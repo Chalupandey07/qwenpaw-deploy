@@ -9,13 +9,13 @@ crons = ["*/5 * * * *"]
 [vars]
 # Public InstaBox URL of the published QwenPaw port. Replace with YOUR URL:
 #   https://8088-<machine-id-without-m_>.instabox.tech/
-QWENPAW_URL = "https://8088-REPLACE-ME.instabox.tech/"
+QWENPAW_URL = "https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech/"
 # Machine id for the optional API-wake fallback. "m_..." form.
-INSTABOX_MACHINE_ID = "m_REPLACE_ME"
+INSTABOX_MACHINE_ID = "m_agq5wqqo2fvypym7rjlpvngc2m"
 
 # KV namespace for last-known status. Create first:
 #   wrangler kv namespace create STATUS
 # then paste the returned id here.
 [[kv_namespaces]]
 binding = "STATUS"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "6a91d8099ed8419c88c94b0946186a27"
