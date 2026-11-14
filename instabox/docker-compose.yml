@@ -22,6 +22,8 @@ services:
       - /data/home/qwenpaw/working:/app/working
       - /data/home/qwenpaw/working.secret:/app/working.secret
       - /data/home/qwenpaw/working.backups:/app/working.backups
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /data/home/qwenpaw/supervisord.conf.template:/etc/supervisor/conf.d/supervisord.conf.template:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/api/healthz || exit 1"]
       interval: 30s
