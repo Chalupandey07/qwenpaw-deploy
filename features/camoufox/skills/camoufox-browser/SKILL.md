@@ -107,3 +107,22 @@ injected into the agent's environment at runtime. To remove it:
 `qwenpaw env delete CAMOUFOX_BRIDGE_TOKEN`. Until the token is set,
 this skill can explain the setup but cannot call the bridge: say so
 plainly instead of pretending to have browsed.
+
+## Opening a site on the user's visible desktop
+
+The user can watch the InstaBox desktop screen (and take it over) via the
+dashboard stream link. To put a page on THAT screen — so the user sees it
+live — use the bridge's desktop endpoint (same token):
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $CAMOUFOX_BRIDGE_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"url":"https://example.com"}' \
+  "$B/desktop-open"
+```
+
+This opens the URL in the desktop Chromium (display `:1`), as a new tab if
+the browser is already running. Use it when the user asks to open a site
+and watch / take control — that is the desktop browser, not Camoufox.
+Camoufox (this skill's other endpoints) is for anti-detect browsing the
+user does NOT need to watch (e.g. x.com, which blocks the desktop Chromium
+and QwenPaw's headless browser alike).
