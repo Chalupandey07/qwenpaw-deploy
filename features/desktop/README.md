@@ -389,6 +389,92 @@ check `xwininfo -id <chromium-window>` map state; if unmapped, re-open
 the URL through the bridge — do not re-diagnose the capture path, it is
 now the host display.
 
+## Rakazo-style computer — P0/P1 build (2026-11-15 ~04:30 IST)
+
+Per the study `rakazo-computer-study.md` (repo commit `0c97840`). The
+working XFCE 1920x1080 desktop was NOT churned; the computer-use
+DriverCard policy stays `effect: allow` (approval fix, blob `3693a825`
+— do not revert to `ask`). No container restart was needed for this
+build. KV namespace `qwenpaw-desktop` (`3eb38e6ebdce41f0a7ed744a99afee46`,
+bound as `DESKTOP_KV` on BOTH Pages projects, production + preview).
+
+### P0 — view/control split + lease + sealed capabilities
+
+| Piece | What it is |
+|---|---|
+| View-only VNC | `desktop-vnc-view.service`: x11vnc `-display :1 -forever -shared -viewonly -nopw -rfbport 5902 -localhost`. `desktop-novnc-view.service`: websockify `127.0.0.1:6082 → 127.0.0.1:5902`. Port 6082 published **private** (id `pv-lwjj2gjx7mrvllk64p6xttkf4a`); token = Worker secret `DESKTOP_VIEW_TOKEN` on both projects (never in git). Reference copies in this folder. |
+| Lease (Worker KV) | `POST /desktop/__takeover` grants a 90 s UUID lease (409 if held); `POST /desktop/__heartbeat` extends 90 s (410 on wrong/stale lease); `POST /desktop/__release` names the lease (stale release is a no-op); `GET /desktop/__lease` is public read. Fence counter + `generation` counter in KV (bumped on takeover/release). |
+| Lease → agent lock | `desktop-lease-watcher.service` polls `__lease` every 5 s (`lease-watcher.py` in this folder) and writes `human worker-lease <epoch>` to `/run/user/1000/instabox-control` while a user lease holds; the computer-use MCP proxy refuses input tools while that file is fresh (≤30 s), read-only tools pass. On lease end it removes the file ONLY if its owner word is `worker-lease` (a dashboard takeover writes a different owner, so it can never be cleared by mistake). On Worker-unreachable it leaves state unchanged (fail-open for the agent). |
+| Sealed capabilities | `POST /desktop/__screen` mints an AES-256-GCM sealed capability (60-min TTL, scope `{mode, generation, leaseId}`; control requires holding the lease); key = SHA-256 of `DESKTOP_ORIGIN_TOKEN` (no new secret). `GET /desktop/session/{view\|control}/{exp}.{token}/...` verifies the capability on EVERY request and proxies to the 6082 (view) or 6081 (control) origin; legacy direct `/desktop/*` asset paths now 302 to the chrome (the old bypass is closed). |
+| noVNC shim + state machine | The Worker injects a shim into `vnc.html`: in-memory storage fallback, hides `#noVNC_status` + the control bar in view-only, posts `qwenpawScreen` states (loading/connecting/connected/failed/disconnected) to the parent, deletes `VideoDecoder` (prevents a codec stall), and re-checks the capability every 1 s on the WebSocket (closes on revocation). |
+
+**Verification (protocol level, all live):**
+- Harness `harness-desktop-gate.mjs`: **38/38 pass** (gate, verify,
+  cookie, legacy redirect, lease grant/409/heartbeat-410, capability
+  mint, session view/control routing to the right origin, shim
+  injection incl. control-bar hiding only in view mode, stale release,
+  generation bump killing old capabilities, tampered capability 403,
+  `__status`, `__wake` throttle, `__action` 503 without key, foreign
+  redirect dropped).
+- **RFB split test (raw RFB client, live):** pointer event to 5902
+  (view) left the cursor at (960,540) — ignored; pointer event to 5901
+  (control) moved it to (700,700); cursor restored. Both servers
+  1920x1080.
+- **Lease end-to-end (live, via KV write):** lease written → watcher
+  wrote `human worker-lease <epoch>` within ~40 s (KV propagation +
+  5 s poll); MCP `list_apps` passed, `click` refused with "A human
+  has taken control of the desktop; wait and retry after they hand
+  back." (the exact path QwenPaw uses, via the SSE proxy); lease
+  deleted → file cleared (23:08:28, journal) → `click` reached the
+  server (`Missing required argument: app`, not the refusal).
+- **Bugs found by testing, fixed:** (1) Python urllib's default
+  User-Agent is 403'd by Cloudflare on the Pages domain — the watcher
+  now sends a Mozilla UA. (2) The watcher's expiry check multiplied
+  epoch-ms by 1000 again (`exp * 1000`), so an expired lease would
+  have been treated as active forever — fixed to compare ms directly.
+  (3) The removal branch's desktop-controller check flaked (two
+  "controller is not agent" log lines); the owner-word check is the
+  real guard, so the controller check was removed. (4) KV is
+  eventually consistent: after a delete, a stale read kept refreshing
+  the control file for ~50 s — the 30 s staleness bound caps the
+  agent's wait; documented in `lease-watcher.py`.
+- Deployed 2026-11-14T23:04:16Z: qwenpawx `35eb7913-6fae-45f8-bacf-
+  84bd35ad407e`, qwenpaw-frontend `26d23300-11d4-4f1e-86ad-34caed128e
+  ae` (both production/success). Live: `/` → 200 both projects,
+  `/desktop` no-cookie → 200 gate page, `/desktop/__lease` → 200
+  `{"holder":"agent","leaseId":null,"expiresAt":null,"fence":0,
+  "generation":0}` on both.
+
+### P1 — overlay chrome + Wake/Asleep + "…" menu
+
+- `pages/public/desktop-chrome.html`: Rakazo-style header (QwenPaw's
+  computer, status pill, Take control → green "You have control" pill
+  + Release control, "…" menu, X Close → `/chat`, machine keeps
+  running). The screen iframe has `pointer-events: none` until the
+  user holds control — that IS the gate. Held predecessor frame during
+  view↔control swaps (15 s timeout, so the screen never blanks);
+  pre-probe before mounting; auto-reconnect with backoff (max 10,
+  then Retry); 15 s heartbeat only while the page is visible; release
+  on `pagehide` via `sendBeacon`. Wake/Asleep/Booting states via
+  `GET /desktop/__status` (probes the view origin + keep-alive
+  `/status`) and `POST /desktop/__wake` (calls keep-alive `GET /ping`,
+  throttled 1/60 s in KV).
+- "…" menu endpoint `POST /desktop/__action` (Stop/Recover/Reset/
+  Update): **built, but returns 503 `instabox_api_key_unset` until
+  `INSTABOX_API_KEY` is set as a Worker secret on both Pages projects
+  (then redeploy). The key was NOT invented and must come from the
+  user.** Recover/Reset/Update return 501 `unsupported` — the
+  InstaBox desktop API has no such actions (only
+  status/install/start/takeover/handback/stop), so those menu items
+  are honest stubs, not live actions.
+- **Still needs the parent's real browser:** (1) log in as satwik →
+  `/desktop` — confirm the overlay chrome renders and stays rendered;
+  (2) Take control → green pill + heartbeat + Release control + held
+  frame across the swap; (3) Wake/Asleep states (only visible when the
+  machine is actually asleep); (4) "…" menu shows the API-key message
+  (expected 503 until the key is set). The parent already verified the
+  plain `/desktop` render at 04:11 IST (before this chrome existed).
+
 ## Limits (honest)
 
 - The desktop dies when the Free VM pauses (30-min idle) or the run ends
