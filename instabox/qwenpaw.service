@@ -1,0 +1,19 @@
+# /etc/systemd/system/qwenpaw.service
+# Install: sudo cp qwenpaw.service /etc/systemd/system/qwenpaw.service
+#          sudo systemctl daemon-reload && sudo systemctl enable --now qwenpaw.service
+[Unit]
+Description=QwenPaw (docker compose)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/data/home/qwenpaw
+ExecStart=/usr/bin/docker compose -f /data/home/qwenpaw/docker-compose.yml up -d
+ExecStop=/usr/bin/docker compose -f /data/home/qwenpaw/docker-compose.yml down
+ExecReload=/usr/bin/docker compose -f /data/home/qwenpaw/docker-compose.yml up -d
+
+[Install]
+WantedBy=multi-user.target
