@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>QwenPaw — Computer</title>
+<link rel="stylesheet" href="/desktop/vendor/xterm.css">
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: #0f1115; color: #e8eaf0; font-family: system-ui, -apple-system, sans-serif; }
@@ -23,12 +24,28 @@
   button.primary:hover { background: #4ade80; }
   button.danger { border-color: #7f1d1d; }
   button:disabled { opacity: 0.5; cursor: default; }
+  select { font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 8px; border: 1px solid #343945; background: #23272f; color: #e8eaf0; cursor: pointer; }
   #menuWrap { position: relative; }
   #menu { display: none; position: absolute; right: 0; top: 40px; background: #1d2129; border: 1px solid #343945; border-radius: 10px; min-width: 210px; padding: 6px; z-index: 50; box-shadow: 0 12px 32px rgba(0,0,0,.5); }
   #menu.open { display: block; }
   #menu button { display: block; width: 100%; text-align: left; background: none; border: none; padding: 9px 10px; border-radius: 6px; }
   #menu button:hover { background: #2c313c; }
   #menu .note { padding: 8px 10px; font-size: 12px; color: #9aa3b2; }
+  #tabBar { display: flex; gap: 4px; padding: 6px 14px 0; background: #171a21; flex: none; }
+  #tabBar button { border: none; border-bottom: 2px solid transparent; background: none; border-radius: 0; padding: 6px 10px; color: #9aa3b2; }
+  #tabBar button.active { color: #e8eaf0; border-bottom-color: #22c55e; }
+  #teachBar { display: none; align-items: center; gap: 10px; padding: 8px 14px; background: #1d2129; border-bottom: 1px solid #262a33; flex: none; }
+  #teachBar.show { display: flex; }
+  #teachBar input[type="text"] { flex: 1; font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 8px; border: 1px solid #343945; background: #0f1115; color: #e8eaf0; }
+  #teachBar label { font-size: 13px; color: #c8cfdb; white-space: nowrap; }
+  #teachBar .rec { color: #f87171; font-weight: 650; font-size: 13px; white-space: nowrap; }
+  #needsYou { display: none; gap: 12px; padding: 12px 14px; background: #2a1f0d; border-bottom: 1px solid #7c5a1e; flex: none; align-items: flex-start; }
+  #needsYou.show { display: flex; }
+  #needsYou .nyText { flex: 1; min-width: 0; }
+  #needsYou .nyTitle { font-weight: 650; font-size: 14px; }
+  #needsYou .nyBody { color: #d6c9a8; font-size: 13px; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+  #needsYou img { width: 220px; max-height: 140px; object-fit: cover; border: 1px solid #7c5a1e; border-radius: 8px; background: #000; cursor: pointer; }
+  #needsYou .nyBtns { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   #screenWrap { position: relative; flex: 1; background: #000; overflow: hidden; }
   #screenWrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
   #screenWrap iframe.view { pointer-events: none; }
@@ -39,7 +56,20 @@
   #screenOverlay p { margin: 0; color: #9aa3b2; max-width: 480px; }
   .spinner { width: 28px; height: 28px; border: 3px solid #343945; border-top-color: #22c55e; border-radius: 50%; animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  #toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: #1d2129; border: 1px solid #343945; border-radius: 10px; padding: 10px 16px; font-size: 13px; display: none; z-index: 100; max-width: 90vw; }
+  #terminalWrap { display: none; flex: 1; background: #000; overflow: hidden; padding: 8px; }
+  #terminalWrap.show { display: block; }
+  #terminalWrap .termEmpty { color: #9aa3b2; padding: 2rem; text-align: center; }
+  #terminal { height: 100%; }
+  #editorModal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 200; align-items: center; justify-content: center; }
+  #editorModal.show { display: flex; }
+  #editor { background: #171a21; border: 1px solid #343945; border-radius: 12px; width: min(680px, 94vw); max-height: 90vh; overflow: auto; padding: 18px; }
+  #editor h2 { margin: 0 0 4px; font-size: 17px; }
+  #editor p { margin: 0 0 12px; color: #9aa3b2; font-size: 13px; }
+  #editor label { display: block; font-size: 13px; color: #c8cfdb; margin: 10px 0 4px; }
+  #editor input[type="text"], #editor textarea { width: 100%; font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid #343945; background: #0f1115; color: #e8eaf0; }
+  #editor textarea { min-height: 64px; resize: vertical; }
+  #editor .row { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  #toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: #1d2129; border: 1px solid #343945; border-radius: 10px; padding: 10px 16px; font-size: 13px; display: none; z-index: 300; max-width: 90vw; }
   #toast.show { display: block; }
   #toast.err { border-color: #7f1d1d; }
 </style>
@@ -52,6 +82,11 @@
     <span class="subtitle">QwenPaw&rsquo;s computer</span>
     <span class="pill" id="statusPill">Connecting&hellip;</span>
     <span class="spacer"></span>
+    <select id="modeSelect" title="Team = shared computer (:1). Private = the QA agent's own computer (:2).">
+      <option value="team">Team</option>
+      <option value="private">Private</option>
+    </select>
+    <button id="teachBtn" style="display:none">Teach a task</button>
     <button id="takeBtn" class="primary" style="display:none">Take control</button>
     <span class="pill control" id="controlPill" style="display:none">You have control</span>
     <button id="releaseBtn" style="display:none">Release control</button>
@@ -67,6 +102,28 @@
     </span>
     <button id="closeBtn" aria-label="Close computer">&times;</button>
   </header>
+  <div id="tabBar">
+    <button id="tabScreen" class="active">Screen</button>
+    <button id="tabTerminal">Terminal</button>
+  </div>
+  <div id="teachBar">
+    <span class="rec">&#9679; Teaching</span>
+    <input type="text" id="teachGoal" placeholder="What are you teaching? e.g. Check the inbox and summarise new mail">
+    <label><input type="checkbox" id="teachSensitive"> Sensitive (hide what I type/paste)</label>
+    <button id="teachStop" class="primary">Stop &amp; draft skill</button>
+  </div>
+  <div id="needsYou">
+    <div class="nyText">
+      <div class="nyTitle">Needs you</div>
+      <div class="nyBody" id="nyBody"></div>
+      <div class="nyBtns">
+        <button id="nySkip">Skip</button>
+        <button id="nyDone">I&rsquo;m done</button>
+        <button id="nyTake" class="primary">Take control</button>
+      </div>
+    </div>
+    <img id="nyPreview" alt="Live preview of the desktop" title="Live preview — click to open the full computer">
+  </div>
   <div id="screenWrap">
     <div id="screenOverlay">
       <div class="spinner" id="overlaySpinner" style="display:none"></div>
@@ -75,8 +132,40 @@
       <span id="overlayActions"></span>
     </div>
   </div>
+  <div id="terminalWrap">
+    <div id="terminal"></div>
+  </div>
+</div>
+<div id="editorModal">
+  <div id="editor">
+    <h2>Teach a task — draft skill</h2>
+    <p>Review the steps the recording produced. Saving stores the skill on QwenPaw (it appears in the skill pool); Test copies a run prompt to test it in a new chat; Add to routine saves it as a routine.</p>
+    <label>Name</label>
+    <input type="text" id="edName">
+    <label>When to use</label>
+    <textarea id="edWhen"></textarea>
+    <label>Inputs (one per line)</label>
+    <textarea id="edInputs"></textarea>
+    <label>Steps (one per line)</label>
+    <textarea id="edSteps" style="min-height:140px"></textarea>
+    <label>How to check</label>
+    <textarea id="edCheck"></textarea>
+    <label>What to return</label>
+    <textarea id="edReturn"></textarea>
+    <label>Approval boundaries</label>
+    <textarea id="edApproval"></textarea>
+    <label>Failure handling</label>
+    <textarea id="edFailure"></textarea>
+    <div class="row">
+      <button id="edSave" class="primary">Save skill</button>
+      <button id="edTest">Test</button>
+      <button id="edRoutine">Add to routine</button>
+      <button id="edClose">Close</button>
+    </div>
+  </div>
 </div>
 <div id="toast"></div>
+<script src="/desktop/vendor/xterm.js"></script>
 <script>
 (function () {
   "use strict";
@@ -91,16 +180,33 @@
   var takeBtn = document.getElementById("takeBtn");
   var releaseBtn = document.getElementById("releaseBtn");
   var controlPill = document.getElementById("controlPill");
+  var teachBtn = document.getElementById("teachBtn");
+  var teachBar = document.getElementById("teachBar");
+  var teachGoal = document.getElementById("teachGoal");
+  var teachSensitive = document.getElementById("teachSensitive");
+  var teachStop = document.getElementById("teachStop");
+  var modeSelect = document.getElementById("modeSelect");
   var menuBtn = document.getElementById("menuBtn");
   var menu = document.getElementById("menu");
   var menuNote = document.getElementById("menuNote");
   var closeBtn = document.getElementById("closeBtn");
   var toastEl = document.getElementById("toast");
+  var tabScreen = document.getElementById("tabScreen");
+  var tabTerminal = document.getElementById("tabTerminal");
+  var terminalWrap = document.getElementById("terminalWrap");
+  var needsYouEl = document.getElementById("needsYou");
+  var nyBody = document.getElementById("nyBody");
+  var nyPreview = document.getElementById("nyPreview");
+  var editorModal = document.getElementById("editorModal");
 
   var leaseId = null, leaseExpiresAt = 0, mode = "view", capUrl = null;
+  var computer = "default"; // "default" = shared :1, "qa" = private :2
   var heartbeatTimer = null, reconnectTimer = null, reconnectAttempts = 0;
   var currentFrame = null, heldFrame = null, heldTimer = null, connected = false;
-  var statusPollTimer = null, toastTimer = null;
+  var statusPollTimer = null, toastTimer = null, needsYouTimer = null;
+  var term = null, termSocket = null, termCapUrl = null;
+  var teaching = null; // {goal, events:[], sensitive}
+  var draftSkill = null; // {name, playbook, events}
 
   function toast(msg, isErr) {
     toastEl.textContent = msg;
@@ -140,6 +246,8 @@
     takeBtn.style.display = hasControl ? "none" : "";
     releaseBtn.style.display = hasControl ? "" : "none";
     controlPill.style.display = hasControl ? "" : "none";
+    teachBtn.style.display = hasControl ? "" : "none";
+    if (!hasControl && teaching) stopTeaching(true);
     if (currentFrame) currentFrame.className = hasControl ? "control" : "view";
   }
 
@@ -183,8 +291,8 @@
     if (heldFrame) { try { heldFrame.remove(); } catch (e) {} heldFrame = null; }
   }
 
-  async function mintScreen(wantMode) {
-    var r = await api("/desktop/__screen", "POST", { mode: wantMode, leaseId: leaseId });
+  async function mintScreen(wantMode, wantComputer) {
+    var r = await api("/desktop/__screen", "POST", { mode: wantMode, computer: wantComputer || computer, leaseId: leaseId });
     if (r.status !== 200 || !r.json.url) return null;
     return r.json.url;
   }
@@ -197,7 +305,7 @@
 
   async function mountScreen(wantMode) {
     mode = wantMode;
-    var url = await mintScreen(wantMode);
+    var url = await mintScreen(wantMode, computer);
     if (!url) {
       showOverlay("Screen link expired", "Could not mint a screen link. Please reload /desktop.", false,
         '<button onclick="location.reload()">Reload</button>');
@@ -211,7 +319,7 @@
     try {
       var probe = await fetch(vncUrl, { redirect: "manual" });
       if (probe.status === 403) {
-        url = await mintScreen(wantMode);
+        url = await mintScreen(wantMode, computer);
         if (!url) { showOverlay("Screen link expired", "Please reload /desktop.", false, '<button onclick="location.reload()">Reload</button>'); return; }
         capUrl = url;
         vncUrl = buildVncUrl(url, wantMode);
@@ -240,17 +348,342 @@
     screenState("loading");
     clearTimeout(heldTimer);
     heldTimer = setTimeout(dropHeldFrame, 15000);
+    // If teaching was on, re-arm the new frame's capture.
+    if (teaching) sendTeachState();
   }
 
   window.addEventListener("message", function (ev) {
     if (ev.origin !== window.location.origin) return;
     var d = ev.data || {};
     if (d.type === "qwenpawScreen" && d.state) screenState(d.state, d.detail);
+    if (d.type === "qwenpawTeachEvent" && d.event && teaching) {
+      teaching.events.push(d.event);
+      if (teaching.events.length > 500) teaching.events.splice(0, teaching.events.length - 500);
+    }
   });
+
+  // --- Teach-by-showing (Rakazo's taught-skills flow) -------------------
+  // The shim in the noVNC iframe forwards pointer/key/scroll/clipboard
+  // events while teaching is on. The draft playbook is built client-side
+  // (a port of packages/core/src/teach-playbook.ts buildPlaybookFromRecording).
+  function describePointer(ev) {
+    var action = ev.type || "click", button = ev.button || "left";
+    if (action === "move") return "Move pointer to (" + (ev.x || 0) + ", " + (ev.y || 0) + ").";
+    if (action === "down") return "Press " + button + " button at (" + (ev.x || 0) + ", " + (ev.y || 0) + ").";
+    if (action === "up") return "Release " + button + " button at (" + (ev.x || 0) + ", " + (ev.y || 0) + ").";
+    return (action === "click" ? "Click" : action) + " " + button + " button at (" + (ev.x || 0) + ", " + (ev.y || 0) + ").";
+  }
+  function scrollDir(v) { return v === "up" || v === "left" || v === "right" ? v : "down"; }
+  function redactSensitive(text) {
+    var t = (text || "").trim();
+    if (/password|secret|token|api[_-]?key/i.test(t)) return "[redacted input]";
+    return text;
+  }
+  function buildPlaybook(goal, events, snapshots) {
+    var steps = [], typed = "", typedSensitive = false, drag = null;
+    function flushTyped() { if (typed) { var t = redactSensitive(typed); if (t) steps.push("Type " + JSON.stringify(t) + "."); typed = ""; } }
+    function flushSensitiveTyped() { if (typedSensitive) { steps.push("Type " + JSON.stringify("[redacted input]") + "."); typedSensitive = false; } }
+    function flushPending() { flushTyped(); flushSensitiveTyped(); }
+    function flushDrag() {
+      if (!drag) return;
+      var moved = Math.hypot(drag.toX - drag.fromX, drag.toY - drag.fromY) >= 8;
+      steps.push(moved ? "Drag " + drag.button + " button from (" + drag.fromX + ", " + drag.fromY + ") to (" + drag.toX + ", " + drag.toY + ")."
+        : "Click " + drag.button + " button at (" + drag.fromX + ", " + drag.fromY + ").");
+      drag = null;
+    }
+    events.forEach(function (ev) {
+      if (ev.kind === "key") {
+        if (ev.sensitive) { flushDrag(); flushTyped(); typedSensitive = true; return; }
+        var k = ev.key;
+        if (!k) return;
+        flushDrag();
+        if (k.length === 1) { flushSensitiveTyped(); typed += k; return; }
+        flushPending();
+        steps.push("Press key: " + k + ".");
+        return;
+      }
+      flushPending();
+      if (ev.kind === "pointer") {
+        var action = ev.type || "click", button = ev.button || "left", x = ev.x || 0, y = ev.y || 0;
+        if (action === "down") { flushDrag(); drag = { button: button, fromX: x, fromY: y, toX: x, toY: y }; return; }
+        if (action === "move" && drag) { drag.toX = x; drag.toY = y; return; }
+        if (action === "up") {
+          if (drag) { drag.toX = x; drag.toY = y; flushDrag(); } else { steps.push(describePointer(ev)); }
+          return;
+        }
+        flushDrag();
+        steps.push(describePointer(ev));
+      } else if (ev.kind === "clipboard") {
+        flushDrag();
+        var text = ev.sensitive ? "[redacted input]" : ev.text ? redactSensitive(ev.text) : "";
+        if (text) steps.push("Paste or type: " + text + ".");
+      } else if (ev.kind === "scroll") {
+        flushDrag();
+        var dir = scrollDir(ev.type), amount = Number(ev.text || 3);
+        var at = ev.x !== undefined && ev.y !== undefined ? " at (" + ev.x + ", " + ev.y + ")" : "";
+        steps.push(Number.isFinite(amount) && amount > 1 ? "Scroll " + dir + " " + amount + " times" + at + "." : "Scroll " + dir + at + ".");
+      } else {
+        flushDrag();
+      }
+    });
+    flushPending();
+    flushDrag();
+    if (steps.length === 0) steps.push("Repeat the demonstrated workflow using the same navigation pattern.");
+    return {
+      whenToUse: (goal || "").trim() || "When the user asks to repeat the demonstrated task.",
+      inputs: (goal || "").trim() ? [(goal || "").trim()] : [],
+      steps: steps,
+      howToCheck: (snapshots && snapshots.length && snapshots[snapshots.length - 1].summary)
+        ? "The final screen should match: " + snapshots[snapshots.length - 1].summary + "."
+        : "Confirm the outcome matches the user's goal before reporting success.",
+      whatToReturn: "A short summary of what was completed and where outputs were saved.",
+      approvalBoundaries: "Do not send messages, spend money, publish content, or delete data without explicit user approval.",
+      failureHandling: "If a step fails or the expected screen is not visible, stop and ask the user before retrying.",
+    };
+  }
+  function formatSkillRunPrompt(name, playbook, test) {
+    var lines = ["Run taught skill: " + name];
+    if (test) lines.push("This is a safe test run. Do not send, spend, delete, or publish anything.");
+    lines.push("When to use: " + playbook.whenToUse);
+    if (playbook.inputs.length) lines.push("Inputs: " + playbook.inputs.join("; "));
+    lines.push("Steps:");
+    playbook.steps.forEach(function (s, i) { lines.push((i + 1) + ". " + s); });
+    lines.push("How to check: " + playbook.howToCheck);
+    lines.push("Return: " + playbook.whatToReturn);
+    lines.push("Approval boundaries: " + playbook.approvalBoundaries);
+    lines.push("Failure handling: " + playbook.failureHandling);
+    return lines.join("\n");
+  }
+  function sendTeachState() {
+    if (!currentFrame) return;
+    try {
+      currentFrame.contentWindow.postMessage(
+        { qwenpawTeach: !!teaching, sensitive: teaching ? teaching.sensitive : false },
+        window.location.origin);
+    } catch (e) {}
+  }
+  function startTeaching() {
+    if (!leaseId) { toast("Take control first — teaching records your own demonstration.", true); return; }
+    teaching = { goal: teachGoal.value.trim(), events: [], sensitive: teachSensitive.checked };
+    teachBar.classList.add("show");
+    sendTeachState();
+    toast("Recording — demonstrate the workflow on the desktop, then Stop & draft skill.");
+  }
+  function stopTeaching(cancelled) {
+    if (!teaching) return;
+    var t = teaching;
+    teaching = null;
+    teachBar.classList.remove("show");
+    sendTeachState();
+    if (cancelled) { toast("Teaching stopped (control released)."); return; }
+    var goal = t.goal || teachGoal.value.trim();
+    var playbook = buildPlaybook(goal, t.events, []);
+    draftSkill = { name: goal.slice(0, 80) || "Taught skill", goal: goal, playbook: playbook, events: t.events };
+    openEditor(draftSkill);
+  }
+  function openEditor(draft) {
+    document.getElementById("edName").value = draft.name;
+    document.getElementById("edWhen").value = draft.playbook.whenToUse;
+    document.getElementById("edInputs").value = draft.playbook.inputs.join("\n");
+    document.getElementById("edSteps").value = draft.playbook.steps.join("\n");
+    document.getElementById("edCheck").value = draft.playbook.howToCheck;
+    document.getElementById("edReturn").value = draft.playbook.whatToReturn;
+    document.getElementById("edApproval").value = draft.playbook.approvalBoundaries;
+    document.getElementById("edFailure").value = draft.playbook.failureHandling;
+    editorModal.classList.add("show");
+  }
+  function readEditor() {
+    return {
+      name: document.getElementById("edName").value.trim(),
+      playbook: {
+        whenToUse: document.getElementById("edWhen").value.trim(),
+        inputs: document.getElementById("edInputs").value.split("\n").map(function (s) { return s.trim(); }).filter(Boolean),
+        steps: document.getElementById("edSteps").value.split("\n").map(function (s) { return s.trim(); }).filter(Boolean),
+        howToCheck: document.getElementById("edCheck").value.trim(),
+        whatToReturn: document.getElementById("edReturn").value.trim(),
+        approvalBoundaries: document.getElementById("edApproval").value.trim(),
+        failureHandling: document.getElementById("edFailure").value.trim(),
+      },
+    };
+  }
+  teachBtn.addEventListener("click", startTeaching);
+  teachStop.addEventListener("click", function () { stopTeaching(false); });
+  teachSensitive.addEventListener("change", function () {
+    if (teaching) { teaching.sensitive = teachSensitive.checked; sendTeachState(); }
+  });
+  document.getElementById("edClose").addEventListener("click", function () { editorModal.classList.remove("show"); });
+  document.getElementById("edSave").addEventListener("click", async function () {
+    var d = readEditor();
+    if (!d.name || d.playbook.steps.length === 0) { toast("A skill needs a name and at least one step.", true); return; }
+    var r = await api("/desktop/__teach", "POST", { name: d.name, goal: (draftSkill && draftSkill.goal) || "", playbook: d.playbook, events: (draftSkill && draftSkill.events) || [] });
+    if (r.status === 200 && r.json.ok) {
+      editorModal.classList.remove("show");
+      toast("Skill saved — QwenPaw will pick it up in the skill pool shortly (id " + r.json.id + ").");
+    } else {
+      toast("Could not save the skill (" + (r.json.error || r.status) + ").", true);
+    }
+  });
+  document.getElementById("edTest").addEventListener("click", async function () {
+    var d = readEditor();
+    if (!d.name || d.playbook.steps.length === 0) { toast("A skill needs a name and at least one step.", true); return; }
+    var prompt = formatSkillRunPrompt(d.name, d.playbook, true);
+    try { await navigator.clipboard.writeText(prompt); toast("Test prompt copied — paste it in a new QwenPaw chat to test the skill."); }
+    catch (e) { toast("Copy failed — the test prompt is:\n" + prompt, true); }
+    window.open("/chat", "_blank");
+  });
+  document.getElementById("edRoutine").addEventListener("click", async function () {
+    var d = readEditor();
+    if (!d.name || d.playbook.steps.length === 0) { toast("A skill needs a name and at least one step.", true); return; }
+    var token = localStorage.getItem("qwenpawRoutineToken") || "";
+    if (!token) {
+      token = window.prompt("Paste the routines token (ROUTINE_WEBHOOK_TOKEN — the one from the setup message). It is stored only in this browser.");
+      if (!token) return;
+      localStorage.setItem("qwenpawRoutineToken", token);
+    }
+    var prompt = formatSkillRunPrompt(d.name, d.playbook, false);
+    var res = await fetch("https://qwenpaw-routines.qwenpaw-rohan.workers.dev/api/routines", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Routine-Token": token },
+      body: JSON.stringify({ id: "taught-" + d.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40), name: d.name, prompt: prompt, scheduleNote: "Taught skill — run on demand from the routines page", active: true }),
+    });
+    if (res.status === 200) {
+      toast("Added to routines — it will appear on the routines page.");
+    } else if (res.status === 401) {
+      localStorage.removeItem("qwenpawRoutineToken");
+      toast("That routines token was rejected — paste the right one and try again.", true);
+    } else {
+      toast("Could not add the routine (" + res.status + ").", true);
+    }
+  });
+
+  // --- Needs-you (Rakazo's ComputerCard) --------------------------------
+  async function pollNeedsYou() {
+    try {
+      var r = await api("/desktop/__needs-you", "GET");
+      if (r.status === 200 && r.json.record) {
+        nyBody.textContent = r.json.record.text || "";
+        nyPreview.src = "/desktop/__preview?computer=" + computer + "&t=" + Date.now();
+        needsYouEl.classList.add("show");
+      } else {
+        needsYouEl.classList.remove("show");
+      }
+    } catch (e) { /* keep the banner as-is */ }
+  }
+  async function resolveNeedsYou(action) {
+    var r = await api("/desktop/__needs-you/resolve", "POST", { action: action });
+    needsYouEl.classList.remove("show");
+    if (r.status === 200 && r.json.ok) {
+      toast(action === "skip"
+        ? "Skipped. Tell the agent in chat: “skip that step”."
+        : "Done. Tell the agent in chat: “done, continue”.");
+    }
+  }
+  document.getElementById("nySkip").addEventListener("click", function () { resolveNeedsYou("skip"); });
+  document.getElementById("nyDone").addEventListener("click", function () { resolveNeedsYou("done"); });
+  document.getElementById("nyTake").addEventListener("click", function () { takeControl(); });
+  nyPreview.addEventListener("click", function () { setTab("screen"); });
+  nyPreview.addEventListener("error", function () { nyPreview.style.display = "none"; });
+  nyPreview.addEventListener("load", function () { nyPreview.style.display = ""; });
+
+  // --- Terminal (Rakazo's terminal tab) ----------------------------------
+  // xterm.js + a WebSocket to the sealed terminal session. The terminal
+  // server speaks Rakazo's frame protocol: [kind:u8][length:u32be][payload]
+  // (kind 0 = stdin, kind 1 = resize cols/rows u16be). Output is raw bytes.
+  function termFrame(kind, payload) {
+    var out = new Uint8Array(5 + payload.length);
+    out[0] = kind;
+    out[1] = (payload.length >>> 24) & 255;
+    out[2] = (payload.length >>> 16) & 255;
+    out[3] = (payload.length >>> 8) & 255;
+    out[4] = payload.length & 255;
+    out.set(payload, 5);
+    return out;
+  }
+  function openTerminal() {
+    if (!leaseId) {
+      terminalWrap.innerHTML = '<div class="termEmpty">Take control to use the terminal.<br><br><button id="termTake" class="primary">Take control</button></div>';
+      document.getElementById("termTake").addEventListener("click", takeControl);
+      return;
+    }
+    if (term && termSocket && termSocket.readyState === 1) return;
+    terminalWrap.innerHTML = '<div id="terminal"></div>';
+    if (typeof window.Terminal === "undefined") {
+      terminalWrap.innerHTML = '<div class="termEmpty">The terminal client (xterm.js) did not load. Reload /desktop and try again.</div>';
+      return;
+    }
+    mintScreen("terminal", computer).then(function (url) {
+      if (!url) {
+        terminalWrap.innerHTML = '<div class="termEmpty">Could not open a terminal session. Reload /desktop and try again.</div>';
+        return;
+      }
+      termCapUrl = url;
+      var wsUrl = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + url + "/websockify";
+      var sock = new WebSocket(wsUrl);
+      sock.binaryType = "arraybuffer";
+      term = new window.Terminal({ cursorBlink: true, fontSize: 14 });
+      term.open(document.getElementById("terminal"));
+      term.write("Connecting to the computer's terminal…\r\n");
+      var enc = new TextEncoder(), dec = new TextDecoder();
+      term.onData(function (data) { if (sock.readyState === 1) sock.send(termFrame(0, enc.encode(data))); });
+      term.onResize(function (size) {
+        if (sock.readyState !== 1) return;
+        var b = new Uint8Array(4);
+        b[0] = (size.cols >>> 8) & 255; b[1] = size.cols & 255;
+        b[2] = (size.rows >>> 8) & 255; b[3] = size.rows & 255;
+        sock.send(termFrame(1, b));
+      });
+      sock.onopen = function () {
+        term.clear();
+        var b = new Uint8Array(4);
+        b[0] = (term.cols >>> 8) & 255; b[1] = term.cols & 255;
+        b[2] = (term.rows >>> 8) & 255; b[3] = term.rows & 255;
+        sock.send(termFrame(1, b));
+      };
+      sock.onmessage = function (ev) { term.write(dec.decode(new Uint8Array(ev.data))); };
+      sock.onclose = function () { term.write("\r\n[terminal disconnected — switch tabs to reconnect]\r\n"); };
+      sock.onerror = function () { term.write("\r\n[terminal connection failed]\r\n"); };
+      termSocket = sock;
+    });
+  }
+  function closeTerminal() {
+    try { if (termSocket) termSocket.close(); } catch (e) {}
+    try { if (term) term.dispose(); } catch (e) {}
+    term = null; termSocket = null; termCapUrl = null;
+  }
+  function setTab(which) {
+    tabScreen.classList.toggle("active", which === "screen");
+    tabTerminal.classList.toggle("active", which === "terminal");
+    wrap.style.display = which === "screen" ? "" : "none";
+    terminalWrap.classList.toggle("show", which === "terminal");
+    if (which === "terminal") openTerminal();
+    else closeTerminal();
+  }
+  tabScreen.addEventListener("click", function () { setTab("screen"); });
+  tabTerminal.addEventListener("click", function () { setTab("terminal"); });
+
+  // --- Team / Private (per-bot computer) --------------------------------
+  modeSelect.addEventListener("change", async function () {
+    var want = modeSelect.value === "private" ? "private" : "team";
+    var r = await api("/desktop/__mode", "POST", { agent: "default", mode: want });
+    if (r.status !== 200 || !r.json.ok) { toast("Could not switch computer mode.", true); return; }
+    computer = want === "private" ? "qa" : "default";
+    closeTerminal();
+    await mountScreen(mode);
+    toast(want === "private" ? "Private computer — the QA agent's own display (:2)." : "Team computer — the shared display (:1).");
+  });
+  async function loadMode() {
+    try {
+      var r = await api("/desktop/__mode?agent=default", "GET");
+      if (r.status === 200 && r.json.mode) {
+        computer = r.json.mode === "private" ? "qa" : "default";
+        modeSelect.value = r.json.mode;
+      }
+    } catch (e) { /* default stays team */ }
+  }
 
   async function takeControl() {
     takeBtn.disabled = true;
-    var r = await api("/desktop/__takeover", "POST", {});
+    var r = await api("/desktop/__takeover", "POST", { computer: computer });
     takeBtn.disabled = false;
     if (r.status !== 200 || !r.json.ok) {
       if (r.json.error === "held") {
@@ -267,7 +700,7 @@
     clearInterval(heartbeatTimer);
     heartbeatTimer = setInterval(async function () {
       if (document.visibilityState !== "visible" || !leaseId) return;
-      var h = await api("/desktop/__heartbeat", "POST", { leaseId: leaseId });
+      var h = await api("/desktop/__heartbeat", "POST", { leaseId: leaseId, computer: computer });
       if (h.status !== 200 || !h.json.ok) {
         clearInterval(heartbeatTimer);
         leaseId = null;
@@ -287,9 +720,9 @@
     clearInterval(heartbeatTimer);
     setControlUI(false);
     if (sendBeacon && navigator.sendBeacon) {
-      try { navigator.sendBeacon("/desktop/__release", JSON.stringify({ leaseId: id })); } catch (e) {}
+      try { navigator.sendBeacon("/desktop/__release", JSON.stringify({ leaseId: id, computer: computer })); } catch (e) {}
     } else {
-      try { await api("/desktop/__release", "POST", { leaseId: id }); } catch (e) {}
+      try { await api("/desktop/__release", "POST", { leaseId: id, computer: computer }); } catch (e) {}
     }
     await mountScreen("view");
   }
@@ -354,6 +787,7 @@
 
   async function init() {
     setControlUI(false);
+    await loadMode();
     var s = await api("/desktop/__status", "GET");
     if (s.status !== 200) {
       showOverlay("Could not reach the desktop", "The status check failed. Reload to try again.", false,
@@ -383,6 +817,9 @@
         '<button id="wakeBtn" class="primary">Wake computer</button>');
       document.getElementById("wakeBtn").onclick = wake;
     }
+    clearInterval(needsYouTimer);
+    needsYouTimer = setInterval(pollNeedsYou, 10000);
+    pollNeedsYou();
   }
 
   init();
