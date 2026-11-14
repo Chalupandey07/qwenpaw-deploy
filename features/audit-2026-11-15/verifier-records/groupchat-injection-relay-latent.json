@@ -1,0 +1,43 @@
+{
+  "decision": "rejected",
+  "record": {
+    "fingerprint": "groupchat-injection-relay-latent",
+    "title": "Thread messages are pasted verbatim into QwenPaw by the relay with no sanitisation \u2014 prompt injection is latent until the relay is installed",
+    "description": "Code trace verified as written, but the finding fails the 7-Question Gate and is not a standalone vulnerability: the sink does not exist today (relay is a repo file, explicitly not installed), verbatim delivery of discussion context to the agent is the relay's documented intended behaviour, no instruction execution was demonstrated, and setting GROUPCHAT_TOKEN closes the only unauthenticated planting path, making this fully redundant with groupchat-open-thread.",
+    "verdict": "rejected",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "~/workspace/qwenpaw-deploy/features/groupchat/worker/src/index.js",
+        "line": 207,
+        "what": "POST /thread/message stores text = cleanText(body.text); cleanText (line 98) is only trim().slice(0,4000) \u2014 no sanitisation, verified."
+      },
+      {
+        "step": "propagation",
+        "path": "~/workspace/qwenpaw-deploy/features/groupchat/relay/relay.py",
+        "line": 126,
+        "what": "build_digest (lines 118-127) appends last 12 messages verbatim as '[role:author] text' into the digest."
+      },
+      {
+        "step": "sink",
+        "path": "~/workspace/qwenpaw-deploy/features/groupchat/relay/relay.py",
+        "line": 132,
+        "what": "deliver_to_agent (lines 132-140) passes digest as --text to 'docker exec qwenpaw qwenpaw agents chat' \u2014 but this sink is LATENT ONLY: README line 12 and relay.py line 27 state the relay is a repo file, NOT installed, install is a coordinator decision."
+      }
+    ],
+    "evidence": [
+      {
+        "command": "grep -n 'build_digest|messages.*-12|docker.*exec|--text' relay.py; sed -n '118,150p' relay.py",
+        "output": "118:def build_digest(thread, agent); 126:for m in thread[\"messages\"][-12:]: lines.append(f\"[{m['role']}:{m['author']}] {m['text']}\"); 132:def deliver_to_agent; 134:digest = build_digest(thread, agent); 136-140: docker exec qwenpaw qwenpaw agents chat ... --text digest"
+      },
+      {
+        "command": "grep -n 'cleanText|const text|role === .agent.|author !== thread.next_agent' worker/src/index.js; grep -n 'not installed|coordinator decision' README.md relay.py",
+        "output": "index.js:98 cleanText trim().slice(0,4000); 207:text=cleanText(body.text); 217-221: role=agent requires PARTICIPANTS.includes(author) and author===next_agent, else 400/409; README:12 relay (repo file, not installed); relay.py:27 Install (coordinator decision \u2014 NOT installed by the build)"
+      }
+    ],
+    "confidence": "high",
+    "conditions": "Would only become assessable if the relay were installed AND GROUPCHAT_TOKEN were left unset AND an embedded instruction were demonstrated to be executed by the live agent despite its system prompt and the [role:author] labelling \u2014 i.e. exactly the groupchat-open-thread chain, not a separate finding.",
+    "remediation": "Setting GROUPCHAT_TOKEN first is correct and sufficient to close the unauthenticated planting path; the proposed delimiters / 'untrusted data' labelling in build_digest is sound optional hardening for a future install, not a fix for a live vulnerability. No relay install or live-agent delivery was performed.",
+    "reason": "Rejected under the 7-Question Gate: Q1 fails \u2014 no copy-pasteable request reaches the agent today because the relay sink is not installed; Q5 fails \u2014 the agent reading the discussion verbatim is the documented intended behaviour (relay header/README: agent is meant to reply as its part of the group discussion), so 'agent reads discussion' is not 'attacker instruction injection'; Q6 fails \u2014 no execution demonstrated, only 'technically possible', and the digest's [role:author] labelling plus the agent system prompt are untested mitigations; per the skill's conditionally-valid table, prompt injection alone requires a demonstrated chain (e.g. reading other users' data), which is absent. The hunter's 'no provenance for role=agent' claim is also overstated: index.js:217-221 enforces agent posts to a participant who is next_agent, so an attacker can only plant role=user text. Once GROUPCHAT_TOKEN is set, only the owner \u2014 who already has direct QwenPaw access \u2014 can supply thread text, so no new attacker capability remains; this finding is redundant with groupchat-open-thread."
+  }
+}

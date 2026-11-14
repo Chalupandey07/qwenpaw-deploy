@@ -1,0 +1,53 @@
+{
+  "decision": "rejected",
+  "record": {
+    "fingerprint": "board-unbounded-board-growth",
+    "title": "No ticket-count cap or list pagination: unbounded board can exhaust the single KV value and break all writes",
+    "description": "Source-confirmed capacity property, not a security vulnerability: POST /api/tickets (lines 361-384) pushes without any count check and saveTickets() (lines 82-83) rewrites the entire board as one KV value under key 'tickets'; GET /api/tickets (lines 357-359) returns the whole board with no limit/offset. Per-field caps exist (title 200, description 5000, MAX_COMMENTS 50 x MAX_COMMENT_LEN 1000, lines 42-43). Maths: worst-case ticket ~57,000 B (200+5000+50x~1030 comment bytes incl. timestamps/JSON + ~300 B fixed fields) so ~460 worst-case tickets reach Cloudflare KV's 25 MB single-value limit; typical ticket ~800 B needs ~32,768 tickets; minimal ticket ~260 B needs ~100,825 tickets. The board is reported empty, so present impact is nil.",
+    "verdict": "rejected",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/board/worker/src/index.js",
+        "line": 346,
+        "what": "All /api/* calls require BOARD_TOKEN via X-Board-Key or ?key= (authed/safeEqual, lines 64-68); unauthenticated requests get 401, so only the single shared-key holder can create tickets"
+      },
+      {
+        "step": "entrypoint",
+        "path": "features/board/worker/src/index.js",
+        "line": 361,
+        "what": "POST /api/tickets validates only per-field limits via validatePatch, then lines 381-383 loadTickets, tickets.push(ticket), saveTickets with no tickets.length / MAX_TICKETS check"
+      },
+      {
+        "step": "propagation",
+        "path": "features/board/worker/src/index.js",
+        "line": 82,
+        "what": "saveTickets does env.TICKETS.put('tickets', JSON.stringify({tickets, updated_at})) \u2014 whole board as one KV value on every mutation"
+      },
+      {
+        "step": "sink",
+        "path": "features/board/worker/src/index.js",
+        "line": 357,
+        "what": "GET /api/tickets loads the whole board and returns json(tickets.map(cleanTicket)) with no limit/offset pagination; url.searchParams is never read for limit/offset"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "grep -n \"MAX_TICKETS\\|MAX_COMMENTS\\|MAX_COMMENT_LEN\\|limit\\|offset\\|tickets.length\\|loadTickets\\|saveTickets\\|KV_KEY\" ~/workspace/qwenpaw-deploy/features/board/worker/src/index.js",
+        "output": "41:const KV_KEY = \"tickets\"; 42:const MAX_COMMENTS = 50; 43:const MAX_COMMENT_LEN = 1000; 71:async function loadTickets(env) { 72: const raw = await env.TICKETS.get(KV_KEY); 82:async function saveTickets(env, tickets) { 83: await env.TICKETS.put(KV_KEY, JSON.stringify({ tickets, updated_at: new Date().toISOString() })); 358: const tickets = await loadTickets(env); 381: const tickets = await loadTickets(env); 382: tickets.push(ticket); 383: await saveTickets(env, tickets); \u2014 no MAX_TICKETS, no limit/offset, no tickets.length check anywhere in file"
+      },
+      {
+        "command": "grep -n \"authed\\|BOARD_TOKEN\\|401\" ~/workspace/qwenpaw-deploy/features/board/worker/src/index.js",
+        "output": "64:function authed(request, env) { 65: if (!env.BOARD_TOKEN) return false; 68: return safeEqual(key, env.BOARD_TOKEN); 346: if (!authed(request, env)) { 349: 401 \u2014 unauthenticated /api/* requests rejected before any ticket handler"
+      },
+      {
+        "command": "python3 worst/typical/minimal ticket-size maths vs 25 MiB KV single-value limit",
+        "output": "worst per ticket ~57000 B -> 459.9 tickets to 25 MiB; typical ~800 B -> 32768 tickets; minimal ~260 B -> 100824 tickets; 500 worst-case tickets = 27.18 MB (>25 MB)"
+      }
+    ],
+    "confidence": "high",
+    "conditions": "Re-read of source confirms the unbounded-growth mechanics; no live test was performed (no board key held, per task instruction not to guess/brute-force it, and no third-party contact). Board-empty status is the hunter's claim, not independently verified here.",
+    "remediation": "As reliability hardening only, not a vulnerability fix: enforce a count cap AND/OR a serialized-size check before saveTickets (a 500-ticket cap alone is insufficient \u2014 500 worst-case tickets total ~27.2 MB > 25 MB; a ~400 cap or a pre-PUT byte-size check against 25 MB is needed), plus ?limit (default 100) / ?offset pagination on GET /api/tickets. This does not change the security verdict.",
+    "reason": "Rejected under the 7-Question Gate: Q1 fails \u2014 no attacker can use this right now, as growth requires the single shared BOARD_TOKEN held only by the owner (401 otherwise, line 346); Q4 fails \u2014 'key-holder/owner can do X' is privileged-access-only, analogous to 'admin can do X' = kill; Q6 fails \u2014 impact is only 'technically possible' and self-inflicted, requiring the owner to deliberately create ~460 worst-case or ~32,768 typical tickets, with no demonstrated KV PUT failure or 500s and nil impact today on a reported-empty board. This is a future capacity/reliability note, not a vulnerability \u2014 validating it with the key would not change the verdict, so needs_validation is not appropriate."
+  }
+}

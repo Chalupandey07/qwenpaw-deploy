@@ -1,0 +1,63 @@
+{
+  "decision": "rejected",
+  "record": {
+    "fingerprint": "board-kv-race-lost-update",
+    "title": "KV race condition: concurrent ticket/comment mutations silently lose data (last-writer-wins on single-key store)",
+    "description": "Mechanism verified in source and REAL as a reliability defect, but NOT a security finding. Every mutation is load-modify-write on one KV key: loadTickets (line 71-72, KV GET 'tickets') -> mutate in memory -> saveTickets (line 82-83, unconditional KV PUT of the whole board). No version, ETag/If-Match, CAS, lock, or transaction exists anywhere; the board-level updated_at written at line 83 is write-only metadata, never read or compared. Cloudflare KV eventual consistency (noted in the file header, lines 26-28) makes the mechanism worse than a pure overlap race: a stale GET can lose data even for nominally sequential mutations from different edges. However it fails the 7-Question Gate as a security finding: Q1/Q4 \u2014 only a BOARD_TOKEN holder can trigger it (authed(), lines 64-68, single shared key, 401 otherwise), and a key holder can already delete/overwrite the entire board via legitimate DELETE/PATCH, so the race gives an attacker nothing they do not already have; Q6 \u2014 no live concurrent test was run and none can be run without the key, so impact is 'technically possible' only. The only realistic trigger is the same trusted user in two tabs or a double-click. That is silent self-data-loss on a single-user board: a reliability/correctness bug, not a security boundary violation, privilege escalation, or cross-user impact.",
+    "verdict": "rejected",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/board/worker/src/index.js",
+        "line": 64,
+        "what": "authed(): every /api/* call requires the single shared BOARD_TOKEN via X-Board-Key or ?key=, else 401; no per-user identity exists"
+      },
+      {
+        "step": "propagation",
+        "path": "features/board/worker/src/index.js",
+        "line": 71,
+        "what": "loadTickets(): KV GET of the single key 'tickets', returns whole board array"
+      },
+      {
+        "step": "propagation",
+        "path": "features/board/worker/src/index.js",
+        "line": 381,
+        "what": "POST /api/tickets: loadTickets, push new ticket, saveTickets (line 383)"
+      },
+      {
+        "step": "propagation",
+        "path": "features/board/worker/src/index.js",
+        "line": 391,
+        "what": "Single-ticket routes load the whole board once, then comments (line 411), mark-sent (line 421), PATCH (line 432) and DELETE (line 437) each mutate in memory and call saveTickets"
+      },
+      {
+        "step": "sink",
+        "path": "features/board/worker/src/index.js",
+        "line": 82,
+        "what": "saveTickets(): unconditional KV PUT of the entire board JSON with a fresh board-level updated_at; no version check, ETag, CAS or lock \u2014 second writer silently overwrites the first"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "nl -ba features/board/worker/src/index.js | sed -n '65,90p;350,445p'",
+        "output": "71 async function loadTickets(env) { 72 const raw = await env.TICKETS.get(KV_KEY); 82 async function saveTickets(env, tickets) { 83 await env.TICKETS.put(KV_KEY, JSON.stringify({ tickets, updated_at: new Date().toISOString() })); 381 const tickets = await loadTickets(env); 383 await saveTickets(env, tickets); 391 const tickets = await loadTickets(env); 409 ticket.comments.push(...); 411 await saveTickets(env, tickets); 421 await saveTickets(env, tickets); 431 Object.assign(ticket, v.value, { updated_at: ... }); 432 await saveTickets(env, tickets); 436 tickets.splice(idx, 1); 437 await saveTickets(env, tickets);"
+      },
+      {
+        "command": "grep -n -E 'await (loadTickets|saveTickets)' features/board/worker/src/index.js",
+        "output": "358 loadTickets (GET list), 381/383 POST create, 391 load (single-ticket routes), 411 comments save, 421 mark-sent save, 432 PATCH save, 437 DELETE save \u2014 5 mutation sites, all load-modify-write"
+      },
+      {
+        "command": "grep -n -i -E 'version|etag|if-match|lock|cas|atomic|transaction' features/board/worker/src/index.js",
+        "output": "Only substring false positives ('blocked' contains 'lock'); no version field, ETag, If-Match, CAS, atomic or transactional primitive anywhere. updated_at is written at lines 83/410/420/431 and never compared."
+      },
+      {
+        "command": "grep -n 'function authed' features/board/worker/src/index.js",
+        "output": "64 function authed(request, env) { 65 if (!env.BOARD_TOKEN) return false; 68 return safeEqual(key, env.BOARD_TOKEN); \u2014 single shared secret gates all mutations"
+      }
+    ],
+    "confidence": "high",
+    "conditions": "Re-open only if the board gains multiple mutually untrusted actors: per-user keys/accounts, a shared board used by different people, or evidence that an unauthenticated party can trigger a mutation. A live concurrent test would then be needed to confirm, on a staging Worker/KV or an empty board, not the live board.",
+    "remediation": "As a reliability fix, not a security fix: the proposed version/updated_at check with 409 is INSUFFICIENT on KV \u2014 Cloudflare KV PUT has no conditional/CAS operation, so check-then-PUT still has a TOCTOU window between the re-read and the PUT; it only narrows the race. A true fix requires serialisation: migrate board state to a Durable Object (single instance, in-memory lock + transactional storage, all mutations via the DO stub) or to D1 with a transaction \u2014 moderate cost, the correct fix if concurrent writers ever matter. Cheap mitigations for the current single-user board: client-side double-submit guard/debounce on create/comment buttons and accepting the residual risk; do not spend DO-migration effort for one trusted user.",
+    "reason": "Fails 7-Question Gate Q1, Q4 and Q6 as a security finding: no unauthenticated or cross-user attacker can trigger it (requires the single shared BOARD_TOKEN), the only actor who can trigger it already has full delete/overwrite power over the same board so the race grants no new capability, and impact was never demonstrated live \u2014 source-only, 'technically possible' self-data-loss. It is a genuine reliability bug (lost update via load-modify-write on one KV key, amplified by KV eventual consistency), not a security vulnerability; reject as a security record and track it, if at all, as a correctness backlog item."
+  }
+}

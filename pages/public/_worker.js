@@ -19,7 +19,7 @@ function wakingPage(retryAfter) {
     (retryAfter ? `<p>Retry after about ${retryAfter} seconds.</p>` : ``) +
     `<p><a style="color:#22c55e" href="/status">Status page</a></p>` +
     `</body></html>`,
-    { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Retry-After": "30", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
+    { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Retry-After": "30", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "SAMEORIGIN", "Content-Security-Policy": "frame-ancestors 'self'" } },
   );
 }
 
@@ -35,7 +35,7 @@ function cooldownPage(retryAfter) {
     `The 5-minute keep-alive Worker will bring it back automatically when the cooldown ends.</p>` +
     `<p><a style="color:#22c55e" href="/status">Status page</a></p>` +
     `</body></html>`,
-    { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", ...(retryAfter ? { "Retry-After": String(retryAfter) } : {}) } },
+    { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "SAMEORIGIN", "Content-Security-Policy": "frame-ancestors 'self'", ...(retryAfter ? { "Retry-After": String(retryAfter) } : {}) } },
   );
 }
 
@@ -53,9 +53,40 @@ function parseRetryAfter(res, bodyText) {
 function rewriteHeaders(res, pagesOrigin) {
   const headers = new Headers(res.headers);
   // Rewrite redirects that point at the origin so the browser stays on Pages.
+  // Hardened (fix 2026-11-15, audit finding proxy-open-redirect-rewrite-gap):
+  // the old code only rewrote absolute ORIGIN URLs. A protocol-relative
+  // Location (//evil.example/x) or a foreign absolute URL
+  // (https://evil.example/x) passed through unrewritten, so our Pages
+  // domain could redirect visitors elsewhere. QwenPaw emits no Location
+  // headers at all today (verified in source), so any Location is
+  // hypothetical — but a foreign redirect must never leave here intact.
   const loc = headers.get("Location");
-  if (loc && loc.startsWith(ORIGIN)) {
-    headers.set("Location", pagesOrigin + loc.slice(ORIGIN.length));
+  if (loc) {
+    if (loc.startsWith(ORIGIN)) {
+      headers.set("Location", pagesOrigin + loc.slice(ORIGIN.length));
+    } else if (loc.startsWith("//")) {
+      try {
+        const u = new URL("https:" + loc);
+        if (u.origin === ORIGIN) {
+          headers.set("Location", pagesOrigin + u.pathname + u.search + u.hash);
+        } else {
+          headers.delete("Location");
+        }
+      } catch {
+        headers.delete("Location");
+      }
+    } else if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(loc)) {
+      headers.delete("Location"); // absolute URL to a foreign host
+    }
+    // A relative Location ("/path") passes through — it stays on Pages.
+  }
+  // Framing guard on proxied HTML: the console must not be embeddable in
+  // another site's iframe (clickjacking). SAMEORIGIN is safe here — nothing
+  // in our setup embeds the console cross-origin.
+  const contentType = headers.get("Content-Type") || "";
+  if (contentType.includes("text/html")) {
+    headers.set("X-Frame-Options", "SAMEORIGIN");
+    headers.set("Content-Security-Policy", "frame-ancestors 'self'");
   }
   // If the origin ever sets a Domain on a cookie, strip it so the cookie
   // becomes host-only for the Pages domain instead of the InstaBox host.

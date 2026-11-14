@@ -22,9 +22,9 @@
 // KV binding: STATUS (shared with qwenpaw-keepalive; all keys here are
 // prefixed "routines:" so they can never collide with keepalive keys).
 // Optional secret: ROUTINE_WEBHOOK_TOKEN — when set, POST /api/routines
-// (add a routine definition) requires header X-Routine-Token to match.
-// When unset, POST /api/routines returns 503 (fail closed for writes).
-// No secrets are in this file. Free-tier use: ~49 scheduled invocations
+// (add a routine definition) and POST /trigger (manual trigger) require
+// header X-Routine-Token to match. When unset, both return 503 (fail
+// closed for writes). No secrets are in this file. Free-tier use: ~49 scheduled invocations
 // per day + manual triggers; each does 1 probe fetch. Far under 100k/day.
 
 const PING_TIMEOUT_MS = 20_000;
@@ -34,6 +34,11 @@ const PENDING_PREFIX = "routines:pending:";
 const MAX_HISTORY = 50;
 const TRIGGER_MIN_GAP_MS = 60_000;
 const MAX_PROMPT_CHARS = 2000;
+// Pending manual triggers expire after 7 days and are capped at 20
+// (fix 2026-11-15, audit finding workers-routines-unauth-trigger: pending
+// KV keys never expired and grew without bound).
+const PENDING_TTL_SECONDS = 7 * 24 * 3600;
+const MAX_PENDING = 20;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -147,6 +152,20 @@ async function listPending(env) {
   return out.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 20);
 }
 
+// Drop all but the newest MAX_PENDING pending entries, so unauthenticated
+// (or buggy) triggers can never grow the pending set without bound.
+async function prunePending(env) {
+  const list = await env.STATUS.list({ prefix: PENDING_PREFIX });
+  if (list.keys.length <= MAX_PENDING) return;
+  const entries = [];
+  for (const k of list.keys) {
+    const v = await readJson(env, k.name, null);
+    if (v) entries.push({ key: k.name, at: v.at || "" });
+  }
+  entries.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  for (const e of entries.slice(MAX_PENDING)) await env.STATUS.delete(e.key);
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -203,7 +222,18 @@ export default {
 
     // Manual trigger: wake QwenPaw + record a PENDING prompt. Rate-limited
     // to one per minute (KV timestamp). Never executes anything in QwenPaw.
+    // Gated (fix 2026-11-15, audit finding workers-routines-unauth-trigger):
+    // unauthenticated POST /trigger queued stored prompts, forced wake
+    // probes, and wrote never-expiring KV keys. Fail closed when the
+    // ROUTINE_WEBHOOK_TOKEN secret is unset; header X-Routine-Token only
+    // (never a ?token= query — tokens in URLs leak in logs/Referer).
     if (url.pathname === "/trigger" && request.method === "POST") {
+      if (!env.ROUTINE_WEBHOOK_TOKEN) {
+        return json({ error: "manual triggers disabled: ROUTINE_WEBHOOK_TOKEN secret is not set" }, 503);
+      }
+      if (request.headers.get("X-Routine-Token") !== env.ROUTINE_WEBHOOK_TOKEN) {
+        return json({ error: "unauthorized" }, 401);
+      }
       let body = {};
       try { body = await request.json(); } catch { /* empty body is fine */ }
       const last = await env.STATUS.get("routines:last-trigger-at");
@@ -219,8 +249,9 @@ export default {
         prompt, status: "pending", qwenpaw: probe.status, httpStatus: probe.httpStatus,
         note: "Recorded only. Run this prompt in the QwenPaw console, or create a native cron job for it. This Worker holds no QwenPaw login and cannot deliver prompts.",
       };
-      await env.STATUS.put(PENDING_PREFIX + id, JSON.stringify(entry));
+      await env.STATUS.put(PENDING_PREFIX + id, JSON.stringify(entry), { expirationTtl: PENDING_TTL_SECONDS });
       await env.STATUS.put("routines:last-trigger-at", String(now));
+      await prunePending(env);
       await pushHistory(env, { at: entry.at, kind: "manual-trigger", cron: null, qwenpaw: probe.status, httpStatus: probe.httpStatus, note: `manual trigger ${id} recorded as pending`, activeRoutines: [], deliveredBy: "none — pending, needs console / native cron job" });
       return json({ ok: true, pending: entry }, 202);
     }

@@ -56,15 +56,29 @@
 //
 // Auth: if the GROUPCHAT_TOKEN secret is set (wrangler secret put
 // GROUPCHAT_TOKEN), every endpoint except GET / requires header
-// X-Groupchat-Token with that value. If it is NOT set, the thread is open
-// to anyone who knows the URL — set the token before sharing the URL.
-// No secrets in this file.
+// X-Groupchat-Token with that value — the token is NEVER accepted via
+// ?token= (query tokens leak in logs/Referer/history). If it is NOT set,
+// the thread is open to anyone who knows the URL — set the token before
+// sharing the URL. Mutating writes are also rate-limited to 30/min per
+// client IP (429 + Retry-After). No secrets in this file.
 
 const PARTICIPANTS = ["default", "QwenPaw_QA_Agent_0.2"];
 const THREAD_KEY = "thread";
 const MAX_MESSAGES = 200;
 const MAX_TEXT_CHARS = 4000;
 const DEFAULT_MAX_ROUNDS = 6;
+// Write rate limit (fix 2026-11-15, audit finding groupchat-no-rate-limit-flood):
+// unauthenticated flooding posted 200 messages in ~27s and evicted the
+// oldest legitimate messages. 30 mutating writes/min per client IP, 429
+// with Retry-After beyond that. Reads (GET /thread) are never limited —
+// the relay polls them. Counters MUST live in Durable Object storage, not
+// in memory: SQLite-backed objects hibernate between requests and a fresh
+// instance (empty Map) is constructed per wake-up, so an in-memory counter
+// never fills. The token gate is the durable protection; this is the
+// flood brake.
+const WRITE_RATE_LIMIT = 30;
+const WRITE_RATE_WINDOW_MS = 60_000;
+const WRITE_RATE_KEY = "write-rate";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -72,10 +86,10 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, X-Groupchat-Token",
 };
 
-function json(data, status = 200) {
+function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json", ...CORS },
+    headers: { "Content-Type": "application/json", ...CORS, ...extraHeaders },
   });
 }
 
@@ -128,13 +142,62 @@ export class GroupChatThread {
     this.env = env;
   }
 
+  // Header-only token (fix 2026-11-15, audit finding groupchat-token-in-query):
+  // the ?token= query fallback is removed — tokens in URLs leak via
+  // Referer, logs, shell history and copy/paste. The relay sends the
+  // header only; no in-repo caller used ?token=.
   checkToken(request) {
     if (!this.env.GROUPCHAT_TOKEN) return true;
-    const supplied =
-      request.headers.get("X-Groupchat-Token") ||
-      new URL(request.url).searchParams.get("token") ||
-      "";
+    const supplied = request.headers.get("X-Groupchat-Token") || "";
     return supplied === this.env.GROUPCHAT_TOKEN;
+  }
+
+  // Per-IP write brake (fix 2026-11-15, audit finding
+  // groupchat-no-rate-limit-flood). Buckets persist in DO storage so the
+  // count survives hibernation; stale buckets are pruned on every check.
+  // Returns { limited, retryAfter }. DO requests run serialized, so the
+  // load -> update -> save cannot interleave.
+  async checkWriteRate(request) {
+    const forwarded = request.headers.get("X-Forwarded-For") || "";
+    const ip =
+      request.headers.get("CF-Connecting-IP") ||
+      forwarded.split(",")[0].trim() ||
+      "unknown";
+    const now = Date.now();
+    const buckets = (await this.ctx.storage.get(WRITE_RATE_KEY)) || {};
+    for (const [key, value] of Object.entries(buckets)) {
+      if (!value || now - value.windowStart >= WRITE_RATE_WINDOW_MS) delete buckets[key];
+    }
+    if (Object.keys(buckets).length > 1000) {
+      // Extremely defensive cap: drop the oldest windows first.
+      const sorted = Object.entries(buckets).sort((a, b) => a[1].windowStart - b[1].windowStart);
+      for (const [key] of sorted.slice(0, Object.keys(buckets).length - 1000)) delete buckets[key];
+    }
+    let bucket = buckets[ip];
+    if (!bucket) {
+      bucket = { count: 0, windowStart: now };
+      buckets[ip] = bucket;
+    }
+    bucket.count += 1;
+    await this.ctx.storage.put(WRITE_RATE_KEY, buckets);
+    if (bucket.count > WRITE_RATE_LIMIT) {
+      return {
+        limited: true,
+        retryAfter: Math.max(
+          1,
+          Math.ceil((bucket.windowStart + WRITE_RATE_WINDOW_MS - now) / 1000),
+        ),
+      };
+    }
+    return { limited: false, retryAfter: 0 };
+  }
+
+  rateLimitedResponse(retryAfter) {
+    return json(
+      { error: "rate_limited", note: "too many writes from this IP; slow down", retry_after_seconds: retryAfter },
+      429,
+      { "Retry-After": String(retryAfter) },
+    );
   }
 
   async loadThread() {
@@ -170,6 +233,10 @@ export class GroupChatThread {
           participants: PARTICIPANTS,
           rule: "only state.next_agent may post as role=agent; user messages never consume a turn",
         },
+        rate_limit: {
+          writes_per_minute_per_ip: WRITE_RATE_LIMIT,
+          applies_to: ["POST /thread/start", "POST /thread/message", "POST /thread/reset"],
+        },
       });
     }
 
@@ -183,6 +250,8 @@ export class GroupChatThread {
 
     if (path === "/thread/start" && request.method === "POST") {
       if (!this.checkToken(request)) return json({ error: "unauthorized" }, 401);
+      const rate = await this.checkWriteRate(request);
+      if (rate.limited) return this.rateLimitedResponse(rate.retryAfter);
       let body = {};
       try { body = await request.json(); } catch { /* empty body is fine */ }
       const thread = newThread(cleanText(body.topic));
@@ -198,6 +267,8 @@ export class GroupChatThread {
 
     if (path === "/thread/message" && request.method === "POST") {
       if (!this.checkToken(request)) return json({ error: "unauthorized" }, 401);
+      const rate = await this.checkWriteRate(request);
+      if (rate.limited) return this.rateLimitedResponse(rate.retryAfter);
       let body = {};
       try {
         body = await request.json();
@@ -230,7 +301,11 @@ export class GroupChatThread {
         role,
         text,
       });
+      // Cap the thread, but say so instead of silently dropping the
+      // oldest messages (audit finding groupchat-no-rate-limit-flood).
+      let evicted = 0;
       if (thread.messages.length > MAX_MESSAGES) {
+        evicted = thread.messages.length - MAX_MESSAGES;
         thread.messages = thread.messages.slice(-MAX_MESSAGES);
       }
       if (role === "agent") {
@@ -247,11 +322,15 @@ export class GroupChatThread {
         }
       }
       await this.saveThread(thread);
-      return json(publicThread(thread, null));
+      const out = publicThread(thread, null);
+      if (evicted > 0) out.evicted_oldest = evicted;
+      return json(out);
     }
 
     if (path === "/thread/reset" && request.method === "POST") {
       if (!this.checkToken(request)) return json({ error: "unauthorized" }, 401);
+      const rate = await this.checkWriteRate(request);
+      if (rate.limited) return this.rateLimitedResponse(rate.retryAfter);
       let body = {};
       try { body = await request.json(); } catch { /* empty body is fine */ }
       if (body.confirm !== true) {

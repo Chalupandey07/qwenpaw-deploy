@@ -1,0 +1,64 @@
+{
+  "decision": "confirmed",
+  "record": {
+    "fingerprint": "workers-routines-unauth-trigger",
+    "title": "Unauthenticated POST /trigger on qwenpaw-routines queues stored prompts, forces origin wake probes, and writes never-expiring KV keys",
+    "description": "POST /trigger on qwenpaw-routines has no authentication check, unlike POST /api/routines in the same file. Any unauthenticated caller can queue a prompt (up to 2000 chars) as a pending KV entry, force a probe GET to the public QwenPaw URL (waking the InstaBox Free machine), and pollute history. The pending KV put has no expirationTtl and there is no cleanup/pruning code anywhere in the file, so keys accumulate indefinitely. The only throttle is a single global KV timestamp allowing 1 trigger/minute shared by all callers. The stored prompt is not executed in QwenPaw (pending only, by design) and is HTML-escaped when rendered, so no stored-XSS or code execution was demonstrated.",
+    "verdict": "confirmed",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/routines/worker/src/index.js",
+        "line": 206,
+        "what": "POST /trigger handler starts with no ROUTINE_WEBHOOK_TOKEN / X-Routine-Token check anywhere in the handler (lines 206-226), unlike POST /api/routines which fail-closes 503 when the token is unset (line 186) and returns 401 on mismatch (line 189)"
+      },
+      {
+        "step": "propagation",
+        "path": "features/routines/worker/src/index.js",
+        "line": 209,
+        "what": "Rate limit is a single global KV timestamp: get routines:last-trigger-at (line 209), reject with 429 only if now - last < TRIGGER_MIN_GAP_MS (60000, line 35/211). No per-IP/per-caller limit, so one caller can also 429-block the legitimate owner for a minute after each trigger"
+      },
+      {
+        "step": "propagation",
+        "path": "features/routines/worker/src/index.js",
+        "line": 214,
+        "what": "probeQwenPaw(env) is called unconditionally before storing the entry, forcing a GET to the public QwenPaw URL on every accepted trigger (live history shows qwenpaw up / httpStatus 200 for the hunter trigger)"
+      },
+      {
+        "step": "sink",
+        "path": "features/routines/worker/src/index.js",
+        "line": 222,
+        "what": "env.STATUS.put(PENDING_PREFIX + id, JSON.stringify(entry)) with no expirationTtl option; grep for expirationTtl across the file returns 0 matches, and grep for delete/prune/cleanup returns nothing (listPending at line 141 only lists, never deletes). History is capped at 50 (MAX_HISTORY) but pending keys are not"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "grep -nE 'expirationTtl|delete\\(|prune|cleanup|ROUTINE_WEBHOOK_TOKEN|X-Routine-Token|last-trigger|TRIGGER_MIN_GAP|STATUS\\.put|STATUS\\.list' features/routines/worker/src/index.js; grep -c expirationTtl (same file)",
+        "output": "TRIGGER_MIN_GAP_MS=60_000 (line 35); esc() lines 50-55; HISTORY put line 68; list line 141; /api/routines token gate lines 186-190 (503 fail-closed, 401 mismatch); DEFINITIONS put line 200; /trigger handler line 206; last-trigger get line 209, gap check line 211; pending put line 222 with no expirationTtl; last-trigger put line 223. expirationTtl count: 0."
+      },
+      {
+        "command": "GET https://qwenpaw-routines.qwenpaw-rohan.workers.dev/ (browser.open, crawled 2026-11-14 20:25 UTC; no POST fired)",
+        "output": "Pending manual triggers table shows one row: 2026-11-14T20:23:02.325Z | hunt-marker | HUNT-TEST <img src=x onerror=alert(1)> & \"quoted\" 'single' | pending. Recent wake ticks: 2026-11-14T20:23:02.325Z manual-trigger up (200) 'manual trigger trig-1794687781812 recorded as pending'. Note: browser text extraction decodes HTML entities, so the literal display does not prove raw unescaped HTML; source line 124 renders pending prompts through esc() (lines 50-55), which escapes < > & \" '."
+      },
+      {
+        "command": "GET https://qwenpaw-routines.qwenpaw-rohan.workers.dev/api/history (browser.open, crawled 2026-11-14 20:25 UTC; no POST fired)",
+        "output": "Newest entry: at 2026-11-14T20:23:02.325Z, kind manual-trigger, qwenpaw up, httpStatus 200, note 'manual trigger trig-1794687781812 recorded as pending', deliveredBy 'none \u2014 pending, needs console / native cron job'. Confirms the hunter's pending id, the stored prompt, and the forced successful probe."
+      }
+    ],
+    "severity": "medium",
+    "confidence": "high",
+    "conditions": "Medium (not high): no code execution or console access \u2014 prompts are pending-only by design and never delivered, the prompt is HTML-escaped via esc() in the status page (no stored-XSS demonstrated), and abuse is capped at 1 trigger/min. Not low: the endpoint is public and unauthenticated, each accepted trigger forces an origin wake probe (pushing the InstaBox Free machine toward its max-run/cooldown), pending keys never expire, and the shared global rate-limit timestamp lets one caller deny the owner a trigger slot. Caveat: history also shows earlier manual triggers trig-1794684729498 (19:32 UTC) and trig-1794684977739 (19:36 UTC) but only trig-1794687781812 appears in the live pending table \u2014 unexplained, possibly manual cleanup by the hunter; it does not refute the no-TTL code fact, but live persistence is established only for the latest entry. No additional POST /trigger was fired during verification.",
+    "remediation": "Gate POST /trigger behind ROUTINE_WEBHOOK_TOKEN using the exact pattern already used by POST /api/routines in the same file: 503 fail-closed when the secret is unset, 401 on X-Routine-Token mismatch. Add expirationTtl (e.g. 7 days / 604800s) to the pending KV put at line 222, and cap/prune stale pending keys (e.g. delete keys older than the TTL on list, or a scheduled sweep) so junk cannot accumulate. Legitimate-use impact: the owner triggers routines manually, so after gating the owner must include the X-Routine-Token header with the ROUTINE_WEBHOOK_TOKEN secret on every manual trigger; until the secret is set the endpoint fail-closes (503), so set the secret before or with the deploy. TTL alone does not stop wake abuse \u2014 the token gate is the required fix.",
+    "validation_plan": {
+      "local": [
+        "Re-read the /trigger handler after patching: confirm the token check runs before the rate-limit read, probe, and KV put, and that the pending put carries expirationTtl",
+        "Confirm no other unauthenticated write path remains in the file (grep for STATUS.put outside token-gated handlers)",
+        "Confirm the owner trigger flow still works with the token header and fails 401 without it / 503 when the secret is unset"
+      ],
+      "deployment": [
+        "Deploy the patched Worker, then unauthenticated POST /trigger must return 401 (or 503 if the secret is unset), authenticated POST with the correct X-Routine-Token must return 202, and the new pending key must carry a TTL",
+        "GET / and /api/history must still show the pending entry while it is live, and the old junk key trig-1794687781812 should be deleted from KV manually since the TTL fix is not retroactive"
+      ]
+    }
+  }
+}

@@ -2,6 +2,11 @@
 // for QwenPaw on InstaBox Free. No secrets in this file.
 // Env vars: QWENPAW_URL, INSTABOX_MACHINE_ID
 // Secrets (optional): PORT_TOKEN (private port only), INSTABOX_API_KEY (API-wake fallback)
+// Secret (required for /wake): WAKE_TOKEN — POST /wake requires header
+// X-Wake-Token to match; when unset, /wake returns 503 (fail closed).
+// GET /ping stays the public wake path: it probes the public console URL,
+// which wakes a paused box on request by InstaBox design — the Pages
+// status page and the activity-feed Wake button use /ping, never /wake.
 // KV binding: STATUS
 
 const PING_TIMEOUT_MS = 30_000;
@@ -202,10 +207,16 @@ export default {
     }
 
     if (path === "/wake" && request.method === "POST") {
-      if (env.WAKE_TOKEN) {
-        const token = request.headers.get("X-Wake-Token") || url.searchParams.get("token");
-        if (token !== env.WAKE_TOKEN) return json({ error: "unauthorized" }, 401);
+      // Gated (fix 2026-11-15, audit finding workers-keepalive-unauth-wake):
+      // unauthenticated POST /wake forced probes and, if INSTABOX_API_KEY
+      // were ever set without a token, would trigger InstaBox API wakes.
+      // Fail closed when WAKE_TOKEN is unset; header X-Wake-Token only
+      // (never a ?token= query — tokens in URLs leak in logs/Referer).
+      if (!env.WAKE_TOKEN) {
+        return json({ error: "manual wake disabled: WAKE_TOKEN secret is not set. Use GET /ping (public wake path) instead." }, 503);
       }
+      const token = request.headers.get("X-Wake-Token") || "";
+      if (token !== env.WAKE_TOKEN) return json({ error: "unauthorized" }, 401);
       const result = await probeQwenPaw(env, { allowRetry: true });
       let wake = null;
       if ((result.status === "offline" || result.status === "waking") && env.INSTABOX_API_KEY && env.INSTABOX_MACHINE_ID) {

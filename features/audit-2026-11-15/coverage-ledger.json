@@ -1,0 +1,702 @@
+[
+ {
+  "agent_id": "verifier",
+  "attack_class": "Authentication",
+  "attempts": [],
+  "boundary": "BOARD_TOKEN auth (header or ?key=)",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Authentication",
+   "boundary": "features/board/worker/src/index.js#BOARD_TOKEN",
+   "subsystem": "features/board/worker",
+   "surface": "features/board/worker/src/index.js#/api/*"
+  },
+  "coverage_id": "features%2Fboard%2Fworker%2Fsrc%2Findex.js%23%2Fapi%2F%2A::features%2Fboard%2Fworker%2Fsrc%2Findex.js%23BOARD_TOKEN::features%2Fboard%2Fworker::ATTACK-CLASSES.md%23Authentication",
+  "excluded_blocks": [],
+  "local_checks": [
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/board/worker/src/index.js",
+     "features/board/worker/wrangler.toml"
+    ],
+    "invariant": "BOARD_TOKEN auth attempts are throttled or the token is provably unguessable",
+    "method": "source",
+    "result": "needs_validation board-no-rate-limit-auth: authed() has no attempt counting, backoff, delay, lockout, or 429 path; exploitability depends on BOARD_TOKEN entropy, which is unknown.",
+    "artifact": null
+   },
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/board/worker/src/index.js"
+    ],
+    "invariant": "Malformed ticket ids are rejected with 400, not 500",
+    "method": "source",
+    "result": "needs_validation board-decode-uri-500: decodeURIComponent at line 390 throws URIError for %FF-style ids; live 500 not demonstrated (needs the board key).",
+    "artifact": null
+   },
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/board/worker/src/index.js"
+    ],
+    "invariant": "Auth-gated owner-only behaviours are not security findings",
+    "method": "source",
+    "result": "rejected board-business-logic-quirks (follow_up coercion, mark-sent re-stamp, empty PATCH 200) and board-timing-length-leak (safeEqual length branch): source-verified but owner-only / no demonstrated impact; quirks re-filed as functional bugs in replica-test/bugs.md.",
+    "artifact": null
+   }
+  ],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Authentication",
+  "prior_status": "none",
+  "result_fingerprints": [
+   "board-decode-uri-500",
+   "board-no-rate-limit-auth"
+  ],
+  "reviewed_paths": [
+   "features/board/worker/src/index.js",
+   "features/board/worker/wrangler.toml"
+  ],
+  "selected_companion_blocks": [
+   "hunt-auth-bypass#Core discipline",
+   "hunt-session#Core discipline"
+  ],
+  "starting_paths": [
+   "features/board/worker/src/index.js"
+  ],
+  "status": "candidate",
+  "subsystem": "features/board/worker",
+  "surface": "Board Worker /api/* (KV ticket store)",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": "verifier",
+  "attack_class": "Race conditions",
+  "attempts": [],
+  "boundary": "Single-key JSON store, eventual consistency",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Race conditions",
+   "boundary": "features/board/worker/src/index.js#KV-single-key",
+   "subsystem": "features/board/worker",
+   "surface": "features/board/worker/src/index.js#/api/*"
+  },
+  "coverage_id": "features%2Fboard%2Fworker%2Fsrc%2Findex.js%23%2Fapi%2F%2A::features%2Fboard%2Fworker%2Fsrc%2Findex.js%23KV-single-key::features%2Fboard%2Fworker::ATTACK-CLASSES.md%23Race%20conditions",
+  "excluded_blocks": [],
+  "local_checks": [
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/board/worker/src/index.js"
+    ],
+    "invariant": "Concurrent mutations do not silently lose data across trust boundaries",
+    "method": "source",
+    "result": "rejected board-kv-race-lost-update: load-modify-write race is real as a reliability defect but owner-only (single shared BOARD_TOKEN holder already has full delete/overwrite power); no live concurrent test possible without the key.",
+    "artifact": null
+   },
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/board/worker/src/index.js"
+    ],
+    "invariant": "Corrupt stored state fails closed instead of silently emptying the board",
+    "method": "source",
+    "result": "rejected board-corrupt-kv-silent-empty: loadTickets returns [] on corrupt KV and the next POST create would overwrite it, but there is no realistic trigger (sole writer always writes valid JSON via an atomic KV put) and the board is currently empty.",
+    "artifact": null
+   },
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/board/worker/src/index.js"
+    ],
+    "invariant": "Board growth is bounded before it can exhaust the KV value",
+    "method": "source",
+    "result": "rejected board-unbounded-board-growth: no ticket-count cap or pagination (about 460 worst-case tickets reach the 25 MB KV limit), but growth requires the owner-held BOARD_TOKEN and impact today is nil on a reported-empty board; capacity note only.",
+    "artifact": null
+   }
+  ],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Race conditions",
+  "prior_status": "none",
+  "result_fingerprints": [],
+  "reviewed_paths": [
+   "features/board/worker/src/index.js"
+  ],
+  "selected_companion_blocks": [
+   "hunt-race-condition#Core discipline",
+   "hunt-business-logic#Core discipline"
+  ],
+  "starting_paths": [
+   "features/board/worker/src/index.js"
+  ],
+  "status": "covered",
+  "subsystem": "features/board/worker",
+  "surface": "Board Worker KV read-modify-write",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": null,
+  "attack_class": "Injection",
+  "attempts": [],
+  "boundary": "esc() output encoding; validation lengths",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Injection",
+   "boundary": "features/board/worker/src/index.js#esc()",
+   "subsystem": "features/board/worker",
+   "surface": "features/board/worker/src/index.js#/api/*"
+  },
+  "coverage_id": "features%2Fboard%2Fworker%2Fsrc%2Findex.js%23%2Fapi%2F%2A::features%2Fboard%2Fworker%2Fsrc%2Findex.js%23esc%28%29::features%2Fboard%2Fworker::ATTACK-CLASSES.md%23Injection",
+  "excluded_blocks": [],
+  "local_checks": [],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+  "prior_status": "none",
+  "result_fingerprints": [],
+  "reviewed_paths": [],
+  "selected_companion_blocks": [
+   "hunt-xss#Core discipline",
+   "hunt-llm-ai#Core discipline"
+  ],
+  "starting_paths": [
+   "features/board/worker/src/index.js"
+  ],
+  "status": "planned",
+  "subsystem": "features/board/worker",
+  "surface": "Board ticket/comment text into HTML UI and QwenPaw task text",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": "verifier",
+  "attack_class": "Authentication",
+  "attempts": [],
+  "boundary": "GROUPCHAT_TOKEN unset = no auth",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Authentication",
+   "boundary": "features/groupchat/worker/src/index.js#GROUPCHAT_TOKEN-unset",
+   "subsystem": "features/groupchat/worker",
+   "surface": "features/groupchat/worker/src/index.js#/thread/*"
+  },
+  "coverage_id": "features%2Fgroupchat%2Fworker%2Fsrc%2Findex.js%23%2Fthread%2F%2A::features%2Fgroupchat%2Fworker%2Fsrc%2Findex.js%23GROUPCHAT_TOKEN-unset::features%2Fgroupchat%2Fworker::ATTACK-CLASSES.md%23Authentication",
+  "excluded_blocks": [],
+  "local_checks": [
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/groupchat/worker/src/index.js"
+    ],
+    "invariant": "Thread endpoints require the configured GROUPCHAT_TOKEN",
+    "method": "source",
+    "result": "confirmed HIGH groupchat-open-thread: GROUPCHAT_TOKEN unset, checkToken() returns true for every request; unauthenticated GET /thread with a wrong token returned HTTP 200.",
+    "artifact": null
+   },
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/groupchat/worker/src/index.js"
+    ],
+    "invariant": "Thread posting is rate-limited so flooding cannot evict legitimate messages",
+    "method": "source",
+    "result": "confirmed LOW groupchat-no-rate-limit-flood: no rate limit on POST /thread/message; hunter's 200 posts in ~27s reached seq 213 with seqs 1-13 evicted; verifier did not re-flood.",
+    "artifact": null
+   },
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/groupchat/worker/src/index.js"
+    ],
+    "invariant": "The groupchat token is never accepted from the URL query string",
+    "method": "source",
+    "result": "needs_validation groupchat-token-in-query: checkToken accepts ?token= (line 135) as well as the header; not live-proven because GROUPCHAT_TOKEN is currently unset.",
+    "artifact": null
+   }
+  ],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Authentication",
+  "prior_status": "none",
+  "result_fingerprints": [
+   "groupchat-no-rate-limit-flood",
+   "groupchat-open-thread",
+   "groupchat-token-in-query"
+  ],
+  "reviewed_paths": [
+   "features/groupchat/worker/src/index.js"
+  ],
+  "selected_companion_blocks": [
+   "hunt-auth-bypass#Core discipline",
+   "hunt-api-misconfig#Core discipline"
+  ],
+  "starting_paths": [
+   "features/groupchat/worker/src/index.js"
+  ],
+  "status": "candidate",
+  "subsystem": "features/groupchat/worker",
+  "surface": "Groupchat Worker /thread/* (open URL, no token set)",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": "verifier",
+  "attack_class": "Injection",
+  "attempts": [],
+  "boundary": "Relay/manual paste into /api/console/chat",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Injection",
+   "boundary": "features/groupchat/worker/src/index.js#relay-to-qwenpaw",
+   "subsystem": "features/groupchat/worker",
+   "surface": "features/groupchat/worker/src/index.js#/thread/message"
+  },
+  "coverage_id": "features%2Fgroupchat%2Fworker%2Fsrc%2Findex.js%23%2Fthread%2Fmessage::features%2Fgroupchat%2Fworker%2Fsrc%2Findex.js%23relay-to-qwenpaw::features%2Fgroupchat%2Fworker::ATTACK-CLASSES.md%23Injection",
+  "excluded_blocks": [],
+  "local_checks": [
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/groupchat/worker/src/index.js",
+     "features/groupchat/relay/relay.py"
+    ],
+    "invariant": "Untrusted thread text cannot reach the agent as instructions without a demonstrated chain",
+    "method": "source",
+    "result": "rejected groupchat-injection-relay-latent: verbatim relay path verified in source, but the relay is not installed (sink does not exist today), verbatim delivery is the documented intended behaviour, and setting GROUPCHAT_TOKEN closes the only unauthenticated planting path.",
+    "artifact": null
+   }
+  ],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+  "prior_status": "none",
+  "result_fingerprints": [],
+  "reviewed_paths": [
+   "features/groupchat/worker/src/index.js",
+   "features/groupchat/relay/relay.py"
+  ],
+  "selected_companion_blocks": [
+   "hunt-llm-ai#Core discipline",
+   "hunt-xss#Core discipline"
+  ],
+  "starting_paths": [
+   "features/groupchat/worker/src/index.js",
+   "features/groupchat/relay/relay.py"
+  ],
+  "status": "covered",
+  "subsystem": "features/groupchat/worker",
+  "surface": "Groupchat/board text relayed into QwenPaw agent (prompt injection)",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": "verifier",
+  "attack_class": "Race conditions",
+  "attempts": [],
+  "boundary": "Single-threaded DO, max_rounds, caps",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Race conditions",
+   "boundary": "features/groupchat/worker/src/index.js#turn-taking",
+   "subsystem": "features/groupchat/worker",
+   "surface": "features/groupchat/worker/src/index.js#/thread/message"
+  },
+  "coverage_id": "features%2Fgroupchat%2Fworker%2Fsrc%2Findex.js%23%2Fthread%2Fmessage::features%2Fgroupchat%2Fworker%2Fsrc%2Findex.js%23turn-taking::features%2Fgroupchat%2Fworker::ATTACK-CLASSES.md%23Race%20conditions",
+  "excluded_blocks": [],
+  "local_checks": [
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/groupchat/worker/src/index.js"
+    ],
+    "invariant": "Turn-taking and message caps bound agent posts and thread growth",
+    "method": "source",
+    "result": "Covered via the groupchat-no-rate-limit-flood verification (turn-taking lines 217-224 and MAX_MESSAGES=200 slice at lines 233-234 re-read; role=user posts are not turn-limited, which is the confirmed flood finding on the /thread/* unit) and the groupchat-injection-relay-latent verification (agent posts require a participant who is next_agent, lines 217-221).",
+    "artifact": null
+   }
+  ],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Race conditions",
+  "prior_status": "none",
+  "result_fingerprints": [],
+  "reviewed_paths": [
+   "features/groupchat/worker/src/index.js"
+  ],
+  "selected_companion_blocks": [
+   "hunt-race-condition#Core discipline",
+   "hunt-business-logic#Core discipline"
+  ],
+  "starting_paths": [
+   "features/groupchat/worker/src/index.js"
+  ],
+  "status": "covered",
+  "subsystem": "features/groupchat/worker",
+  "surface": "Groupchat turn-taking + Durable Object consistency",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": "verifier",
+  "attack_class": "Injection",
+  "attempts": [],
+  "boundary": "Untrusted inputs (workspace names, ticket text) into shell/API/file paths",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Injection",
+   "boundary": "features/infra/scripts/*#inputs",
+   "subsystem": "features/infra/scripts",
+   "surface": "features/infra/scripts/*"
+  },
+  "coverage_id": "features%2Finfra%2Fscripts%2F%2A::features%2Finfra%2Fscripts%2F%2A%23inputs::features%2Finfra%2Fscripts::ATTACK-CLASSES.md%23Injection",
+  "excluded_blocks": [],
+  "local_checks": [
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/botpages/deploy-page.py"
+    ],
+    "invariant": "Deploy reads only regular files inside the source dir",
+    "method": "source",
+    "result": "needs_validation infra-deploy-page-symlink-escape: collect() follows symlinks out of the source dir (reproduced with dummy data); the planting step is unproven, so the end-to-end chain is not demonstrated.",
+    "artifact": null
+   },
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/infra/workers/email-router/index.js"
+    ],
+    "invariant": "Email delivery into the agent accepts only allowlisted senders",
+    "method": "source",
+    "result": "needs_validation infra-email-prompt-injection: undeployed worker has no sender allowlist; it would deliver any sender's email verbatim as an authenticated console chat task if deployed without a fix.",
+    "artifact": null
+   }
+  ],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+  "prior_status": "none",
+  "result_fingerprints": [
+   "infra-deploy-page-symlink-escape",
+   "infra-email-prompt-injection"
+  ],
+  "reviewed_paths": [
+   "features/botpages/deploy-page.py",
+   "features/infra/workers/email-router/index.js"
+  ],
+  "selected_companion_blocks": [
+   "hunt-rce#Core discipline",
+   "hunt-lfi#Core discipline",
+   "hunt-ssrf#Core discipline"
+  ],
+  "starting_paths": [
+   "features/infra/scripts/fleet.py",
+   "features/infra/evals/run-evals.py",
+   "features/infra/workers/email-router/index.js"
+  ],
+  "status": "candidate",
+  "subsystem": "features/infra/scripts",
+  "surface": "Infra scripts: fleet.py, workspace-export.py, audit-report.py, run-evals.py, email-router, botpages deploy",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": null,
+  "attack_class": "Information disclosure",
+  "attempts": [],
+  "boundary": "Public status-only data; probe URL env-controlled",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Information disclosure",
+   "boundary": "features/infra/workers/activity-feed/index.js#probe",
+   "subsystem": "features/infra/workers/activity-feed",
+   "surface": "features/infra/workers/activity-feed/index.js#/api/live"
+  },
+  "coverage_id": "features%2Finfra%2Fworkers%2Factivity-feed%2Findex.js%23%2Fapi%2Flive::features%2Finfra%2Fworkers%2Factivity-feed%2Findex.js%23probe::features%2Finfra%2Fworkers%2Factivity-feed::ATTACK-CLASSES.md%23Information%20disclosure",
+  "excluded_blocks": [],
+  "local_checks": [],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Information disclosure",
+  "prior_status": "none",
+  "result_fingerprints": [],
+  "reviewed_paths": [],
+  "selected_companion_blocks": [
+   "hunt-ssrf#Core discipline",
+   "hunt-cors#Core discipline"
+  ],
+  "starting_paths": [
+   "features/infra/workers/activity-feed/index.js"
+  ],
+  "status": "planned",
+  "subsystem": "features/infra/workers/activity-feed",
+  "surface": "Activity feed /api/live probe + status page",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": "verifier",
+  "attack_class": "Resource exhaustion",
+  "attempts": [],
+  "boundary": "1/min rate limit; token-gated writes fail-closed; KV caps",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Resource exhaustion",
+   "boundary": "features/routines/worker/src/index.js#rate-limit",
+   "subsystem": "features/routines/worker",
+   "surface": "features/routines/worker/src/index.js#/trigger"
+  },
+  "coverage_id": "features%2Froutines%2Fworker%2Fsrc%2Findex.js%23%2Ftrigger::features%2Froutines%2Fworker%2Fsrc%2Findex.js%23rate-limit::features%2Froutines%2Fworker::ATTACK-CLASSES.md%23Resource%20exhaustion",
+  "excluded_blocks": [],
+  "local_checks": [
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/routines/worker/src/index.js"
+    ],
+    "invariant": "POST /trigger requires ROUTINE_WEBHOOK_TOKEN and pending entries expire",
+    "method": "source",
+    "result": "confirmed MEDIUM workers-routines-unauth-trigger: unauthenticated POST /trigger queues stored prompts, forces origin wake probes, and writes never-expiring KV keys.",
+    "artifact": null
+   },
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "features/routines/worker/src/index.js"
+    ],
+    "invariant": "The 1/min rate limit is atomic against parallel requests",
+    "method": "source",
+    "result": "rejected workers-trigger-rate-limit-race: the non-atomic check-then-set is real (local simulation [202,202] in parallel vs [202,429] sequential) but has no independent impact and is mooted by token-gating /trigger; folded as a note under the confirmed unauthenticated-trigger finding.",
+    "artifact": null
+   }
+  ],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Resource exhaustion",
+  "prior_status": "none",
+  "result_fingerprints": [
+   "workers-routines-unauth-trigger"
+  ],
+  "reviewed_paths": [
+   "features/routines/worker/src/index.js"
+  ],
+  "selected_companion_blocks": [
+   "hunt-auth-bypass#Core discipline",
+   "hunt-business-logic#Core discipline"
+  ],
+  "starting_paths": [
+   "features/routines/worker/src/index.js"
+  ],
+  "status": "candidate",
+  "subsystem": "features/routines/worker",
+  "surface": "Routines /trigger + /api/routines writes + cron wake loop",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": null,
+  "attack_class": "Access control",
+  "attempts": [],
+  "boundary": "Bind mounts, .env chmod 600, working.secret 700, no secrets in git",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Access control",
+   "boundary": "instabox/docker-compose.yml#bind-mounts",
+   "subsystem": "instabox",
+   "surface": "instabox/docker-compose.yml#services"
+  },
+  "coverage_id": "instabox%2Fdocker-compose.yml%23services::instabox%2Fdocker-compose.yml%23bind-mounts::instabox::ATTACK-CLASSES.md%23Access%20control",
+  "excluded_blocks": [],
+  "local_checks": [],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+  "prior_status": "none",
+  "result_fingerprints": [],
+  "reviewed_paths": [],
+  "selected_companion_blocks": [
+   "hunt-cloud-misconfig#Core discipline",
+   "hunt-cicd#Core discipline"
+  ],
+  "starting_paths": [
+   "instabox/docker-compose.yml",
+   "instabox/qwenpaw.service"
+  ],
+  "status": "planned",
+  "subsystem": "instabox",
+  "surface": "InstaBox Docker/systemd + deploy repo secrets handling",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": "verifier",
+  "attack_class": "Access control",
+  "attempts": [],
+  "boundary": "QwenPaw auth behind proxy; cookie Domain strip; Location rewrite",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Access control",
+   "boundary": "pages/public/_worker.js#cookie-location",
+   "subsystem": "pages/public",
+   "surface": "pages/public/_worker.js#proxy"
+  },
+  "coverage_id": "pages%2Fpublic%2F_worker.js%23proxy::pages%2Fpublic%2F_worker.js%23cookie-location::pages%2Fpublic::ATTACK-CLASSES.md%23Access%20control",
+  "excluded_blocks": [],
+  "local_checks": [
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "pages/public/_worker.js"
+    ],
+    "invariant": "The proxy never emits an attacker-controlled redirect off the Pages origin",
+    "method": "source",
+    "result": "rejected proxy-open-redirect-rewrite-gap: the Location rewrite gap is real but has no producer - the deployed QwenPaw v2.3.0 source contains no code that emits a Location header, and 7 live unauthenticated probes returned no Location; fix as defense-in-depth only.",
+    "artifact": null
+   }
+  ],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Access control",
+  "prior_status": "none",
+  "result_fingerprints": [],
+  "reviewed_paths": [
+   "pages/public/_worker.js"
+  ],
+  "selected_companion_blocks": [
+   "hunt-auth-bypass#Core discipline",
+   "hunt-open-redirect#Core discipline",
+   "hunt-cache-poison#Core discipline",
+   "hunt-session#Core discipline"
+  ],
+  "starting_paths": [
+   "pages/public/_worker.js"
+  ],
+  "status": "covered",
+  "subsystem": "pages/public",
+  "surface": "Pages proxy: forwarding, cookies, redirects, 503/409 pages",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": "verifier",
+  "attack_class": "Authentication",
+  "attempts": [],
+  "boundary": "Auth middleware; allow_no_auth_hosts 127.0.0.1/::1",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Authentication",
+   "boundary": "qwenpaw-console#localhost-bypass",
+   "subsystem": "qwenpaw",
+   "surface": "qwenpaw-console#/api/auth"
+  },
+  "coverage_id": "qwenpaw-console%23%2Fapi%2Fauth::qwenpaw-console%23localhost-bypass::qwenpaw::ATTACK-CLASSES.md%23Authentication",
+  "excluded_blocks": [],
+  "local_checks": [
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "qwenpaw/app/auth.py",
+     "pages/public/_worker.js"
+    ],
+    "invariant": "Bearer tokens are accepted only via the Authorization header except for exempt routes",
+    "method": "source",
+    "result": "needs_validation qwenpaw-query-token-leak: _extract_token accepts ?token= on every request (line 856 unconditional fallback); the console SPA itself generates ?token= URLs for file previews and QR-code status polling, and no leak sink was demonstrated. Container path /app/src/qwenpaw/app/auth.py mapped to qwenpaw/app/auth.py; the Pages proxy forwards query strings verbatim.",
+    "artifact": null
+   }
+  ],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Authentication",
+  "prior_status": "none",
+  "result_fingerprints": [
+   "qwenpaw-query-token-leak"
+  ],
+  "reviewed_paths": [
+   "qwenpaw/app/auth.py",
+   "pages/public/_worker.js"
+  ],
+  "selected_companion_blocks": [
+   "hunt-auth-bypass#Core discipline",
+   "hunt-session#Core discipline",
+   "hunt-ato#Core discipline"
+  ],
+  "starting_paths": [
+   "working/config.json"
+  ],
+  "status": "candidate",
+  "subsystem": "qwenpaw",
+  "surface": "QwenPaw console auth: login, session, localhost bypass, channels, mailbox",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": "verifier",
+  "attack_class": "Injection",
+  "attempts": [],
+  "boundary": "Tool guard + approval levels; env secret handling",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Injection",
+   "boundary": "qwenpaw-skills#tool-guard",
+   "subsystem": "qwenpaw",
+   "surface": "qwenpaw-skills#delegate-github-build-page"
+  },
+  "coverage_id": "qwenpaw-skills%23delegate-github-build-page::qwenpaw-skills%23tool-guard::qwenpaw::ATTACK-CLASSES.md%23Injection",
+  "excluded_blocks": [],
+  "local_checks": [
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "qwenpaw/security/skill_scanner/scanner.py",
+     "qwenpaw/security/skill_scanner/__init__.py",
+     "working/config.json",
+     "qwenpaw/app/crons/models.py",
+     "qwenpaw/app/crons/executor.py",
+     "qwenpaw/runtime/prompt_contributors.py",
+     "qwenpaw/security/tool_guard/models.py"
+    ],
+    "invariant": "Agent-read content cannot steer the agent without a demonstrated end-to-end chain",
+    "method": "source",
+    "result": "rejected qwenpaw-indirect-prompt-injection: code facts verified (warn-mode scanner, sandbox disabled, cron tool_safety defaults to False/OFF) but a prompt-level instruction-vs-data boundary ships in the default system prompt, the cron arm is 401 unauthenticated, and no injection or victim-visible effect was demonstrated. Container paths under /app/src/qwenpaw and /app/working are mapped to qwenpaw/... and working/... respectively.",
+    "artifact": null
+   }
+  ],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Injection",
+  "prior_status": "none",
+  "result_fingerprints": [],
+  "reviewed_paths": [
+   "qwenpaw/security/skill_scanner/scanner.py",
+   "qwenpaw/security/skill_scanner/__init__.py",
+   "working/config.json",
+   "qwenpaw/app/crons/models.py",
+   "qwenpaw/app/crons/executor.py",
+   "qwenpaw/runtime/prompt_contributors.py",
+   "qwenpaw/security/tool_guard/models.py"
+  ],
+  "selected_companion_blocks": [
+   "hunt-llm-ai#Core discipline",
+   "hunt-api-misconfig#Core discipline"
+  ],
+  "starting_paths": [
+   "features/integrations/github-SKILL.md"
+  ],
+  "status": "covered",
+  "subsystem": "qwenpaw",
+  "surface": "QwenPaw skills: delegate, github, build-page, mailbox, cron, approvals",
+  "unresolved": [],
+  "wave": 1
+ },
+ {
+  "agent_id": "verifier",
+  "attack_class": "Authentication",
+  "attempts": [],
+  "boundary": "Wake gating; probe URL env-controlled; API-wake secret",
+  "canonical_refs": {
+   "attack_class": "ATTACK-CLASSES.md#Authentication",
+   "boundary": "worker/src/index.js#probe",
+   "subsystem": "worker",
+   "surface": "worker/src/index.js#/wake"
+  },
+  "coverage_id": "worker%2Fsrc%2Findex.js%23%2Fwake::worker%2Fsrc%2Findex.js%23probe::worker::ATTACK-CLASSES.md%23Authentication",
+  "excluded_blocks": [],
+  "local_checks": [
+   {
+    "agent_id": "verifier",
+    "reviewed_paths": [
+     "worker/src/index.js"
+    ],
+    "invariant": "POST /wake and GET /ping require WAKE_TOKEN, and the InstaBox API wake is gated on it",
+    "method": "source",
+    "result": "confirmed LOW workers-keepalive-unauth-wake: WAKE_TOKEN unset so unauthenticated POST /wake reaches the probe (live 200, wake:null); INSTABOX_API_KEY is also unset (Cloudflare secrets list empty), so the API-wake arm is unreachable in the deployed configuration.",
+    "artifact": null
+   }
+  ],
+  "ordinary_attack_class_block": "ATTACK-CLASSES.md#Authentication",
+  "prior_status": "none",
+  "result_fingerprints": [
+   "workers-keepalive-unauth-wake"
+  ],
+  "reviewed_paths": [
+   "worker/src/index.js"
+  ],
+  "selected_companion_blocks": [
+   "hunt-auth-bypass#Core discipline",
+   "hunt-ssrf#Core discipline"
+  ],
+  "starting_paths": [
+   "worker/src/index.js"
+  ],
+  "status": "candidate",
+  "subsystem": "worker",
+  "surface": "Keepalive /wake + /status + probe of QWENPAW_URL",
+  "unresolved": [],
+  "wave": 1
+ }
+]

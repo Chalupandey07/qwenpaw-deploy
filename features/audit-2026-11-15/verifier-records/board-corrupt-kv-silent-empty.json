@@ -1,0 +1,42 @@
+{
+  "decision": "rejected",
+  "record": {
+    "fingerprint": "board-corrupt-kv-silent-empty",
+    "title": "Corrupt KV value silently returns an empty board; the next write then overwrites (destroys) the stored data",
+    "description": "The code pattern is real in isolation \u2014 loadTickets() at lines 71-80 returns [] on JSON parse failure or a non-array object without .tickets, and POST /api/tickets then load-push-saves that [] plus one new ticket, overwriting the corrupt KV value. A local mock-KV simulation of the verbatim functions confirmed this: corrupt fixture loaded as [], wrong-shape {\"foo\":1} loaded as [], and a POST-style load+push+save left KV as {\"tickets\":[new ticket]} with the original ticket gone. But as a finding it fails the 7-Question Gate and is rejected: there is no realistic trigger and no attacker path. The sole writer in the repo is saveTickets() (line 83), which always writes JSON.stringify({tickets, updated_at}) \u2014 valid JSON \u2014 and there is no other TICKETS.put in the codebase; a KV put is a single atomic write, so a partial write is not a realistic trigger. Corruption would require an already-broken state: a manual operator edit via the Cloudflare dashboard/wrangler kv:put, or another writer sharing the namespace \u2014 neither evidenced. An attacker cannot create that state through the API (all /api/* writes go through saveTickets and produce valid JSON), and triggering the overwrite requires the privileged BOARD_TOKEN, so Q1 and Q4 fail. Only POST /api/tickets is destructive after corruption; PATCH/DELETE/comments/mark-sent first do findIndex on the [] load, get -1, and return 404 before any save. Q6 also fails: no live proof (correctly not attempted against live KV) and the board is currently EMPTY per the build report, so there is no data at risk today \u2014 a corrupt empty board is indistinguishable from an empty board and a create would destroy nothing. This is at most a defensive-coding / reliability hardening note, not a security finding or a reportable reliability bug. Remediation assessed as correct in direction but optional: fail-closed (loadTickets should throw/return a sentinel, handlers return a distinct 500, and POST must refuse to save) plus a backup KV key written only on successful loads/saves (never backing up a corrupt value) would fix it, but it is hardening, not a required fix.",
+    "verdict": "rejected",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/board/worker/src/index.js",
+        "line": 77,
+        "what": "loadTickets catch returns [] on JSON.parse failure; line 78 returns parsed.tickets || [] for non-array objects, so corrupt/wrong-shape KV is indistinguishable from an empty board"
+      },
+      {
+        "step": "propagation",
+        "path": "features/board/worker/src/index.js",
+        "line": 381,
+        "what": "POST /api/tickets loads tickets ([]) then pushes the new ticket; PATCH/DELETE/comments/mark-sent (lines 391, 411, 421, 432) instead 404 on findIndex -1 before any save, so only create propagates"
+      },
+      {
+        "step": "sink",
+        "path": "features/board/worker/src/index.js",
+        "line": 83,
+        "what": "saveTickets overwrites KV key 'tickets' with JSON.stringify({tickets, updated_at}); called from POST at line 383, destroying the prior corrupt value irreversibly (no backup/version)"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "grep -n 'loadTickets|saveTickets|TICKETS.put|TICKETS.get|KV_KEY' features/board/worker/src/index.js; grep -rn 'TICKETS.put' features/board/",
+        "output": "41: const KV_KEY = \"tickets\"; 71: async function loadTickets(env) { 72: const raw = await env.TICKETS.get(KV_KEY); 82: async function saveTickets(env, tickets) { 83: await env.TICKETS.put(KV_KEY, JSON.stringify({ tickets, updated_at: new Date().toISOString() })); 358: GET loadTickets; 381: POST loadTickets; 383: saveTickets; 391: loadTickets (id routes); 411/421/432/437: saveTickets (comments/mark-sent/PATCH/DELETE). Only one TICKETS.put in the whole repo (line 83); sole writer always emits valid JSON."
+      },
+      {
+        "command": "node /tmp/board-corrupt-sim.mjs (verbatim loadTickets/saveTickets lines 71-84 against a mock KV in /tmp; live KV untouched, no board key used)",
+        "output": "load corrupt: []\nload wrong-shape: []\nKV after POST on corrupt: {\"tickets\":[{\"id\":\"new\",\"title\":\"new ticket\"}],\"updated_at\":\"2026-11-14T20:27:27.335Z\"}\noriginal ticket survives? false"
+      }
+    ],
+    "confidence": "high",
+    "remediation": "Optional hardening only, not a required fix: make loadTickets throw (or return a corrupt sentinel) instead of []; handlers return a distinct 500 (e.g. board_corrupt) and refuse all writes, especially POST create, until repaired; optionally write a backup KV key on each successful save (copy of the last good value, only when the load parsed cleanly) with a documented restore step. Correct as proposed, with the caveat that the guard must cover POST create specifically, since the other mutating routes already 404 before saving.",
+    "reason": "Fails the 7-Question Gate: Q1 \u2014 no attacker-usable step-by-step request (attacker cannot corrupt KV via the API, and the overwrite needs the privileged BOARD_TOKEN); Q4 \u2014 requires privileged access plus an already-broken KV state; Q6 \u2014 impact beyond 'technically possible' not proven, and the board is currently empty so impact today is zero. Realistic trigger absent: the sole writer always writes valid JSON via an atomic KV put, so corruption requires manual operator error or an unevidenced second writer. Three preconditions (corrupt KV + non-empty board + authenticated create) exceed the kill-fast limit. Reclassify as a defensive-coding note, not a security or reliability finding."
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "decision": "rejected",
+  "record": {
+    "fingerprint": "board-business-logic-quirks",
+    "title": "Business-logic quirks: follow_up string 'false' coerces to true; mark-sent re-stamps and has no state guard; empty PATCH returns 200 no-op",
+    "description": "Source-verified all three quirks, but REJECTED as a security finding. 7-Question Gate fails Q1/Q4/Q6: every /api/* route requires the shared BOARD_TOKEN (authed(), lines 64-68; enforced lines 346-349, 401 without it), so only the key holder \u2014 the board owner \u2014 can trigger any of them, on their own board data only. There is no cross-user, privilege-escalation, unauthenticated, or other-user impact; the effect is owner-only data/semantics confusion. Correct home is NOT a security finding and NOT a single bundled security candidate: split into three separate functional bugs for the replica-test bug list (S3/S4). (1) follow_up coercion \u2014 functional input-validation bug (S3): validatePatch line 127 does `out.follow_up = !!body.follow_up` with no typeof-boolean check, unlike title/description/column/agent/priority which are strictly validated; the string 'false' (and any non-empty string, 1, {}, []) is truthy and stores true. The same validatePatch is shared by POST create (line 363), so create is affected too; the UI sends a real checkbox boolean so the normal UI path is unaffected. (2) mark-sent re-stamp \u2014 functional idempotency/audit bug (S3/S4): lines 414-422 unconditionally set `sent_to_qwenpaw_at = now` and `updated_at = now` with no already-sent check and no done/wont-do guard; re-marking overwrites the original sent timestamp (audit history lost). Note the session value is deterministic (`board-<id8>`, line 417) so only the timestamp changes, and the UI hides the button once sent (line ~307), so the API guard is the missing layer. (3) Empty PATCH \u2014 functional validation bug (S4): lines 427-433, `{}` passes validatePatch as `{value:{}}`, then `Object.assign(ticket, {}, {updated_at: now})` bumps updated_at, saves to KV, and returns 200 with no field changed; the same applies to a PATCH containing only unknown fields, which are silently ignored. No live test was run (no board key; do not guess/brute-force it), but live testing would only re-prove these owner-only functional behaviours, not convert them into a security finding.",
+    "verdict": "rejected",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/board/worker/src/index.js",
+        "line": 427,
+        "what": "PATCH /api/tickets/:id parses JSON body and calls validatePatch(body)"
+      },
+      {
+        "step": "propagation",
+        "path": "features/board/worker/src/index.js",
+        "line": 127,
+        "what": "validatePatch: if (body.follow_up !== undefined) out.follow_up = !!body.follow_up \u2014 no typeof boolean check, so string 'false' coerces to true"
+      },
+      {
+        "step": "sink",
+        "path": "features/board/worker/src/index.js",
+        "line": 431,
+        "what": "PATCH handler Object.assign(ticket, v.value, {updated_at: now}) persists the coerced follow_up; with {} it persists nothing but still bumps updated_at and returns 200"
+      },
+      {
+        "step": "entrypoint",
+        "path": "features/board/worker/src/index.js",
+        "line": 414,
+        "what": "POST /api/tickets/:id/mark-sent handler, after authed() gate at lines 346-349"
+      },
+      {
+        "step": "sink",
+        "path": "features/board/worker/src/index.js",
+        "line": 418,
+        "what": "mark-sent unconditionally overwrites ticket.sent_to_qwenpaw_at = now (line 416) and updated_at = now (line 420), with no already-sent or done/wont-do check; only todo->in-progress move at line 419"
+      },
+      {
+        "step": "entrypoint",
+        "path": "features/board/worker/src/index.js",
+        "line": 346,
+        "what": "Auth gate: all /api/* calls return 401 unless authed() (BOARD_TOKEN via X-Board-Key or ?key=, lines 64-68) \u2014 establishes owner-only precondition for all three quirks"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "grep -n \"follow_up\\|mark-sent\\|updated_at\\|validatePatch\\|Object.assign\" ~/workspace/qwenpaw-deploy/features/board/worker/src/index.js",
+        "output": "103:function validatePatch(body) {; 127:  if (body.follow_up !== undefined) out.follow_up = !!body.follow_up;; 414:        if (parts.length === 4 && parts[3] === \"mark-sent\") {; 420:          ticket.updated_at = now;; 429:          const v = validatePatch(body);; 431:          Object.assign(ticket, v.value, { updated_at: new Date().toISOString() });"
+      },
+      {
+        "command": "sed -n '414,433p' ~/workspace/qwenpaw-deploy/features/board/worker/src/index.js",
+        "output": "if (parts.length === 4 && parts[3] === \"mark-sent\") { if (request.method !== \"POST\") return 405; const now = new Date().toISOString(); ticket.qwenpaw_session = `board-${ticket.id.slice(0, 8)}`; ticket.sent_to_qwenpaw_at = now; if (ticket.column === \"todo\") ticket.column = \"in-progress\"; ticket.updated_at = now; await saveTickets(env, tickets); return json(cleanTicket(ticket)); } ... if (request.method === \"PATCH\") { const body = await request.json().catch(() => ({})); const v = validatePatch(body); if (v.error) return json({ error: v.error }, 400); Object.assign(ticket, v.value, { updated_at: new Date().toISOString() }); await saveTickets(env, tickets); return json(cleanTicket(ticket)); }"
+      },
+      {
+        "command": "grep -n \"authed\\|BOARD_TOKEN\\|401\" ~/workspace/qwenpaw-deploy/features/board/worker/src/index.js",
+        "output": "64:function authed(request, env) {; 65:  if (!env.BOARD_TOKEN) return false;; 68:  return safeEqual(key, env.BOARD_TOKEN);; 346:    if (!authed(request, env)) {; 349:        401,"
+      },
+      {
+        "command": "sed -n '110,135p' ~/workspace/qwenpaw-deploy/features/board/worker/src/index.js",
+        "output": "title/description/column/agent/priority each type/enum-checked and return {error} on bad input; follow_up line 127 is the only field with no type check: if (body.follow_up !== undefined) out.follow_up = !!body.follow_up;"
+      }
+    ],
+    "confidence": "high",
+    "remediation": "As three separate functional fixes, not a security fix: (1) In validatePatch, require a JSON boolean \u2014 `if (body.follow_up !== undefined) { if (typeof body.follow_up !== 'boolean') return {error: 'follow_up must be a boolean'}; out.follow_up = body.follow_up; }` \u2014 this also fixes POST create, which shares validatePatch. (2) In mark-sent, make it idempotent: if `ticket.sent_to_qwenpaw_at` is already set, return the existing record unchanged (200, no re-stamp) or 409; do not overwrite the original timestamp. Refusing from done/wont-do is an optional policy choice, not required for correctness \u2014 the core fix is never re-stamping; if terminal-column refusal is adopted, return 409 there too and do not move the column. (3) In PATCH, reject an empty validated patch: `if (Object.keys(v.value).length === 0) return json({error: 'no fields to update'}, 400)` before Object.assign/save \u2014 this also covers PATCH with only unknown fields.",
+    "reason": "Fails the 7-Question Gate as a security finding: Q1 \u2014 no attacker-usable step-by-step request exists without the owner-held BOARD_TOKEN; Q4 \u2014 requires privileged (owner/key-holder) access the attacker cannot realistically get, i.e. 'owner can confuse their own board data'; Q6 \u2014 no impact beyond technically possible on own data (no other-user data, ATO, PII, or money). Source code confirms the behaviours, but source confirmation of owner-only semantics does not make them security findings, and obtaining the key for a live test would only re-prove functional bugs. Re-file as three separate functional bugs (S3/S4 replica-test list), split rather than bundled, since each has a different fix and owner."
+  }
+}

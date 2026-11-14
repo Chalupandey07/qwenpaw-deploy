@@ -11,7 +11,11 @@ Usage (run from this directory, features/groupchat/worker/):
       with the GROUPCHAT_THREAD Durable Object binding (SQLite class
       GroupChatThread, migration tag v1) and no KV binding. The old
       GROUPCHAT KV namespace is retired (see wrangler.toml) and is not
-      referenced by the deploy.
+      referenced by the deploy. By default NO migration block is sent:
+      the class already exists with live objects, and re-sending
+      new_sqlite_classes is rejected by the API (error 10074). Use
+      `deploy --with-migration` only for a first-time deploy on an
+      account where the class does not exist yet.
   python3 deploy-groupchat.py status
       GET the deployed Worker metadata (name, id, etag) — read-only check.
   python3 deploy-groupchat.py set-secret <token>
@@ -73,7 +77,7 @@ def cf_call(path, method="GET", body=None, content_type=None):
         raise
 
 
-def cmd_deploy():
+def cmd_deploy(with_migration=False):
     with open(os.path.join(HERE, "src", "index.js"), "rb") as f:
         script = f.read()
     metadata = {
@@ -86,11 +90,12 @@ def cmd_deploy():
                 "class_name": "GroupChatThread",
             },
         ],
-        # First Durable Object migration for this Worker: creates the
-        # SQLite-backed GroupChatThread class. Re-deploying with the same
-        # tag and class list is a no-op migration (the class already exists).
-        "migrations": {"tag": "v1", "new_sqlite_classes": ["GroupChatThread"]},
     }
+    if with_migration:
+        # First-time deploy only. Re-sending new_sqlite_classes for a
+        # class that already has live Durable Objects is rejected by the
+        # API (error 10074), so redeploys must omit this block.
+        metadata["migrations"] = {"tag": "v1", "new_sqlite_classes": ["GroupChatThread"]}
     boundary = "----cfgroupchat" + uuid.uuid4().hex
     parts = [
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"metadata\"\r\nContent-Type: application/json\r\n\r\n{json.dumps(metadata)}\r\n".encode(),
@@ -162,7 +167,7 @@ def main():
     if cmd == "status":
         cmd_status()
     elif cmd == "deploy":
-        cmd_deploy()
+        cmd_deploy(with_migration="--with-migration" in sys.argv[2:])
     elif cmd == "set-secret":
         if len(sys.argv) < 3 or not sys.argv[2]:
             print("usage: deploy-groupchat.py set-secret <token>", file=sys.stderr)

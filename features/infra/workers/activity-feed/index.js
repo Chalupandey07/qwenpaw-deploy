@@ -4,7 +4,9 @@
 // content, no auth: status only. This is NOT a live desktop — see
 // 01-live-computer.md for why no desktop path exists.
 // Env vars: QWENPAW_URL (console origin), CONSOLE_URL (Pages console link),
-// KEEPALIVE_URL (keepalive Worker, for the wake button).
+// KEEPALIVE_URL (keepalive Worker; the Wake button calls its public GET
+// /ping, which wakes a paused box by probing the public console URL.
+// POST /wake is token-gated and is never called from this page.)
 // KV binding: STATUS (same namespace as keepalive; this Worker only reads
 // qwenpaw:status and writes its own qwenpaw:activity key, never the
 // keepalive's key).
@@ -82,7 +84,7 @@ ${s.retryAfterSeconds ? `<tr><td style="padding:4px 12px 4px 0;color:#9ca3af">Re
 </table>
 <p><a style="color:#22c55e" href="${esc(env.CONSOLE_URL || "https://qwenpawx.pages.dev/")}">Open the console — take over here</a></p>
 <p><button onclick="fetch('/api/live').then(()=>location.reload())" style="padding:8px 14px;cursor:pointer">Probe now</button>
-<button onclick="fetch('${esc(env.KEEPALIVE_URL || "")}/wake',{method:'POST'}).then(r=>r.json()).then(j=>alert(JSON.stringify(j.status||j))).catch(()=>alert('wake call failed'))" style="padding:8px 14px;cursor:pointer">Wake</button></p>
+<button onclick="fetch('${esc(env.KEEPALIVE_URL || "")}/ping').then(r=>r.json()).then(j=>alert(JSON.stringify(j.status||j))).catch(()=>alert('wake call failed'))" style="padding:8px 14px;cursor:pointer">Wake</button></p>
 <p style="color:#9ca3af;font-size:0.9em">This page shows keep-alive status only — it is not a live desktop and cannot show what the agent is doing inside a session. That lives in the console. Refreshes every 60s. Status source: keep-alive Worker, every 5 min.</p>
 <p style="color:#9ca3af;font-size:0.9em"><a style="color:#9ca3af" href="/api/status">JSON</a> · <a style="color:#9ca3af" href="/api/live">Live probe (JSON)</a></p>
 </body></html>`;

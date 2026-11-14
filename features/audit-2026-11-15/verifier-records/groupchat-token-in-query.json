@@ -1,0 +1,64 @@
+{
+  "decision": "needs_validation",
+  "record": {
+    "fingerprint": "groupchat-token-in-query",
+    "title": "GROUPCHAT_TOKEN is accepted via ?token= query parameter, leaking it in logs, referrers and history",
+    "description": "checkToken in features/groupchat/worker/src/index.js accepts the GROUPCHAT_TOKEN secret from the URL query string as well as from the X-Groupchat-Token header. The fallback exists in source (line 135) and grants access on exact match (line 137) to every protected endpoint. It is NOT live-proven: GROUPCHAT_TOKEN is currently unset, so checkToken returns true at line 132 before reaching the fallback, and GET /thread?token=anything returning 200 proves only that the thread is open, not that ?token= authenticates. Real exposure is narrow for this service: it returns only JSON, has no HTML page and no outbound links, so a Referer leak does not apply; the applicable channels are a ?token= URL being copied/shared, stored in browser/shell history, or recorded in full-URL access logs by an intermediary or Cloudflare logging if enabled. No in-repo caller uses ?token=, so the leak requires someone to actually use that form.",
+    "verdict": "needs_validation",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/groupchat/worker/src/index.js",
+        "line": 135,
+        "what": "new URL(request.url).searchParams.get(\"token\") reads the secret from the URL query string"
+      },
+      {
+        "step": "propagation",
+        "path": "features/groupchat/worker/src/index.js",
+        "line": 134,
+        "what": "supplied = header X-Groupchat-Token || query ?token= || \"\" \u2014 query value is treated as equivalent to the header"
+      },
+      {
+        "step": "sink",
+        "path": "features/groupchat/worker/src/index.js",
+        "line": 137,
+        "what": "return supplied === this.env.GROUPCHAT_TOKEN \u2014 exact match grants access; checkToken gates GET /thread (line 177), POST /thread/start (185), POST /thread/message (200) and POST /thread/reset (254)"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "awk 'NR>=131 && NR<=138 {printf \"%d: %s\\n\", NR, $0}' features/groupchat/worker/src/index.js",
+        "output": "131: checkToken(request) { 132: if (!this.env.GROUPCHAT_TOKEN) return true; 133: const supplied = 134: request.headers.get(\"X-Groupchat-Token\") || 135: new URL(request.url).searchParams.get(\"token\") || 136: \"\"; 137: return supplied === this.env.GROUPCHAT_TOKEN;"
+      },
+      {
+        "command": "grep -n 'checkToken\\|GROUPCHAT_TOKEN' features/groupchat/worker/src/index.js; grep -n 'X-Groupchat-Token' features/groupchat/relay/relay.py",
+        "output": "checkToken gates lines 177, 185, 200, 254; relay.py:94 req.add_header(\"X-Groupchat-Token\", GROUPCHAT_TOKEN) \u2014 relay uses header only"
+      },
+      {
+        "command": "grep -rn 'href\\|<a \\|text/html' features/groupchat/ --include='*.js' --include='*.py'; grep -n 'Content-Type' features/groupchat/worker/src/index.js",
+        "output": "no href/<a>/text/html matches in groupchat service; worker returns only application/json (line 78) \u2014 no HTML page or outbound links, so no Referer channel in this service; no console.log of request URL in the worker"
+      },
+      {
+        "command": "grep -rn '?token=\\|searchParams.get(\"token\")' features/groupchat/ --include='*.js' --include='*.py' --include='*.md'",
+        "output": "only occurrence is the fallback itself (index.js:135); no legitimate in-repo consumer uses ?token= for groupchat"
+      }
+    ],
+    "confidence": "medium",
+    "conditions": "Applies only if GROUPCHAT_TOKEN is set (currently unset, so the service is open regardless) and only if a caller actually authenticates via ?token=. The Referer/history claim in the title is overstated for this API-only JSON service: Referer does not apply (no HTML/links); browser/shell history and full-URL logging apply only if a ?token= URL is pasted, curled, copied or logged. Cloudflare Workers/Logpush query-string logging was not verified from source and was not checked against third-party docs per task constraints \u2014 do not assert it as a confirmed channel.",
+    "remediation": "Remove the ?token= fallback in checkToken (delete line 135, keep header-only check: request.headers.get(\"X-Groupchat-Token\") === env.GROUPCHAT_TOKEN). Correct and minimal: the relay already uses the header only (relay.py:94), the README already documents header-only auth, and the code comment at lines 57-60 already says header \u2014 the code contradicts its own docs. Breaks nothing in-repo; the only breakage is ad-hoc manual browser/curl testing with ?token=, which is exactly the unsafe pattern being removed.",
+    "blockers": [
+      "GROUPCHAT_TOKEN is currently unset, so ?token= authentication cannot be demonstrated live without first setting a token, which changes the deployment and was forbidden for this verification"
+    ],
+    "validation_plan": {
+      "local": [
+        "After removing line 135, node --check the worker and grep to confirm no searchParams.get('token') remains",
+        "With a test secret in wrangler dev/miniflare, confirm header token returns 200 and ?token=<same value> returns 401"
+      ],
+      "deployment": [
+        "With user approval only: set a throwaway token via python3 deploy-groupchat.py set-secret <test-token>",
+        "curl GET /thread with X-Groupchat-Token: <test-token> expecting 200; with ?token=<test-token> expecting 200 before the fix and 401 after; without any token expecting 401",
+        "After the fix, redeploy, re-test header 200 / ?token= 401, then rotate the throwaway token to the real secret"
+      ]
+    }
+  }
+}

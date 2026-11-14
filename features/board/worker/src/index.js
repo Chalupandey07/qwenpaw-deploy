@@ -49,15 +49,28 @@ const CONSOLE_CHAT_API = CONSOLE_URL + "/api/console/chat";
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "x-content-type-options": "nosniff",
+      "cache-control": "no-store",
+    },
   });
 }
 
+// Constant-time comparison that never early-returns on length (fix
+// 2026-11-15, audit hardening for board-timing-length-leak): the old
+// code returned false immediately when lengths differed, leaking the key
+// length through timing. Now the loop always runs over the longer string
+// and the length difference is folded into the diff.
 function safeEqual(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  const len = Math.max(a.length, b.length);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < len; i++) {
+    const ca = i < a.length ? a.charCodeAt(i) : 0;
+    const cb = i < b.length ? b.charCodeAt(i) : 0;
+    diff |= ca ^ cb;
+  }
   return diff === 0;
 }
 
@@ -124,7 +137,13 @@ function validatePatch(body) {
     if (!PRIORITIES.includes(body.priority)) return { error: "unknown priority" };
     out.priority = body.priority;
   }
-  if (body.follow_up !== undefined) out.follow_up = !!body.follow_up;
+  // Strict boolean (fix 2026-11-15, audit bug board-business-logic-quirks):
+  // the old code did !!body.follow_up, so the STRING "false" coerced to
+  // true. A non-boolean follow_up is now a 400.
+  if (body.follow_up !== undefined) {
+    if (typeof body.follow_up !== "boolean") return { error: "follow_up must be a boolean" };
+    out.follow_up = body.follow_up;
+  }
   return { value: out };
 }
 
@@ -337,9 +356,12 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    if (path === "/health") return json({ ok: true, worker: "qwenpaw-board" });
+    if (path === "/health") {
+      if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
+      return json({ ok: true, worker: "qwenpaw-board" });
+    }
     if (path === "/" || path === "/index.html") {
-      return new Response(BOARD_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
+      return new Response(BOARD_HTML, { headers: { "content-type": "text/html; charset=utf-8", "x-content-type-options": "nosniff", "x-frame-options": "SAMEORIGIN", "content-security-policy": "frame-ancestors 'self'" } });
     }
 
     if (!path.startsWith("/api/")) return json({ error: "not found" }, 404);
@@ -368,10 +390,10 @@ export default {
             id: crypto.randomUUID(),
             title: v.value.title,
             description: v.value.description || "",
-            column: "todo",
+            column: v.value.column || "todo",
             agent: v.value.agent || "default",
             priority: v.value.priority || "normal",
-            follow_up: !!v.value.follow_up,
+            follow_up: v.value.follow_up === true,
             comments: [],
             qwenpaw_session: null,
             sent_to_qwenpaw_at: null,
@@ -387,7 +409,16 @@ export default {
       }
 
       if (parts[1] === "tickets" && parts.length >= 3) {
-        const id = decodeURIComponent(parts[2]);
+        // Malformed percent-encoding (fix 2026-11-15, audit bug
+        // board-decode-uri-500): %FF-style invalid-UTF-8 ids made
+        // decodeURIComponent throw, and the outer catch returned a 500
+        // that leaked the error text. Bad ids are now a clean 400.
+        let id;
+        try {
+          id = decodeURIComponent(parts[2]);
+        } catch {
+          return json({ error: "invalid ticket id" }, 400);
+        }
         const tickets = await loadTickets(env);
         const idx = tickets.findIndex((t) => t.id === id);
         if (idx === -1) return json({ error: "ticket not found" }, 404);
@@ -413,6 +444,10 @@ export default {
         }
         if (parts.length === 4 && parts[3] === "mark-sent") {
           if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+          // Idempotent (fix 2026-11-15, audit bug
+          // board-business-logic-quirks): re-marking must not re-stamp
+          // the timestamp or move the column again.
+          if (ticket.sent_to_qwenpaw_at) return json(cleanTicket(ticket));
           const now = new Date().toISOString();
           ticket.qwenpaw_session = `board-${ticket.id.slice(0, 8)}`;
           ticket.sent_to_qwenpaw_at = now;
@@ -428,6 +463,12 @@ export default {
           const body = await request.json().catch(() => ({}));
           const v = validatePatch(body);
           if (v.error) return json({ error: v.error }, 400);
+          // Empty patch (fix 2026-11-15, audit bug
+          // board-business-logic-quirks): the old code returned 200 for
+          // a no-op PATCH. A patch that changes nothing is now a 400.
+          if (Object.keys(v.value).length === 0) {
+            return json({ error: "empty patch: nothing to update" }, 400);
+          }
           Object.assign(ticket, v.value, { updated_at: new Date().toISOString() });
           await saveTickets(env, tickets);
           return json(cleanTicket(ticket));
@@ -442,7 +483,10 @@ export default {
 
       return json({ error: "not found" }, 404);
     } catch (e) {
-      return json({ error: "server error: " + (e?.message || e) }, 500);
+      // Generic on purpose: the old message echoed e.message, which can
+      // leak internals (fix 2026-11-15, audit bug board-decode-uri-500).
+      console.log("board error:", e?.message || e);
+      return json({ error: "server error" }, 500);
     }
   },
 };

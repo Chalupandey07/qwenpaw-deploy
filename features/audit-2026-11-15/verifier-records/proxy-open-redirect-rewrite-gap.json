@@ -1,0 +1,54 @@
+{
+  "decision": "rejected",
+  "record": {
+    "fingerprint": "proxy-open-redirect-rewrite-gap",
+    "title": "Location rewrite only covers absolute ORIGIN URLs; protocol-relative or foreign-absolute Location from origin would pass through unrewritten",
+    "description": "The code gap is real but has no producer: rewriteHeaders in pages/public/_worker.js only rewrites a Location starting with ORIGIN, so a //evil.com or https://evil.com Location from the origin would pass through verbatim. However, exhaustive source inspection of the deployed QwenPaw v2.3.0 (agentscope/qwenpaw:v2.3.0, inside container qwenpaw at /app/src/qwenpaw) finds zero code that can emit a Location header at all \u2014 no RedirectResponse, no redirect() call, no Location header set anywhere \u2014 and live probes of unauthenticated Pages paths return no Location header. No request, authenticated or not, can produce the claimed foreign redirect, so Q1 of the 7-Question Gate fails and the finding is an unexploitable latent gap, not a vulnerability. The proposed remediation (rewrite/drop any absolute or protocol-relative Location) is still correct, minimal defense-in-depth and would break nothing: the only redirects the origin could ever legitimately emit are same-host absolute ones (e.g. Starlette trailing-slash redirects), which the fix would rewrite to the Pages origin, and no legitimate foreign Location exists.",
+    "verdict": "rejected",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "pages/public/_worker.js",
+        "line": 53,
+        "what": "rewriteHeaders(res, pagesOrigin) defined; candidate cited line 60, actual definition is line 53"
+      },
+      {
+        "step": "sink",
+        "path": "pages/public/_worker.js",
+        "line": 57,
+        "what": "Location rewritten only if loc.startsWith(ORIGIN) (lines 56-58); protocol-relative //evil.com or foreign-absolute https://evil.com values would pass through verbatim"
+      },
+      {
+        "step": "propagation",
+        "path": "pages/public/_worker.js",
+        "line": 144,
+        "what": "rewriteHeaders called on every proxied response in proxy() before the response is returned"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "grep -n rewriteHeaders|startsWith(ORIGIN)|Location ~/workspace/qwenpaw-deploy/pages/public/_worker.js",
+        "output": "53:function rewriteHeaders(res, pagesOrigin) { 56: const loc = headers.get(\"Location\"); 57: if (loc && loc.startsWith(ORIGIN)) { 58: headers.set(\"Location\", pagesOrigin + loc.slice(ORIGIN.length)); 144: const headers = rewriteHeaders(res, pagesOrigin);"
+      },
+      {
+        "command": "docker exec qwenpaw grep -rn RedirectResponse /app/src/qwenpaw --include=*.py | head -40; docker exec qwenpaw grep -rn redirect\\( /app/src/qwenpaw --include=*.py | head -40; docker exec qwenpaw grep -rn Location /app/src/qwenpaw --include=*.py | head -20",
+        "output": "RedirectResponse: zero matches. redirect(: only /app/src/qwenpaw/app/channels/ingress.py:578 'async def no_redirect' (outbound httpx client helper, disables redirects \u2014 not a response). Location: only CLI echo strings (plugin_commands.py:555,650) and a SourceLocation Pydantic model \u2014 no HTTP header. Same greps over installed site-packages copy also zero."
+      },
+      {
+        "command": "docker exec qwenpaw grep -rn Redirect /app/src/qwenpaw/app/routers/mcp_oauth.py /app/src/qwenpaw/app/routers/provider_oauth.py /app/src/qwenpaw/app/auth.py | head; sed of provider_oauth.py oauth start/callback and mcp_oauth.py _redirect_uri/start",
+        "output": "OAuth flows never return a redirect response: provider_oauth start returns JSON OAuthStartResponse{authorize_url,state} (authorize_url opened by frontend in a popup); callback returns HTMLResponse 200/400/500; mcp_oauth start returns JSON auth_url and _redirect_uri() only builds the callback URI sent to the provider as a parameter. No Location header is set in either flow."
+      },
+      {
+        "command": "curl -s -i -m 20 https://qwenpawx.pages.dev/login (HEAD) ; curl -s -i -m 20 https://qwenpawx.pages.dev/logout ; curl -s -i -m 20 -X POST https://qwenpawx.pages.dev/api/auth/login -H 'Content-Type: application/json' -d '{}'",
+        "output": "HEAD /login: 405 Method Not Allowed, no Location. GET /logout: 200 text/html SPA, no Location. POST /api/auth/login {}: 422 validation (missing username/password), no Location."
+      },
+      {
+        "command": "curl -s -i -m 20 https://qwenpawx.pages.dev/api/auth/status/ ; curl -s -i -m 20 https://qwenpawx.pages.dev/login/ ; curl -s -i -m 20 https://qwenpawx.pages.dev/old-path ; curl -s -i -m 20 'https://qwenpawx.pages.dev/api/mcp/oauth/callback?code=x&state=y'",
+        "output": "GET /api/auth/status/: 401 Unauthorized, no Location (no Starlette trailing-slash 307). GET /login/: 200 SPA, no Location. GET /old-path: 200 SPA, no Location. GET /api/mcp/oauth/callback?code=x&state=y: 401 Unauthorized, no Location."
+      }
+    ],
+    "confidence": "high",
+    "conditions": "Verified against deployed QwenPaw v2.3.0 source in container qwenpaw on machine m_agq5wqqo2fvypym7rjlpvngc2m and live Pages origin https://qwenpawx.pages.dev on 2026-11-15. No login was attempted and no auth state, .env, auth.json or chats were touched.",
+    "reason": "Disproved by source, not just by unauthenticated probing: the entire QwenPaw application source tree contains no code path that emits an HTTP Location header (zero RedirectResponse, zero redirect() responses, zero Location sets; OAuth flows return JSON authorize_url / HTMLResponse instead). A foreign or protocol-relative Location therefore cannot be produced by the origin in the first place \u2014 authenticated or not \u2014 so there is no request an attacker can send that yields a redirect off Pages. Live evidence agrees: 7 unauthenticated probes (hunter's 3 plus /login HEAD, /logout, POST /api/auth/login, /api/auth/status/ trailing-slash, /login/, /old-path, /api/mcp/oauth/callback) all returned 200/401/405/422 with no Location header. The 7-Question Gate fails at Q1 (no copy-pasteable request producing a redirect) and Q7 (open redirect alone is a never-submit class without an OAuth/ATO chain, and no chain exists here). The rewrite gap is a real latent hardening gap, but a gap with no producer is not a vulnerability; it should be fixed as defense-in-depth only, not tracked as a finding."
+  }
+}

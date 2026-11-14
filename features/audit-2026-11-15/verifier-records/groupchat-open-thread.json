@@ -1,0 +1,69 @@
+{
+  "decision": "confirmed",
+  "record": {
+    "fingerprint": "groupchat-open-thread",
+    "title": "Unauthenticated anyone can read, write, impersonate agents in, and reset the shared group-chat thread",
+    "description": "GROUPCHAT_TOKEN is unset on the live qwenpaw-groupchat Worker, so checkToken() returns true for every request and all thread endpoints (GET /thread, POST /thread/start, POST /thread/message, POST /thread/reset) are open to anyone who knows the URL. An unauthenticated caller can read the full thread, post as a user or as either agent (subject only to turn-taking), start new rounds, and wipe the thread with {confirm:true}. No QwenPaw account takeover or code execution: the relay is not installed, so fake agent turns do not reach QwenPaw.",
+    "verdict": "confirmed",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/groupchat/worker/src/index.js",
+        "line": 132,
+        "what": "checkToken(): if (!this.env.GROUPCHAT_TOKEN) return true \u2014 no token configured means every request passes auth"
+      },
+      {
+        "step": "propagation",
+        "path": "features/groupchat/worker/src/index.js",
+        "line": 162,
+        "what": "GET / reports auth_required: Boolean(this.env.GROUPCHAT_TOKEN), i.e. false when the secret is unset"
+      },
+      {
+        "step": "sink",
+        "path": "features/groupchat/worker/src/index.js",
+        "line": 177,
+        "what": "GET /thread gated only by checkToken(); with token unset the 401 branch is unreachable"
+      },
+      {
+        "step": "sink",
+        "path": "features/groupchat/worker/src/index.js",
+        "line": 185,
+        "what": "POST /thread/start gated only by checkToken(); same bypass"
+      },
+      {
+        "step": "sink",
+        "path": "features/groupchat/worker/src/index.js",
+        "line": 200,
+        "what": "POST /thread/message gated only by checkToken(); agent-role posts are checked only for turn order and participant name, not identity"
+      },
+      {
+        "step": "sink",
+        "path": "features/groupchat/worker/src/index.js",
+        "line": 254,
+        "what": "POST /thread/reset gated only by checkToken(); {confirm:true} then wipes the thread"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "curl -s https://qwenpaw-groupchat.qwenpaw-rohan.workers.dev/",
+        "output": "{\"service\":\"qwenpaw-groupchat\",\"thread\":\"one shared thread for QwenPaw agents default + QwenPaw_QA_Agent_0.2\",\"store\":\"durable-object (sqlite)\",\"auth_required\":false,...}"
+      },
+      {
+        "command": "curl -s -w \"HTTP %{http_code}\" -H \"X-Groupchat-Token: wrong-token-verifier-2026\" https://qwenpaw-groupchat.qwenpaw-rohan.workers.dev/thread",
+        "output": "HTTP 200 {\"id\":\"groupchat-mwguv0lq\",\"topic\":\"\",\"status\":\"open\",\"round\":1,\"max_rounds\":6,\"next_agent\":\"default\",\"participants\":[\"default\",\"QwenPaw_QA_Agent_0.2\"],\"seq\":0,\"updated_at\":\"2026-11-14T20:25:39.278Z\",\"messages\":[]}"
+      }
+    ],
+    "severity": "high",
+    "confidence": "high",
+    "conditions": "Verified read-only only: verifier performed no POST, start, message, or reset (thread observed clean/reset, seq 0, messages []). Write/impersonation/reset success rests on the source trace above plus the hunter's live POST evidence, which the verifier did not re-run to avoid re-polluting the reset thread. Relay-not-installed (so fake turns do not reach QwenPaw) is as stated in the candidate and was not independently re-verified.",
+    "remediation": "Set the token with `wrangler secret put GROUPCHAT_TOKEN` on the qwenpaw-groupchat Worker, then verify GET / reports auth_required:true and unauthenticated/wrong-token GET /thread and POST /thread/message return 401. Side effect: the owner and the relay (when installed) must send X-Groupchat-Token on every thread request; setting the secret is a user/parent action via wrangler or the Cloudflare API.",
+    "validation_plan": {
+      "local": [
+        "Re-read checkToken and the 401 gates at lines 177, 185, 200, 254 after any change; confirm no endpoint bypasses checkToken."
+      ],
+      "deployment": [
+        "GET / shows auth_required:true; GET /thread with no token and with a wrong token returns 401; POST /thread/message with the correct token still succeeds; POST /thread/reset with a wrong token returns 401."
+      ]
+    }
+  }
+}

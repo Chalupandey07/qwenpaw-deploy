@@ -1,0 +1,72 @@
+{
+  "decision": "needs_validation",
+  "record": {
+    "fingerprint": "qwenpaw-query-token-leak",
+    "title": "Bearer token accepted via ?token= query parameter on every API request",
+    "description": "Code-confirmed primitive: AuthMiddleware._extract_token in /app/src/qwenpaw/app/auth.py accepts the bearer token from the ?token= query parameter on every request, not only WebSocket upgrades \u2014 line 856 unconditionally returns the query token, making the upgrade branch at lines 853-855 dead code. Dispatch (lines 784-803) then verifies any extracted token: absent token yields 401 'Not authenticated', present-but-invalid token yields 401 'Invalid or expired token', so the hunter's GET /api/healthz?token=invalid returning 'Invalid or expired token' is consistent with the query token being parsed and verified. The exposure does not require a user manually pasting a token: the console SPA itself generates ?token= URLs in normal use (filePreviewUrl for file previews and GET /config/channels/{id}/qrcode/status?token= polling). However no leak is demonstrated: no valid token was available, no log was inspected, and no sink (browser history entry, Referer target, or query-string-logging system) was shown to receive a token. 7-Question Gate: Q1/Q6 fail for confirmation \u2014 an attacker has no demonstrated step-by-step path to obtain a token \u2014 while Q4 is met by normal SPA use, so this is a real hardening issue awaiting a demonstrated leak sink, not a rejection and not a confirmation.",
+    "verdict": "needs_validation",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "/app/src/qwenpaw/app/auth.py",
+        "line": 849,
+        "what": "AuthMiddleware._extract_token: checks Authorization Bearer header first, then falls through to query-param handling"
+      },
+      {
+        "step": "propagation",
+        "path": "/app/src/qwenpaw/app/auth.py",
+        "line": 856,
+        "what": "Unconditional fallback 'return request.query_params.get(\"token\") or None' accepts ?token= on every request; the upgrade-only branch at lines 853-855 is dead code because line 856 returns the same value for non-upgrade requests"
+      },
+      {
+        "step": "sink",
+        "path": "/app/src/qwenpaw/app/auth.py",
+        "line": 796,
+        "what": "dispatch() calls verify_token(token) on whatever _extract_token returned, so a query-param token is fully verified and grants the request; invalid query token yields 401 'Invalid or expired token' vs 401 'Not authenticated' when no token is present at all (lines 788-801)"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "docker exec qwenpaw sed -n '800,870p' /app/src/qwenpaw/app/auth.py (via ib.py exec on m_agq5wqqo2fvypym7rjlpvngc2m)",
+        "output": "_extract_token lines 849-856 verbatim: Bearer check, then 'if \"upgrade\" in conn.lower(): return request.query_params.get(\"token\")', then 'return request.query_params.get(\"token\") or None'. Confirms hunter's claimed lines and unconditional branch. (Note: host path /app/src/... does not exist; file lives inside container qwenpaw at /app/src/qwenpaw/app/auth.py.)"
+      },
+      {
+        "command": "docker exec qwenpaw sed -n '781,810p' /app/src/qwenpaw/app/auth.py (via ib.py exec)",
+        "output": "dispatch(): _should_skip_auth gate, token=_extract_token(request); no token -> 401 'Not authenticated'; verify_token(token) None -> 401 'Invalid or expired token'; else request.state.user set and call_next. Two distinct 401 messages confirmed in code."
+      },
+      {
+        "command": "docker exec qwenpaw grep -o '.{100}token=.{80}' /app/src/qwenpaw/console/assets/index-DZrIuh3B.js (via ib.py exec)",
+        "output": "4 'token=' occurrences in built console bundle, including filePreviewUrl building '${o}?token=${...}' and getChannelQrcodeStatus calling '/config/channels/{id}/qrcode/status?token=${...}'. The SPA itself emits ?token= URLs in normal use; exposure does not require manual token pasting."
+      },
+      {
+        "command": "docker exec qwenpaw grep -c 'EventSource' /app/src/qwenpaw/console/assets/index-DZrIuh3B.js; grep of fetch streaming (via ib.py exec)",
+        "output": "EventSource count 0. Chat streaming uses fetch + ReadableStream getReader() with headers, so SSE/EventSource does NOT depend on ?token= and is not a blocker for restricting it. No 'new WebSocket(' match in the index bundle (WS ?token= use, if any, lives in another chunk \u2014 unknown, not asserted)."
+      },
+      {
+        "command": "grep -n 'token|console.log|fetch(' ~/workspace/qwenpaw-deploy/pages/public/_worker.js; sed -n '1,80p' _worker.js",
+        "output": "_worker.js has no token handling and no logging. proxy() builds originUrl = ORIGIN + url.pathname + url.search, so ?token= query strings are forwarded verbatim to the InstaBox origin; nothing strips them. Whether Cloudflare or InstaBox edge logs record query strings is unknown (owner-visible, not checkable here)."
+      }
+    ],
+    "confidence": "medium",
+    "conditions": "Primitive is certain from source; exploitability is unproven because no leak sink has been demonstrated. Verdict stays needs_validation until (a) a sink that actually receives a valid token is shown (query strings in Cloudflare/InstaBox request logs, a Referer target, or a navigated history entry), or (b) the owner confirms no such sink exists, in which case this downgrades to a hardening note.",
+    "remediation": "Do NOT apply the proposed upgrade-only restriction as written: it would break the console SPA, which uses ?token= for non-upgrade GETs (file preview URLs, which are resource URLs that cannot carry an Authorization header, and QR-code status polling). Correct fix: in _extract_token, accept ?token= only for WebSocket upgrades plus an explicit allow-list of the routes the SPA genuinely needs it for (file preview, QR-code status), and require the Authorization header everywhere else \u2014 or convert QR status polling to header auth and serve file previews via header-authenticated blob fetch so ?token= can be upgrade-only. Alternative edge mitigation: strip ?token= at the Pages proxy for non-upgrade, non-exempt requests (proxy currently forwards url.search verbatim). Any source fix to auth.py requires a Docker image rebuild + container restart + new snapshot; it is NOT a quick fix.",
+    "blockers": [
+      "No demonstrated leak: no valid token was available, no Cloudflare/InstaBox access log was inspected, and no Referer/history sink was shown to receive a token \u2014 the 7-Question Gate Q6 (impact beyond technically possible) is unmet.",
+      "SPA dependency on ?token= for non-upgrade GETs is not yet fully scoped: filePreviewUrl consumption (img/video/a src vs fetch) and any WebSocket ?token= use in other console chunks are unconfirmed, so the safe exemption list for a fix is unknown.",
+      "Fix requires a Docker image rebuild, container restart, and snapshot \u2014 needs owner approval and a maintenance window, not an in-place edit."
+    ],
+    "validation_plan": {
+      "local": [
+        "Enumerate every ?token= call site across all console chunks (filePreviewUrl and getChannelQrcodeStatus confirmed in index bundle; check remaining chunks for WebSocket ?token= use).",
+        "Determine how filePreviewUrl is consumed (resource src vs fetch) and whether QR-code status polling can use the Authorization header instead.",
+        "Confirm Pages _worker.js forwards query strings and logs nothing (done: originUrl includes url.search, no logging calls)."
+      ],
+      "deployment": [
+        "Owner checks Cloudflare dashboard request logs and InstaBox edge logging for whether query strings (including ?token=) are recorded and who can view them.",
+        "Owner (with a valid token, never shared) tests GET /api/healthz?token=<valid> end to end to prove query-token acceptance beyond the invalid-token 401; verifier did not do this \u2014 no token was available and no login was attempted.",
+        "After any fix, regression-test file preview, QR-code status, WebSocket console, and fetch-based chat streaming before snapshotting."
+      ]
+    }
+  },
+  "_recovery_note": "Session transcript truncated the final message; repaired by appending 1 closing brace(s). The record may be missing a trailing field (e.g. reason) that was cut off; decision, title, description, verdict, trace and evidence are intact as the verifier wrote them."
+}

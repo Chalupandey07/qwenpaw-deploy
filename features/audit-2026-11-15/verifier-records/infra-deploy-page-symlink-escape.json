@@ -1,0 +1,80 @@
+{
+  "decision": "needs_validation",
+  "record": {
+    "fingerprint": "infra-deploy-page-symlink-escape",
+    "title": "deploy-page.py follows symlinks out of the source dir, so a planted symlink can publish arbitrary host files to a public Pages project",
+    "description": "Primitive confirmed from source and by local reproduction with dummy data: features/botpages/deploy-page.py collect() walks the source dir with os.walk, checks only the link name's extension against ALLOWED_EXTS, then open() follows any symlink and reads the target's bytes; deploy() re-reads the same disk path and uploads it to the public qwenpaw-pages Pages project. No islink/readlink/realpath check exists anywhere in the repo's deploy code (grep for islink across ~/workspace/qwenpaw-deploy returns nothing). However the end-to-end exploit chain is NOT demonstrated: the source dir (<workspace>/pages) is written by the agent under the build-page skill, which only writes regular HTML files (muse.write cannot create symlinks); planting a link requires either the user explicitly asking the agent to run ln -s via shell, or prompt injection smuggled into a page-build request that the agent obeys. That is 3+ preconditions (injection reaches the chat, agent obeys a symlink-creating shell command outside the skill's write-file flow, agent deploys without noticing, target file is readable from the deploy context), so Q1 (no copy-paste attacker request exists right now) and Q6 (impact beyond technically possible) of the 7-Question Gate fail for a confirmed verdict. Also unproven from this VM: deploy runs inside the QwenPaw container, not on this VM \u2014 /data/home/qwenpaw/working.secret does not exist on this VM, so whether working.secret/envs.json or other host files are readable from the deploy context could not be verified here. This is a real, cheap-to-fix primitive with a speculative planting step \u2014 needs_validation, not confirmed and not rejected.",
+    "verdict": "needs_validation",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/botpages/deploy-page.py",
+        "line": 137,
+        "what": "collect() os.walk(source_dir) with default followlinks=False \u2014 symlinked dirs are not descended, but symlinked files inside walked dirs are still listed in names"
+      },
+      {
+        "step": "propagation",
+        "path": "features/botpages/deploy-page.py",
+        "line": 142,
+        "what": "extension check uses only the link name (os.path.splitext(name)); the target's real name/type is never inspected, so evil.html -> <any file> passes the ALLOWED_EXTS check"
+      },
+      {
+        "step": "propagation",
+        "path": "features/botpages/deploy-page.py",
+        "line": 148,
+        "what": "os.path.getsize(disk) follows the symlink (size of the target, not the link)"
+      },
+      {
+        "step": "propagation",
+        "path": "features/botpages/deploy-page.py",
+        "line": 153,
+        "what": "open(disk, 'rb') follows the symlink and reads the target file's bytes into the deploy manifest/hash"
+      },
+      {
+        "step": "sink",
+        "path": "features/botpages/deploy-page.py",
+        "line": 199,
+        "what": "deploy() re-reads the same disk path with open(disk, 'rb') for every missing hash"
+      },
+      {
+        "step": "sink",
+        "path": "features/botpages/deploy-page.py",
+        "line": 207,
+        "what": "cf_call('/pages/assets/upload', POST, bearer=jwt) uploads the target's base64 content to the public qwenpaw-pages Pages project, then step 6 creates the deployment serving it at qwenpaw-pages.pages.dev/<rel path>"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "grep -rn 'islink|readlink|realpath|commonpath' ~/workspace/qwenpaw-deploy/features/ ~/workspace/qwenpaw-deploy/scripts/ ; grep -rn islink ~/workspace/qwenpaw-deploy/",
+        "output": "No islink/readlink/realpath in features/botpages/deploy-page.py or scripts/ (only unrelated commonpath use in features/infra/scripts/workspace-export.py:111); repo-wide grep for islink returns nothing (exit 1)."
+      },
+      {
+        "command": "python3 importlib load of deploy-page.py; created /tmp/symlink-verify-1a30120c/pages/{index.html, evil.html -> ../outside/secret-dummy.txt} with DUMMY content, ran collect()",
+        "output": "islink evil.html: True; collect returned 2 files: /evil.html (islink=True) and /index.html (islink=False); evil.html content via open(): b'DUMMY-OUTSIDE-CONTENT-12345' \u2014 collect() read the outside dummy file's content. Test files deleted afterwards (rm -rf /tmp/symlink-verify-1a30120c; ls confirms absent). DUMMY content only; no real secret file was used or read."
+      },
+      {
+        "command": "read features/botpages/build-page-SKILL.md + README.md; checked deploy context",
+        "output": "Skill step 2 writes only regular files to <workspace>/pages/<slug>/index.html; no symlink step, no ln -s anywhere in botpages docs. Deploy runs with the agent's Cloudflare token (qwenpaw env set inside the container, injected at runtime), i.e. inside the QwenPaw container, not this VM. This VM is uid 0 but /data/home/qwenpaw/working.secret does not exist here, so target-file readability from the deploy context is unverified."
+      }
+    ],
+    "confidence": "medium",
+    "conditions": "Primitive is high-confidence (source-verified + reproduced with dummy data). Exploitability is low-to-medium confidence: the planting step is the gap. 7-Question Gate: Q1 fails (no attacker-usable request right now \u2014 the deployer is the user's own agent), Q4 borderline (requires the agent to act on an injected/user-directed symlink command, i.e. privileged agent action, not an unauthenticated remote attacker), Q6 fails (no public upload of a real outside file demonstrated, no proof the deploy context can read working.secret or other sensitive host files). Per the conditionally-valid table, prompt injection is only valid with a demonstrated chain to data exfiltration, which is not yet shown. Keep as needs_validation rather than reject because the chain is plausible (single-user agent with shell + deploy capability + public Pages sink; an injection author who gets a symlink planted could fetch the published file from the public URL without machine access) and the fix is trivial and risk-free. Reject only if planting is shown impossible (e.g. agent has no shell/symlink capability in the QwenPaw container) or the deploy context cannot read anything outside the pages dir.",
+    "remediation": "In collect(), before getsize/open: skip (or refuse the deploy on) any entry where os.path.islink(disk) is true, and also drop symlinked dirs from dirs[:] (defence in depth; os.walk already defaults followlinks=False). Additionally resolve with os.path.realpath(disk) and require os.path.commonpath([realpath(source_dir), realpath(disk)]) == realpath(source_dir) before reading, to catch hardlink/..-style escapes as well. Fixing collect() alone covers the sink because deploy() only re-reads disk paths returned by collect(). Add a regression test: symlink to a dummy outside file in a temp source dir must be skipped/refused and its content must not appear in collect()'s output. Legitimate-use impact: none found \u2014 the build-page skill requires self-contained regular HTML files written by the agent; no legitimate symlink use in a page source dir is documented anywhere in the repo, so skipping symlinks breaks no supported workflow.",
+    "blockers": [
+      "Demonstrate the planting step safely: show a page-build request (or injected instruction in pasted page content) causing the agent, in the real QwenPaw container context, to create a symlink inside <workspace>/pages pointing outside it \u2014 or show the agent has no shell/symlink capability there, which would kill the chain.",
+      "Confirm from the deploy context (inside the QwenPaw container, not this VM) which files outside the pages dir are readable by the deploy process \u2014 e.g. whether working.secret/ or other host files are reachable \u2014 using metadata/listing checks only, never publishing a real secret.",
+      "Demonstrate the sink end-to-end safely: deploy a dummy pages dir containing a symlink to a dummy outside file to a non-production/test Pages project and confirm whether the outside dummy content becomes publicly fetchable (do not use the production qwenpaw-pages project or any real file for this)."
+    ],
+    "validation_plan": {
+      "local": [
+        "Re-run the /tmp dummy reproduction (symlink evil.html -> dummy outside file, importlib collect()) and confirm the fixed collect() skips/refuses it and returns only real files.",
+        "Add a regression test asserting symlinked files and symlinked dirs in the source tree are never read, and that a realpath/commonpath escape is refused.",
+        "Verify the fix does not break the normal flow: collect() over a dir of regular .html/.css/.js files returns them unchanged."
+      ],
+      "deployment": [
+        "Deploy a dummy pages dir containing a symlink to a dummy outside file against a disposable/test Pages project (not production qwenpaw-pages) and verify the outside dummy content is not published and the deployment succeeds for the real files.",
+        "After the fix is live, repeat the planting-attempt test in the container context and confirm the agent/deploy pipeline rejects the symlink before any upload."
+      ]
+    }
+  }
+}

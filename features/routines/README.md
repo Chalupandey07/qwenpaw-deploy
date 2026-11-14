@@ -161,13 +161,15 @@ Gotchas found during this build (all verified live):
 - `vars` in upload metadata is ignored; use `plain_text` bindings.
 - New Workers have `workers.dev` disabled by default (error 1042).
 
-## Optional hardening (not done — needs a user/coordinator decision)
+## Optional hardening (DONE 2026-11-15 in the security audit)
 
-- Set a `ROUTINE_WEBHOOK_TOKEN` secret to enable authenticated
-  `POST /api/routines` writes:
-  `PUT /client/v4/accounts/<id>/workers/scripts/qwenpaw-routines/secrets`
-  `{"name":"ROUTINE_WEBHOOK_TOKEN","text":"<generated>","type":"secret_text"}`.
-  No token was created or stored by this build, so no secret needs rotating.
+- `ROUTINE_WEBHOOK_TOKEN` secret IS set. `POST /api/routines` writes and
+  `POST /trigger` both require header `X-Routine-Token` to match; when
+  the secret is unset both return 503 (fail closed). Pending manual
+  triggers expire after 7 days and are capped at the newest 20.
+  Rotate with `PUT /client/v4/accounts/<id>/workers/scripts/qwenpaw-routines/secrets`
+  `{"name":"ROUTINE_WEBHOOK_TOKEN","text":"<new generated value>","type":"secret_text"}`.
+  The token value is delivered to the user only — never in git.
 - The Worker never stores a QwenPaw password. If prompt delivery from the
   Worker is ever wanted, the safe form is a dedicated low-privilege
   QwenPaw account + a token with a short expiry (`expires_in` on

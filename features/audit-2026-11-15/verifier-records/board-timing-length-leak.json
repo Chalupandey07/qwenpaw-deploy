@@ -1,0 +1,43 @@
+{
+  "decision": "rejected",
+  "record": {
+    "fingerprint": "board-timing-length-leak",
+    "title": "safeEqual leaks BOARD_TOKEN length via early return on length mismatch",
+    "description": "Code pattern verified in source: safeEqual at features/board/worker/src/index.js lines 56-62 returns false immediately at line 58 when lengths differ, skipping the constant-time loop at lines 59-62; authed() at lines 64-69 passes the supplied key and env.BOARD_TOKEN to safeEqual, and the fetch handler at line 346 returns an identical 401 for any failed auth. In principle this is a length oracle, but only via timing: the response body/status is identical for wrong-length and wrong-value keys, no live timing measurement was attempted or provided, the signal is a sub-microsecond loop difference versus millisecond-scale Cloudflare edge/network jitter, and knowing the length alone reveals no key content and does not materially aid guessing a high-entropy secret.",
+    "verdict": "rejected",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/board/worker/src/index.js",
+        "line": 346,
+        "what": "fetch handler calls authed(request, env) for /api/* and returns identical 401 on false"
+      },
+      {
+        "step": "propagation",
+        "path": "features/board/worker/src/index.js",
+        "line": 68,
+        "what": "authed() passes supplied key and env.BOARD_TOKEN to safeEqual(key, env.BOARD_TOKEN)"
+      },
+      {
+        "step": "sink",
+        "path": "features/board/worker/src/index.js",
+        "line": 58,
+        "what": "safeEqual returns false immediately on a.length !== b.length, skipping the constant-time XOR loop on lines 59-62"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "grep -n \"safeEqual\\|a.length\\|authed\\|BOARD_TOKEN\\|401\" ~/workspace/qwenpaw-deploy/features/board/worker/src/index.js",
+        "output": "56:function safeEqual(a, b) {\n58:  if (a.length !== b.length) return false;\n60:  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n64:function authed(request, env) {\n65:  if (!env.BOARD_TOKEN) return false;\n68:  return safeEqual(key, env.BOARD_TOKEN);\n346:    if (!authed(request, env)) {\n349:        401,"
+      },
+      {
+        "command": "sed -n '56,69p' ~/workspace/qwenpaw-deploy/features/board/worker/src/index.js",
+        "output": "function safeEqual(a, b) {\n  if (typeof a !== \"string\" || typeof b !== \"string\") return false;\n  if (a.length !== b.length) return false;\n  let diff = 0;\n  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return diff === 0;\n}\n\nfunction authed(request, env) {\n  if (!env.BOARD_TOKEN) return false;\n  const url = new URL(request.url);\n  const key = request.headers.get(\"x-board-key\") || url.searchParams.get(\"key\") || \"\";\n  return safeEqual(key, env.BOARD_TOKEN);\n}"
+      }
+    ],
+    "confidence": "low",
+    "conditions": "No live timing measurement was attempted; the only observable difference is timing, with an identical 401 response for wrong-length and wrong-value keys.",
+    "remediation": "Proposed remediation is correct as optional hardening, not as a required vulnerability fix: hash both values (e.g. SHA-256 via crypto.subtle) and compare the fixed-length digests in constant time, or loop over max(a.length, b.length) accumulating diff without an early return and decide only after the loop. Either removes the gross length branch; note plain JS loops are still not strictly constant-time under JIT, so the hash-compare form is preferred.",
+    "reason": "Fails the 7-Question Gate and should be rejected as a finding, demoted at most to an optional hardening note: Q1 fails \u2014 no copy-pasteable request yields any data, since the 401 is identical either way and length is only hypothetically learnable via timing; Q6 fails \u2014 impact is only 'technically possible' with no demonstrated measurement, statistical sample, or attacker-attainable outcome, and the skill directs that a single wrong gate answer kills the finding. The exploitable signal is a sub-microsecond loop skip swamped by millisecond Cloudflare edge jitter, and length alone gives no key content, so there is no tangible impact to report even as confirmed-informational."
+  }
+}

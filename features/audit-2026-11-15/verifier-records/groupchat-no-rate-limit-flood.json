@@ -1,0 +1,55 @@
+{
+  "decision": "confirmed",
+  "record": {
+    "fingerprint": "groupchat-no-rate-limit-flood",
+    "title": "No rate limiting: unauthenticated flooding evicts legitimate messages and burns Worker quota",
+    "description": "POST /thread/message in features/groupchat/worker/src/index.js has no rate limit, per-IP/per-token counter, time window, or 429 path: the only bound is MAX_MESSAGES=200 with silent oldest-first eviction. Role=user posts are not turn-limited (turn-taking and the 6-round cap only constrain role=agent, max 12 agent posts per thread), so an unlimited stream of user posts can push seq past 200 and silently drop the oldest messages. Hunter's 200 posts in ~27s reaching seq 213 with seqs 1-13 evicted follows directly from this code; I did not re-flood (thread was reset clean) and verified the code plus the reset live state instead.",
+    "verdict": "confirmed",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/groupchat/worker/src/index.js",
+        "line": 199,
+        "what": "POST /thread/message handler; only checks are checkToken (line 200), JSON/role validation, thread open, and agent turn-taking (lines 217-224) \u2014 no rate, count, window, or per-IP check anywhere in the handler or file."
+      },
+      {
+        "step": "propagation",
+        "path": "features/groupchat/worker/src/index.js",
+        "line": 225,
+        "what": "Every accepted post unconditionally does thread.seq += 1 and thread.messages.push(...); role=user posts never consume a turn and never advance round/max_rounds, so there is no indirect throttle on them."
+      },
+      {
+        "step": "sink",
+        "path": "features/groupchat/worker/src/index.js",
+        "line": 233,
+        "what": "if (thread.messages.length > MAX_MESSAGES) thread.messages = thread.messages.slice(-MAX_MESSAGES) at lines 233-234, with MAX_MESSAGES=200 at line 65: overflow silently evicts oldest-first with no error, warning, or eviction notice to the caller or relay."
+      }
+    ],
+    "evidence": [
+      {
+        "command": "grep -n -i -E 'rate|limit|throttl|429|quota|per.ip|per_ip|bucket|window' features/groupchat/worker/src/index.js; grep -n 'MAX_MESSAGES|slice(-MAX' features/groupchat/worker/src/index.js",
+        "output": "Only hit is line 55 comment: 'hundred requests/day of the 100,000/day free quota.' No rate/throttle/429/counter code. MAX_MESSAGES=200 (line 65); slice(-MAX_MESSAGES) at line 234."
+      },
+      {
+        "command": "curl -s https://qwenpaw-groupchat.qwenpaw-rohan.workers.dev/thread",
+        "output": "HTTP 200: {\"id\":\"groupchat-mwguv0lq\",\"topic\":\"\",\"status\":\"open\",\"round\":1,\"max_rounds\":6,\"next_agent\":\"default\",\"seq\":0,\"updated_at\":\"2026-11-14T20:25:39.278Z\",\"messages\":[]} \u2014 confirms reset clean (seq 0, 0 messages); no posts made."
+      },
+      {
+        "command": "curl -s https://qwenpaw-groupchat.qwenpaw-rohan.workers.dev/",
+        "output": "HTTP 200: {\"service\":\"qwenpaw-groupchat\",\"store\":\"durable-object (sqlite)\",\"auth_required\":false,...} \u2014 token still NOT set live, so the flood path is currently unauthenticated (same precondition as groupchat-open-thread)."
+      }
+    ],
+    "severity": "low",
+    "confidence": "medium",
+    "conditions": "INDEPENDENT finding \u2014 do not fold into groupchat-open-thread. Setting GROUPCHAT_TOKEN fixes unauthenticated posting but does not fix this: a token holder (relay, user, or anyone the token leaks to) can still flood, and quota burn / silent eviction are availability impacts distinct from merely posting a bogus message. Severity DOWNGRADED medium -> low: 200 posts is trivial against the 100,000 req/day Free quota stated in the file header (at the hunter's ~7.4 req/s, ~100k requests would take ~3.7h of sustained flooding); eviction affects only this one auxiliary thread, agent posts are already turn/round-limited, user posts do not inject into QwenPaw directly, and no data beyond thread history is lost. Do not double-count the currently-open (auth_required:false) state \u2014 that part belongs to groupchat-open-thread. Confidence is medium, not high, because the 200-posts/27s flood itself was not re-run by design (thread reset clean, do not re-pollute); the no-rate-limit code path and the eviction sink were verified directly from source.",
+    "remediation": "Add an in-Worker per-IP (and per-author) counter in the Durable Object \u2014 e.g. N posts per minute per IP/author, stored in DO storage, returning 429 with Retry-After \u2014 and on cap overflow either reject with 429 or return an explicit eviction notice/count instead of silently slicing. This in-DO option is Free-tier-legal per the source comments (SQLite-backed DO is the only kind the Workers Free plan can create, single-threaded/strongly consistent). The candidate's alternative claim that Cloudflare Rate Limiting rules may need a paid plan for the needed granularity could NOT be verified from any comment in features/groupchat/ (grep found no mention of Rate Limiting/WAF/paid plan) \u2014 treat it as needing a check, do not rely on it; prefer the in-DO counter.",
+    "validation_plan": {
+      "local": [
+        "Grep the handler for any rate/counter/429 code and re-read lines 199-234 after the fix; unit-test the DO handler with >N rapid user posts from one IP and assert 429s and that seq/messages 1..k are retained, plus a second IP is unaffected."
+      ],
+      "deployment": [
+        "With GROUPCHAT_TOKEN set, send a small bounded burst (e.g. 10-20 posts, not 200) from one IP, confirm 429 after the limit and no eviction of earlier messages, then POST /thread/reset {confirm:true} and confirm GET /thread returns seq 0; separately confirm a sustained-burst quota check is not needed \u2014 the limit, not the quota, is the control."
+      ]
+    }
+  }
+}

@@ -131,18 +131,19 @@ Base URL: `https://qwenpaw-groupchat.qwenpaw-rohan.workers.dev/`
 | `POST /thread/message` | `{author, role: user\|agent, text}` | Appended message, or 409 `not_your_turn` / `thread_closed` |
 | `POST /thread/reset` | `{confirm: true}` | Cleared thread |
 
-Auth: if the `GROUPCHAT_TOKEN` secret is set on the Worker, every
-endpoint except `GET /` requires header `X-Groupchat-Token`. **Set it
-before sharing the URL** (`npx wrangler secret put GROUPCHAT_TOKEN`).
-Until then the thread is open to anyone who knows the URL — that is how
-it was verified live, and it is flagged as a hardening step, not a
-finished state. Never put a QwenPaw user token in the Worker.
+Auth (audit fix 2026-11-15): the `GROUPCHAT_TOKEN` secret IS set on the
+Worker, so every endpoint except `GET /` requires header
+`X-Groupchat-Token` — the token is never accepted via `?token=` (query
+tokens leak in logs/Referer/history). Mutating writes are rate-limited
+to 30/min per client IP (429 + `Retry-After`); reads are never limited.
+The relay sends the header only. Never put a QwenPaw user token in the
+Worker.
 
 ### Deploy / redeploy
 
 ```bash
 cd features/groupchat/worker
-python3 deploy-groupchat.py deploy      # upload src/index.js (+ DO binding + migration v1)
+python3 deploy-groupchat.py deploy      # upload src/index.js (+ DO binding; no migration block on redeploy — re-sending new_sqlite_classes is rejected with API error 10074; use `deploy --with-migration` only for a first-time deploy)
 python3 deploy-groupchat.py status      # read-only check
 curl -s https://qwenpaw-groupchat.qwenpaw-rohan.workers.dev/
 # or: npx wrangler deploy   (needs interactive wrangler login)
@@ -203,7 +204,10 @@ features/groupchat/
 
 1. **Telegram bot token** from `@BotFather` + your numeric Telegram user
    ID, then apply `telegram/config-patch.md` + container restart.
-2. **`GROUPCHAT_TOKEN` secret** on the Worker before sharing its URL.
+2. ~~**`GROUPCHAT_TOKEN` secret** on the Worker before sharing its URL.~~
+   DONE 2026-11-15 (security audit): token set, header-only auth,
+   30/min/IP write limit, live-verified 401s. The token value was
+   delivered to the user only — never in git.
 3. **Relay install decision** — start `relay/relay.py` on the machine
    (background process) or keep group chat manual (Worker thread +
    agents carrying messages with `chat_with_agent`).

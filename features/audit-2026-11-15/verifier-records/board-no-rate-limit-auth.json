@@ -1,0 +1,63 @@
+{
+  "decision": "needs_validation",
+  "record": {
+    "fingerprint": "board-no-rate-limit-auth",
+    "title": "No rate limiting or lockout on BOARD_TOKEN authentication attempts",
+    "description": "Verified in source: authed() at features/board/worker/src/index.js:64 does a bare constant-time string compare (safeEqual) with no attempt counting, backoff, delay, lockout, or 429 path, and the 401 gate at line 346 returns immediately on failure. wrangler.toml contains only the Worker name, compatibility_date and KV binding \u2014 no rate-limit or WAF configuration. Hunter live evidence (10 rapid unauthenticated requests plus ~20 more in the same minute, all 401, no 429/delay/lockout) is consistent with the source. Under the 7-Question Gate this is a real primitive but not a demonstrable exploit: Q1 cannot be completed (no copy-paste request yields read/modify/delete without guessing the token), Q6 fails (impact shown is only 'technically possible' \u2014 no successful guess), and the skill's conditionally-valid table requires 'rate limit bypass + brute-force succeeds' for a reportable finding. Exploitability therefore depends entirely on BOARD_TOKEN entropy, which is unknown to the verifier and must not be probed by guessing. If the token is a long CSPRNG value, online guessing is infeasible even with no throttling and this is a hardening note only; if it is short/low-entropy, it is exploitable. needs_validation is the correct verdict \u2014 neither confirmed nor rejected.",
+    "verdict": "needs_validation",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/board/worker/src/index.js",
+        "line": 346,
+        "what": "fetch() handler: every /api/* path reaches the auth gate before any ticket handler"
+      },
+      {
+        "step": "propagation",
+        "path": "features/board/worker/src/index.js",
+        "line": 64,
+        "what": "authed() extracts X-Board-Key header or ?key= query param and calls safeEqual(key, env.BOARD_TOKEN) with no counter, timestamp, delay, or failure tracking"
+      },
+      {
+        "step": "sink",
+        "path": "features/board/worker/src/index.js",
+        "line": 346,
+        "what": "On authed() false, handler immediately returns 401 JSON with no 429, Retry-After, backoff, or lockout state; no other code path in the file throttles failures"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "grep -n -E 'function authed|function safeEqual|if \\(!authed|return json.*401|unauthorized' features/board/worker/src/index.js",
+        "output": "56:function safeEqual(a, b) { 64:function authed(request, env) { 346:    if (!authed(request, env)) { 348:        { error: \"unauthorized \u2014 send the board key as ?key= or X-Board-Key header\" },"
+      },
+      {
+        "command": "grep -rn -i -E 'rate|429|throttl|lockout|attempt|backoff|waf' features/board/worker/",
+        "output": "no matches in features/board/worker/ (src/index.js and wrangler.toml contain no rate-limit, 429, throttle, lockout, attempt-counting, backoff, or WAF terms)"
+      },
+      {
+        "command": "grep -n -E 'rate|429|limit|kv_namespaces|name =' features/board/worker/wrangler.toml; cat features/board/worker/wrangler.toml",
+        "output": "1:name = \"qwenpaw-board\" 7:[[kv_namespaces]] \u2014 wrangler.toml has only name, compatibility_date, KV binding (TICKETS), and a comment that BOARD_TOKEN is a secret set via API; no rate-limit configuration"
+      },
+      {
+        "command": "hunter live evidence (as supplied, not re-run by verifier)",
+        "output": "10 rapid unauthenticated requests all 401 with no 429/delay/lockout, plus ~20 more in the same minute \u2014 consistent with the source finding of no throttling"
+      }
+    ],
+    "confidence": "medium",
+    "conditions": "Exploitable only if BOARD_TOKEN is short, low-entropy, human-chosen, or otherwise guessable/dictionary-attackable. If it is a >=32-character CSPRNG value, online guessing is computationally infeasible despite the absence of throttling, and this reduces to a defence-in-depth hardening note. Token strength is the single deciding fact and is currently unknown.",
+    "remediation": "Rotate to a long random BOARD_TOKEN (>=32 characters from a CSPRNG) if the current value is not already that; add per-IP failed-attempt counting with temporary block/delay in the Worker (e.g. KV or Durable Object counter returning 429 with Retry-After after a small failure threshold) \u2014 this is the reliable control, because a Cloudflare WAF rate-limit rule is not directly available on a workers.dev subdomain without a zone/custom domain, so do not rely on WAF alone; prefer header-only auth (X-Board-Key) and drop ?key= support so the key is not leaked into logs, referrers, or browser history. Note safeEqual is already constant-time, so no timing-oracle fix is needed.",
+    "blockers": [
+      "BOARD_TOKEN length/entropy is unknown and is the sole deciding fact \u2014 owner must check it via Cloudflare secret metadata/dashboard (length/creation only, never disclose or copy the value); no guessing, brute-force, or probing of the token is permitted as validation"
+    ],
+    "validation_plan": {
+      "local": [
+        "Re-read authed() and the 401 gate in features/board/worker/src/index.js and confirm no counter/delay/429 was added (grep for rate/429/throttle/lockout in features/board/worker/)",
+        "Owner checks BOARD_TOKEN strength via Cloudflare (length and generation method only, value never shown or logged); if <32 chars or not CSPRNG-generated, rotate immediately"
+      ],
+      "deployment": [
+        "After any fix is deployed, repeat the hunter probe with wrong keys (e.g. 10-20 rapid requests) and confirm failures now return 429/delay after a threshold instead of unlimited 401s",
+        "Confirm a correct key still authenticates normally and that ?key= is rejected or removed if header-only auth is adopted"
+      ]
+    }
+  }
+}

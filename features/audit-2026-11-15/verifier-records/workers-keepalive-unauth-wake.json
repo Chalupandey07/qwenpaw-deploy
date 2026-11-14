@@ -1,0 +1,103 @@
+{
+  "decision": "confirmed",
+  "record": {
+    "fingerprint": "workers-keepalive-unauth-wake",
+    "title": "Unauthenticated POST /wake on qwenpaw-keepalive (WAKE_TOKEN unset) can force probes but cannot trigger an InstaBox API wake \u2014 INSTABOX_API_KEY is unset",
+    "description": "WAKE_TOKEN is unset, so the optional gate at worker/src/index.js:205-208 is skipped and unauthenticated POST /wake reaches the probe (verified live: 200, status up, wake:null). However the high-impact arm is impossible in the deployed configuration: the Cloudflare Workers secrets list for qwenpaw-keepalive is empty (result []), so INSTABOX_API_KEY is unset, and the API-wake condition at line 211 (probe offline/waking AND INSTABOX_API_KEY AND INSTABOX_MACHINE_ID) can never be true; callInstaBoxWake (fetch at lines 150-153) is therefore unreachable from /wake and from the cron tick (line 166). The residual confirmed issue is low severity: anyone can POST /wake (and GET /ping, which has no auth check at all) to force a probe of the public QwenPaw URL \u2014 which by InstaBox design wakes a paused box on request \u2014 and to write KV status (source manual-wake), burning Worker/instance activity. If INSTABOX_API_KEY is ever set without WAKE_TOKEN, the unauthenticated API-wake arm becomes live immediately.",
+    "verdict": "confirmed",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "worker/src/index.js",
+        "line": 204,
+        "what": "POST /wake handler; no auth before this point"
+      },
+      {
+        "step": "propagation",
+        "path": "worker/src/index.js",
+        "line": 205,
+        "what": "Optional gate only: if (env.WAKE_TOKEN) { check X-Wake-Token header or ?token, else 401 } \u2014 skipped entirely when WAKE_TOKEN unset"
+      },
+      {
+        "step": "propagation",
+        "path": "worker/src/index.js",
+        "line": 209,
+        "what": "Unauthenticated request falls through to probeQwenPaw(env, {allowRetry:true}) \u2014 up to 2 attempts with 60s retry on 503/transient failure"
+      },
+      {
+        "step": "propagation",
+        "path": "worker/src/index.js",
+        "line": 211,
+        "what": "API-wake condition: (result.status === 'offline' || 'waking') && env.INSTABOX_API_KEY && env.INSTABOX_MACHINE_ID \u2014 INSTABOX_API_KEY unset, so this is always false"
+      },
+      {
+        "step": "propagation",
+        "path": "worker/src/index.js",
+        "line": 214,
+        "what": "10-minute gap check (WAKE_MIN_GAP_MS = 10*60_000, line 10) \u2014 unreachable while the line-211 condition is false"
+      },
+      {
+        "step": "sink",
+        "path": "worker/src/index.js",
+        "line": 215,
+        "what": "wake = await callInstaBoxWake(env) \u2014 unreachable in deployed config"
+      },
+      {
+        "step": "sink",
+        "path": "worker/src/index.js",
+        "line": 150,
+        "what": "callInstaBoxWake POSTs https://api.instabox.sh/v1/machines/<id>/wake with X-API-Key: env.INSTABOX_API_KEY (definition lines 147-160)"
+      },
+      {
+        "step": "propagation",
+        "path": "worker/src/index.js",
+        "line": 166,
+        "what": "Cron keepAliveTick has the identical INSTABOX_API_KEY && INSTABOX_MACHINE_ID gate, so the cron API-wake fallback is also impossible while the key is unset"
+      },
+      {
+        "step": "propagation",
+        "path": "worker/src/index.js",
+        "line": 198,
+        "what": "GET /ping has no token check at all (lines 198-202) \u2014 unauthenticated probe-forcing exists independently of /wake"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "curl -s -X POST https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev/wake -H 'Content-Type: application/json' -d '{}'",
+        "output": "HTTP 200, {\"status\":\"up\",\"httpStatus\":200,\"note\":\"QwenPaw console answered\",\"source\":\"manual-wake\",\"checkedAt\":\"2026-11-14T20:25:48.215Z\",\"lastPingAt\":\"2026-11-14T20:25:48.215Z\",\"lastUpAt\":\"2026-11-14T20:25:48.215Z\",\"consecutiveFailures\":0,\"lastWakeResult\":null,\"wake\":null} \u2014 unauthenticated, no 401, so WAKE_TOKEN is unset; wake:null because machine was up (probe status up, not offline/waking)"
+      },
+      {
+        "command": "curl -s https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev/status",
+        "output": "{\"status\":\"up\",\"httpStatus\":200,\"note\":\"QwenPaw console answered\",\"source\":\"manual-wake\",\"checkedAt\":\"2026-11-14T20:25:48.215Z\",\"lastPingAt\":\"2026-11-14T20:25:48.215Z\",\"lastUpAt\":\"2026-11-14T20:25:48.215Z\",\"consecutiveFailures\":0,\"lastWakeResult\":null,\"consoleUrl\":\"https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech/\"} \u2014 no lastWakeAt field (saveStatus line 220 sets lastWakeAt only when wake is non-null and not skipped; undefined is dropped from JSON)"
+      },
+      {
+        "command": "python3 ~/workspace/custom-connectors/custom.cloudflare/bin/cf.py get /client/v4/accounts/ca85fe3692c3f378200950999df9a35e/workers/scripts/qwenpaw-keepalive/secrets",
+        "output": "{\"result\": [], \"success\": true, \"errors\": [], \"messages\": []} \u2014 secret NAMES list is empty: no secrets at all are set on qwenpaw-keepalive, so INSTABOX_API_KEY, WAKE_TOKEN and PORT_TOKEN are all unset (names only; no values exist in this output)"
+      },
+      {
+        "command": "python3 ~/workspace/custom-connectors/custom.cloudflare/bin/cf.py get /client/v4/accounts/ca85fe3692c3f378200950999df9a35e/workers/scripts/qwenpaw-keepalive/settings",
+        "output": "success:true; bindings: INSTABOX_MACHINE_ID (plain_text, m_agq5wqqo2fvypym7rjlpvngc2m), QWENPAW_URL (plain_text), STATUS (kv_namespace 6a91d8099ed8419c88c94b0946186a27) \u2014 corroborates the empty secrets list: no secret_text binding is present"
+      },
+      {
+        "command": "curl -s -i -X OPTIONS https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev/wake -H 'Origin: https://example.com' -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: X-Wake-Token'",
+        "output": "HTTP 204, Access-Control-Allow-Origin: *, Access-Control-Allow-Headers: Content-Type, X-Wake-Token, Access-Control-Allow-Methods: GET, POST, OPTIONS \u2014 preflight allows any origin to call /wake cross-origin (CORS const lines 9-13, OPTIONS handler line 181)"
+      }
+    ],
+    "severity": "low",
+    "confidence": "high",
+    "conditions": "Confirmed low while INSTABOX_API_KEY remains unset: unauthenticated /wake and /ping can force probes (and, via InstaBox's own wake-on-request for the public URL, indirectly wake a paused box) and write KV status, but cannot call the InstaBox API. The condition flips if the owner ever runs `wrangler secret put INSTABOX_API_KEY` without also setting WAKE_TOKEN \u2014 then an unauthenticated POST /wake during an offline/waking window, more than 10 min after the last API wake, would POST the InstaBox wake API with the stored key. Correction to the candidate: the sink call is at line 215 (condition line 211, gap line 214), not lines 212-216; callInstaBoxWake is defined at lines 147-160 with the fetch at lines 150-153.",
+    "remediation": "Set WAKE_TOKEN as a Worker secret (wrangler secret put WAKE_TOKEN) and, if the API-wake fallback is ever wanted, set INSTABOX_API_KEY only together with WAKE_TOKEN. Side effects / correctness notes: (1) The activity-feed Worker's Wake button (features/infra/workers/activity-feed/index.js:85) POSTs /wake with no token and will start returning 401 \u2014 fix it server-side by storing WAKE_TOKEN as that Worker's own secret and forwarding it as X-Wake-Token, never embedding the token in client-side JS. (2) The Pages status page Wake button (pages/public/status-page.html:86-90) already calls /ping, not /wake, so it is unaffected by gating /wake \u2014 but /ping (lines 198-202) has no auth check at all, so gating only /wake leaves unauthenticated probe-forcing open; either gate /ping the same way (breaking the public status-page Wake button unless it is proxied server-side) or explicitly accept /ping as the intended public wake path and document it. (3) Do not put WAKE_TOKEN in wrangler.toml [vars] or any static Pages asset \u2014 it would be public.",
+    "validation_plan": {
+      "local": [
+        "Re-read worker/src/index.js lines 204-221 and 147-160 after any change; confirm the gate is unconditional (not `if (env.WAKE_TOKEN)`) if /ping is also gated, or document the /ping exception."
+      ],
+      "deployment": [
+        "Unauthenticated POST /wake must return 401 {error:unauthorized}; the same POST with header X-Wake-Token set to the owner-held token must return 200 with wake:null while up.",
+        "Re-run the Cloudflare secrets list (names only) and confirm WAKE_TOKEN is present and INSTABOX_API_KEY is present only if the API fallback is intended.",
+        "Confirm the activity-feed Wake button still works after the change (server-side token forwarding) and the Pages status page Wake button behaviour is as intended (/ping path).",
+        "Do NOT force downtime to test the API-wake arm; wait for a natural offline/waking window and then check /status for lastWakeAt/lastWakeResult, or test with a throwaway machine id/key pair."
+      ]
+    }
+  },
+  "_recovery_note": "Session transcript truncated the final message; repaired by appending 1 closing brace(s). The record may be missing a trailing field (e.g. reason) that was cut off; decision, title, description, verdict, trace and evidence are intact as the verifier wrote them."
+}

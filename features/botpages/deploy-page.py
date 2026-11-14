@@ -132,10 +132,27 @@ def file_hash(data: bytes, ext: str) -> str:
 
 
 def collect(source_dir):
-    """Walk the source dir; return [(url_path, disk_path, hash, content_type)]."""
+    """Walk the source dir; return [(url_path, disk_path, hash, content_type)].
+
+    Symlink-safe (fix 2026-11-15, audit finding
+    infra-deploy-page-symlink-escape): a planted symlink (e.g. evil.html
+    -> a file outside the source tree) used to be opened and uploaded to
+    a public Pages project. Symlinked files and directories are now
+    skipped, and every collected file must resolve (realpath) inside the
+    source directory. Hardlinks are NOT caught by this check — a hardlink
+    to a secret file looks like a regular file — but planting one needs
+    local write access to the machine already, and the build-page skill
+    only ever writes regular files.
+    """
     files = []
+    base = os.path.realpath(source_dir)
     for root, dirs, names in os.walk(source_dir):
-        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        # Never descend into symlinked directories (os.walk would not
+        # follow them by default, but drop them explicitly).
+        dirs[:] = sorted(
+            d for d in dirs
+            if not d.startswith(".") and not os.path.islink(os.path.join(root, d))
+        )
         for name in sorted(names):
             if name in SPECIAL_FILES or name.startswith("."):
                 continue
@@ -144,6 +161,13 @@ def collect(source_dir):
                 print(f"  skip (unsupported type): {name}")
                 continue
             disk = os.path.join(root, name)
+            if os.path.islink(disk):
+                print(f"  skip (symlink, not followed): {name}")
+                continue
+            real = os.path.realpath(disk)
+            if os.path.commonpath([real, base]) != base:
+                print(f"  skip (resolves outside source dir): {name}")
+                continue
             rel = os.path.relpath(disk, source_dir).replace(os.sep, "/")
             size = os.path.getsize(disk)
             if size > MAX_FILE_BYTES:

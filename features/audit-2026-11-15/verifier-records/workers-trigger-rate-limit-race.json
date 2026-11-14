@@ -1,0 +1,59 @@
+{
+  "decision": "rejected",
+  "record": {
+    "fingerprint": "workers-trigger-rate-limit-race",
+    "title": "Routines /trigger 1/min rate limit is a non-atomic check-then-set and may be bypassable with parallel requests",
+    "description": "Mechanism verified from source and local simulation, but rejected as a standalone record: the check-then-set is real (L209 get, L211 60s check, L214 probe await widening the window, L223 put; no lock/CAS/transaction anywhere in the file, and KV has no atomic CAS), and a local simulation of that exact interleaving returns [202,202] for two parallel triggers vs [202,429] sequentially. However it adds no independent impact: /trigger is already unauthenticated (unlike token-gated POST /api/routines), so anyone can already trigger once a minute, and a race only yields a few extra pending entries per minute in the same abuse class \u2014 /trigger only wakes QwenPaw and records a PENDING prompt, it executes nothing. Token-gating /trigger (the fix for the confirmed unauthenticated-trigger finding) makes the race moot for attackers. Fold this as a note under that confirmed finding, not a separate record.",
+    "verdict": "rejected",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/routines/worker/src/index.js",
+        "line": 206,
+        "what": "POST /trigger handler; no auth/token check, unlike POST /api/routines at L186-191 which requires X-Routine-Token"
+      },
+      {
+        "step": "propagation",
+        "path": "features/routines/worker/src/index.js",
+        "line": 209,
+        "what": "const last = await env.STATUS.get('routines:last-trigger-at') \u2014 read of the rate-limit timestamp"
+      },
+      {
+        "step": "propagation",
+        "path": "features/routines/worker/src/index.js",
+        "line": 211,
+        "what": "if (last && now - Number(last) < TRIGGER_MIN_GAP_MS) return 429 \u2014 check, TRIGGER_MIN_GAP_MS=60000 at L35"
+      },
+      {
+        "step": "propagation",
+        "path": "features/routines/worker/src/index.js",
+        "line": 214,
+        "what": "const probe = await probeQwenPaw(env) \u2014 network await between check and write, widening the interleave window (probe timeout up to 20000ms)"
+      },
+      {
+        "step": "sink",
+        "path": "features/routines/worker/src/index.js",
+        "line": 223,
+        "what": "await env.STATUS.put('routines:last-trigger-at', String(now)) \u2014 write, separate KV op after L222 pending-entry put; no lock, CAS, transaction or Durable Object anywhere (grep finds no such primitive)"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "grep -n 'TRIGGER_MIN_GAP_MS|last-trigger-at|/trigger|STATUS.put|STATUS.get|DurableObject|transaction|compare|lock|mutex|atomic' features/routines/worker/src/index.js",
+        "output": "35:const TRIGGER_MIN_GAP_MS = 60_000; 209:const last = await env.STATUS.get(\"routines:last-trigger-at\"); 211:if (last && now - Number(last) < TRIGGER_MIN_GAP_MS) { 222:await env.STATUS.put(PENDING_PREFIX + id, JSON.stringify(entry)); 223:await env.STATUS.put(\"routines:last-trigger-at\", String(now)); \u2014 no DurableObject/transaction/lock/mutex/atomic/CAS hits"
+      },
+      {
+        "command": "node /tmp/race-sim.js (local simulation of L209-223 logic with async KV mock + 50ms probe await; no production requests fired)",
+        "output": "sequential: [202,429] (expect [202,429]); parallel 2: [202,202] (expect [202,202] if race is real)"
+      },
+      {
+        "command": "sed -n '160,210p' features/routines/worker/src/index.js",
+        "output": "POST /api/routines requires ROUTINE_WEBHOOK_TOKEN / X-Routine-Token (503 fail-closed if unset, 401 on mismatch); POST /trigger at L206 has no such check before the L209 read"
+      }
+    ],
+    "confidence": "high",
+    "conditions": "Race is real as a mechanism: concurrent Workers isolates can both await the L209 get before either reaches the L223 put, and the L214 probe await makes the window seconds-wide, not a single tick. Cloudflare KV is eventually consistent across edge locations, which widens rather than narrows the race (a stale read in another colo also passes the check); the file itself makes no strong-consistency claim. Local simulation proves the interleaving logic only \u2014 it does not prove a production parallel burst succeeds, and no parallel production requests were fired per task constraints.",
+    "remediation": "Token-gate POST /trigger exactly like POST /api/routines (require X-Routine-Token matching ROUTINE_WEBHOOK_TOKEN, fail closed 503 when unset) \u2014 this is the correct fix for the abuse class and makes the race moot for unauthenticated callers. Note token-gating alone does not make the check atomic; if strict 1/min atomicity is ever required, move the check-and-set into a Durable Object (single-threaded, sequential execution), since KV offers no CAS. A Durable Object solely for this soft 1/min limit is disproportionate \u2014 the limit guards wake/probe volume, not a security boundary.",
+    "reason": "Rejected as a standalone record, not because the race is false \u2014 the non-atomic read-check-write and its interleave window are verified. Rejected because it has no independent impact: the confirmed unauthenticated-trigger finding already lets anyone trigger once a minute, the race only adds a few extra PENDING entries per minute in the same abuse class, /trigger executes nothing, and the confirmed finding's token-gating fix moots it. Keeping it standalone would double-count one abuse class. Fold it as a note under the confirmed unauthenticated-trigger finding."
+  }
+}

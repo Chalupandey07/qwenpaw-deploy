@@ -1,0 +1,77 @@
+{
+  "decision": "needs_validation",
+  "record": {
+    "fingerprint": "board-decode-uri-500",
+    "title": "Malformed percent-encoded ticket id throws decodeURIComponent and returns 500 with an error message",
+    "description": "Code defect is real, but the candidate's literal trigger (%ZZ) is refuted live: Cloudflare edge returns 400 Bad Request (HTML, CF-RAY: -) for %ZZ before the Worker runs, so even a key holder cannot reach line 390 with %ZZ. The same defect IS reachable authenticated via a syntactically-valid-hex but invalid-UTF-8 id such as %FF (also %E0%A4%A, %C3%28, %80): those pass the edge, reach the Worker auth gate (live 401 unauthenticated proves this), survive WHATWG URL pathname parsing unchanged, and decodeURIComponent throws URIError: URI malformed (verified in Node). Auth gate at line 346 runs before decode at line 390, so only a board-key holder can trigger it; the echoed message is only the generic 'URI malformed' string, no data exposure. Per the 7-Question Gate this is NOT a security finding (Q1/Q4 fail: requires the shared board key, which already grants full ticket read/write/delete; Q6 fails: no impact beyond a 500 status and a generic error string). At most a minor functional robustness bug (S4). The live 500 itself was not demonstrated because the key was not available.",
+    "verdict": "needs_validation",
+    "trace": [
+      {
+        "step": "entrypoint",
+        "path": "features/board/worker/src/index.js",
+        "line": 346,
+        "what": "Auth gate: if (!authed(request, env)) return 401 before any routing or decoding; authed() at line 64 checks X-Board-Key or ?key= against env.BOARD_TOKEN"
+      },
+      {
+        "step": "propagation",
+        "path": "features/board/worker/src/index.js",
+        "line": 353,
+        "what": "parts = path.split('/').filter(Boolean) from url.pathname (new URL at line 337); WHATWG URL preserves %FF/%E0%A4%A in pathname unchanged"
+      },
+      {
+        "step": "propagation",
+        "path": "features/board/worker/src/index.js",
+        "line": 389,
+        "what": "Route match parts[1]==='tickets' && parts.length>=3, inside try block starting line 355"
+      },
+      {
+        "step": "sink",
+        "path": "features/board/worker/src/index.js",
+        "line": 390,
+        "what": "const id = decodeURIComponent(parts[2]); throws URIError for %FF/%E0%A4%A/%C3%28 (verified in Node); %ZZ would also throw here but never reaches the Worker live"
+      },
+      {
+        "step": "sink",
+        "path": "features/board/worker/src/index.js",
+        "line": 445,
+        "what": "Outer catch (line 444) returns json({error: 'server error: ' + (e?.message || e)}, 500), so the URIError becomes 500 {error:'server error: URI malformed'}"
+      }
+    ],
+    "evidence": [
+      {
+        "command": "curl -sS --path-as-is -i --max-time 15 https://qwenpaw-board.qwenpaw-rohan.workers.dev/api/tickets/%ZZ",
+        "output": "HTTP/1.1 400 Bad Request, Server: cloudflare, CF-RAY: -, Content-Length: 155, HTML body '<title>400 Bad Request</title>' \u2014 Cloudflare edge rejection, not a Worker response; %ZZ never reaches the Worker"
+      },
+      {
+        "command": "curl -sS --path-as-is -i --max-time 15 https://qwenpaw-board.qwenpaw-rohan.workers.dev/api/tickets/%20 ; same for %2F and /api/tickets/nonexistent-id",
+        "output": "HTTP 401 Unauthorized, {\"error\":\"unauthorized \u2014 send the board key as ?key= or X-Board-Key header\"} for %20, %2F and nonexistent-id \u2014 confirms the auth gate (line 346) runs before decode for well-formed ids"
+      },
+      {
+        "command": "curl -sS --path-as-is -w 'HTTP %{http_code}' https://qwenpaw-board.qwenpaw-rohan.workers.dev/api/tickets/%FF ; same for %E0%A4%A, %C3%28, %80, %ED%A0%80, abc%FFdef",
+        "output": "HTTP 401 with the same Worker 401 JSON for every one \u2014 these syntactically-valid-hex, invalid-UTF-8 ids pass the Cloudflare edge and reach the Worker auth gate, unlike %ZZ"
+      },
+      {
+        "command": "node -e \"for (const s of ['%FF','%E0%A4%A','%C3%28','%80','%ED%A0%80']) { try{decodeURIComponent(s)}catch(e){console.log(s,'THROWS',e.constructor.name+': '+e.message)} }\"",
+        "output": "%FF THROWS URIError: URI malformed; %E0%A4%A THROWS URIError: URI malformed; %C3%28 THROWS URIError: URI malformed; %80 THROWS URIError: URI malformed; %ED%A0%80 THROWS URIError: URI malformed"
+      },
+      {
+        "command": "node -e \"new URL('https://qwenpaw-board.qwenpaw-rohan.workers.dev/api/tickets/%FF').pathname\" (and %ZZ, %E0%A4%A)",
+        "output": "pathname preserves the sequence unchanged (/api/tickets/%FF, /api/tickets/%ZZ, /api/tickets/%E0%A4%A), so parts[2] fed to decodeURIComponent at line 390 is the raw malformed sequence"
+      }
+    ],
+    "confidence": "medium",
+    "conditions": "Authenticated-only functional bug (S4 at most), not a security finding. Live 500 not demonstrated: no board key was available and %ZZ is edge-blocked. Reachability of the 500 rests on code reading plus live proof that %FF reaches the Worker (401) and Node proof that WHATWG URL preserves %FF and decodeURIComponent throws on it. A key holder already has full ticket access, so there is no privilege or data-exposure impact.",
+    "remediation": "Correct as proposed, with one correction to the test trigger: wrap decodeURIComponent(parts[2]) in its own try/catch (or validate the id first) and return 400 {error:'invalid ticket id'} on URIError; change the outer catch at line 445 to return a generic 'server error' without appending e.message (hygiene only \u2014 the echoed string is just the generic 'URI malformed', not sensitive data). Note the %ZZ case will still show Cloudflare's edge 400 live even after the fix; the fix is observable live only via %FF-style ids.",
+    "blockers": [
+      "Live authenticated test needs the board key (not available to this verifier; must not be guessed or brute-forced): authenticated GET /api/tickets/%FF with X-Board-Key is required to demonstrate the 500 pre-fix and the 400 post-fix."
+    ],
+    "validation_plan": {
+      "local": [
+        "Run the Worker locally with BOARD_TOKEN set; authenticated GET /api/tickets/%FF must return 500 {error:'server error: URI malformed'} pre-fix and 400 {error:'invalid ticket id'} post-fix. Note: locally %ZZ may also reach the Worker (no Cloudflare edge), so local %ZZ behaviour does not predict deployed behaviour."
+      ],
+      "deployment": [
+        "With the board key, curl --path-as-is https://qwenpaw-board.qwenpaw-rohan.workers.dev/api/tickets/%FF -H 'X-Board-Key: <key>' \u2014 expect 500 pre-fix, 400 post-fix. Also confirm %ZZ still returns Cloudflare edge 400 (unchanged, pre-Worker) and a valid id still returns its ticket."
+      ]
+    }
+  }
+}
