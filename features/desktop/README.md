@@ -205,10 +205,17 @@ binary (it was an npm global, not a system package). Restored:
   The 6080 direct URL still needs its private-port token (unchanged);
   the 6081 token is the Worker secret (server-side only).
 - Embedded desktop live at `https://qwenpawx.pages.dev/desktop`
-  (gate page 200 for logged-out, `__verify` 401s bad tokens; logged-in
-  render still needs a real browser check — see "Gate fix" above).
+  (gate page 200 for logged-out, `__verify` 401s bad tokens). **Fixed
+  2026-11-15 ~04:15 IST — see "Final fix round" below**: the
+  `/desktop/vnc.html` fetch now returns real noVNC HTML (200, 17,810 B)
+  instead of the console SPA, and the WebSocket opens with the RFB
+  banner. Logged-in render still needs a real-browser check by the parent.
 - QwenPaw computer-use MCP wired and connected (see section above).
   One container restart used (03:18 UTC) for the DriverCard pickup.
+  **Fixed 2026-11-15 ~04:15 IST — see "Final fix round" below**:
+  Chromium is now visible to AT-SPI, `list_apps` shows it and
+  `get_app_state({"app":"Chromium"})` returns a 1920x1004 screenshot of
+  the actual browser window (wordsolverx.com).
 - Camoufox bridge healthy, browser sitting on `https://x.com/0xsatwik`.
 - Astra alive again (models list works; earlier 429 cleared). 120 s
   first-content timeout still in `.env`; console + Pages 200, keep-alive
@@ -222,6 +229,98 @@ binary (it was an npm global, not a system package). Restored:
   reinstall + bridge `/desktop-open`). **Restore from
   `qwenpaw-desktop-working`, not the older one** — the older predates the
   Chromium reinstall.
+
+## Final fix round — /desktop redirect + agent screenshot (2026-11-15 ~04:15 IST)
+
+Both bugs were verified by the parent in a real browser at 03:47 IST and
+both are fixed below. Neither needed a container restart.
+
+### BUG 1 — /desktop fell back to the chat view (root cause: InstaBox proxy 303)
+
+**Measured live (not guessed):** with a valid desktop cookie,
+`GET /desktop` → 302 to `/desktop/vnc.html?...`, then
+`GET /desktop/vnc.html?...` → **303 `Location: /vnc.html?...`**,
+then `GET /vnc.html` → **200, the QwenPaw console SPA (38,125 B)** —
+whose router shows the chat view with a blank pane, URL still on
+`vnc.html`. That is exactly the reported symptom.
+
+**Mechanism:** the InstaBox private-port proxy answers ANY request
+carrying `?_token=` with `303 See Other` + `Set-Cookie:
+__Host-instabox_port_auth` and a relative Location with the token
+stripped (verified by curl against the 6080 origin for `vnc.html`,
+`app/ui.js` and `websockify` alike). The old worker passed that relative
+Location straight to the browser, so the browser left `/desktop/*` for
+`/vnc.html` on the Pages root. A follow-up request with ONLY that cookie
+(no `_token`) returns 200; no cookie + no token returns 401.
+
+**Fix (`pages/public/_worker.js`, `fetchDesktopOrigin`):**
+- First try WITHOUT `_token`, forwarding the browser's cookies (a
+  returning visitor already holds `__Host-instabox_port_auth`).
+- On 401, retry once WITH `_token` and follow the proxy's 303
+  server-side (resolve Location against the origin, re-fetch without
+  `_token` but with the 303's Set-Cookie, max 3 hops).
+- The collected proxy-auth cookies are passed through to the browser
+  (Set-Cookie) so later visits skip the token dance.
+- Any Location that survives is resolved against the desktop origin and
+  re-scoped under `/desktop/*`; foreign redirects are dropped — a
+  root-relative Location can never reach the browser again.
+- The WebSocket path was already fine and is untouched in behaviour:
+  the upgrade opens (101) and the first message is the RFB banner
+  (`RFB 003.008`).
+
+**Verification:** harness `features/desktop/harness-desktop-gate.mjs`
+extended with a mock InstaBox proxy — **16/16 pass** (new tests 11–14:
+303-follow to 200, cookie-first path sends no `_token`, asset through
+the same flow, foreign redirect dropped). Live (Node probe with a
+short-lived test token, since revoked): `/desktop/vnc.html` → **200,
+real noVNC HTML, 17,810 B, `class="noVNC_loading"`, `app/ui.js`
+present**; WS → 101 + `RFB 003.008`. Deployed to both Pages projects
+(qwenpawx `dda49570`, frontend `b95a1340`).
+
+### BUG 2 — the agent's screenshot showed a bare desktop (root cause: Chromium off the AT-SPI bus)
+
+**Measured live:** the MCP server's `list_apps` returned ONLY
+`xfce4-panel`, `xfdesktop`, `xfwm4` — no Chromium — so
+`get_app_state({"app":"Chromium"})` returned `appNotFound("Chromium")`.
+The agent's screenshot therefore came from the desktop window's own
+pixbuf (wallpaper + icons), never the Chromium window above it. VNC and
+`scrot` capture the composited framebuffer, which is why THEY showed the
+window.
+
+**Mechanism:** Chromium (pid 61356) was launched by the bridge with
+**no `DBUS_SESSION_BUS_ADDRESS` and no `XDG_RUNTIME_DIR`** (the bridge
+systemd unit never set them), so it could not register with AT-SPI2
+(registry at `/run/user/1000/at-spi/bus`). The XFCE session, Xvnc and
+the MCP server all have `DBUS_SESSION_BUS_ADDRESS=
+unix:path=/run/user/1000/bus`.
+
+**Fix (live on the machine, `/data/home/camoufox/bridge/bridge.py`,
+`desktop_open`, backup `bridge.py.bak-2026-11-15-atspi`):** inject the
+session-bus env into the Chromium subprocess — discover
+`DBUS_SESSION_BUS_ADDRESS` / `XDG_RUNTIME_DIR` from the running
+`xfce4-session`'s environ, fall back to `/run/user/<uid>`. Bridge
+restarted (`sudo systemctl restart camoufox-bridge` — plain restart is
+denied for the exec user), Chromium killed and relaunched via
+`/desktop-open` (wordsolverx.com). **The repo copy of `bridge.py` is
+NOT synced — it contains no secret values, but the file is kept
+machine-only by convention; the patch is documented here.**
+
+**Verification (live, via the running MCP server — the exact path
+QwenPaw uses):** `list_apps` now shows Chromium; `get_app_state(
+{"app":"Chromium"})` → `isError: False`, `App=Chromium (pid 72478)`,
+window `"Daily Puzzle Answers, Solvers & Wordle Tools - Chromium"`,
+frame `{x: 0, y: 0, width: 1920, height: 1004}`, and a **1920x1004
+screenshot of the actual browser window** (wordsolverx.com content
+visible in the pixel map; the old 144 KB "screenshot" was the bare
+desktop). Note: `/proc/<chromium-pid>/environ` is **zeroed after
+startup** (1150 NUL bytes — Chromium scrubs it), so env checks must use
+the crashpad-handler children (which inherit the launch env and DO show
+`DBUS=Y`) or the launch-time env, never the main process environ.
+
+**Still needs the parent's real browser:** (1) log in as satwik →
+`https://qwenpawx.pages.dev/desktop` — confirm the embedded desktop
+renders and stays rendered; (2) new QwenPaw chat → "take a screenshot
+of the desktop" — confirm the browser window is visible in the reply.
 
 ## Limits (honest)
 

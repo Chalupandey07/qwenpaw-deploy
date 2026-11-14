@@ -393,6 +393,85 @@ async function desktopVerify(request, env) {
   });
 }
 
+// Fetch from the desktop origin the way the InstaBox private-port proxy
+// requires (fixed 2026-11-15, BUG 1 — the /desktop fallback-to-chat bug):
+// the proxy answers ANY request carrying ?_token= with `303 + Set-Cookie:
+// __Host-instabox_port_auth` and a relative Location with the token
+// stripped. The old code passed that relative Location straight to the
+// browser, so the browser left /desktop/* for /vnc.html on the Pages root
+// — which the worker proxies to the CONSOLE, whose SPA then shows the chat
+// view. Instead this helper:
+//   (1) first tries WITHOUT _token, forwarding the browser's cookies (a
+//       returning visitor already holds __Host-instabox_port_auth);
+//   (2) on 401, retries WITH _token and follows the proxy's 303
+//       server-side, re-fetching the clean URL with the 303's Set-Cookie
+//       and no _token (max 3 hops);
+//   (3) returns the collected proxy-auth cookies so the caller can pass
+//       them through to the browser (Set-Cookie) for later visits.
+// A surviving redirect is never handed to the browser as a root-relative
+// Location — see the rewrite in desktop() below.
+function collectSetCookiePairs(res) {
+  const list = typeof res.headers.getSetCookie === "function"
+    ? res.headers.getSetCookie()
+    : (res.headers.get("Set-Cookie") ? [res.headers.get("Set-Cookie")] : []);
+  return list.map((c) => c.split(";")[0]).filter(Boolean);
+}
+
+async function fetchDesktopOrigin(request, url, env, originUrl) {
+  const setCookies = [];
+  const buildReq = (target, extraCookies) => {
+    const req = new Request(target, request);
+    req.headers.delete("host");
+    req.headers.delete("cf-connecting-ip");
+    req.headers.delete("cf-ipcountry");
+    req.headers.delete("cf-ray");
+    req.headers.delete("cf-visitor");
+    req.headers.set("X-Forwarded-Host", url.host);
+    req.headers.set("X-Forwarded-Proto", "https");
+    if (extraCookies && extraCookies.length) {
+      const prev = req.headers.get("Cookie");
+      req.headers.set("Cookie", [...(prev ? [prev] : []), ...extraCookies].join("; "));
+    }
+    return req;
+  };
+
+  let target = new URL(originUrl);
+  let cookies = [];
+  let usedToken = false;
+  for (let hop = 0; hop < 4; hop++) {
+    let res;
+    try {
+      res = await fetch(buildReq(target, cookies));
+    } catch {
+      return { res: null, setCookies };
+    }
+    if (res.status === 401 && !usedToken) {
+      // No usable proxy cookie: retry once with the server-side token.
+      usedToken = true;
+      target = new URL(originUrl);
+      target.searchParams.set("_token", env.DESKTOP_ORIGIN_TOKEN);
+      continue;
+    }
+    const loc = res.headers.get("Location");
+    if (res.status >= 300 && res.status < 400 && loc) {
+      cookies = [...cookies, ...collectSetCookiePairs(res)];
+      setCookies.push(...collectSetCookiePairs(res));
+      let next;
+      try {
+        next = new URL(loc, target);
+      } catch {
+        return { res, setCookies };
+      }
+      if (next.origin !== DESKTOP_ORIGIN) return { res, setCookies };
+      next.searchParams.delete("_token");
+      target = next;
+      continue;
+    }
+    return { res, setCookies };
+  }
+  return { res: null, setCookies };
+}
+
 async function desktop(request, url, env) {
   if (!env.DESKTOP_ORIGIN_TOKEN) {
     return new Response("Desktop is not configured yet.", {
@@ -422,20 +501,9 @@ async function desktop(request, url, env) {
   // (query param on the server-to-server fetch — never in the browser URL).
   const stripped = path.slice("/desktop".length) || "/";
   const originUrl = new URL(DESKTOP_ORIGIN + stripped + url.search);
-  originUrl.searchParams.set("_token", env.DESKTOP_ORIGIN_TOKEN);
 
-  let res;
-  try {
-    const req = new Request(originUrl, request);
-    req.headers.delete("host");
-    req.headers.delete("cf-connecting-ip");
-    req.headers.delete("cf-ipcountry");
-    req.headers.delete("cf-ray");
-    req.headers.delete("cf-visitor");
-    req.headers.set("X-Forwarded-Host", url.host);
-    req.headers.set("X-Forwarded-Proto", "https");
-    res = await fetch(req);
-  } catch {
+  const { res, setCookies } = await fetchDesktopOrigin(request, url, env, originUrl);
+  if (!res) {
     return new Response("Desktop origin unreachable. Try again in a moment.", {
       status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
     });
@@ -456,35 +524,39 @@ async function desktop(request, url, env) {
   }
 
   const headers = new Headers(res.headers);
-  // Keep the desktop on our own domain: rewrite redirects that point at the
-  // desktop origin to /desktop/*, drop foreign redirects entirely.
+  // Keep the desktop on our own domain: a Location that survives the
+  // server-side redirect following (foreign redirect, or hop limit) is
+  // resolved against the desktop origin and re-scoped under /desktop/* —
+  // a root-relative Location must NEVER reach the browser, or it escapes
+  // to the console SPA (BUG 1, 2026-11-15). Foreign redirects are dropped.
   const loc = headers.get("Location");
   if (loc) {
-    if (loc.startsWith(DESKTOP_ORIGIN)) {
-      headers.set("Location", url.origin + "/desktop" + loc.slice(DESKTOP_ORIGIN.length));
-    } else if (loc.startsWith("//")) {
-      try {
-        const u = new URL("https:" + loc);
-        if (u.origin === DESKTOP_ORIGIN) {
-          headers.set("Location", url.origin + "/desktop" + u.pathname + u.search + u.hash);
-        } else {
-          headers.delete("Location");
-        }
-      } catch {
-        headers.delete("Location");
-      }
-    } else if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(loc)) {
+    let resolved = null;
+    try {
+      resolved = new URL(loc, DESKTOP_ORIGIN);
+    } catch {
+      resolved = null;
+    }
+    if (resolved && resolved.origin === DESKTOP_ORIGIN) {
+      headers.set("Location", url.origin + "/desktop" + resolved.pathname + resolved.search + resolved.hash);
+    } else {
       headers.delete("Location");
     }
   }
   // Strip any Domain= on cookies so they become host-only for our domain.
-  const setCookies = typeof res.headers.getSetCookie === "function"
+  const resSetCookies = typeof res.headers.getSetCookie === "function"
     ? res.headers.getSetCookie()
     : (headers.get("Set-Cookie") ? [headers.get("Set-Cookie")] : []);
-  if (setCookies.length) {
+  const allCookies = [...resSetCookies, ...setCookies];
+  if (allCookies.length) {
     headers.delete("Set-Cookie");
-    for (const c of setCookies) {
-      headers.append("Set-Cookie", c.replace(/;\s*domain=[^;]+/gi, ""));
+    const seen = new Set();
+    for (const c of allCookies) {
+      const clean = c.replace(/;\s*domain=[^;]+/gi, "");
+      const name = clean.split("=")[0];
+      if (seen.has(name)) continue;
+      seen.add(name);
+      headers.append("Set-Cookie", clean);
     }
   }
   // Desktop HTML may be embedded in the console (same origin) later; allow

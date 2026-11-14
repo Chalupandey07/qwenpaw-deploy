@@ -10,6 +10,13 @@ const TEST_SECRET = "test-desktop-secret";
 
 // Mock origin: healthz 200 only for the good token, 401 otherwise;
 // noVNC serves vnc.html; console root serves the SPA.
+// The desktop origin simulates the InstaBox private-port proxy exactly:
+//  - a request WITH ?_token= gets 303 + Set-Cookie __Host-instabox_port_auth
+//    and a relative Location with the token stripped;
+//  - a request WITH that auth cookie (no token) gets 200;
+//  - anything else gets 401.
+// `seen` records every desktop-origin request for the tests to assert on.
+const seen = [];
 globalThis.fetch = async (input, init) => {
   const req = input instanceof Request ? input : new Request(input, init);
   const url = req.url;
@@ -21,10 +28,25 @@ globalThis.fetch = async (input, init) => {
     });
   }
   if (url.startsWith(DESKTOP_ORIGIN)) {
-    return new Response("<html>vnc</html>", {
-      status: 200,
-      headers: { "Content-Type": "text/html; charset=utf-8" },
-    });
+    const u = new URL(url);
+    const cookie = req.headers.get("Cookie") || "";
+    seen.push({ path: u.pathname, hadToken: u.searchParams.has("_token"), hadAuth: cookie.includes("__Host-instabox_port_auth=test-auth") });
+    if (u.pathname === "/foreign-redirect") {
+      return new Response("", { status: 302, headers: { Location: "https://evil.example/x" } });
+    }
+    if (u.searchParams.has("_token")) {
+      u.searchParams.delete("_token");
+      const loc = u.pathname + (u.search ? u.search : "");
+      return new Response("", { status: 303, headers: { Location: loc, "Set-Cookie": "__Host-instabox_port_auth=test-auth; Path=/; Secure; HttpOnly" } });
+    }
+    if (cookie.includes("__Host-instabox_port_auth=test-auth")) {
+      const isJs = u.pathname.endsWith(".js");
+      return new Response(isJs ? "ui.js content" : "<html>vnc</html>", {
+        status: 200,
+        headers: { "Content-Type": isJs ? "text/javascript" : "text/html; charset=utf-8" },
+      });
+    }
+    return new Response("unauthorized", { status: 401 });
   }
   if (url.startsWith(ORIGIN + "/")) {
     return new Response("<html>console spa</html>", {
@@ -100,6 +122,40 @@ check("9b __verify GET -> 405", r.status === 405, `status=${r.status}`);
 // 10. Console root still proxies fine (no regression).
 r = await call("/");
 check("10 console / still proxies 200", r.status === 200 && (await r.text()).includes("console spa"), `status=${r.status}`);
+
+// 11. BUG 1 (2026-11-15): vnc.html, first visit (no proxy cookie) — the
+// worker must follow the proxy's 303 server-side and return 200 noVNC,
+// never a root-relative Location, and must pass the proxy auth cookie
+// through to the browser.
+seen.length = 0;
+r = await call("/desktop/vnc.html", { headers: { Cookie: goodCookie } });
+body = await r.text();
+const loc11 = r.headers.get("Location");
+const sc11 = (typeof r.headers.getSetCookie === "function" ? r.headers.getSetCookie().join(";") : (r.headers.get("Set-Cookie") || ""));
+check("11 vnc.html first visit -> 200 via 303-follow, no root Location, auth cookie set",
+  r.status === 200 && body.includes("vnc") && !loc11 && sc11.includes("__Host-instabox_port_auth"),
+  `status=${r.status} loc=${loc11} cookies=${sc11.slice(0, 80)} seen=${JSON.stringify(seen)}`);
+check("11b token used only as 401 fallback; follow-up carried the auth cookie",
+  seen.some((s) => s.hadToken) && seen.some((s) => s.hadAuth && !s.hadToken),
+  `seen=${JSON.stringify(seen)}`);
+
+// 12. Returning visitor (proxy cookie present) -> 200 without any _token fetch.
+seen.length = 0;
+r = await call("/desktop/vnc.html", { headers: { Cookie: goodCookie + "; __Host-instabox_port_auth=test-auth" } });
+check("12 vnc.html with proxy cookie -> 200, no _token fetch",
+  r.status === 200 && (await r.text()).includes("vnc") && !seen.some((s) => s.hadToken),
+  `status=${r.status} seen=${JSON.stringify(seen)}`);
+
+// 13. Asset through the same 303 flow.
+seen.length = 0;
+r = await call("/desktop/app/ui.js", { headers: { Cookie: goodCookie } });
+check("13 asset /desktop/app/ui.js -> 200 via 303-follow, no Location",
+  r.status === 200 && (await r.text()).includes("ui.js content") && !r.headers.get("Location"),
+  `status=${r.status} loc=${r.headers.get("Location")}`);
+
+// 14. Foreign redirect from the origin is dropped, never sent to the browser.
+r = await call("/desktop/foreign-redirect", { headers: { Cookie: goodCookie } });
+check("14 foreign redirect dropped (no Location)", r.status === 302 && !r.headers.get("Location"), `status=${r.status} loc=${r.headers.get("Location")}`);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
