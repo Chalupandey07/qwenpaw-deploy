@@ -6,6 +6,15 @@
 const ORIGIN = "https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
 const WAKE_WAIT_MS = 45_000;
 
+// Built-in desktop (:1, Xfce + Chromium) served via noVNC on port 6081.
+// The origin is the PRIVATE published port; its token lives in the Worker
+// secret DESKTOP_ORIGIN_TOKEN (never in git). The page is gated on a valid
+// QwenPaw session (same satwik login as the console): the worker probes
+// /api/healthz with the visitor's cookies — 200 = logged in, 401 = log in
+// first. This is the Rakazo-style embedded desktop: the user watches and
+// drives the desktop from the console's own domain, no separate link.
+const DESKTOP_ORIGIN = "https://6081-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function wakingPage(retryAfter) {
@@ -198,6 +207,136 @@ export default {
       return env.ASSETS.fetch(new Request(url.origin + "/status-page.html"));
     }
 
+    // Embedded desktop — /desktop/* proxied to the noVNC origin, gated on
+    // a valid QwenPaw session (see desktop() below).
+    if (path === "/desktop" || path.startsWith("/desktop/")) {
+      return desktop(request, url, env);
+    }
+
     return proxy(request, url);
   },
 };
+
+// --- Embedded desktop -----------------------------------------------------
+// GET /desktop            -> redirect to the noVNC client (autoconnect)
+// GET /desktop/<asset>    -> proxied to the noVNC origin (prefix stripped)
+// WS  /desktop/websockify -> proxied WebSocket upgrade to the VNC server
+async function desktop(request, url, env) {
+  if (!env.DESKTOP_ORIGIN_TOKEN) {
+    return new Response("Desktop is not configured yet.", {
+      status: 503, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+    });
+  }
+
+  // Session gate: is this visitor logged in to QwenPaw? Probe the console's
+  // health endpoint with the visitor's own cookies. 200 = session valid.
+  // 401 = not logged in -> send them to the console to log in first.
+  // 503 = the machine is waking -> show the waking page, not a login loop.
+  let sessionRes;
+  try {
+    sessionRes = await fetch(new Request(ORIGIN + "/api/healthz", {
+      method: "GET",
+      headers: { Cookie: request.headers.get("Cookie") || "" },
+    }));
+  } catch {
+    return new Response("QwenPaw origin unreachable. Try again in a moment.", {
+      status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+    });
+  }
+  if (sessionRes.status === 401) {
+    return Response.redirect(url.origin + "/", 302);
+  }
+  if (sessionRes.status === 503) {
+    return wakingPage(null);
+  }
+  if (sessionRes.status !== 200) {
+    return new Response("Could not verify your QwenPaw login. Try again in a moment.", {
+      status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+    });
+  }
+
+  const path = url.pathname;
+  if (path === "/desktop" || path === "/desktop/") {
+    return Response.redirect(
+      url.origin + "/desktop/vnc.html?autoconnect=true&resize=scale&reconnect=true", 302,
+    );
+  }
+
+  // Strip the /desktop prefix; the origin token is added server-side only
+  // (query param on the server-to-server fetch — never in the browser URL).
+  const stripped = path.slice("/desktop".length) || "/";
+  const originUrl = new URL(DESKTOP_ORIGIN + stripped + url.search);
+  originUrl.searchParams.set("_token", env.DESKTOP_ORIGIN_TOKEN);
+
+  let res;
+  try {
+    const req = new Request(originUrl, request);
+    req.headers.delete("host");
+    req.headers.delete("cf-connecting-ip");
+    req.headers.delete("cf-ipcountry");
+    req.headers.delete("cf-ray");
+    req.headers.delete("cf-visitor");
+    req.headers.set("X-Forwarded-Host", url.host);
+    req.headers.set("X-Forwarded-Proto", "https");
+    res = await fetch(req);
+  } catch {
+    return new Response("Desktop origin unreachable. Try again in a moment.", {
+      status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+    });
+  }
+
+  // The private port answers 401 when its token is wrong — that is a server
+  // misconfiguration, never the visitor's fault; say so plainly.
+  if (res.status === 401) {
+    return new Response("Desktop is temporarily unavailable (origin auth). Try again in a moment.", {
+      status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+    });
+  }
+
+  const headers = new Headers(res.headers);
+  // Keep the desktop on our own domain: rewrite redirects that point at the
+  // desktop origin to /desktop/*, drop foreign redirects entirely.
+  const loc = headers.get("Location");
+  if (loc) {
+    if (loc.startsWith(DESKTOP_ORIGIN)) {
+      headers.set("Location", url.origin + "/desktop" + loc.slice(DESKTOP_ORIGIN.length));
+    } else if (loc.startsWith("//")) {
+      try {
+        const u = new URL("https:" + loc);
+        if (u.origin === DESKTOP_ORIGIN) {
+          headers.set("Location", url.origin + "/desktop" + u.pathname + u.search + u.hash);
+        } else {
+          headers.delete("Location");
+        }
+      } catch {
+        headers.delete("Location");
+      }
+    } else if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(loc)) {
+      headers.delete("Location");
+    }
+  }
+  // Strip any Domain= on cookies so they become host-only for our domain.
+  const setCookies = typeof res.headers.getSetCookie === "function"
+    ? res.headers.getSetCookie()
+    : (headers.get("Set-Cookie") ? [headers.get("Set-Cookie")] : []);
+  if (setCookies.length) {
+    headers.delete("Set-Cookie");
+    for (const c of setCookies) {
+      headers.append("Set-Cookie", c.replace(/;\s*domain=[^;]+/gi, ""));
+    }
+  }
+  // Desktop HTML may be embedded in the console (same origin) later; allow
+  // same-origin framing, block everyone else.
+  const contentType = headers.get("Content-Type") || "";
+  if (contentType.includes("text/html")) {
+    headers.set("X-Frame-Options", "SAMEORIGIN");
+    headers.set("Content-Security-Policy", "frame-ancestors 'self'");
+  }
+  headers.set("Cache-Control", "no-store");
+  headers.set("X-Content-Type-Options", "nosniff");
+
+  if (res.status === 101 && res.webSocket) {
+    return new Response(null, { status: 101, headers, webSocket: res.webSocket });
+  }
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}

@@ -1,0 +1,31 @@
+# Reference copy of the live QwenPaw DriverCard on the machine:
+# /data/home/qwenpaw/working/workspaces/default/drivers/mcp/computer-use.yaml
+# (mode 600). No secrets in it — plain SSE endpoint on the Docker gateway.
+# Do NOT add this client to agent.json/config.json mcp.clients: the legacy
+# migration is one-shot (migration_version 2 already reached) and a new
+# legacy client is ignored. DriverCards are the live config; edits hot-reload
+# via driver_config_watcher (a container restart also picks them up).
+name: computer-use
+protocol: mcp
+endpoint:
+  transport: sse
+  url: http://172.18.0.1:8898/sse
+credentials: {}
+config:
+  display_name: computer-use
+  description: InstaBox built-in desktop computer use (screenshot, click, type) via MCP
+enabled: true
+policy:
+  default_effect: deny
+  rules:
+  - subject: '*'
+    effect: ask
+    target:
+      kind: tool
+      name: '*'
+    principal:
+      source_type: '*'
+      source_value: '*'
+      subject_type: '*'
+      subject_value: '*'
+    condition: null

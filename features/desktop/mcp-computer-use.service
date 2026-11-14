@@ -1,0 +1,20 @@
+# systemd unit on the machine: /etc/systemd/system/mcp-computer-use.service
+# (enabled, active). Exposes the InstaBox computer-use MCP server over SSE
+# for QwenPaw: mcp-proxy wraps `instabox-computer-use mcp` (stdio) and serves
+# it on the Docker gateway 172.18.0.1:8898 (reachable from the QwenPaw
+# container, same pattern as the Camoufox bridge on :8899).
+[Unit]
+Description=MCP proxy: InstaBox computer-use MCP over SSE for QwenPaw
+After=network.target
+
+[Service]
+Type=simple
+User=user
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DISPLAY=:1
+ExecStart=/data/home/mcp-proxy/venv/bin/mcp-proxy --host 172.18.0.1 --port 8898 -- /usr/local/bin/instabox-computer-use mcp
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
