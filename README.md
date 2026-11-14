@@ -4,15 +4,16 @@
 
 ## ✅ Deployed — live (2026-11-14)
 
-- **QwenPaw console:** https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech — login with username `admin` and the password generated at deploy time (see deploy handoff; stored only in `/data/home/qwenpaw/.env` on the machine)
-- **Pages frontend (main):** https://qwenpawx.pages.dev — status, Wake button, Open Console link
-- **Pages frontend (backup):** https://qwenpaw-frontend.pages.dev — same site, still live
+- **QwenPaw console — use this, not the InstaBox URL directly:** https://qwenpawx.pages.dev — root `/` IS the console, served through a Cloudflare Pages reverse proxy (`pages/public/_worker.js`). Backup: https://qwenpaw-frontend.pages.dev — same proxy, same console.
+- **Status / wake page:** https://qwenpawx.pages.dev/status (and `/status` on the backup domain) — status, Wake button, Open Console link. The old status page at `/` is gone.
+- **Login — read this:** QwenPaw allows exactly one user account. The account that exists on the machine is username `satwik`, created by interactive registration after deploy (auth.json written 2026-11-14 18:27). It was **not** created from the `.env` values, so the password in `/data/home/qwenpaw/.env` does **not** log in (verified: login as `admin` and as `satwik` with the `.env` password both return 401, on localhost, on the InstaBox URL, and through both Pages proxies — the proxy is not the problem, the stored credentials are). Log in with the `satwik` password chosen at registration. If that password is lost, delete `working.secret/auth.json` inside the machine and restart the container — QwenPaw then re-creates the admin from `QWENPAW_AUTH_USERNAME` / `QWENPAW_AUTH_PASSWORD` in `.env` on next boot (see `app/auth.py`: "if [you] forget [your] password, delete auth.json from SECRET_DIR"). That wipes the existing account, so only do it deliberately.
+- **QwenPaw console (origin, direct):** https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech — still works, but use the Pages domains; every visit through them also wakes the box.
 - **Note:** `qwenpaw.pages.dev` is taken by an unrelated Chinese personal homepage and cannot be claimed. An empty Pages project named `qwenpaw` exists (subdomain `qwenpaw-b71.pages.dev`, nothing deployed to it).
 - **Worker keep-alive:** https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev — cron `*/5 * * * *`, `/status` and `/ping` verified returning `status: up`
 - **GitHub repo:** https://github.com/Ratulbaba7/qwenpaw-deploy (public, `main`, all 14 files)
 - **InstaBox machine:** `m_agq5wqqo2fvypym7rjlpvngc2m` (`qwenpaw`, agent-browser, 4 vCPU / 8 GiB / 20 GiB), running
 - **Snapshot:** `qwenpaw-ready` (`sn_agq5wrfmt5jfcqkjhtjqqqw3du`, ready)
-- **Cloudflare:** KV namespace `STATUS` (`6a91d8099ed8419c88c94b0946186a27`), Worker `qwenpaw-keepalive`, Pages project `qwenpawx` (deployment `ccb51e8b-f6a2-4a66-9f37-e9127a9b58fa`, success), backup project `qwenpaw-frontend` (deployment `2065800b-5ab8-4cbe-b254-a87f72b7f445`, success)
+- **Cloudflare:** KV namespace `STATUS` (`6a91d8099ed8419c88c94b0946186a27`), Worker `qwenpaw-keepalive`, Pages project `qwenpawx` (proxy deployment `eabd3a30-5868-40a7-bc5f-553c8a4d1a1d`, success), backup project `qwenpaw-frontend` (proxy deployment `58e7aeb2-e099-4fe5-ad3c-1fab3f1c8d5c`, success)
 
 Next step for the user: open the console URL, log in, go to Settings → Models, add your own LLM API key (OpenAI / Anthropic / Gemini / DeepSeek / OpenRouter), set it as Default LLM, and send a test chat.
 
@@ -20,18 +21,26 @@ Next step for the user: open the console URL, log in, go to Settings → Models,
 QwenPaw `agentscope/qwenpaw:v2.3.0` (pinned, Docker Hub only) runs in Docker on a
 free InstaBox `agent-browser` machine (Debian 13, 4 vCPU / 8 GiB, 20 GiB `/data`).
 A Cloudflare Worker pings it every 5 minutes so it sleeps as little as possible.
-Cloudflare Pages is a status / Wake / Open Console frontend — it does **not**
-run QwenPaw, and it does **not** proxy the console.
+Cloudflare Pages is a **reverse proxy in front of the console**: root `/` on
+`qwenpawx.pages.dev` (and on `qwenpaw-frontend.pages.dev`) serves the QwenPaw
+console itself — SPA, `/api/*`, assets, auth cookies, SSE streaming — all
+proxied to the InstaBox origin. `/status` serves the status / Wake page.
+Every visit through the proxy hits the public InstaBox URL, which counts as
+activity and wakes an auto-paused box; the 5-minute Worker cron is the other
+keeper. WebSocket upgrades are passed through untouched (the console itself
+uses SSE, not a browser WebSocket — the origin answers WS upgrades on `/`
+with 403, and the proxy returns that same 403).
 
 ```
 GitHub repo (this repo — source of truth)
   ├─ instabox/  → Docker + systemd on the InstaBox machine, port 8088
   ├─ worker/    → Cloudflare Worker, cron  */5, /status /ping /wake
-  └─ pages/     → Cloudflare Pages, static status site
+  └─ pages/     → Cloudflare Pages, _worker.js reverse proxy + status page
 
 Worker ──ping every 5 min──► https://8088-<id>.instabox.tech/api/healthz
-Pages  ──GET /status────────► Worker (KV cached, no live probe per poll)
-You    ──Open Console───────► https://8088-<id>.instabox.tech/  (QwenPaw login)
+Pages  ──GET / ─────────────► proxy ──► https://8088-<id>.instabox.tech/ (console)
+Pages  ──GET /status────────► status page (Worker /status, Wake button)
+You    ──open qwenpawx.pages.dev ──► QwenPaw login, through the proxy
 ```
 
 ## What Free can and cannot do — read this first
@@ -46,8 +55,11 @@ You    ──Open Console───────► https://8088-<id>.instabox.tec
 
 No Tunnel on Free: when the VM pauses, `cloudflared` dies and visitors get
 Error 1033/1016, and nothing wakes it — the hit never reaches InstaBox.
-No Worker reverse-proxy of the console: it breaks WebSockets/SSE, auth cookies,
-and file transfers, and hits InstaBox's 24 KiB header cap.
+The Pages proxy is the outside layer instead. Its limits: on a 503
+"Sandbox is waking up" the proxy waits ~45 s and retries once, then serves
+an auto-refreshing waking page; on 409 `machine_cooldown` it serves a
+cooldown page with the retry time. Set-Cookie domains from the origin are
+stripped to host-only so login cookies stick to the Pages domain.
 
 ## Repo layout — everything customizable here
 
@@ -59,7 +71,9 @@ and file transfers, and hits InstaBox's 24 KiB header cap.
 | `instabox/setup.sh` | One-time install inside the machine |
 | `worker/wrangler.toml` | Worker name, cron ` */5 * * * *`, `QWENPAW_URL`, KV binding |
 | `worker/src/index.js` | Ping / retry / cooldown / API-wake fallback / `/status` |
-| `pages/public/index.html` | Frontend: `WORKER_URL`, `CONSOLE_URL`, text, theme |
+| `pages/public/_worker.js` | Pages reverse proxy: `/` + everything → InstaBox origin, `/status` → status page, 503 wake-wait + retry, 409 cooldown page |
+| `pages/public/status-page.html` | Status / Wake page served at `/status`: `WORKER_URL`, Open Console is `/` on the same domain |
+| `scripts/deploy-pages-proxy.py` | Direct-upload deploy of `pages/public/` (incl. `_worker.js`) to a Pages project: `python3 scripts/deploy-pages-proxy.py qwenpawx` |
 | `.github/workflows/deploy-worker-pages.yml` | Deploy Worker + Pages on push |
 | `.github/workflows/keepalive-backup.yml` | GitHub Actions cron ping, backup if Worker cron ever misses |
 | `scripts/backup.sh`, `scripts/verify.sh` | Off-box backup, post-deploy checks |
@@ -111,26 +125,33 @@ curl -s https://qwenpaw-keepalive.<your-subdomain>.workers.dev/status
 Worker free limits: 100,000 req/day, 10 ms CPU/invocation, 5 cron triggers,
 50 subrequests. This design uses ~288 cron + a few hundred `/status` reads/day.
 
-### 3. Cloudflare Pages
+### 3. Cloudflare Pages (reverse proxy — the console's front door)
 
 ```bash
-cd pages
-# Edit public/index.html: WORKER_URL and CONSOLE_URL
-npx wrangler pages deploy public --project-name qwenpawx
-# Live at https://qwenpawx.pages.dev
-# Backup project qwenpaw-frontend is also deployed: https://qwenpaw-frontend.pages.dev
+# Deploy pages/public/ (status page + _worker.js proxy) via the Direct Upload API:
+python3 scripts/deploy-pages-proxy.py qwenpawx
+python3 scripts/deploy-pages-proxy.py qwenpaw-frontend
+# Live at https://qwenpawx.pages.dev  (root / = console, /status = status page)
+# Backup: https://qwenpaw-frontend.pages.dev (same proxy, same console)
 # Or connect the repo in the Cloudflare dashboard: Pages → Connect to Git,
 # Framework: None, build command: (empty), output: public
+# (Git-connected deploys also pick up _worker.js from public/.)
 ```
 
 ### 4. Tests to run once
 
 - 35-min idle test: status stays UP, no wake needed.
-- Wake test: pause the machine, hit Wake on the Pages site, expect up in ~60 s.
+- Wake test: pause the machine, open `https://qwenpawx.pages.dev/` — the proxy
+  waits ~45 s, retries, and the login page loads. `/status` shows the same.
+- Proxy tests (run after every Pages deploy):
+  `curl https://qwenpawx.pages.dev/` → QwenPaw Console HTML, 200;
+  `curl https://qwenpawx.pages.dev/api/auth/status` → `{"enabled":true,"has_users":true}`;
+  `curl https://qwenpawx.pages.dev/status` → status page with Wake button;
+  same three on `qwenpaw-frontend.pages.dev`.
 - Reboot test: `instabox stop qwenpaw && instabox start qwenpaw` — container
   must come back via systemd with no manual commands.
-- Cooldown test (once, when it happens naturally): Pages shows `cooldown`
-  with a retry time. Do not hammer Wake during it.
+- Cooldown test (once, when it happens naturally): the proxy serves a
+  `cooldown` page with a retry time. Do not hammer Wake during it.
 
 ## Security notes
 
