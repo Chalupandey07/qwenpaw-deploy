@@ -19,6 +19,17 @@ const DESKTOP_ORIGIN = "https://6081-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
 // Worker secret DESKTOP_VIEW_TOKEN. The default /desktop view is this
 // view-only stream; driving it requires holding the control lease (P0).
 const DESKTOP_VIEW_ORIGIN = "https://6082-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
+// Terminal: websockify on port 6083 (private publish) relaying to the
+// Python PTY server on the machine. Its token is the Worker secret
+// DESKTOP_TERMINAL_TOKEN. The terminal is control-only: it is only ever
+// served behind a "terminal" capability, which requires holding the
+// control lease (see verifyCapability).
+const DESKTOP_TERMINAL_ORIGIN = "https://6083-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
+// Private (per-agent) second display :2 for the QA agent. 6084 = view-only
+// noVNC, 6085 = interactive noVNC. Tokens: DESKTOP_QA_VIEW_TOKEN /
+// DESKTOP_QA_ORIGIN_TOKEN (Worker secrets, both projects).
+const DESKTOP_QA_VIEW_ORIGIN = "https://6084-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
+const DESKTOP_QA_ORIGIN = "https://6085-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
 // Keep-alive Worker: GET /ping is the public wake path (probing the public
 // console URL wakes a paused box); GET /status is its cached status.
 const KEEPALIVE_URL = "https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev";
@@ -204,7 +215,83 @@ async function proxy(request, url) {
     return new Response(null, { status: 101, headers, webSocket: res.webSocket });
   }
 
+  // Side-panel injection (Rakazo's right bot sidebar, worker-injection
+  // way): the QwenPaw console is a React SPA whose HTML the proxy serves.
+  // Its CSP is only `frame-ancestors 'self'` — no script-src — so an
+  // injected same-origin <script> runs. The script appends a floating
+  // "Computer" button + a 316px right sidebar panel (iframe to /desktop)
+  // to document.body, OUTSIDE React's #root, so React re-renders can
+  // never remove it. Only the SPA index is injected (marker
+  // `<div id="root"`); API JSON, SSE streams and assets are untouched.
+  // The injection is defensive (try/catch, feature-detect) so a failure
+  // can never break the console.
+  if (isSafeMethod && res.status === 200 && (headers.get("Content-Type") || "").includes("text/html")) {
+    try {
+      const html = await res.text();
+      if (html.includes('<div id="root"') && html.includes("</body>")) {
+        const injected = html.replace("</body>", consolePanelScript() + "</body>");
+        headers.set("Cache-Control", "no-store, no-transform");
+        headers.delete("ETag");
+        headers.delete("Last-Modified");
+        headers.delete("Content-Length");
+        return new Response(injected, { status: res.status, statusText: res.statusText, headers });
+      }
+      return new Response(html, { status: res.status, statusText: res.statusText, headers });
+    } catch {
+      // The origin body could not be read (it may now be consumed) —
+      // do not return a broken stream.
+      return new Response("QwenPaw console temporarily unavailable. Try again in a moment.", {
+        status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+      });
+    }
+  }
+
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+// --- Console side panel (injected into the SPA HTML by proxy()) ---------
+// Floating "Computer" button (bottom-right) + a 316px right sidebar panel
+// with the /desktop chrome in an iframe. Same origin as the console, so
+// the panel iframe is allowed by frame-ancestors 'self'. The panel is
+// collapsed by default; its open/closed state lives in sessionStorage.
+// Everything is DOM-level (document.body), outside React's #root.
+function consolePanelScript() {
+  return `<script>
+(function () {
+  try {
+    if (!document.getElementById("root")) return;
+    if (document.getElementById("qwenpawComputerBtn")) return;
+    var btn = document.createElement("button");
+    btn.id = "qwenpawComputerBtn";
+    btn.type = "button";
+    btn.textContent = "Computer";
+    btn.title = "QwenPaw's computer — watch and drive the live desktop";
+    btn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483647;padding:10px 16px;border-radius:999px;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
+    var panel = document.createElement("div");
+    panel.id = "qwenpawComputerPanel";
+    panel.style.cssText = "position:fixed;top:0;right:0;bottom:0;width:316px;z-index:2147483646;background:#0f1115;border-left:1px solid #262a33;display:none;flex-direction:column;box-shadow:-12px 0 32px rgba(0,0,0,.4);";
+    var bar = document.createElement("div");
+    bar.style.cssText = "display:flex;align-items:center;gap:8px;height:44px;padding:0 10px;background:#171a21;border-bottom:1px solid #262a33;color:#e8eaf0;font:600 13px system-ui,sans-serif;flex:none;";
+    bar.innerHTML = "<span style='flex:1'>Computer</span><a href='/desktop' target='_blank' style='color:#86efac;text-decoration:none'>Open full</a><button id='qwenpawComputerClose' type='button' style='background:none;border:none;color:#e8eaf0;font-size:18px;cursor:pointer;padding:4px 8px'>&times;</button>";
+    var frame = document.createElement("iframe");
+    frame.src = "/desktop";
+    frame.title = "QwenPaw computer";
+    frame.style.cssText = "flex:1;width:100%;border:0;background:#000;";
+    panel.appendChild(bar);
+    panel.appendChild(frame);
+    document.body.appendChild(panel);
+    document.body.appendChild(btn);
+    var open = sessionStorage.getItem("qwenpawComputerOpen") === "1";
+    function setOpen(v) {
+      panel.style.display = v ? "flex" : "none";
+      try { sessionStorage.setItem("qwenpawComputerOpen", v ? "1" : "0"); } catch (e) {}
+    }
+    btn.addEventListener("click", function () { setOpen(true); });
+    document.getElementById("qwenpawComputerClose").addEventListener("click", function () { setOpen(false); });
+    setOpen(open);
+  } catch (e) { /* never break the console */ }
+})();
+</script>`;
 }
 
 export default {
@@ -504,7 +591,7 @@ async function desktop(request, url, env, ctx) {
   // lease-watcher polls this to mirror the lease into the desktop control
   // file the computer-use MCP proxy honors).
   if (path === "/desktop/__lease") {
-    return desktopLeaseRead(env);
+    return desktopLeaseRead(request, env);
   }
 
   // Sealed screen sessions: the capability in the path IS the auth
@@ -512,6 +599,32 @@ async function desktop(request, url, env, ctx) {
   if (path.startsWith("/desktop/session/")) {
     return desktopSession(request, url, env, ctx);
   }
+
+  // Vendored terminal client (xterm.js + xterm.css, public library files
+  // in pages/public/vendor/). Served from the ASSETS binding — no cookie
+  // needed, they are just a JS library.
+  if (path === "/desktop/vendor/xterm.js" || path === "/desktop/vendor/xterm.css") {
+    if (!env.ASSETS) return new Response("Desktop assets are not bound.", { status: 500 });
+    const assetPath = path.replace("/desktop/vendor/", "/vendor/");
+    const res = await env.ASSETS.fetch(new Request(url.origin + assetPath));
+    if (res.status === 404) return new Response("Not found.", { status: 404 });
+    return new Response(res.body, {
+      status: res.status,
+      headers: {
+        "Content-Type": path.endsWith(".css") ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8",
+        "Cache-Control": "public, max-age=86400",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+
+  // Machine-side sync-token routes (no desktop cookie — the bridge and
+  // the lease-watcher call these with X-Desktop-Sync, not a cookie).
+  // The sync token is checked inside each handler; without it they 401.
+  if (path === "/desktop/__needs-you" && request.method === "POST") return desktopNeedsYou(request, env);
+  if (path === "/desktop/__preview-upload") return desktopPreviewUpload(request, env);
+  if (path === "/desktop/__pending-skills") return desktopPendingSkills(request, env);
+  if (path === "/desktop/__pending-skills/ack") return desktopPendingSkillsAck(request, env);
 
   // Everything below needs the desktop session cookie (minted by __verify
   // after a real QwenPaw login) — see the note at the top of this section.
@@ -526,6 +639,11 @@ async function desktop(request, url, env, ctx) {
   if (path === "/desktop/__status") return desktopStatus(request, url, env);
   if (path === "/desktop/__wake") return desktopWake(request, env);
   if (path === "/desktop/__action") return desktopAction(request, env);
+  if (path === "/desktop/__needs-you") return desktopNeedsYou(request, env);
+  if (path === "/desktop/__needs-you/resolve") return desktopNeedsYouResolve(request, env);
+  if (path === "/desktop/__preview") return desktopPreview(request, env);
+  if (path === "/desktop/__teach") return desktopTeach(request, env);
+  if (path === "/desktop/__mode") return desktopMode(request, env);
 
   // The Rakazo-style overlay chrome (desktop-chrome.html, a static asset):
   // header + Take control / Release / "…" menu / Close above the screen
@@ -545,18 +663,36 @@ async function desktop(request, url, env, ctx) {
 }
 
 // --- Rakazo-style control lease + sealed screen capability (P0) ---------
-// State lives in the DESKTOP_KV binding (bound to both Pages projects):
-//   "lease"      -> {leaseId, holder:"user", grantedAt, expiresAt, fence}
-//   "generation" -> integer, bumped on every takeover/release so old
-//                   capabilities die (Rakazo's bot/computer generations).
+// State lives in the DESKTOP_KV binding (bound to both Pages projects).
+// The lease and the generation are PER COMPUTER ("default" = shared :1,
+// "qa" = private :2) so a takeover of one computer never blocks the other:
+//   "lease:<computer>"      -> {leaseId, holder:"user", grantedAt, expiresAt, fence}
+//   "generation:<computer>" -> integer, bumped on every takeover/release so old
+//                              capabilities die (Rakazo's bot/computer generations).
 // The machine-side lease-watcher (desktop-lease-watcher.service) mirrors
-// the lease into /run/user/1000/instabox-control, the file the
+// each lease into its computer's control file (/run/user/1000/instabox-control
+// for :1, /run/user/1000/qa/instabox-control for :2), the file the matching
 // computer-use MCP proxy already honors: while a user holds the lease the
 // agent's input tools are refused; on handback they pass again and the
 // agent re-reads the screen.
+// (The un-suffixed "lease" / "generation" keys from P0 are legacy and are no
+// longer written; they may be deleted from KV.)
 const KV_LEASE_KEY = "lease";
 const KV_GENERATION_KEY = "generation";
 const KV_LAST_WAKE_KEY = "lastWake";
+
+function leaseKey(computer) {
+  return KV_LEASE_KEY + ":" + (computer === "qa" ? "qa" : "default");
+}
+
+function generationKey(computer) {
+  return KV_GENERATION_KEY + ":" + (computer === "qa" ? "qa" : "default");
+}
+
+// Normalise a computer value from a request body / query param.
+function computerOf(value) {
+  return value === "qa" ? "qa" : "default";
+}
 
 function jsonResp(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
@@ -575,9 +711,9 @@ function kvRequired(env) {
   return null;
 }
 
-async function getLease(env) {
+async function getLease(env, computer) {
   try {
-    return await env.DESKTOP_KV.get(KV_LEASE_KEY, "json");
+    return await env.DESKTOP_KV.get(leaseKey(computer), "json");
   } catch {
     return null;
   }
@@ -587,9 +723,9 @@ function leaseActive(lease) {
   return !!lease && lease.holder === "user" && typeof lease.expiresAt === "number" && lease.expiresAt > Date.now();
 }
 
-async function getGeneration(env) {
+async function getGeneration(env, computer) {
   try {
-    const v = await env.DESKTOP_KV.get(KV_GENERATION_KEY);
+    const v = await env.DESKTOP_KV.get(generationKey(computer));
     const n = Number(v);
     return Number.isFinite(n) ? n : 0;
   } catch {
@@ -597,10 +733,10 @@ async function getGeneration(env) {
   }
 }
 
-async function bumpGeneration(env) {
-  const gen = (await getGeneration(env)) + 1;
+async function bumpGeneration(env, computer) {
+  const gen = (await getGeneration(env, computer)) + 1;
   try {
-    await env.DESKTOP_KV.put(KV_GENERATION_KEY, String(gen));
+    await env.DESKTOP_KV.put(generationKey(computer), String(gen));
   } catch { /* best effort */ }
   return gen;
 }
@@ -614,13 +750,14 @@ async function readJsonBody(request) {
   }
 }
 
-// GET /desktop/__lease (public) — {holder, leaseId, expiresAt, generation}.
+// GET /desktop/__lease?computer=default|qa (public) — {holder, leaseId, expiresAt, generation}.
 // No secrets: the lease id is a random UUID and only names the holder.
-async function desktopLeaseRead(env) {
+async function desktopLeaseRead(request, env) {
   const missing = kvRequired(env);
   if (missing) return missing;
-  const lease = await getLease(env);
-  const gen = await getGeneration(env);
+  const computer = computerOf(new URL(request.url).searchParams.get("computer"));
+  const lease = await getLease(env, computer);
+  const gen = await getGeneration(env, computer);
   if (leaseActive(lease)) {
     return jsonResp({ holder: "user", leaseId: lease.leaseId, expiresAt: lease.expiresAt, fence: lease.fence, generation: gen });
   }
@@ -634,7 +771,9 @@ async function desktopTakeover(request, env) {
   if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
   const missing = kvRequired(env);
   if (missing) return missing;
-  const lease = await getLease(env);
+  const body = await readJsonBody(request);
+  const computer = computerOf(body.computer);
+  const lease = await getLease(env, computer);
   if (leaseActive(lease)) {
     return jsonResp({ ok: false, error: "held", leaseId: lease.leaseId, expiresAt: lease.expiresAt }, 409);
   }
@@ -646,8 +785,8 @@ async function desktopTakeover(request, env) {
     expiresAt: now + LEASE_TTL_MS,
     fence: (typeof lease?.fence === "number" ? lease.fence : 0) + 1,
   };
-  await env.DESKTOP_KV.put(KV_LEASE_KEY, JSON.stringify(next));
-  const gen = await bumpGeneration(env);
+  await env.DESKTOP_KV.put(leaseKey(computer), JSON.stringify(next));
+  const gen = await bumpGeneration(env, computer);
   return jsonResp({ ok: true, leaseId: next.leaseId, expiresAt: next.expiresAt, fence: next.fence, generation: gen });
 }
 
@@ -659,12 +798,13 @@ async function desktopHeartbeat(request, env) {
   const missing = kvRequired(env);
   if (missing) return missing;
   const body = await readJsonBody(request);
-  const lease = await getLease(env);
+  const computer = computerOf(body.computer);
+  const lease = await getLease(env, computer);
   if (!leaseActive(lease) || body.leaseId !== lease.leaseId) {
     return jsonResp({ ok: false, error: "no_lease" }, 410);
   }
   lease.expiresAt = Date.now() + LEASE_TTL_MS;
-  await env.DESKTOP_KV.put(KV_LEASE_KEY, JSON.stringify(lease));
+  await env.DESKTOP_KV.put(leaseKey(computer), JSON.stringify(lease));
   return jsonResp({ ok: true, expiresAt: lease.expiresAt });
 }
 
@@ -675,12 +815,13 @@ async function desktopRelease(request, env) {
   const missing = kvRequired(env);
   if (missing) return missing;
   const body = await readJsonBody(request);
-  const lease = await getLease(env);
+  const computer = computerOf(body.computer);
+  const lease = await getLease(env, computer);
   if (!lease || body.leaseId !== lease.leaseId) {
     return jsonResp({ ok: false, error: "stale" });
   }
-  await env.DESKTOP_KV.delete(KV_LEASE_KEY);
-  const gen = await bumpGeneration(env);
+  await env.DESKTOP_KV.delete(leaseKey(computer));
+  const gen = await bumpGeneration(env, computer);
   return jsonResp({ ok: true, released: true, generation: gen });
 }
 
@@ -735,43 +876,49 @@ async function openCapability(env, token) {
   }
 }
 
-// Full capability check: expiry, mode, generation, and (for control) a
-// live lease with the same id. Used on every session request and by the
-// WebSocket recheck loop.
+// Full capability check: expiry, mode, generation, and (for control and
+// terminal) a live lease with the same id. Used on every session request
+// and by the WebSocket recheck loop. The payload also carries `computer`
+// ("default" = shared :1, "qa" = private :2); a capability minted for one
+// computer can never open the other.
 async function verifyCapability(env, mode, exp, token) {
   if (!exp || !/^\d+$/.test(exp) || Number(exp) * 1000 < Date.now()) return null;
-  if (mode !== "view" && mode !== "control") return null;
+  if (mode !== "view" && mode !== "control" && mode !== "terminal") return null;
   const payload = await openCapability(env, token);
   if (!payload) return null;
   if (payload.mode !== mode || payload.exp !== Number(exp)) return null;
-  if (payload.gen !== (await getGeneration(env))) return null;
-  if (mode === "control") {
-    const lease = await getLease(env);
+  const computer = computerOf(payload.computer);
+  if (payload.gen !== (await getGeneration(env, computer))) return null;
+  if (mode === "control" || mode === "terminal") {
+    const lease = await getLease(env, computer);
     if (!leaseActive(lease) || lease.leaseId !== payload.leaseId) return null;
   }
   return payload;
 }
 
-// POST /desktop/__screen {mode:"view"|"control", leaseId?} — mint a
-// 60-min capability URL for the chrome iframe. Control requires holding
-// the lease; view needs only the session cookie.
+// POST /desktop/__screen {mode:"view"|"control"|"terminal", computer?,
+// leaseId?} — mint a 60-min capability URL for the chrome iframe.
+// Control and terminal require holding the lease; view needs only the
+// session cookie. `computer` is "default" (shared :1) or "qa" (private
+// :2); the capability is scoped to it.
 async function desktopScreen(request, env) {
   if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
   const missing = kvRequired(env);
   if (missing) return missing;
   const body = await readJsonBody(request);
-  const mode = body.mode === "control" ? "control" : "view";
-  const gen = await getGeneration(env);
+  const mode = body.mode === "control" ? "control" : body.mode === "terminal" ? "terminal" : "view";
+  const computer = body.computer === "qa" ? "qa" : "default";
+  const gen = await getGeneration(env, computer);
   const exp = Math.floor(Date.now() / 1000) + CAPABILITY_TTL_S;
-  if (mode === "control") {
-    const lease = await getLease(env);
+  if (mode === "control" || mode === "terminal") {
+    const lease = await getLease(env, computer);
     if (!leaseActive(lease) || body.leaseId !== lease.leaseId) {
       return jsonResp({ ok: false, error: "no_lease" }, 403);
     }
-    const token = await sealCapability(env, { mode, exp, gen, leaseId: lease.leaseId });
-    return jsonResp({ ok: true, url: `/desktop/session/control/${exp}.${token}`, expiresAt: exp * 1000 });
+    const token = await sealCapability(env, { mode, exp, gen, leaseId: lease.leaseId, computer });
+    return jsonResp({ ok: true, url: `/desktop/session/${mode}/${exp}.${token}`, expiresAt: exp * 1000 });
   }
-  const token = await sealCapability(env, { mode, exp, gen, leaseId: null });
+  const token = await sealCapability(env, { mode, exp, gen, leaseId: null, computer });
   return jsonResp({ ok: true, url: `/desktop/session/view/${exp}.${token}`, expiresAt: exp * 1000 });
 }
 
@@ -859,7 +1006,60 @@ window.__QWENPAW_DESKTOP_MODE = ${JSON.stringify(mode)};
       var c = document.getElementById("noVNC_canvas");
       if (c) { try { c.focus(); } catch (e) {} }
     }
+    // Teach-by-showing (Rakazo's recordTeachingInputEvent): the parent
+    // (chrome) turns recording on while the user holds control and is
+    // teaching. The shim forwards pointer/key/scroll/clipboard events to
+    // the parent as {type:"qwenpawTeachEvent", event}. It never
+    // preventDefaults — noVNC still receives every event. While the
+    // "sensitive" flag is on, key/clipboard VALUES are never sent (only
+    // {kind, sensitive:true}); the parent and the Worker strip them too
+    // (see sanitizeTeachRecordingEvent in the Worker).
+    if (ev.data && typeof ev.data.qwenpawTeach === "boolean") {
+      teachOn = ev.data.qwenpawTeach;
+      teachSensitive = !!ev.data.sensitive;
+    }
+    if (ev.data && typeof ev.data.qwenpawTeachSensitive === "boolean") {
+      teachSensitive = ev.data.qwenpawTeachSensitive;
+    }
   });
+  var teachOn = false, teachSensitive = false, lastMoveAt = 0;
+  function teachSend(ev) {
+    if (!teachOn) return;
+    try { window.parent.postMessage({ type: "qwenpawTeachEvent", event: ev }, window.location.origin); } catch (e) {}
+  }
+  function teachPoint(kind, type, e) {
+    var r = (document.getElementById("noVNC_canvas") || {}).getBoundingClientRect ? document.getElementById("noVNC_canvas").getBoundingClientRect() : null;
+    var x = e.clientX, y = e.clientY;
+    if (r) { x = Math.round(e.clientX - r.left); y = Math.round(e.clientY - r.top); }
+    teachSend({ kind: kind, type: type, x: x, y: y, button: (e.button === 2 ? "right" : e.button === 1 ? "middle" : "left"), at: new Date().toISOString(), sensitive: teachSensitive });
+  }
+  document.addEventListener("pointerdown", function (e) { teachPoint("pointer", "down", e); }, true);
+  document.addEventListener("pointerup", function (e) { teachPoint("pointer", "up", e); }, true);
+  document.addEventListener("pointermove", function (e) {
+    var now = Date.now();
+    if (now - lastMoveAt < 500) return;
+    lastMoveAt = now;
+    teachPoint("pointer", "move", e);
+  }, true);
+  document.addEventListener("wheel", function (e) {
+    if (!teachOn) return;
+    var dir = e.deltaY < 0 ? "up" : "down";
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) dir = e.deltaX < 0 ? "left" : "right";
+    teachSend({ kind: "scroll", type: dir, text: "3", at: new Date().toISOString(), sensitive: teachSensitive });
+  }, true);
+  document.addEventListener("keydown", function (e) {
+    if (!teachOn) return;
+    if (teachSensitive) { teachSend({ kind: "key", sensitive: true, at: new Date().toISOString() }); return; }
+    var k = e.key || "";
+    teachSend({ kind: "key", key: k.length > 1 ? k : k, at: new Date().toISOString() });
+  }, true);
+  document.addEventListener("paste", function (e) {
+    if (!teachOn) return;
+    if (teachSensitive) { teachSend({ kind: "clipboard", sensitive: true, at: new Date().toISOString() }); return; }
+    var t = "";
+    try { t = (e.clipboardData || window.clipboardData).getData("text") || ""; } catch (e2) {}
+    teachSend({ kind: "clipboard", text: t.slice(0, 500), at: new Date().toISOString() });
+  }, true);
   setInterval(report, 500);
   report();
 })();
@@ -884,9 +1084,23 @@ async function desktopSession(request, url, env, ctx) {
       status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
     });
   }
+  const computer = payload.computer === "qa" ? "qa" : "default";
+  const isTerminal = mode === "terminal";
   const isView = mode === "view";
-  const origin = isView ? DESKTOP_VIEW_ORIGIN : DESKTOP_ORIGIN;
-  const originToken = isView ? env.DESKTOP_VIEW_TOKEN : env.DESKTOP_ORIGIN_TOKEN;
+  // Origin + token by (mode, computer). The terminal is its own origin
+  // (websockify → PTY server) and is control-only by construction:
+  // verifyCapability above already required a live lease for it.
+  let origin, originToken;
+  if (isTerminal) {
+    origin = DESKTOP_TERMINAL_ORIGIN;
+    originToken = env.DESKTOP_TERMINAL_TOKEN;
+  } else if (computer === "qa") {
+    origin = isView ? DESKTOP_QA_VIEW_ORIGIN : DESKTOP_QA_ORIGIN;
+    originToken = isView ? env.DESKTOP_QA_VIEW_TOKEN : env.DESKTOP_QA_ORIGIN_TOKEN;
+  } else {
+    origin = isView ? DESKTOP_VIEW_ORIGIN : DESKTOP_ORIGIN;
+    originToken = isView ? env.DESKTOP_VIEW_TOKEN : env.DESKTOP_ORIGIN_TOKEN;
+  }
   if (!originToken) {
     return new Response("Desktop is not configured yet.", {
       status: 503, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
@@ -1020,8 +1234,8 @@ async function desktopStatus(request, url, env) {
     const j = await r.json().catch(() => null);
     if (j && typeof j.status === "string") machine = j.status;
   } catch { /* keep unknown */ }
-  const lease = await getLease(env).catch(() => null);
-  const gen = await getGeneration(env);
+  const lease = await getLease(env, "default").catch(() => null);
+  const gen = await getGeneration(env, "default");
   return jsonResp({
     desktop,
     machine,
@@ -1096,8 +1310,240 @@ async function desktopAction(request, env) {
   }
   const text = await res.text().catch(() => "");
   if (res.status >= 200 && res.status < 300) {
-    await bumpGeneration(env).catch(() => {});
+    await bumpGeneration(env, "default").catch(() => {});
     return jsonResp({ ok: true, action: "stop" });
   }
   return jsonResp({ ok: false, error: "api_rejected", httpStatus: res.status, detail: text.slice(0, 200) }, 502);
+}
+
+// --- Extension: needs-you, preview, teach-by-showing, mode (P3) --------
+// State lives in the same DESKTOP_KV binding:
+//   "needsyou"        -> {text, at, runId?} | null  (one open request)
+//   "preview"         -> base64 PNG of the :1 desktop (60 s TTL, refreshed
+//                        by the machine-side lease-watcher via scrot)
+//   "teach-skill:<id>"-> {id, name, goal, playbook, at} (pending delivery
+//                        to the QwenPaw skill pool by the lease-watcher)
+//   "computerMode:<agent>" -> "team" | "private"
+// Machine-side callers (bridge, lease-watcher) authenticate with the
+// DESKTOP_SYNC_TOKEN Worker secret (header X-Desktop-Sync). That token is
+// generated for this channel (it is NOT an InstaBox or Cloudflare key) and
+// is set as a Worker secret on both Pages projects + in the machine's
+// /data/home/camoufox/.env and /data/home/mcp-proxy/.env (never in git).
+const KV_NEEDSYOU_KEY = "needsyou";
+const KV_PREVIEW_KEY = "preview";
+const KV_PREVIEW_TTL_S = 60;
+
+function previewKey(computer) {
+  return KV_PREVIEW_KEY + ":" + (computer === "qa" ? "qa" : "default");
+}
+const KV_TEACH_PREFIX = "teach-skill:";
+const KV_MODE_PREFIX = "computerMode:";
+
+function syncTokenValid(request, env) {
+  if (!env.DESKTOP_SYNC_TOKEN) return false;
+  const h = request.headers.get("X-Desktop-Sync");
+  if (!h) return false;
+  // Constant-time-ish compare (timing-safe compare is not available in
+  // Workers; length check first, then a full scan without early exit).
+  if (h.length !== env.DESKTOP_SYNC_TOKEN.length) return false;
+  let diff = 0;
+  for (let i = 0; i < h.length; i++) diff |= h.charCodeAt(i) ^ env.DESKTOP_SYNC_TOKEN.charCodeAt(i);
+  return diff === 0;
+}
+
+// GET /desktop/__needs-you (cookie-gated) — the open needs-you record or
+// {record: null}. The chrome polls this and shows the ComputerCard-style
+// banner (Rakazo's ComputerCard: "Needs you" + agent text + live preview
+// + Skip / I'm done / Take control).
+async function desktopNeedsYou(request, env) {
+  if (request.method === "GET") {
+    const missing = kvRequired(env);
+    if (missing) return missing;
+    let record = null;
+    try { record = await env.DESKTOP_KV.get(KV_NEEDSYOU_KEY, "json"); } catch { /* ignore */ }
+    return jsonResp({ record: record || null });
+  }
+  // POST — raise/update. Only the machine-side bridge may raise (sync
+  // token), because the agent cannot mint a desktop cookie. The bridge
+  // endpoint POST /needs-you (Bearer BRIDGE_TOKEN, from inside the
+  // container) forwards here.
+  if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
+  if (!syncTokenValid(request, env)) return jsonResp({ ok: false, error: "unauthorized" }, 401);
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const body = await readJsonBody(request);
+  const text = typeof body.text === "string" ? body.text.slice(0, 1000) : "";
+  if (!text.trim()) return jsonResp({ ok: false, error: "empty_text" }, 400);
+  const record = { text: text.trim(), at: new Date().toISOString(), runId: typeof body.runId === "string" ? body.runId.slice(0, 100) : null };
+  await env.DESKTOP_KV.put(KV_NEEDSYOU_KEY, JSON.stringify(record));
+  return jsonResp({ ok: true, record });
+}
+
+// POST /desktop/__needs-you/resolve {action:"skip"|"done"} (cookie-gated)
+// — the user answers the needs-you request. This clears the banner. It
+// cannot message the agent directly (the agent reads only the console),
+// so the chrome tells the user to say "skip that step" / "done, continue"
+// in the chat. Honest limitation, stated in the UI.
+async function desktopNeedsYouResolve(request, env) {
+  if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const body = await readJsonBody(request);
+  if (body.action !== "skip" && body.action !== "done") {
+    return jsonResp({ ok: false, error: "bad_action" }, 400);
+  }
+  await env.DESKTOP_KV.delete(KV_NEEDSYOU_KEY).catch(() => {});
+  return jsonResp({ ok: true, action: body.action });
+}
+
+// GET /desktop/__preview (cookie-gated) — the latest desktop screenshot
+// PNG (from the lease-watcher's scrot, max 60 s old) or 404.
+async function desktopPreview(request, env) {
+  if (request.method !== "GET") return jsonResp({ ok: false, error: "method" }, 405);
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const computer = computerOf(new URL(request.url).searchParams.get("computer"));
+  let b64 = null;
+  try { b64 = await env.DESKTOP_KV.get(previewKey(computer)); } catch { /* ignore */ }
+  if (!b64) return new Response("No preview yet.", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+  let bytes;
+  try {
+    const bin = atob(b64);
+    bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  } catch {
+    return new Response("Preview is corrupt.", { status: 502 });
+  }
+  return new Response(bytes, { status: 200, headers: { "Content-Type": "image/png", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
+}
+
+// POST /desktop/__preview-upload (sync-token gated) — the lease-watcher
+// posts the scrot PNG as raw bytes. Stored base64 with a 60 s TTL.
+async function desktopPreviewUpload(request, env) {
+  if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
+  if (!syncTokenValid(request, env)) return jsonResp({ ok: false, error: "unauthorized" }, 401);
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const ct = request.headers.get("Content-Type") || "";
+  if (!ct.includes("image/png")) return jsonResp({ ok: false, error: "need_png" }, 400);
+  const buf = await request.arrayBuffer().catch(() => null);
+  if (!buf || buf.byteLength === 0 || buf.byteLength > 2_000_000) {
+    return jsonResp({ ok: false, error: "bad_image" }, 400);
+  }
+  const bytes = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  const computer = computerOf(new URL(request.url).searchParams.get("computer"));
+  await env.DESKTOP_KV.put(previewKey(computer), btoa(s), { expirationTtl: KV_PREVIEW_TTL_S });
+  return jsonResp({ ok: true, bytes: buf.byteLength });
+}
+
+// Strip sensitive values from a taught recording (Rakazo's
+// sanitizeTeachRecordingEvent): a sensitive event keeps its kind but
+// loses its key/text. The chrome already strips them client-side; this
+// is the server-side second pass.
+function sanitizeTeachEvents(events) {
+  if (!Array.isArray(events)) return [];
+  return events.slice(0, 500).map((e) => {
+    if (!e || typeof e !== "object") return null;
+    const out = { kind: typeof e.kind === "string" ? e.kind : "pointer", at: typeof e.at === "string" ? e.at : new Date().toISOString() };
+    if (typeof e.x === "number") out.x = e.x;
+    if (typeof e.y === "number") out.y = e.y;
+    if (typeof e.button === "string") out.button = e.button.slice(0, 20);
+    if (typeof e.type === "string") out.type = e.type.slice(0, 20);
+    if (e.sensitive) { out.sensitive = true; return out; }
+    if (typeof e.key === "string") out.key = e.key.slice(0, 50);
+    if (typeof e.text === "string") out.text = e.text.slice(0, 500);
+    return out;
+  }).filter(Boolean);
+}
+
+// POST /desktop/__teach {name, goal, playbook, events?} (cookie-gated) —
+// save a taught skill (Rakazo's taught-skills flow: record → draft
+// playbook → save). Stored in KV as teach-skill:<id>; the machine-side
+// lease-watcher delivers it to the QwenPaw skill pool (SKILL.md) and
+// enables it, then acks. The playbook fields are Name / When to use /
+// Inputs / Steps / How to check / What to return / Approval boundaries /
+// Failure handling (see packages/core/src/teach-playbook.ts).
+async function desktopTeach(request, env) {
+  if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const body = await readJsonBody(request);
+  const name = typeof body.name === "string" ? body.name.trim().slice(0, 80) : "";
+  const goal = typeof body.goal === "string" ? body.goal.trim().slice(0, 500) : "";
+  const pb = body.playbook && typeof body.playbook === "object" ? body.playbook : null;
+  if (!name || !pb || !Array.isArray(pb.steps) || pb.steps.length === 0) {
+    return jsonResp({ ok: false, error: "bad_skill", note: "A taught skill needs a name and a playbook with at least one step." }, 400);
+  }
+  const id = "taught-" + crypto.randomUUID().slice(0, 8);
+  const skill = {
+    id,
+    name,
+    goal,
+    playbook: {
+      whenToUse: typeof pb.whenToUse === "string" ? pb.whenToUse.slice(0, 1000) : goal,
+      inputs: Array.isArray(pb.inputs) ? pb.inputs.slice(0, 20).map((x) => String(x).slice(0, 200)) : [],
+      steps: pb.steps.slice(0, 100).map((x) => String(x).slice(0, 500)),
+      howToCheck: typeof pb.howToCheck === "string" ? pb.howToCheck.slice(0, 1000) : "",
+      whatToReturn: typeof pb.whatToReturn === "string" ? pb.whatToReturn.slice(0, 1000) : "",
+      approvalBoundaries: typeof pb.approvalBoundaries === "string" ? pb.approvalBoundaries.slice(0, 1000) : "",
+      failureHandling: typeof pb.failureHandling === "string" ? pb.failureHandling.slice(0, 1000) : "",
+    },
+    events: sanitizeTeachEvents(body.events),
+    at: new Date().toISOString(),
+  };
+  await env.DESKTOP_KV.put(KV_TEACH_PREFIX + id, JSON.stringify(skill));
+  return jsonResp({ ok: true, id, name });
+}
+
+// GET /desktop/__pending-skills (sync-token gated) — list pending taught
+// skills for the lease-watcher to deliver.
+async function desktopPendingSkills(request, env) {
+  if (request.method !== "GET") return jsonResp({ ok: false, error: "method" }, 405);
+  if (!syncTokenValid(request, env)) return jsonResp({ ok: false, error: "unauthorized" }, 401);
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const list = await env.DESKTOP_KV.list({ prefix: KV_TEACH_PREFIX }).catch(() => ({ keys: [] }));
+  const skills = [];
+  for (const k of list.keys || []) {
+    const v = await env.DESKTOP_KV.get(k.name, "json").catch(() => null);
+    if (v) skills.push(v);
+  }
+  return jsonResp({ skills });
+}
+
+// POST /desktop/__pending-skills/ack {id} (sync-token gated) — delete a
+// delivered taught skill from KV.
+async function desktopPendingSkillsAck(request, env) {
+  if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
+  if (!syncTokenValid(request, env)) return jsonResp({ ok: false, error: "unauthorized" }, 401);
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const body = await readJsonBody(request);
+  const id = typeof body.id === "string" ? body.id : "";
+  if (!id || !/^taught-[A-Za-z0-9-]+$/.test(id)) return jsonResp({ ok: false, error: "bad_id" }, 400);
+  await env.DESKTOP_KV.delete(KV_TEACH_PREFIX + id).catch(() => {});
+  return jsonResp({ ok: true });
+}
+
+// GET /desktop/__mode?agent=<name> and POST /desktop/__mode {agent, mode}
+// (cookie-gated) — per-agent Team vs Private computer mode. "team" is the
+// shared :1 desktop; "private" is the per-agent :2 display (QA agent).
+// The mode is recorded per agent in KV; the chrome header shows it.
+async function desktopMode(request, env) {
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const url = new URL(request.url);
+  const agent = (request.method === "POST" ? (await readJsonBody(request)).agent : url.searchParams.get("agent")) || "default";
+  const agentSafe = String(agent).slice(0, 60).replace(/[^A-Za-z0-9._-]/g, "_");
+  if (request.method === "GET") {
+    const mode = (await env.DESKTOP_KV.get(KV_MODE_PREFIX + agentSafe).catch(() => null)) || "team";
+    return jsonResp({ agent: agentSafe, mode: mode === "private" ? "private" : "team" });
+  }
+  if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
+  const body = await readJsonBody(request);
+  const mode = body.mode === "private" ? "private" : "team";
+  await env.DESKTOP_KV.put(KV_MODE_PREFIX + agentSafe, mode);
+  return jsonResp({ ok: true, agent: agentSafe, mode });
 }
