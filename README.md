@@ -170,3 +170,35 @@ python3 scripts/deploy-pages-proxy.py qwenpaw-frontend
 
 $0/mo. Worker <1,000 req/day of 100k, Pages 1 static file, InstaBox Free
 1 machine / 100 GiB egress/mo. Optional custom domain ~$10/yr.
+
+## Maintenance notes — no-China sweep 2026-11-15 (verified live)
+
+- Language: `working/config.json` `agents.language` + `installed_md_files_language`
+  are `en`, `user_timezone` is `Asia/Kolkata`, SIP is disabled with TTS Google /
+  STT Deepgram and an English greeting. All China channels are `enabled: false`;
+  only `console` is enabled. Full workspace CJK grep: zero matches.
+- Kilo is the active model: provider file lives in
+  `working.secret/providers/builtin/kilo.json` (`enabled: true`, Kilo Code,
+  `https://api.kilo.ai/api/gateway`, no key) and the active model in
+  `working.secret/providers/active_model.json`
+  (`{"provider_id": "kilo", "model": "kilo-auto/free"}`) — NOT in
+  `working/` itself. Ollama and LM Studio providers are disabled
+  (`enabled: false`) per the cloud-LLM-only rule.
+- China hub plugins (`modelscope-hub`, `aliyun-hub`) are re-provisioned from the
+  image on every boot by `seed_builtin_hub_plugins` in
+  `src/qwenpaw/market/builtin.py`. Deleting their dirs alone does NOT work.
+  The durable uninstall is: delete `working/plugins/modelscope-hub` and
+  `working/plugins/aliyun-hub` WHILE THE CONTAINER IS STOPPED, but KEEP their
+  names in `working/plugins/.hub-defaults.json` (the "processed" marker) —
+  the seeder skips ids already in that list and does not restore them.
+  Verified 2026-11-15: after a stop/start, only `clawhub-hub` + `qwenpaw-hub`
+  remain.
+- What cannot be removed without rebuilding the image (baked-in code, inert
+  without the plugin dirs): `src/qwenpaw/market/providers/aliyun.py`,
+  `src/qwenpaw/market/providers/modelscope.py`, the `_LEGACY_HUB_NAMES` map in
+  `src/qwenpaw/market/builtin.py`, and `/app/plugins/hub/*`. Do not rebuild
+  the image and do not pull any China-registry image.
+- Backups of every changed file: `/data/home/qwenpaw/working.backups/2026-11-15-en-fix-all/`
+  on the machine. The old Chinese greeting survives only in old chat history
+  (sessions/`history.db`); new chats are English. `working.secret/auth.json`
+  is never touched by this sweep (account is `satwik`).
