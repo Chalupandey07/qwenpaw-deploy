@@ -15,6 +15,9 @@ services:
       - QWENPAW_TELEMETRY_DISABLED=true
       - QWENPAW_DISABLED_CHANNELS=dingtalk,feishu,wechat,qq,wecom,yuanbao,xiaoyi,imessage
       - QWENPAW_CHANNEL_PRESET=light
+      - TZ=Asia/Kolkata
+      - LANG=en_US.UTF-8
+      - LC_ALL=en_US.UTF-8
     volumes:
       - /data/home/qwenpaw/working:/app/working
       - /data/home/qwenpaw/working.secret:/app/working.secret
