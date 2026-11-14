@@ -1,0 +1,27 @@
+services:
+  qwenpaw:
+    image: agentscope/qwenpaw:v2.3.0
+    init: true
+    container_name: qwenpaw
+    restart: always
+    ports:
+      - "127.0.0.1:8088:8088"
+    env_file:
+      - .env
+    environment:
+      - QWENPAW_AUTH_ENABLED=true
+      - QWENPAW_AUTH_USERNAME=admin
+      - QWENPAW_AUTH_PASSWORD=${QWENPAW_AUTH_PASSWORD:?set QWENPAW_AUTH_PASSWORD in .env}
+      - QWENPAW_TELEMETRY_DISABLED=true
+      - QWENPAW_DISABLED_CHANNELS=dingtalk,feishu,wechat,qq,wecom,yuanbao,xiaoyi,imessage
+      - QWENPAW_CHANNEL_PRESET=light
+    volumes:
+      - /data/home/qwenpaw/working:/app/working
+      - /data/home/qwenpaw/working.secret:/app/working.secret
+      - /data/home/qwenpaw/working.backups:/app/working.backups
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/api/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
