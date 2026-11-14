@@ -322,6 +322,73 @@ the crashpad-handler children (which inherit the launch env and DO show
 renders and stays rendered; (2) new QwenPaw chat → "take a screenshot
 of the desktop" — confirm the browser window is visible in the reply.
 
+## Screenshot fix — the agent's own screenshot showed a bare desktop (2026-11-15 ~04:25 IST)
+
+**Correction to BUG 2 above:** the AT-SPI fix fixed the MCP path only
+(`get_app_state` returns the window). The agent's own chat screenshot
+still showed a bare desktop at 04:10 IST — because the agent does NOT
+use the MCP for "take a screenshot of the desktop". It uses QwenPaw's
+native tool `DesktopScreenshot`
+(`/app/src/qwenpaw/agents/tools/desktop_screenshot.py`), which captures
+with **mss** (`mss.mss().shot(mon=0)`) inside the container.
+
+**Real root cause (measured live):** the container runs its OWN full
+desktop — Xvfb `:1` (1280x800) + `dbus-run-session startxfce4` +
+xfce4-session/panel/xfdesktop, all started by supervisord from the
+image's `/etc/supervisor/conf.d/supervisord.conf.template` — while the
+host's real desktop is Xvnc `:1` (1920x1080, Chromium + wordsolverx).
+Both claim display `:1`, but the container's `/tmp/.X11-unix` is private
+to it, and the QwenPaw server runs with `DISPLAY=:1`. So mss always
+captured the container's phantom XFCE desktop (same wallpaper/icons/dock
+— hence "bare desktop"), never the host desktop. A compositor would not
+have helped: Chromium is not on that X server at all.
+
+**Fix (live, container recreated once — the restart was necessary and is
+the proof: `DISPLAY=:1` is baked into the running supervisord `app`
+environment, the internal Xvfb owned the container's X1 socket, and the
+host socket can only be shared via a compose volume change):**
+- `instabox/docker-compose.yml`: added volumes
+  `/tmp/.X11-unix:/tmp/.X11-unix` (host X sockets into the container)
+  and `/data/home/qwenpaw/supervisord.conf.template:/etc/supervisor/
+  conf.d/supervisord.conf.template:ro`.
+- `instabox/supervisord.conf.template` (new, byte-identical to the live
+  file): `xvfb` and `xfce4` programs set `autostart=false`,
+  `autorestart=false`, and the `rm -f /tmp/.X1-lock /tmp/.X11-unix/X1`
+  was removed from the xvfb command — with the host socket mounted in,
+  that rm would have deleted the host desktop's socket. Disabling xfce4
+  also matters: otherwise a second XFCE session would start against the
+  host display and fight the host's own session.
+- `docker compose up -d` recreated the container (backup:
+  `docker-compose.yml.bak-2026-11-15-screenshot-fix` on the machine).
+  A fresh snapshot create was refused with HTTP 429 (rate limit — not
+  retried); the existing `qwenpaw-desktop-working` snapshot remains the
+  restore point.
+
+**Verification (mechanism + live behaviour):** after the recreate the
+container has no Xvfb/XFCE processes, its `/tmp/.X11-unix` shows the
+host's X1/X99 sockets, and `mss` inside the container captures
+1920x1080 — pixel-identical to the host's own `scrot` (same brightness
+grid, same center pixel). `list_apps` still shows Chromium
+(`[running, pid=72478, window=Daily Puzzle Answers, Solvers & Wordle
+Tools - Chromium]`); qwenpawx root and `/desktop` both 200.
+**Parent browser proof 04:23 IST:** new chat "take a screenshot of the
+desktop" → zero approval prompts, 3 steps, 8 s, and the screenshot
+**shows the Chromium window with wordsolverx.com** (two tabs — the
+second tab came from the re-open call below).
+
+**One loose end, stated honestly:** after the recreate the Chromium
+window was found `IsUnMapped` (10x10; its frame 1920x1032 also
+unmapped) even though the process was alive and the parent had seen it
+mapped at 04:11 IST. The only desktop interactions in that window were
+MCP clicks/keys (22:44–22:49 UTC, incl. a `click_method=global` call) —
+correlating, not proven. It was re-mapped with the bridge
+(`POST /desktop-open {"url":"https://wordsolverx.com"}` → `{"ok":true}`,
+window `0xe00003` 1920x1004 `IsViewable`) and stayed mapped across
+re-checks. If an agent screenshot ever comes back bare again, first
+check `xwininfo -id <chromium-window>` map state; if unmapped, re-open
+the URL through the bridge — do not re-diagnose the capture path, it is
+now the host display.
+
 ## Limits (honest)
 
 - The desktop dies when the Free VM pauses (30-min idle) or the run ends
