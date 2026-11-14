@@ -1,0 +1,14 @@
+[Unit]
+Description=Dedicated D-Bus session bus for the QA-agent display :2
+After=network.target
+
+[Service]
+Type=simple
+User=user
+ExecStartPre=/bin/mkdir -p /run/user/1000/qa
+ExecStart=/usr/bin/dbus-daemon --session --address=unix:path=/run/user/1000/qa/bus --nofork
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
