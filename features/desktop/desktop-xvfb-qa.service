@@ -1,0 +1,14 @@
+[Unit]
+Description=Xvfb display :2 (private QA-agent desktop)
+After=network.target
+
+[Service]
+Type=simple
+User=user
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/Xvfb :2 -screen 0 1920x1080x24 -nolisten tcp
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
