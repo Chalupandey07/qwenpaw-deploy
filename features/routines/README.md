@@ -170,6 +170,13 @@ Gotchas found during this build (all verified live):
   Rotate with `PUT /client/v4/accounts/<id>/workers/scripts/qwenpaw-routines/secrets`
   `{"name":"ROUTINE_WEBHOOK_TOKEN","text":"<new generated value>","type":"secret_text"}`.
   The token value is delivered to the user only — never in git.
+- Public GETs never return prompt text (re-test fix 2026-11-15, RT-001):
+  `GET /`, `GET /api/status` and `GET /api/routines` return routine
+  id/name/schedule/state only — the `prompt` field is stripped, and
+  pending triggers are shown without their submitted prompt. The
+  token-gated `POST /api/routines` response still returns the full
+  definition to the token holder who wrote it. Read prompts from KV
+  (`routines:definitions`), never from the public status page.
 - The Worker never stores a QwenPaw password. If prompt delivery from the
   Worker is ever wanted, the safe form is a dedicated low-privilege
   QwenPaw account + a token with a short expiry (`expires_in` on
