@@ -58,6 +58,37 @@ function esc(s) {
   }[c]));
 }
 
+// Public view of a routine definition. The full definition (including the
+// `prompt` text — the user's own automation instructions) is NEVER returned
+// on an unauthenticated GET: GET /, GET /api/status and GET /api/routines
+// are public by design (status page), so they expose only id/name/schedule/
+// state. The token-gated POST /api/routines response still returns the full
+// definition to the token holder who just wrote it. (Re-test 2026-11-15,
+// RT-001: unauthenticated GETs previously returned full prompt text.)
+function publicRoutine(r) {
+  if (!r || typeof r !== "object") return r;
+  return {
+    id: r.id ?? null,
+    name: r.name ?? r.id ?? null,
+    scheduleNote: r.scheduleNote || "",
+    active: r.active !== false,
+  };
+}
+
+// Public view of a pending manual trigger: id/at/routine/status only —
+// never the submitted prompt text (same RT-001 reason as publicRoutine).
+function publicPending(p) {
+  if (!p || typeof p !== "object") return p;
+  return {
+    id: p.id ?? null,
+    at: p.at ?? "",
+    routineId: p.routineId || null,
+    status: p.status || "",
+    qwenpaw: p.qwenpaw || "",
+    httpStatus: p.httpStatus ?? null,
+  };
+}
+
 async function readJson(env, key, fallback) {
   try {
     const raw = await env.STATUS.get(key);
@@ -125,17 +156,20 @@ async function scheduledTick(env, ctx, cron) {
 
 function statusPage(defs, hist, pending, qwenpawUrl) {
   const rows = hist.map((h) => `<tr><td>${esc(h.at)}</td><td>${esc(h.kind)}</td><td>${esc(h.qwenpaw)} (${esc(h.httpStatus)})</td><td>${esc(h.note || "")}</td><td>${esc((h.activeRoutines || []).join(", "))}</td></tr>`).join("");
-  const defRows = defs.map((r) => `<tr><td>${esc(r.id)}</td><td>${esc(r.name)}</td><td>${esc(r.scheduleNote || "")}</td><td>${esc(r.active ? "active" : "paused")}</td><td>${esc(r.prompt || "")}</td></tr>`).join("");
-  const pendRows = pending.map((p) => `<tr><td>${esc(p.at)}</td><td>${esc(p.routineId || "-")}</td><td>${esc(p.prompt || "")}</td><td>${esc(p.status)}</td></tr>`).join("");
+  // RT-001: prompt text is never rendered on this public page. The Prompt
+  // column was removed (was: esc(r.prompt)); the owner reads prompts from
+  // KV (routines:definitions), never from the public status page.
+  const defRows = defs.map((r) => `<tr><td>${esc(r.id)}</td><td>${esc(r.name)}</td><td>${esc(r.scheduleNote || "")}</td><td>${esc(r.active ? "active" : "paused")}</td></tr>`).join("");
+  const pendRows = pending.map((p) => `<tr><td>${esc(p.at)}</td><td>${esc(p.routineId || "-")}</td><td>${esc(p.status)}</td></tr>`).join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>QwenPaw Routines</title><style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2em auto;padding:0 1em}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left;font-size:14px}code{background:#f2f2f2;padding:1px 4px}</style></head><body>
 <h1>QwenPaw Routines</h1>
 <p>Wake + history layer for QwenPaw on InstaBox Free. The scheduler of record is QwenPaw's <b>native cron system</b> (<code>POST /api/cron/jobs</code>, stored in <code>jobs.json</code> v2). This Worker wakes the machine every 30 min and at 07:00 IST daily so native jobs can fire despite the 30-min idle pause.</p>
 <p>Console: <a href="${esc(qwenpawUrl)}">${esc(qwenpawUrl)}</a> &middot; <a href="/api/status">JSON status</a> &middot; <a href="/api/history">JSON history</a></p>
 <h2>Routines (registry in KV, key <code>routines:definitions</code>)</h2>
-<table><tr><th>ID</th><th>Name</th><th>Schedule</th><th>State</th><th>Prompt</th></tr>${defRows || "<tr><td colspan=5>No routines defined yet.</td></tr>"}</table>
+<table><tr><th>ID</th><th>Name</th><th>Schedule</th><th>State</th></tr>${defRows || "<tr><td colspan=4>No routines defined yet.</td></tr>"}</table>
 <h2>Pending manual triggers</h2>
-<table><tr><th>At</th><th>Routine</th><th>Prompt</th><th>Status</th></tr>${pendRows || "<tr><td colspan=4>None pending.</td></tr>"}</table>
+<table><tr><th>At</th><th>Routine</th><th>Status</th></tr>${pendRows || "<tr><td colspan=3>None pending.</td></tr>"}</table>
 <p>Pending prompts are <b>not</b> delivered automatically: this Worker holds no QwenPaw login. Paste the prompt in the console, or turn it into a native cron job (see the repo README).</p>
 <h2>Recent wake ticks (newest first)</h2>
 <table><tr><th>At (UTC)</th><th>Kind</th><th>QwenPaw</th><th>Note</th><th>Active routines</th></tr>${rows || "<tr><td colspan=5>No ticks recorded yet.</td></tr>"}</table>
@@ -174,7 +208,7 @@ export default {
     if (url.pathname === "/" || url.pathname === "/index.html") {
       const defs = await readJson(env, DEFINITIONS_KEY, []);
       const hist = await readJson(env, HISTORY_KEY, []);
-      const pending = await listPending(env);
+      const pending = (await listPending(env)).map(publicPending);
       return new Response(statusPage(defs, hist, pending, env.QWENPAW_URL || ""), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
@@ -185,7 +219,7 @@ export default {
       const defs = await readJson(env, DEFINITIONS_KEY, []);
       return json({
         worker: "qwenpaw-routines", qwenpaw: probe,
-        routines: defs, schedulerOfRecord: "qwenpaw native cron (POST /api/cron/jobs, jobs.json v2)",
+        routines: defs.map(publicRoutine), schedulerOfRecord: "qwenpaw native cron (POST /api/cron/jobs, jobs.json v2)",
         note: "This Worker wakes QwenPaw and records history. It does not deliver prompts (no QwenPaw login stored).",
       });
     }
@@ -195,7 +229,7 @@ export default {
     }
 
     if (url.pathname === "/api/routines" && request.method === "GET") {
-      return json({ routines: await readJson(env, DEFINITIONS_KEY, []) });
+      return json({ routines: (await readJson(env, DEFINITIONS_KEY, [])).map(publicRoutine) });
     }
 
     // Add/replace one routine definition. Fail closed: if no webhook token
