@@ -1,0 +1,20 @@
+[Unit]
+Description=Camoufox HTTP bridge for QwenPaw (Option B)
+After=network-online.target docker.service camoufox-vnc.service
+Wants=network-online.target camoufox-vnc.service
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/data/home/camoufox
+EnvironmentFile=/data/home/camoufox/.env
+Environment=XDG_CACHE_HOME=/data/home/camoufox/cache
+Environment=CAMOUFOX_VIRTUAL_DISPLAY_SIZE=1920x1080x24
+Environment=CAMOUFOX_VIRTUAL_DISPLAY=:99
+Environment=BRIDGE_PORT=8899
+ExecStart=/data/home/camoufox/.venv/bin/python /data/home/camoufox/bridge/bridge.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
