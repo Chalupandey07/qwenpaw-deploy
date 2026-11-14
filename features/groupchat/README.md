@@ -137,7 +137,9 @@ Worker, so every endpoint except `GET /` requires header
 tokens leak in logs/Referer/history). Mutating writes are rate-limited
 to 30/min per client IP (429 + `Retry-After`); reads are never limited.
 The relay sends the header only. Never put a QwenPaw user token in the
-Worker.
+Worker. Fail closed (re-test fix 2026-11-15, RT-002): if the secret is
+ever unset, every gated endpoint returns 401 instead of silently
+reopening the thread.
 
 ### Deploy / redeploy
 
