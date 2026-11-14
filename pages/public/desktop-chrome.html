@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QwenPaw — Computer</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0f1115; color: #e8eaf0; font-family: system-ui, -apple-system, sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  header { display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 14px; background: #171a21; border-bottom: 1px solid #262a33; flex: none; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; flex: none; }
+  .dot.asleep { background: #f59e0b; }
+  .title { font-weight: 650; font-size: 15px; white-space: nowrap; }
+  .subtitle { color: #9aa3b2; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .spacer { flex: 1; }
+  .pill { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: #262a33; color: #c8cfdb; white-space: nowrap; }
+  .pill.live { background: #14532d; color: #86efac; }
+  .pill.control { background: #14532d; color: #86efac; }
+  button { font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 8px; border: 1px solid #343945; background: #23272f; color: #e8eaf0; cursor: pointer; white-space: nowrap; }
+  button:hover { background: #2c313c; }
+  button.primary { background: #22c55e; border-color: #22c55e; color: #06210f; font-weight: 650; }
+  button.primary:hover { background: #4ade80; }
+  button.danger { border-color: #7f1d1d; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #menuWrap { position: relative; }
+  #menu { display: none; position: absolute; right: 0; top: 40px; background: #1d2129; border: 1px solid #343945; border-radius: 10px; min-width: 210px; padding: 6px; z-index: 50; box-shadow: 0 12px 32px rgba(0,0,0,.5); }
+  #menu.open { display: block; }
+  #menu button { display: block; width: 100%; text-align: left; background: none; border: none; padding: 9px 10px; border-radius: 6px; }
+  #menu button:hover { background: #2c313c; }
+  #menu .note { padding: 8px 10px; font-size: 12px; color: #9aa3b2; }
+  #screenWrap { position: relative; flex: 1; background: #000; overflow: hidden; }
+  #screenWrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+  #screenWrap iframe.view { pointer-events: none; }
+  #screenWrap iframe.control { pointer-events: auto; }
+  #screenOverlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 14px; background: rgba(15,17,21,.92); z-index: 30; text-align: center; padding: 2rem; }
+  #screenOverlay.show { display: flex; }
+  #screenOverlay h2 { margin: 0; font-size: 18px; }
+  #screenOverlay p { margin: 0; color: #9aa3b2; max-width: 480px; }
+  .spinner { width: 28px; height: 28px; border: 3px solid #343945; border-top-color: #22c55e; border-radius: 50%; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: #1d2129; border: 1px solid #343945; border-radius: 10px; padding: 10px 16px; font-size: 13px; display: none; z-index: 100; max-width: 90vw; }
+  #toast.show { display: block; }
+  #toast.err { border-color: #7f1d1d; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="dot" id="dot"></span>
+    <span class="title">QwenPaw</span>
+    <span class="subtitle">QwenPaw&rsquo;s computer</span>
+    <span class="pill" id="statusPill">Connecting&hellip;</span>
+    <span class="spacer"></span>
+    <button id="takeBtn" class="primary" style="display:none">Take control</button>
+    <span class="pill control" id="controlPill" style="display:none">You have control</span>
+    <button id="releaseBtn" style="display:none">Release control</button>
+    <span id="menuWrap">
+      <button id="menuBtn" aria-label="More actions">&hellip;</button>
+      <span id="menu">
+        <button data-action="stop">Stop computer</button>
+        <button data-action="recover">Recover computer</button>
+        <button data-action="reset">Reset computer</button>
+        <button data-action="update">Update computer</button>
+        <span class="note" id="menuNote"></span>
+      </span>
+    </span>
+    <button id="closeBtn" aria-label="Close computer">&times;</button>
+  </header>
+  <div id="screenWrap">
+    <div id="screenOverlay">
+      <div class="spinner" id="overlaySpinner" style="display:none"></div>
+      <h2 id="overlayTitle">Connecting&hellip;</h2>
+      <p id="overlayText"></p>
+      <span id="overlayActions"></span>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+<script>
+(function () {
+  "use strict";
+  var wrap = document.getElementById("screenWrap");
+  var overlay = document.getElementById("screenOverlay");
+  var overlayTitle = document.getElementById("overlayTitle");
+  var overlayText = document.getElementById("overlayText");
+  var overlayActions = document.getElementById("overlayActions");
+  var overlaySpinner = document.getElementById("overlaySpinner");
+  var statusPill = document.getElementById("statusPill");
+  var dot = document.getElementById("dot");
+  var takeBtn = document.getElementById("takeBtn");
+  var releaseBtn = document.getElementById("releaseBtn");
+  var controlPill = document.getElementById("controlPill");
+  var menuBtn = document.getElementById("menuBtn");
+  var menu = document.getElementById("menu");
+  var menuNote = document.getElementById("menuNote");
+  var closeBtn = document.getElementById("closeBtn");
+  var toastEl = document.getElementById("toast");
+
+  var leaseId = null, leaseExpiresAt = 0, mode = "view", capUrl = null;
+  var heartbeatTimer = null, reconnectTimer = null, reconnectAttempts = 0;
+  var currentFrame = null, heldFrame = null, heldTimer = null, connected = false;
+  var statusPollTimer = null, toastTimer = null;
+
+  function toast(msg, isErr) {
+    toastEl.textContent = msg;
+    toastEl.className = isErr ? "show err" : "show";
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.className = ""; }, 6000);
+  }
+
+  async function api(path, method, body) {
+    var r = await fetch(path, {
+      method: method || "GET",
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    var j = null;
+    try { j = await r.json(); } catch (e) { /* non-JSON */ }
+    return { status: r.status, json: j || {} };
+  }
+
+  function setPill(text, cls) {
+    statusPill.textContent = text;
+    statusPill.className = "pill" + (cls ? " " + cls : "");
+    dot.className = "dot" + (text === "Asleep" ? " asleep" : "");
+  }
+
+  function showOverlay(title, text, spinner, actionsHtml) {
+    overlayTitle.textContent = title;
+    overlayText.textContent = text || "";
+    overlaySpinner.style.display = spinner ? "block" : "none";
+    overlayActions.innerHTML = actionsHtml || "";
+    overlay.classList.add("show");
+  }
+
+  function hideOverlay() { overlay.classList.remove("show"); }
+
+  function setControlUI(hasControl) {
+    takeBtn.style.display = hasControl ? "none" : "";
+    releaseBtn.style.display = hasControl ? "" : "none";
+    controlPill.style.display = hasControl ? "" : "none";
+    if (currentFrame) currentFrame.className = hasControl ? "control" : "view";
+  }
+
+  function screenState(state, detail) {
+    if (state === "connected") {
+      connected = true;
+      reconnectAttempts = 0;
+      setPill(mode === "control" ? "You have control" : "Live", "live");
+      hideOverlay();
+      dropHeldFrame();
+      if (currentFrame) {
+        try { currentFrame.contentWindow.postMessage({ qwenpawScreenFocus: true }, window.location.origin); } catch (e) {}
+      }
+    } else if (state === "connecting" || state === "loading") {
+      setPill("Connecting…");
+      showOverlay("Connecting to the desktop…", "", true, "");
+    } else if (state === "failed" || state === "disconnected") {
+      connected = false;
+      setPill("Screen not connected");
+      scheduleReconnect(detail || "The screen connection dropped.");
+    }
+  }
+
+  function scheduleReconnect(detail) {
+    if (reconnectAttempts >= 10) {
+      showOverlay("Screen not connected", detail + " The desktop may have paused.", false,
+        '<button id="retryBtn">Retry screen</button>');
+      var b = document.getElementById("retryBtn");
+      if (b) b.onclick = function () { reconnectAttempts = 0; mountScreen(mode); };
+      return;
+    }
+    var delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+    reconnectAttempts++;
+    showOverlay("Reconnecting…", detail, true, "");
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(function () { mountScreen(mode); }, delay);
+  }
+
+  function dropHeldFrame() {
+    clearTimeout(heldTimer);
+    if (heldFrame) { try { heldFrame.remove(); } catch (e) {} heldFrame = null; }
+  }
+
+  async function mintScreen(wantMode) {
+    var r = await api("/desktop/__screen", "POST", { mode: wantMode, leaseId: leaseId });
+    if (r.status !== 200 || !r.json.url) return null;
+    return r.json.url;
+  }
+
+  function buildVncUrl(capPath, wantMode) {
+    var path = capPath.replace(/^\//, "") + "/websockify";
+    return capPath + "/vnc.html?autoconnect=true&resize=scale&view_only=" + (wantMode === "view" ? "true" : "false") +
+      "&path=" + encodeURIComponent(path);
+  }
+
+  async function mountScreen(wantMode) {
+    mode = wantMode;
+    var url = await mintScreen(wantMode);
+    if (!url) {
+      showOverlay("Screen link expired", "Could not mint a screen link. Please reload /desktop.", false,
+        '<button onclick="location.reload()">Reload</button>');
+      return;
+    }
+    capUrl = url;
+    var vncUrl = buildVncUrl(url, wantMode);
+    // Pre-probe (Rakazo): 403 = link expired (re-mint once), other errors
+    // = screen did not respond. The held predecessor frame stays mounted
+    // on top while the new frame connects, so the screen never blanks.
+    try {
+      var probe = await fetch(vncUrl, { redirect: "manual" });
+      if (probe.status === 403) {
+        url = await mintScreen(wantMode);
+        if (!url) { showOverlay("Screen link expired", "Please reload /desktop.", false, '<button onclick="location.reload()">Reload</button>'); return; }
+        capUrl = url;
+        vncUrl = buildVncUrl(url, wantMode);
+      } else if (probe.status >= 400) {
+        scheduleReconnect("The screen did not respond (" + probe.status + ").");
+        return;
+      }
+      try { await probe.body.cancel(); } catch (e) {}
+    } catch (e) {
+      scheduleReconnect("The screen did not respond.");
+      return;
+    }
+    var frame = document.createElement("iframe");
+    frame.className = wantMode === "control" ? "control" : "view";
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-pointer-lock");
+    frame.setAttribute("allow", "clipboard-read; clipboard-write; fullscreen");
+    frame.src = vncUrl;
+    if (currentFrame) {
+      heldFrame = currentFrame;
+      heldFrame.style.zIndex = "2";
+    }
+    currentFrame = frame;
+    frame.style.zIndex = "1";
+    wrap.appendChild(frame);
+    connected = false;
+    screenState("loading");
+    clearTimeout(heldTimer);
+    heldTimer = setTimeout(dropHeldFrame, 15000);
+  }
+
+  window.addEventListener("message", function (ev) {
+    if (ev.origin !== window.location.origin) return;
+    var d = ev.data || {};
+    if (d.type === "qwenpawScreen" && d.state) screenState(d.state, d.detail);
+  });
+
+  async function takeControl() {
+    takeBtn.disabled = true;
+    var r = await api("/desktop/__takeover", "POST", {});
+    takeBtn.disabled = false;
+    if (r.status !== 200 || !r.json.ok) {
+      if (r.json.error === "held") {
+        toast("Someone else is using this computer — the hold expires in about 90 s if their tab goes away. Try again shortly.", true);
+      } else {
+        toast("Could not take control (" + (r.json.error || r.status) + ").", true);
+      }
+      return;
+    }
+    leaseId = r.json.leaseId;
+    leaseExpiresAt = r.json.expiresAt;
+    setControlUI(true);
+    await mountScreen("control");
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(async function () {
+      if (document.visibilityState !== "visible" || !leaseId) return;
+      var h = await api("/desktop/__heartbeat", "POST", { leaseId: leaseId });
+      if (h.status !== 200 || !h.json.ok) {
+        clearInterval(heartbeatTimer);
+        leaseId = null;
+        setControlUI(false);
+        toast("Control expired — back to watching.", true);
+        await mountScreen("view");
+      } else {
+        leaseExpiresAt = h.json.expiresAt;
+      }
+    }, 15000);
+  }
+
+  async function releaseControl(sendBeacon) {
+    if (!leaseId) return;
+    var id = leaseId;
+    leaseId = null;
+    clearInterval(heartbeatTimer);
+    setControlUI(false);
+    if (sendBeacon && navigator.sendBeacon) {
+      try { navigator.sendBeacon("/desktop/__release", JSON.stringify({ leaseId: id })); } catch (e) {}
+    } else {
+      try { await api("/desktop/__release", "POST", { leaseId: id }); } catch (e) {}
+    }
+    await mountScreen("view");
+  }
+
+  takeBtn.addEventListener("click", takeControl);
+  releaseBtn.addEventListener("click", function () { releaseControl(false); });
+  closeBtn.addEventListener("click", async function () {
+    await releaseControl(false);
+    location.href = "/chat";
+  });
+  window.addEventListener("pagehide", function () { releaseControl(true); });
+
+  menuBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    menu.classList.toggle("open");
+  });
+  document.addEventListener("click", function () { menu.classList.remove("open"); });
+  menu.querySelectorAll("button[data-action]").forEach(function (btn) {
+    btn.addEventListener("click", async function () {
+      var action = btn.getAttribute("data-action");
+      menu.classList.remove("open");
+      if ((action === "reset" || action === "recover") &&
+          !window.confirm("Are you sure you want to " + action + " the computer? Unsaved work on the desktop may be lost.")) {
+        return;
+      }
+      var r = await api("/desktop/__action", "POST", { action: action });
+      if (r.status === 200 && r.json.ok) {
+        toast("Computer " + action + " requested.");
+        if (action === "stop") setTimeout(init, 3000);
+      } else if (r.json.error === "instabox_api_key_unset") {
+        toast("Maintenance needs the InstaBox API key — it is not set as a Worker secret yet.", true);
+        menuNote.textContent = "Maintenance actions need INSTABOX_API_KEY set as a Worker secret (then redeploy).";
+      } else if (r.json.error === "unsupported") {
+        toast("“" + action + "” is not supported by the InstaBox desktop API. " + (r.json.note || ""), true);
+      } else {
+        toast("Maintenance action failed (" + (r.json.error || r.status) + ").", true);
+      }
+    });
+  });
+
+  async function wake() {
+    showOverlay("Booting live desktop…", "Waking the machine. This usually takes under a minute.", true, "");
+    setPill("Booting…");
+    var r = await api("/desktop/__wake", "POST", {});
+    if (r.status !== 200 || !r.json.ok) {
+      showOverlay("Could not wake the computer", r.json.error === "throttled" ? "Wake was requested a moment ago — please wait a little and try again." : "The wake request failed. Try again in a moment.", false,
+        '<button id="wakeRetry">Try again</button>');
+      document.getElementById("wakeRetry").onclick = wake;
+      return;
+    }
+    clearInterval(statusPollTimer);
+    statusPollTimer = setInterval(async function () {
+      var s = await api("/desktop/__status", "GET");
+      if (s.status === 200 && s.json.desktop === "up") {
+        clearInterval(statusPollTimer);
+        await mountScreen("view");
+      } else if (s.status === 200 && s.json.desktop === "waking") {
+        showOverlay("Booting live desktop…", "The machine is starting.", true, "");
+      }
+    }, 5000);
+  }
+
+  async function init() {
+    setControlUI(false);
+    var s = await api("/desktop/__status", "GET");
+    if (s.status !== 200) {
+      showOverlay("Could not reach the desktop", "The status check failed. Reload to try again.", false,
+        '<button onclick="location.reload()">Reload</button>');
+      return;
+    }
+    if (s.json.desktop === "up") {
+      setPill("Live", "live");
+      takeBtn.style.display = "";
+      await mountScreen("view");
+    } else if (s.json.desktop === "waking") {
+      showOverlay("Booting live desktop…", "The machine is starting.", true, "");
+      setPill("Booting…");
+      clearInterval(statusPollTimer);
+      statusPollTimer = setInterval(async function () {
+        var s2 = await api("/desktop/__status", "GET");
+        if (s2.status === 200 && s2.json.desktop === "up") {
+          clearInterval(statusPollTimer);
+          setPill("Live", "live");
+          takeBtn.style.display = "";
+          await mountScreen("view");
+        }
+      }, 5000);
+    } else {
+      setPill("Asleep");
+      showOverlay("Computer is asleep", "The desktop is not running. Wake it to watch and drive it.", false,
+        '<button id="wakeBtn" class="primary">Wake computer</button>');
+      document.getElementById("wakeBtn").onclick = wake;
+    }
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
