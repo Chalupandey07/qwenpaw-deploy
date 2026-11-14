@@ -2,14 +2,25 @@
 // pages/public/_worker.js. Run: node features/desktop/harness-desktop-gate.mjs
 // Mocks the origin (QwenPaw healthz + noVNC + keep-alive) and exercises the
 // worker's fetch handler. NOT deployed — test-only.
+// Coverage: P0/P1 gate + lease + sealed capability (tests 1-21), plus the
+// P3 extension — per-computer lease (22-24), needs-you (25), preview
+// (26), teach-by-showing (27), Team/Private mode (28), terminal (29),
+// console side-panel injection (30), vendor files (31).
 import { createHmac } from "node:crypto";
 
 const ORIGIN = "https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
 const DESKTOP_ORIGIN = "https://6081-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
 const DESKTOP_VIEW_ORIGIN = "https://6082-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
+const DESKTOP_TERMINAL_ORIGIN = "https://6083-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
+const DESKTOP_QA_VIEW_ORIGIN = "https://6084-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
+const DESKTOP_QA_ORIGIN = "https://6085-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
 const KEEPALIVE_URL = "https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev";
 const TEST_SECRET = "test-desktop-secret";
 const TEST_VIEW_SECRET = "test-view-secret";
+const TEST_SYNC_SECRET = "test-sync-secret";
+const TEST_TERMINAL_SECRET = "test-terminal-secret";
+const TEST_QA_VIEW_SECRET = "test-qa-view-secret";
+const TEST_QA_SECRET = "test-qa-secret";
 
 // Mock KV (DESKTOP_KV binding).
 class MockKV {
@@ -22,6 +33,13 @@ class MockKV {
   }
   async put(k, v) { this.map.set(k, typeof v === "string" ? v : JSON.stringify(v)); }
   async delete(k) { this.map.delete(k); }
+  async list({ prefix } = {}) {
+    const keys = [];
+    for (const k of this.map.keys()) {
+      if (!prefix || k.startsWith(prefix)) keys.push({ name: k });
+    }
+    return { keys };
+  }
 }
 
 // Mock origin: healthz 200 only for the good token, 401 otherwise;
@@ -43,7 +61,7 @@ globalThis.fetch = async (input, init) => {
       headers: { "Content-Type": "application/json" },
     });
   }
-  if (url.startsWith(DESKTOP_ORIGIN) || url.startsWith(DESKTOP_VIEW_ORIGIN)) {
+  if (url.startsWith(DESKTOP_ORIGIN) || url.startsWith(DESKTOP_VIEW_ORIGIN) || url.startsWith(DESKTOP_TERMINAL_ORIGIN) || url.startsWith(DESKTOP_QA_VIEW_ORIGIN) || url.startsWith(DESKTOP_QA_ORIGIN)) {
     const u = new URL(url);
     const cookie = req.headers.get("Cookie") || "";
     seen.push({ origin: u.origin, path: u.pathname, hadToken: u.searchParams.has("_token"), hadAuth: cookie.includes("__Host-instabox_port_auth=test-auth") });
@@ -72,9 +90,17 @@ globalThis.fetch = async (input, init) => {
     return new Response(JSON.stringify({ status: "up" }), { status: 200, headers: { "Content-Type": "application/json" } });
   }
   if (url.startsWith(ORIGIN + "/")) {
-    return new Response("<html>console spa</html>", {
+    // The console SPA index (marker <div id="root") so the side-panel
+    // injection test can run; API JSON is a separate branch below.
+    if (url === ORIGIN + "/" || url === ORIGIN + "/chat") {
+      return new Response("<html><head><title>QwenPaw Console</title></head><body><div id=\"root\"></div>console spa</body></html>", {
+        status: 200,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    }
+    return new Response(JSON.stringify({ ok: true }), {
       status: 200,
-      headers: { "Content-Type": "text/html; charset=utf-8" },
+      headers: { "Content-Type": "application/json" },
     });
   }
   return new Response("not found", { status: 404 });
@@ -85,6 +111,10 @@ const kv = new MockKV();
 const env = {
   DESKTOP_ORIGIN_TOKEN: TEST_SECRET,
   DESKTOP_VIEW_TOKEN: TEST_VIEW_SECRET,
+  DESKTOP_TERMINAL_TOKEN: TEST_TERMINAL_SECRET,
+  DESKTOP_QA_VIEW_TOKEN: TEST_QA_VIEW_SECRET,
+  DESKTOP_QA_ORIGIN_TOKEN: TEST_QA_SECRET,
+  DESKTOP_SYNC_TOKEN: TEST_SYNC_SECRET,
   DESKTOP_KV: kv,
   ASSETS: {
     fetch: async (req) => {
@@ -94,6 +124,12 @@ const env = {
       }
       if (u.pathname === "/status-page.html") {
         return new Response("<html>status</html>", { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+      if (u.pathname === "/vendor/xterm.js") {
+        return new Response("/* xterm.js stub */", { status: 200, headers: { "Content-Type": "text/javascript" } });
+      }
+      if (u.pathname === "/vendor/xterm.css") {
+        return new Response("/* xterm.css stub */", { status: 200, headers: { "Content-Type": "text/css" } });
       }
       return new Response("asset not found", { status: 404 });
     },
@@ -182,7 +218,7 @@ j = await r.json();
 check("12c __lease now shows holder user + same leaseId", j.holder === "user" && j.leaseId === leaseId, `body=${JSON.stringify(j)}`);
 
 // 13. __heartbeat extends with the right leaseId; wrong leaseId -> 410.
-const before = (await kv.get("lease", "json")).expiresAt;
+const before = (await kv.get("lease:default", "json")).expiresAt;
 await new Promise((res) => setTimeout(res, 5));
 r = await call("/desktop/__heartbeat", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId }) });
 j = await r.json();
@@ -234,12 +270,12 @@ check("15d control fetch went to the INTERACTIVE origin (6081)",
 // the right release ends it and bumps the generation, killing old caps.
 r = await call("/desktop/__release", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: "00000000-0000-0000-0000-000000000000" }) });
 j = await r.json();
-check("16a __release with wrong leaseId -> stale, lease survives", r.status === 200 && j.error === "stale" && (await kv.get("lease", "json"))?.leaseId === leaseId, `body=${JSON.stringify(j)}`);
-const genBefore = await kv.get("generation");
+check("16a __release with wrong leaseId -> stale, lease survives", r.status === 200 && j.error === "stale" && (await kv.get("lease:default", "json"))?.leaseId === leaseId, `body=${JSON.stringify(j)}`);
+const genBefore = await kv.get("generation:default");
 r = await call("/desktop/__release", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId }) });
 j = await r.json();
 check("16b __release with right leaseId -> ok", r.status === 200 && j.released === true, `body=${JSON.stringify(j)}`);
-check("16c generation bumped on release", Number(await kv.get("generation")) === Number(genBefore) + 1, `gen=${await kv.get("generation")} before=${genBefore}`);
+check("16c generation bumped on release", Number(await kv.get("generation:default")) === Number(genBefore) + 1, `gen=${await kv.get("generation:default")} before=${genBefore}`);
 r = await call("/desktop/__lease");
 j = await r.json();
 check("16d __lease after release -> holder agent", j.holder === "agent", `body=${JSON.stringify(j)}`);
@@ -275,6 +311,188 @@ r = await call("/desktop/__screen", { method: "POST", headers: { "Content-Type":
 const viewCap2 = (await r.json()).url;
 r = await call(viewCap2 + "/foreign-redirect", { headers: cookieHdr });
 check("21 session foreign redirect dropped (no Location)", r.status === 302 && !r.headers.get("Location"), `status=${r.status} loc=${r.headers.get("Location")}`);
+
+// --- Extension: per-computer lease, needs-you, preview, teach, mode,
+// --- terminal, console injection, vendor files (P3) ----------------------
+const syncHdr = { "X-Desktop-Sync": TEST_SYNC_SECRET };
+
+// 22. Per-computer lease independence: a qa takeover does not touch the
+// default lease, and vice versa; each computer has its own generation.
+r = await call("/desktop/__takeover", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ computer: "qa" }) });
+j = await r.json();
+const qaLeaseId = j.leaseId;
+check("22a __takeover computer=qa -> 200 + leaseId", r.status === 200 && !!qaLeaseId, `status=${r.status} body=${JSON.stringify(j)}`);
+r = await call("/desktop/__lease?computer=default");
+j = await r.json();
+check("22b default lease still free after qa takeover", j.holder === "agent" && j.leaseId === null, `body=${JSON.stringify(j)}`);
+r = await call("/desktop/__lease?computer=qa");
+j = await r.json();
+check("22c qa lease shows holder user + qa leaseId", j.holder === "user" && j.leaseId === qaLeaseId, `body=${JSON.stringify(j)}`);
+r = await call("/desktop/__takeover", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ computer: "default" }) });
+j = await r.json();
+const defLeaseId = j.leaseId;
+check("22d __takeover computer=default works while qa is held", r.status === 200 && !!defLeaseId && defLeaseId !== qaLeaseId, `status=${r.status}`);
+r = await call("/desktop/__takeover", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ computer: "qa" }) });
+check("22e second qa takeover -> 409 held", r.status === 409, `status=${r.status}`);
+check("22f generations are per-computer (qa bumped, default bumped once each)",
+  Number(await kv.get("generation:qa")) === 1 && Number(await kv.get("generation:default")) >= 1,
+  `gen:qa=${await kv.get("generation:qa")} gen:default=${await kv.get("generation:default")}`);
+
+// 23. Per-computer heartbeat/release: a qa heartbeat must not extend the
+// default lease, and a default release must not end the qa lease.
+r = await call("/desktop/__heartbeat", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: qaLeaseId, computer: "qa" }) });
+check("23a __heartbeat qa leaseId + computer=qa -> 200", r.status === 200 && (await r.json()).ok === true, `status=${r.status}`);
+r = await call("/desktop/__heartbeat", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: qaLeaseId, computer: "default" }) });
+check("23b __heartbeat qa leaseId + computer=default -> 410 (wrong computer)", r.status === 410, `status=${r.status}`);
+r = await call("/desktop/__release", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: defLeaseId, computer: "default" }) });
+j = await r.json();
+check("23c __release default leaseId -> ok, qa lease survives", r.status === 200 && j.released === true && (await kv.get("lease:qa", "json"))?.leaseId === qaLeaseId, `body=${JSON.stringify(j)}`);
+r = await call("/desktop/__release", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: qaLeaseId, computer: "qa" }) });
+check("23d __release qa leaseId -> ok, qa lease gone", r.status === 200 && (await r.json()).released === true && (await kv.get("lease:qa", "json")) === null, `status=${r.status}`);
+
+// 24. Per-computer screen capability: a qa control capability routes to
+// the QA origins (6084 view / 6085 control), never the :1 origins.
+r = await call("/desktop/__takeover", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ computer: "qa" }) });
+const qaLease2 = (await r.json()).leaseId;
+r = await call("/desktop/__screen", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ mode: "control", leaseId: qaLease2, computer: "qa" }) });
+j = await r.json();
+const qaControlCap = j.url;
+check("24a __screen control computer=qa -> 200 + control URL", r.status === 200 && typeof qaControlCap === "string" && qaControlCap.startsWith("/desktop/session/control/"), `status=${r.status} url=${qaControlCap}`);
+seen.length = 0;
+r = await call(qaControlCap + "/vnc.html", { headers: cookieHdr });
+check("24b qa control session -> 200 via the QA interactive origin (6085)",
+  r.status === 200 && seen.some((s) => s.origin === DESKTOP_QA_ORIGIN) && !seen.some((s) => s.origin === DESKTOP_ORIGIN),
+  `status=${r.status} seen=${JSON.stringify(seen)}`);
+r = await call("/desktop/__screen", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ mode: "view", computer: "qa" }) });
+const qaViewCap = (await r.json()).url;
+seen.length = 0;
+r = await call(qaViewCap + "/vnc.html", { headers: cookieHdr });
+check("24c qa view session -> 200 via the QA view origin (6084)",
+  r.status === 200 && seen.some((s) => s.origin === DESKTOP_QA_VIEW_ORIGIN) && !seen.some((s) => s.origin === DESKTOP_VIEW_ORIGIN),
+  `status=${r.status} seen=${JSON.stringify(seen)}`);
+await call("/desktop/__release", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: qaLease2, computer: "qa" }) });
+
+// 25. Needs-you: raise (sync token) -> GET (cookie) shows it -> resolve
+// clears it. Wrong/absent sync token -> 401; GET without cookie -> gate.
+r = await call("/desktop/__needs-you", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "Sign-in needed" }) });
+check("25a __needs-you POST without sync token -> 401", r.status === 401, `status=${r.status}`);
+r = await call("/desktop/__needs-you", { method: "POST", headers: { "Content-Type": "application/json", "X-Desktop-Sync": "wrong-token" }, body: JSON.stringify({ text: "Sign-in needed" }) });
+check("25b __needs-you POST with wrong sync token -> 401", r.status === 401, `status=${r.status}`);
+r = await call("/desktop/__needs-you", { method: "POST", headers: { "Content-Type": "application/json", ...syncHdr }, body: JSON.stringify({ text: "Sign-in needed", runId: "run-1" }) });
+j = await r.json();
+check("25c __needs-you POST with sync token -> 200 + record", r.status === 200 && j.ok === true && j.record.text === "Sign-in needed" && j.record.runId === "run-1", `status=${r.status} body=${JSON.stringify(j)}`);
+r = await call("/desktop/__needs-you", { method: "POST", headers: { "Content-Type": "application/json", ...syncHdr }, body: JSON.stringify({ text: "   " }) });
+check("25d __needs-you POST with empty text -> 400", r.status === 400, `status=${r.status}`);
+r = await call("/desktop/__needs-you");
+check("25e __needs-you GET without cookie -> gate page (not the record)", r.status === 200 && (await r.text()).includes("/desktop/__verify"), `status=${r.status}`);
+r = await call("/desktop/__needs-you", { headers: cookieHdr });
+j = await r.json();
+check("25f __needs-you GET with cookie -> the record", r.status === 200 && j.record && j.record.text === "Sign-in needed", `body=${JSON.stringify(j)}`);
+r = await call("/desktop/__needs-you/resolve", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ action: "bogus" }) });
+check("25g __needs-you/resolve bad action -> 400", r.status === 400, `status=${r.status}`);
+r = await call("/desktop/__needs-you/resolve", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ action: "skip" }) });
+check("25h __needs-you/resolve skip -> 200", r.status === 200 && (await r.json()).ok === true, `status=${r.status}`);
+r = await call("/desktop/__needs-you", { headers: cookieHdr });
+j = await r.json();
+check("25i __needs-you GET after resolve -> record null", j.record === null, `body=${JSON.stringify(j)}`);
+
+// 26. Preview: upload (sync token, PNG) -> GET (cookie) returns the PNG,
+// per computer. Wrong token -> 401; non-PNG -> 400; no cookie -> gate.
+const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
+r = await call("/desktop/__preview-upload", { method: "POST", headers: { "Content-Type": "image/png" }, body: pngBytes });
+check("26a __preview-upload without sync token -> 401", r.status === 401, `status=${r.status}`);
+r = await call("/desktop/__preview-upload", { method: "POST", headers: { "Content-Type": "text/plain", ...syncHdr }, body: "not a png" });
+check("26b __preview-upload non-PNG -> 400", r.status === 400, `status=${r.status}`);
+r = await call("/desktop/__preview-upload?computer=qa", { method: "POST", headers: { "Content-Type": "image/png", ...syncHdr }, body: pngBytes });
+check("26c __preview-upload computer=qa -> 200", r.status === 200 && (await r.json()).ok === true, `status=${r.status}`);
+r = await call("/desktop/__preview?computer=default", { headers: cookieHdr });
+check("26d __preview computer=default with no upload yet -> 404", r.status === 404, `status=${r.status}`);
+r = await call("/desktop/__preview?computer=qa", { headers: cookieHdr });
+check("26e __preview computer=qa -> 200 PNG, same bytes", r.status === 200 && r.headers.get("Content-Type") === "image/png" && (await r.arrayBuffer()).byteLength === pngBytes.byteLength, `status=${r.status} ct=${r.headers.get("Content-Type")}`);
+r = await call("/desktop/__preview-upload", { method: "POST", headers: { "Content-Type": "image/png", ...syncHdr }, body: pngBytes });
+check("26f __preview-upload default -> 200", r.status === 200, `status=${r.status}`);
+r = await call("/desktop/__preview", { headers: cookieHdr });
+check("26g __preview default (no computer param) -> 200 PNG", r.status === 200 && (await r.arrayBuffer()).byteLength === pngBytes.byteLength, `status=${r.status}`);
+r = await call("/desktop/__preview?computer=qa");
+check("26h __preview without cookie -> gate page", r.status === 200 && (await r.text()).includes("/desktop/__verify"), `status=${r.status}`);
+
+// 27. Teach-by-showing: save (cookie) -> pending-skills list (sync token)
+// -> ack -> list empty. Bad skill -> 400; sensitive events redacted.
+r = await call("/desktop/__teach", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ name: "", goal: "x", playbook: { steps: ["do it"] } }) });
+check("27a __teach without a name -> 400 bad_skill", r.status === 400 && (await r.json()).error === "bad_skill", `status=${r.status}`);
+r = await call("/desktop/__teach", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({
+  name: "Harness taught skill", goal: "Test the teach flow",
+  playbook: { whenToUse: "when testing", inputs: ["a"], steps: ["Open the page", "Click submit"], howToCheck: "the page says done", whatToReturn: "done", approvalBoundaries: "none", failureHandling: "retry" },
+  events: [
+    { kind: "key", key: "s3cr3t-password", sensitive: true, at: "2026-11-15T00:00:00.000Z" },
+    { kind: "pointer", x: 100, y: 200, button: "left" },
+  ],
+}) });
+j = await r.json();
+const taughtId = j.id;
+check("27b __teach valid skill -> 200 + taught- id", r.status === 200 && typeof taughtId === "string" && taughtId.startsWith("taught-"), `status=${r.status} body=${JSON.stringify(j)}`);
+r = await call("/desktop/__pending-skills");
+check("27c __pending-skills without sync token -> 401", r.status === 401, `status=${r.status}`);
+r = await call("/desktop/__pending-skills", { headers: syncHdr });
+j = await r.json();
+const listed = j.skills && j.skills.find((s) => s.id === taughtId);
+check("27d __pending-skills lists the taught skill", r.status === 200 && !!listed && listed.name === "Harness taught skill", `body=${JSON.stringify(j).slice(0, 200)}`);
+check("27e sensitive teach event redacted (no key/text stored)",
+  !!listed && listed.events && listed.events[0] && listed.events[0].sensitive === true && !("key" in listed.events[0]) && !("text" in listed.events[0]) && listed.events[1].x === 100,
+  `events=${JSON.stringify(listed && listed.events)}`);
+r = await call("/desktop/__pending-skills/ack", { method: "POST", headers: { "Content-Type": "application/json", ...syncHdr }, body: JSON.stringify({ id: "bad id!" }) });
+check("27f __pending-skills/ack bad id -> 400", r.status === 400, `status=${r.status}`);
+r = await call("/desktop/__pending-skills/ack", { method: "POST", headers: { "Content-Type": "application/json", ...syncHdr }, body: JSON.stringify({ id: taughtId }) });
+check("27g __pending-skills/ack -> 200", r.status === 200 && (await r.json()).ok === true, `status=${r.status}`);
+r = await call("/desktop/__pending-skills", { headers: syncHdr });
+j = await r.json();
+check("27h __pending-skills after ack -> empty", j.skills.length === 0, `body=${JSON.stringify(j)}`);
+
+// 28. Mode: GET defaults to team; POST private sticks per agent; another
+// agent is unaffected; GET without cookie -> gate.
+r = await call("/desktop/__mode?agent=default", { headers: cookieHdr });
+check("28a __mode GET default agent -> team", r.status === 200 && (await r.json()).mode === "team", `status=${r.status}`);
+r = await call("/desktop/__mode", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ agent: "qa-agent", mode: "private" }) });
+check("28b __mode POST private -> 200", r.status === 200 && (await r.json()).mode === "private", `status=${r.status}`);
+r = await call("/desktop/__mode?agent=qa-agent", { headers: cookieHdr });
+check("28c __mode GET qa-agent -> private", (await r.json()).mode === "private", `status=${r.status}`);
+r = await call("/desktop/__mode?agent=default", { headers: cookieHdr });
+check("28d __mode GET default still team (per-agent)", (await r.json()).mode === "team", `status=${r.status}`);
+r = await call("/desktop/__mode?agent=default");
+check("28e __mode GET without cookie -> gate page", r.status === 200 && (await r.text()).includes("/desktop/__verify"), `status=${r.status}`);
+
+// 29. Terminal: capability mint requires a live lease (403 without, 200
+// with); the session routes to the terminal origin (6083).
+r = await call("/desktop/__screen", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ mode: "terminal" }) });
+check("29a __screen terminal without a lease -> 403 no_lease", r.status === 403 && (await r.json()).error === "no_lease", `status=${r.status}`);
+r = await call("/desktop/__takeover", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ computer: "default" }) });
+const termLeaseId = (await r.json()).leaseId;
+r = await call("/desktop/__screen", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ mode: "terminal", leaseId: termLeaseId }) });
+j = await r.json();
+const termCap = j.url;
+check("29b __screen terminal with lease -> 200 + terminal URL", r.status === 200 && typeof termCap === "string" && termCap.startsWith("/desktop/session/terminal/"), `status=${r.status} url=${termCap}`);
+seen.length = 0;
+r = await call(termCap + "/", { headers: cookieHdr });
+check("29c terminal session -> 200 via the terminal origin (6083)",
+  r.status === 200 && seen.some((s) => s.origin === DESKTOP_TERMINAL_ORIGIN),
+  `status=${r.status} seen=${JSON.stringify(seen)}`);
+await call("/desktop/__release", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: termLeaseId, computer: "default" }) });
+
+// 30. Console side-panel injection: the SPA index gets the panel script;
+// API JSON and the /status page do not.
+r = await call("/");
+body = await r.text();
+check("30a console / injects the side-panel script", r.status === 200 && body.includes("qwenpawComputerPanel") && body.includes("/desktop"), `status=${r.status} hasPanel=${body.includes("qwenpawComputerPanel")}`);
+r = await call("/api/auth/status");
+check("30b API JSON is NOT injected", r.status === 200 && !(await r.text()).includes("qwenpawComputerPanel"), `status=${r.status}`);
+r = await call("/status");
+check("30c /status page is NOT the console SPA (no panel script)", r.status === 200 && !(await r.text()).includes("qwenpawComputerPanel"), `status=${r.status}`);
+
+// 31. Vendor files: xterm.js + xterm.css served under /desktop/vendor.
+r = await call("/desktop/vendor/xterm.js", { headers: cookieHdr });
+check("31a /desktop/vendor/xterm.js -> 200 JS", r.status === 200 && (r.headers.get("Content-Type") || "").includes("javascript"), `status=${r.status} ct=${r.headers.get("Content-Type")}`);
+r = await call("/desktop/vendor/xterm.css", { headers: cookieHdr });
+check("31b /desktop/vendor/xterm.css -> 200 CSS", r.status === 200 && (r.headers.get("Content-Type") || "").includes("css"), `status=${r.status} ct=${r.headers.get("Content-Type")}`);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
