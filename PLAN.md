@@ -38,12 +38,13 @@ Rules that never change: English only, no China endpoints/data, InstaBox Free on
 - [ ] Add Drex as an OPTIONAL QwenPaw provider alongside Astra/Kilo/mosicn — never a replacement. NOTE from docs landing page: Drex is a calibrated decision/evaluation model + document intelligence (Perception/NDI), not a general chat LLM — the research must confirm exactly how it can (and cannot) be used as a provider before building anything
 - [ ] Test Drex provider in the test project rounds
 
-### Phase 4 — Memory (research first, then implement)
-- [ ] Research: deja-vu (vshulcz/deja-vu) — verdict replace-vs-augment for QwenPaw memory (research subagent running)
-- [ ] Lessons file: agent keeps writing lessons.md (correct spelling — verify against repo/QwenPaw convention) recording lessons + mistakes so it improves itself
-- [ ] Fast, low-token memory search (embeddings/indexed retrieval/summaries — design from research)
-- [ ] Research: Ripwire (redhat-et/ripwire) — ranked code map; verdict vs/complementing deja-vu (research subagent running)
-- [ ] Implement the winning memory setup; test recall speed + token cost in the test project
+### Phase 4 — Memory (Ripwire research DONE 2026-11-15, deja-vu research still running)
+- [x] Research: Ripwire (redhat-et/ripwire, v0.6.10, Apache-2.0) — zero-dependency C++23 CLI, one offline binary, no API key. Reads a source tree, writes a ranked symbol map: what to touch, callers, impact, which tests to run. Commands: `ripwire .` (~5.6K tokens vs 20–25K naive read), `--for="<change>"` (~2.1K tokens), `--callers/--impact/--pack-task/--test-gate/--recall/--edit-check`. 27 languages incl. JS/TS/Python/YAML/JSON/Markdown. Prebuilt binaries or cmake build (needs AVX2 x86-64-v3 — verify on VM first). Astra attempts for this research: gpt-6.1-sol 120s timeout, gpt-6-astra HTTP 429 — claims verified directly against the repo instead.
+- [x] Research finding: Ripwire and deja-vu are COMPLEMENTARY, not overlapping. Ripwire indexes code as it is now ("what to touch"); deja-vu indexes history ("what did we do before"). CRITICAL: QwenPaw is NOT one of deja-vu's 46 harnesses, so deja-vu cannot natively index QwenPaw chat history (chats.json/history.db/sessions format has no reader). Workarounds are partial: manual `remember` + repo `.deja/memory.jsonl` curation, or a QwenPaw store adapter (real work). NEITHER tool does lessons.md natively — closest is deja-vu's promoted notes; the honest implementation is a LESSONS.md skill/convention in the QwenPaw workspace (agent appends lesson + mistake + fix after each task, read at session start). GOTCHA: /tmp on the machine is a 512 MB tmpfs at 100% full — build under /data/home, never /tmp.
+- [ ] Implement (in this order): (1) Ripwire first — install binary on host /data/home/ripwire, bind-mount into the QwenPaw container (agent runs inside Docker), CLI-first not MCP (saves context); (2) deja-vu limited pilot — install, register MCP manually, use `remember` + repo memory.jsonl for curated decisions, do NOT expect automatic QwenPaw chat indexing; (3) LESSONS.md as a skill — append lesson + mistake + fix after each task, read at session start alongside MEMORY.md/AGENTS.md; optionally mirror code gotchas into .ripwire_notes and curated decisions into .deja/memory.jsonl.
+- [ ] Fast, low-token memory search: Ripwire --recall/--for for code+docs; deja-vu recall for session history (pilot); measure token cost per query.
+- [ ] Wait for the dedicated deja-vu research report before finalizing the deja-vu pilot scope.
+- [ ] Test recall speed + token cost in the test project
 
 ### Phase 5 — Cloudflare Code Mode (research first, then implement)
 - [ ] Research: cloudflare/agents Code Mode docs — MCP tools through TypeScript code, token savings, setup (research subagent running)
