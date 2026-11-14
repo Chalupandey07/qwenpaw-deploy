@@ -1,0 +1,18 @@
+name: Keep-alive backup ping
+# Backup only — the Cloudflare Worker cron is the primary keep-alive.
+# Runs every 15 min and pings the public InstaBox URL (wakes + counts as use).
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping QwenPaw
+        run: |
+          code=$(curl -s -m 30 -o /dev/null -w "%{http_code}" "$QWENPAW_URL" || echo 000)
+          echo "http=$code"
+          if [ "$code" = "503" ]; then sleep 60; curl -fsS -m 30 "$QWENPAW_URL" -o /dev/null || true; fi
+        env:
+          QWENPAW_URL: ${{ secrets.QWENPAW_URL }}
