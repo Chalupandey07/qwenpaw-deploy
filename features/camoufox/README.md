@@ -71,6 +71,7 @@ needs `Authorization: Bearer $CAMOUFOX_BRIDGE_TOKEN`.
 | `POST /eval` `{expression}` | `page.evaluate` |
 | `POST /state` | Current title + url |
 | `POST /restart` | Relaunch the browser |
+| `POST /desktop-open` `{url}` | Open the URL in the InstaBox desktop Chromium (display `:1` — the screen the user watches). New tab if Chromium is already running. Added 2026-11-15; verified live with example.com opening as a second tab next to wordsolverx.com. See `features/desktop/README.md`. |
 | `GET /latest.png?token=…` | Latest screenshot (PNG) |
 | `GET /watch?token=…` | Auto-refreshing (5 s) screenshot page |
 
