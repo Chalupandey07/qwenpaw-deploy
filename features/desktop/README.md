@@ -44,9 +44,22 @@ again 2026-11-14T21:49:50Z: `expiresAt` 2026-11-15T21:49:50Z, payload
 payload had field `"a":0`, fresh mints have `"i":0` (both have
 `u:-85024, g:0, v:false`) — no known meaning; do not chase it. **Rule:
 never hand over a stream link until it has rendered in a real browser.**
-A fresh 24 h link was minted 2026-11-14T21:49:50Z (expires
-2026-11-15T21:49:50Z) and is held for a browser render check before the
-user gets it.
+
+UPDATE 2026-11-15 ~03:55 IST: the 21:49:50Z token ALSO failed in a real
+browser ("This desktop link is invalid", first load + reload) — so the
+expiry theory is dead twice over. Decoded, that token's payload was
+`{u, g, v, e, i}` — it LACKS the machine id (`m`) and nonce (`n`) that
+the first (also rejected) token had. A mint is not always well-formed:
+fresh mints done after that one (21:58Z, 22:13Z) return the FULL
+7-field payload `{m, u, i, g, v, e, n}` with `e` = mint+86400. Why one
+mint came back short is unexplained (it was minted during the
+takeover/handback re-test, so desktop state at mint time is a suspect —
+never mint while a takeover is in progress). **Always decode the payload
+and check for `m` + `n` before trusting a mint.** A fresh full-payload
+link was minted 2026-11-14T22:13:52Z (expires 2026-11-15T22:13:52Z) and
+saved at `/tmp/stream-link.txt` for a parent browser render check —
+still NOT verified in a real browser, do not give it to the user until
+it renders.
 
 ## Embedded desktop — Rakazo-style, in the console itself (preferred)
 
@@ -59,22 +72,60 @@ user never uses a separate dashboard link. Ours now does the same:
   `pv-opxsq3ta4p5x7sh36c3kqteuf4`); its token is the Worker secret
   `DESKTOP_ORIGIN_TOKEN` on **both** Pages projects (never in git).
 - `pages/public/_worker.js` `/desktop` branch: session-gated on a valid
-  QwenPaw login — probes `ORIGIN + /api/healthz` with the visitor's
-  cookies (200 = proceed, 401 = 302 to `/`, 503 = waking page).
-  `/desktop` → 302 to
+  QwenPaw login. **The first gate design was wrong and is replaced — see
+  "Gate fix" below.** The current design: a gate page + `POST
+  /desktop/__verify` + HMAC-signed cookie (12 h, `Path=/desktop`, keyed
+  by `DESKTOP_ORIGIN_TOKEN`). `/desktop` → 302 to
   `/desktop/vnc.html?autoconnect=true&resize=scale&reconnect=true`,
   prefix-stripped proxy to the 6081 origin with `_token` added
   server-side only, Location rewriting (origin → `/desktop/*`, foreign
   dropped), Domain= stripped from cookies, `X-Frame-Options: SAMEORIGIN`
   + `CSP: frame-ancestors 'self'`, no-store/nosniff, WebSocket 101
-  passthrough. Local node harness: 9/9 checks pass (incl. no-secret →
-  503, healthz 401 → 302, origin 401 → 502, token only in server-side
-  origin URL). Deployed to both Pages projects.
-- Live verified: `/desktop` without a cookie → 302 to `/` on both
-  projects; `/` console still 200. **Logged-in path not yet verified**
-  (needs a real logged-in browser session) — the gate works because the
-  desktop lives on the same `qwenpawx.pages.dev` domain as the console
-  login cookies.
+  passthrough. Local node harness `harness-desktop-gate.mjs`: 11/11
+  checks pass (gate page, bad token → 401, good token → 200 + valid
+  HMAC cookie, forged/expired cookie → gate, vnc.html proxied, bad
+  JSON → 400, GET __verify → 405, console unaffected). Deployed to both
+  Pages projects.
+- Live verified: `/desktop` without a cookie serves the gate page (200,
+  1,884 B) on both projects; `POST /desktop/__verify` with a bad token
+  → 401 `{"ok":false}`; console still 200. **Logged-in render still
+  needs a real logged-in browser check by the parent** — the gate page
+  reads the console's stored token from browser storage and reloads
+  once `__verify` succeeds.
+
+### Gate fix — why the first gate could never work (2026-11-15 ~04:15 IST)
+
+The first gate probed `ORIGIN + /api/healthz` with the visitor's
+**cookies**. QwenPaw has no session cookie at all: its auth reads the
+token only from the `Authorization: Bearer` header or the `?token=`
+query param (`/app/src/qwenpaw/app/auth.py`, `_extract_token`, line
+~850; no `set_cookie` anywhere in the app). The console SPA keeps the
+token in browser storage and sends it as a header on API calls — a
+plain navigation to `/desktop` carries no credential, so the probe
+always got 401 and the worker bounced every logged-in user to `/`
+(the SPA then sent them on to `/chat`). Verified symptom: logged-in
+browser, `/desktop` → `/chat` (3 tries, 2 tabs); logged-out curl
+correctly 302'd. The new gate page runs in the browser on the same
+origin as the console, so it can read the stored token, tries every
+token-shaped stored value against `__verify` (max 10), and reloads on
+success. The token is never logged or stored server-side.
+
+### Pages secret lesson — redeploy after setting a secret (2026-11-15)
+
+After the gate rewrite was deployed, `/desktop` returned 503
+"Desktop is not configured yet" on BOTH projects even though the
+project config listed `DESKTOP_ORIGIN_TOKEN` (secret_text) in both
+environments. The secret value was re-set via the API (PATCH
+`/accounts/{id}/pages/projects/{project}` — PUT returns 405
+`method_not_allowed`) and the worker STILL 503'd until the projects
+were **redeployed**. Rule: **a Pages secret only binds to deployments
+created after it is set — set the secret, then redeploy.** The 6081
+publish was also rotated in the process (delete + re-create returns
+the new private-port token; the list/get APIs never return it): new
+publish id `pv-sei4re6fbr7e6kkb3nyt6wnp5q`, token re-set as
+`DESKTOP_ORIGIN_TOKEN` on both projects. Current deployments:
+qwenpawx `df54820e-1418-4158-be07-ea0c8fc1788a`, qwenpaw-frontend
+`4fcbfc1a-edc7-4b73-9190-c13093000b37` (both production/main/success).
 - URL: `https://qwenpawx.pages.dev/desktop` (also on
   `qwenpaw-frontend.pages.dev/desktop`).
 
@@ -123,22 +174,39 @@ binary (it was an npm global, not a system package). Restored:
 ## Current state (2026-11-15 ~03:50 IST, verified live)
 
 - Desktop running, 1920x1080, `controller: agent`, `agentPausable: true`.
-- Chromium open on the desktop with tabs: wordsolverx.com
-  ("Daily Puzzle Answers, Solvers & Wordle Tools" — screenshot
-  `/data/home/camoufox/shots/desktop-wordsolverx4.png`), example.com
-  (opened via `/desktop-open`, screenshot `desktop-open-test.png`), and
-  example.org (opened via `/desktop-open` 2026-11-14T21:49Z, screenshot
-  `retest-desktop.png` 114 KB; MCP `list_apps` confirms window
-  "Example Domain - Chromium").
-- Interactive stream link minted, TTL 24 h (token delivered to the user
-  only — never in git or memory). **Fresh link minted 2026-11-14T21:49:50Z,
-  expires 2026-11-15T21:49:50Z — awaiting a real-browser render check
-  before the user gets it.**
-- noVNC private ports published: 6080 (Camoufox `:99`, token in the
-  publish response, user only; no token → 401) and 6081 (embedded
-  `:1` desktop, token = `DESKTOP_ORIGIN_TOKEN` Worker secret).
+- Chromium on the desktop: the window came up 10x10 (`WM_NORMAL_HINTS:
+  program specified size: 10 by 10`) even with `--start-maximized`, so
+  screenshots showed a bare desktop. Fixed: `bridge.py` `desktop_open`
+  now launches with `--window-size=1920,1048 --window-position=0,0`
+  (in addition to `--start-maximized`); Chromium relaunched via
+  `/desktop-open` — content window now `1920x1004+0+28` titled "Daily
+  Puzzle Answers, Solvers & Wordle Tools - Chromium" (wordsolverx.com),
+  screenshot `/data/home/camoufox/shots/fix-1-after.png` (496 KB).
+  NOTE: the repo copy `features/camoufox/bridge/bridge.py` predates
+  `desktop_open` entirely — it is stale; the live file is on the
+  machine at `/data/home/camoufox/bridge/bridge.py`.
+- Interactive stream link: the 21:49Z mint was ALSO invalid in a real
+  browser (payload lacked `m`/`n`). Fresh full-payload link minted
+  2026-11-14T22:13:52Z, expires 2026-11-15T22:13:52Z, saved at
+  `/tmp/stream-link.txt` — awaiting a real-browser render check before
+  the user gets it.
+- noVNC private ports published: 6080 (Camoufox `:99`) and 6081
+  (embedded `:1` desktop, publish id now
+  `pv-sei4re6fbr7e6kkb3nyt6wnp5q`, token = `DESKTOP_ORIGIN_TOKEN` Worker
+  secret). **Both VNC servers are passwordless now**: `:99` restarted
+  with `-SecurityTypes None` (was `-rfbauth`, which is why the 6080
+  view prompted for a VNC password on Connect) and `:1` already ran
+  with `None` — protocol-verified, both offer only security type `[1]`
+  (None), so noVNC never prompts. `/usr/share/novnc/index.html` now
+  redirects `/` straight to `vnc.html?autoconnect=true&resize=scale&
+  reconnect=true` (was a directory listing). Camoufox relaunched after
+  the `:99` restart and is back on `https://x.com/0xsatwik` (200,
+  title verified); its window resized to 1920x1048.
+  The 6080 direct URL still needs its private-port token (unchanged);
+  the 6081 token is the Worker secret (server-side only).
 - Embedded desktop live at `https://qwenpawx.pages.dev/desktop`
-  (gate verified for logged-out → 302; logged-in path still to verify).
+  (gate page 200 for logged-out, `__verify` 401s bad tokens; logged-in
+  render still needs a real browser check — see "Gate fix" above).
 - QwenPaw computer-use MCP wired and connected (see section above).
   One container restart used (03:18 UTC) for the DriverCard pickup.
 - Camoufox bridge healthy, browser sitting on `https://x.com/0xsatwik`.

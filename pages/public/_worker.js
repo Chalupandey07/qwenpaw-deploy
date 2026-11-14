@@ -218,9 +218,181 @@ export default {
 };
 
 // --- Embedded desktop -----------------------------------------------------
-// GET /desktop            -> redirect to the noVNC client (autoconnect)
+// GET /desktop            -> gate page (first visit) or redirect to noVNC
 // GET /desktop/<asset>    -> proxied to the noVNC origin (prefix stripped)
 // WS  /desktop/websockify -> proxied WebSocket upgrade to the VNC server
+// POST /desktop/__verify  -> mint a desktop session cookie (see below)
+//
+// WHY A GATE PAGE (fixed 2026-11-15): QwenPaw auth is header-based — the
+// console SPA keeps its token in browser storage and sends it as
+// `Authorization: Bearer <token>` (or `?token=`) on API calls. There is NO
+// session cookie anywhere in QwenPaw (verified in
+// /app/src/qwenpaw/app/auth.py `_extract_token`). A plain browser
+// navigation to /desktop therefore carries no credential at all, so the
+// old server-side probe (forward the visitor's Cookie to /api/healthz)
+// could never pass for a logged-in user: it always got 401, bounced them
+// to /, and the console SPA then sent them on to /chat. The gate below
+// fixes that without touching QwenPaw:
+//   * A visit without a valid desktop cookie gets a small gate page. It
+//     runs in the browser on the same origin as the console, so it can
+//     read the console's stored token, POSTs candidate tokens to
+//     /desktop/__verify, and reloads once one verifies.
+//   * /desktop/__verify checks the token against the origin
+//     (/api/healthz with Authorization: Bearer) and, on 200, mints a
+//     short-lived HMAC-signed cookie scoped to /desktop. The token is
+//     never logged or stored anywhere.
+//   * /desktop/* with a valid cookie is proxied to the noVNC origin as
+//     before. The cookie is also sent on the noVNC WebSocket handshake,
+//     so the live view works after the one-time check.
+// The :1 VNC server runs with -SecurityTypes None, so noVNC never asks
+// the user for a VNC password; access control is the QwenPaw session
+// (this gate) plus the private-port token (server-side only, never in
+// the browser URL). The :99 Camoufox VNC is likewise passwordless now.
+const DESKTOP_COOKIE = "qwenpaw_desktop";
+const DESKTOP_COOKIE_MAX_AGE_S = 12 * 3600;
+
+function gatePage() {
+  const html =
+    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+    `<meta name="viewport" content="width=device-width, initial-scale=1">` +
+    `<title>QwenPaw — Desktop</title></head><body style="font-family:system-ui,sans-serif;background:#0f1115;color:#e8eaf0;padding:2rem">` +
+    `<h1>Opening the desktop…</h1><p id="msg">Checking your QwenPaw login…</p>` +
+    `<p><a style="color:#22c55e" href="/">Back to the console</a></p>` +
+    `<script>
+    (function () {
+      var msg = document.getElementById('msg');
+      function candidates() {
+        var out = [];
+        [window.localStorage, window.sessionStorage].forEach(function (store) {
+          try {
+            for (var i = 0; i < store.length; i++) {
+              var v = store.getItem(store.key(i));
+              if (typeof v === 'string' && v.length >= 20 && /^[A-Za-z0-9._\\-+/=]+$/.test(v) && out.indexOf(v) === -1) out.push(v);
+            }
+          } catch (e) { /* storage unavailable */ }
+        });
+        return out.slice(0, 10);
+      }
+      async function tryToken(t) {
+        var r = await fetch('/desktop/__verify', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: t }) });
+        return r.status === 200;
+      }
+      (async function () {
+        var list = candidates();
+        for (var i = 0; i < list.length; i++) {
+          try { if (await tryToken(list[i])) { location.reload(); return; } } catch (e) { /* try the next candidate */ }
+        }
+        msg.textContent = 'Could not verify your QwenPaw login. Please log in to the console first, then come back here.';
+        var p = document.createElement('p');
+        var link = document.createElement('a');
+        link.href = '/'; link.style.color = '#22c55e'; link.textContent = 'Go to the console to log in';
+        p.appendChild(link); msg.after(p);
+      })();
+    })();
+    </script></body></html>`;
+  return new Response(html, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "SAMEORIGIN",
+      "Content-Security-Policy": "frame-ancestors 'self'",
+    },
+  });
+}
+
+async function hmacHex(keyMaterial, message) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(keyMaterial),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function parseDesktopCookie(request) {
+  const header = request.headers.get("Cookie") || "";
+  for (const part of header.split(";")) {
+    const [name, ...rest] = part.trim().split("=");
+    if (name === DESKTOP_COOKIE) return rest.join("=");
+  }
+  return null;
+}
+
+async function desktopCookieValid(request, env) {
+  const value = parseDesktopCookie(request);
+  if (!value) return false;
+  const [exp, sig] = value.split(".");
+  if (!exp || !sig || !/^\d+$/.test(exp)) return false;
+  if (Number(exp) * 1000 < Date.now()) return false;
+  const expect = await hmacHex(env.DESKTOP_ORIGIN_TOKEN, "desktop:" + exp);
+  return sig.length === expect.length && sig === expect;
+}
+
+async function mintDesktopCookie(env) {
+  const exp = Math.floor(Date.now() / 1000) + DESKTOP_COOKIE_MAX_AGE_S;
+  const sig = await hmacHex(env.DESKTOP_ORIGIN_TOKEN, "desktop:" + exp);
+  return `${DESKTOP_COOKIE}=${exp}.${sig}; HttpOnly; Secure; SameSite=Lax; Path=/desktop; Max-Age=${DESKTOP_COOKIE_MAX_AGE_S}`;
+}
+
+// POST /desktop/__verify {token} -> 200 + Set-Cookie when the token is a
+// valid QwenPaw session, 401 when it is not. The token is checked against
+// the origin and never logged or stored.
+async function desktopVerify(request, env) {
+  if (request.method !== "POST") {
+    return new Response("Method not allowed.", { status: 405 });
+  }
+  let token = "";
+  try {
+    const body = await request.json();
+    if (typeof body?.token === "string") token = body.token;
+  } catch { /* bad JSON -> 400 below */ }
+  if (!token || token.length > 4096) {
+    return new Response(JSON.stringify({ ok: false }), {
+      status: 400,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    });
+  }
+  let res;
+  try {
+    res = await fetch(ORIGIN + "/api/healthz", {
+      method: "GET",
+      headers: { Authorization: "Bearer " + token },
+    });
+  } catch {
+    return new Response(JSON.stringify({ ok: false }), {
+      status: 502,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    });
+  }
+  if (res.status === 401) {
+    return new Response(JSON.stringify({ ok: false }), {
+      status: 401,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    });
+  }
+  if (res.status !== 200) {
+    return new Response(JSON.stringify({ ok: false }), {
+      status: 502,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    });
+  }
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "Set-Cookie": await mintDesktopCookie(env),
+    },
+  });
+}
+
 async function desktop(request, url, env) {
   if (!env.DESKTOP_ORIGIN_TOKEN) {
     return new Response("Desktop is not configured yet.", {
@@ -228,34 +400,18 @@ async function desktop(request, url, env) {
     });
   }
 
-  // Session gate: is this visitor logged in to QwenPaw? Probe the console's
-  // health endpoint with the visitor's own cookies. 200 = session valid.
-  // 401 = not logged in -> send them to the console to log in first.
-  // 503 = the machine is waking -> show the waking page, not a login loop.
-  let sessionRes;
-  try {
-    sessionRes = await fetch(new Request(ORIGIN + "/api/healthz", {
-      method: "GET",
-      headers: { Cookie: request.headers.get("Cookie") || "" },
-    }));
-  } catch {
-    return new Response("QwenPaw origin unreachable. Try again in a moment.", {
-      status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
-    });
-  }
-  if (sessionRes.status === 401) {
-    return Response.redirect(url.origin + "/", 302);
-  }
-  if (sessionRes.status === 503) {
-    return wakingPage(null);
-  }
-  if (sessionRes.status !== 200) {
-    return new Response("Could not verify your QwenPaw login. Try again in a moment.", {
-      status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
-    });
+  const path = url.pathname;
+  if (path === "/desktop/__verify") {
+    return desktopVerify(request, env);
   }
 
-  const path = url.pathname;
+  // Session gate: a valid HMAC desktop cookie (minted by __verify after a
+  // real QwenPaw login) is the only proof accepted here — see the note at
+  // the top of this section for why a Cookie->healthz probe cannot work.
+  if (!(await desktopCookieValid(request, env))) {
+    return gatePage();
+  }
+
   if (path === "/desktop" || path === "/desktop/") {
     return Response.redirect(
       url.origin + "/desktop/vnc.html?autoconnect=true&resize=scale&reconnect=true", 302,
@@ -283,6 +439,12 @@ async function desktop(request, url, env) {
     return new Response("Desktop origin unreachable. Try again in a moment.", {
       status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
     });
+  }
+
+  // The machine is waking (503 from the InstaBox proxy): show the waking
+  // page rather than a bare error.
+  if (res.status === 503) {
+    return wakingPage(null);
   }
 
   // The private port answers 401 when its token is wrong — that is a server
