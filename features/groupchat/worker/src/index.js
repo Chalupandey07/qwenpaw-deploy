@@ -54,12 +54,12 @@
 // 200 messages, each text capped at 4000 chars). Expected use is a few
 // hundred requests/day of the 100,000/day free quota.
 //
-// Auth: if the GROUPCHAT_TOKEN secret is set (wrangler secret put
-// GROUPCHAT_TOKEN), every endpoint except GET / requires header
+// Auth: the GROUPCHAT_TOKEN secret MUST be set (wrangler secret put
+// GROUPCHAT_TOKEN). Every endpoint except GET / requires header
 // X-Groupchat-Token with that value — the token is NEVER accepted via
-// ?token= (query tokens leak in logs/Referer/history). If it is NOT set,
-// the thread is open to anyone who knows the URL — set the token before
-// sharing the URL. Mutating writes are also rate-limited to 30/min per
+// ?token= (query tokens leak in logs/Referer/history). If the secret is
+// NOT set, every gated endpoint returns 401 (fail closed, RT-002) — the
+// thread is never silently open. Mutating writes are also rate-limited to 30/min per
 // client IP (429 + Retry-After). No secrets in this file.
 
 const PARTICIPANTS = ["default", "QwenPaw_QA_Agent_0.2"];
@@ -146,8 +146,14 @@ export class GroupChatThread {
   // the ?token= query fallback is removed — tokens in URLs leak via
   // Referer, logs, shell history and copy/paste. The relay sends the
   // header only; no in-repo caller used ?token=.
+  // Fail CLOSED when the secret is unset (re-test 2026-11-15, RT-002):
+  // the old code returned true when GROUPCHAT_TOKEN was unset, so deleting
+  // or mis-rotating the secret silently reopened the thread to anyone.
+  // Routines and keepalive already fail closed the same way (503/401 when
+  // their token is unset); this matches them. GET / stays public and
+  // advertises auth_required so the state is visible.
   checkToken(request) {
-    if (!this.env.GROUPCHAT_TOKEN) return true;
+    if (!this.env.GROUPCHAT_TOKEN) return false;
     const supplied = request.headers.get("X-Groupchat-Token") || "";
     return supplied === this.env.GROUPCHAT_TOKEN;
   }
