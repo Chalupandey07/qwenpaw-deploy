@@ -5,12 +5,14 @@
 ## ✅ Deployed — live (2026-11-14)
 
 - **QwenPaw console:** https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech — login with username `admin` and the password generated at deploy time (see deploy handoff; stored only in `/data/home/qwenpaw/.env` on the machine)
-- **Pages frontend:** https://qwenpaw-frontend.pages.dev — status, Wake button, Open Console link
+- **Pages frontend (main):** https://qwenpawx.pages.dev — status, Wake button, Open Console link
+- **Pages frontend (backup):** https://qwenpaw-frontend.pages.dev — same site, still live
+- **Note:** `qwenpaw.pages.dev` is taken by an unrelated Chinese personal homepage and cannot be claimed. An empty Pages project named `qwenpaw` exists (subdomain `qwenpaw-b71.pages.dev`, nothing deployed to it).
 - **Worker keep-alive:** https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev — cron `*/5 * * * *`, `/status` and `/ping` verified returning `status: up`
 - **GitHub repo:** https://github.com/Ratulbaba7/qwenpaw-deploy (public, `main`, all 14 files)
 - **InstaBox machine:** `m_agq5wqqo2fvypym7rjlpvngc2m` (`qwenpaw`, agent-browser, 4 vCPU / 8 GiB / 20 GiB), running
 - **Snapshot:** `qwenpaw-ready` (`sn_agq5wrfmt5jfcqkjhtjqqqw3du`, ready)
-- **Cloudflare:** KV namespace `STATUS` (`6a91d8099ed8419c88c94b0946186a27`), Worker `qwenpaw-keepalive`, Pages project `qwenpaw-frontend` (deployment `2065800b-5ab8-4cbe-b254-a87f72b7f445`, success)
+- **Cloudflare:** KV namespace `STATUS` (`6a91d8099ed8419c88c94b0946186a27`), Worker `qwenpaw-keepalive`, Pages project `qwenpawx` (deployment `ccb51e8b-f6a2-4a66-9f37-e9127a9b58fa`, success), backup project `qwenpaw-frontend` (deployment `2065800b-5ab8-4cbe-b254-a87f72b7f445`, success)
 
 Next step for the user: open the console URL, log in, go to Settings → Models, add your own LLM API key (OpenAI / Anthropic / Gemini / DeepSeek / OpenRouter), set it as Default LLM, and send a test chat.
 
@@ -114,8 +116,9 @@ Worker free limits: 100,000 req/day, 10 ms CPU/invocation, 5 cron triggers,
 ```bash
 cd pages
 # Edit public/index.html: WORKER_URL and CONSOLE_URL
-npx wrangler pages deploy public --project-name qwenpaw-frontend
-# Live at https://qwenpaw-frontend.pages.dev
+npx wrangler pages deploy public --project-name qwenpawx
+# Live at https://qwenpawx.pages.dev
+# Backup project qwenpaw-frontend is also deployed: https://qwenpaw-frontend.pages.dev
 # Or connect the repo in the Cloudflare dashboard: Pages → Connect to Git,
 # Framework: None, build command: (empty), output: public
 ```
