@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QwenPaw — Status</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 2rem 1rem; background: #0f1115; color: #e8eaf0; }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+  p.sub { color: #9aa3b2; margin: 0 0 1.5rem; }
+  .card { background: #171a21; border: 1px solid #262b36; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; }
+  .pill { display: inline-block; padding: .3rem .7rem; border-radius: 999px; font-weight: 600; font-size: .9rem; }
+  .up { background: #14532d; color: #bbf7d0; } .waking { background: #713f12; color: #fde68a; }
+  .cooldown { background: #7f1d1d; color: #fecaca; } .offline { background: #7f1d1d; color: #fecaca; }
+  .unknown { background: #334155; color: #e2e8f0; } .degraded { background: #713f12; color: #fde68a; }
+  dl { display: grid; grid-template-columns: 10rem 1fr; gap: .35rem .75rem; margin: 1rem 0 0; font-size: .95rem; }
+  dt { color: #9aa3b2; } dd { margin: 0; overflow-wrap: anywhere; }
+  button, a.btn { display: inline-block; border: 0; border-radius: 8px; padding: .7rem 1.1rem; font-size: 1rem; font-weight: 600; cursor: pointer; text-decoration: none; margin-right: .5rem; }
+  button { background: #2563eb; color: #fff; } button:disabled { opacity: .55; cursor: wait; }
+  a.btn { background: #22c55e; color: #052e12; }
+  #msg { margin-top: .75rem; color: #9aa3b2; font-size: .95rem; min-height: 1.2em; }
+  small { color: #7d8597; }
+</style>
+</head>
+<body>
+<main>
+  <h1>QwenPaw</h1>
+  <p class="sub">Personal AI assistant — InstaBox Free + Cloudflare Worker keep-alive. The console itself lives at <a style="color:#22c55e" href="/">this site's root /</a> — this page is only the status / wake page.</p>
+  <section class="card">
+    <span id="pill" class="pill unknown">Checking…</span>
+    <dl>
+      <dt>Status</dt><dd id="status">—</dd>
+      <dt>Last check</dt><dd id="checkedAt">—</dd>
+      <dt>Last seen up</dt><dd id="lastUpAt">—</dd>
+      <dt>HTTP</dt><dd id="http">—</dd>
+      <dt>Note</dt><dd id="note">—</dd>
+    </dl>
+    <p id="msg"></p>
+  </section>
+  <section class="card">
+    <button id="wakeBtn" type="button">Wake QwenPaw</button>
+    <a id="openBtn" class="btn" href="#" target="_blank" rel="noopener">Open Console ↗</a>
+    <button id="refreshBtn" type="button" style="background:#262b36;color:#e8eaf0">Refresh status</button>
+    <p><small>Wake pings the console URL — that alone wakes an auto-paused box (up to ~45 s). If it is in max-run cooldown, nothing can wake it until the cooldown ends; the status above will say so.</small></p>
+  </section>
+  <p><small>Frontend: Cloudflare Pages reverse proxy — root / is the QwenPaw console, this /status page is the status / wake page. Keep-alive: Cloudflare Worker cron every 5 min. QwenPaw itself runs on InstaBox Free.</small></p>
+</main>
+<script>
+  // ---- CONFIG: replace these two values ----
+  const WORKER_URL = "https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev";
+  const CONSOLE_URL = "/";
+  // ------------------------------------------
+  const $ = (id) => document.getElementById(id);
+  const fmt = (iso) => iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" }) : "—";
+  async function loadStatus(live = false) {
+    try {
+      const res = await fetch(`${WORKER_URL}/status${live ? "?live=1" : ""}`, { cache: "no-store" });
+      const d = await res.json();
+      const pill = $("pill");
+      pill.textContent = d.status ? d.status.toUpperCase() : "UNKNOWN";
+      pill.className = "pill " + (d.status || "unknown");
+      $("status").textContent = d.status || "unknown";
+      $("checkedAt").textContent = fmt(d.checkedAt);
+      $("lastUpAt").textContent = fmt(d.lastUpAt);
+      $("http").textContent = d.httpStatus ? `HTTP ${d.httpStatus}` : "—";
+      $("note").textContent = d.note || "";
+      $("openBtn").href = "/";
+      if (d.status === "cooldown" && d.retryAfterSeconds) {
+        $("msg").textContent = `In cooldown — retry in about ${Math.ceil(d.retryAfterSeconds / 60)} min. Do not keep pressing Wake; it cannot help until the cooldown ends.`;
+      } else if (d.status === "waking") {
+        $("msg").textContent = "Waking up — wait ~60 s, then press Refresh status.";
+      } else if (d.status === "up") {
+        $("msg").textContent = "Up — open the console.";
+      } else if (d.status === "offline") {
+        $("msg").textContent = "Offline — press Wake QwenPaw, wait ~60 s, then Refresh.";
+      } else {
+        $("msg").textContent = "";
+      }
+    } catch (e) {
+      $("pill").textContent = "ERROR"; $("pill").className = "pill offline";
+      $("msg").textContent = "Could not reach the Worker (/status). Check WORKER_URL.";
+    }
+  }
+  $("wakeBtn").addEventListener("click", async () => {
+    const btn = $("wakeBtn"); btn.disabled = true; btn.textContent = "Waking…";
+    $("msg").textContent = "Pinging the console — this wakes an auto-paused box. Wait ~60 s…";
+    try { await fetch(`${WORKER_URL}/ping`, { cache: "no-store" }); } catch (e) { /* status poll below will show the result */ }
+    await new Promise((r) => setTimeout(r, 5000));
+    await loadStatus(true);
+    btn.disabled = false; btn.textContent = "Wake QwenPaw";
+  });
+  $("refreshBtn").addEventListener("click", () => loadStatus(true));
+  loadStatus(false);
+  setInterval(() => loadStatus(false), 30_000);
+</script>
+</body>
+</html>
