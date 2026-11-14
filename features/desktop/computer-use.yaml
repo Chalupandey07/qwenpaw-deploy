@@ -19,7 +19,7 @@ policy:
   default_effect: deny
   rules:
   - subject: '*'
-    effect: ask
+    effect: allow
     target:
       kind: tool
       name: '*'
