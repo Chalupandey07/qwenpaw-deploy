@@ -1535,14 +1535,17 @@ async function desktopMode(request, env) {
   const missing = kvRequired(env);
   if (missing) return missing;
   const url = new URL(request.url);
-  const agent = (request.method === "POST" ? (await readJsonBody(request)).agent : url.searchParams.get("agent")) || "default";
+  // Read the body ONCE: Request.json() consumes the stream, so a second
+  // readJsonBody() would return {} and the mode would always fall back to
+  // "team" (harness 28b/28c caught this).
+  const body = request.method === "POST" ? await readJsonBody(request) : {};
+  const agent = (request.method === "POST" ? body.agent : url.searchParams.get("agent")) || "default";
   const agentSafe = String(agent).slice(0, 60).replace(/[^A-Za-z0-9._-]/g, "_");
   if (request.method === "GET") {
     const mode = (await env.DESKTOP_KV.get(KV_MODE_PREFIX + agentSafe).catch(() => null)) || "team";
     return jsonResp({ agent: agentSafe, mode: mode === "private" ? "private" : "team" });
   }
   if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
-  const body = await readJsonBody(request);
   const mode = body.mode === "private" ? "private" : "team";
   await env.DESKTOP_KV.put(KV_MODE_PREFIX + agentSafe, mode);
   return jsonResp({ ok: true, agent: agentSafe, mode });
