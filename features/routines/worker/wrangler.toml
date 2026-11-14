@@ -1,0 +1,18 @@
+name = "qwenpaw-routines"
+main = "src/index.js"
+compatibility_date = "2026-11-14"
+
+# Cron triggers are set via the Cloudflare API after deploy (see README):
+#   */30 * * * *  — wake tick every 30 min
+#   30 1 * * *    — daily slot, 01:30 UTC = 07:00 Asia/Kolkata
+# (wrangler.toml [triggers] is kept out so the API-set schedules are the
+# single source of truth and a redeploy cannot silently drop them.)
+
+[vars]
+QWENPAW_URL = "https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech/"
+
+# Shared with qwenpaw-keepalive. All routines keys are prefixed
+# "routines:" so they cannot collide with keepalive keys.
+[[kv_namespaces]]
+binding = "STATUS"
+id = "6a91d8099ed8419c88c94b0946186a27"

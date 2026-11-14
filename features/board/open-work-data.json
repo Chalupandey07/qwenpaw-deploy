@@ -1,0 +1,439 @@
+{
+  "generated_at_utc": "2026-11-14T19:44:59.059923+00:00",
+  "machine": "m_agq5wqqo2fvypym7rjlpvngc2m",
+  "jobs": {
+    "default": {
+      "jobs": [],
+      "version": 2
+    },
+    "QwenPaw_QA_Agent_0.2": {
+      "jobs": [],
+      "version": 2
+    }
+  },
+  "agents": {
+    "default": {
+      "name": "Default",
+      "language": "en",
+      "fallback_models": [],
+      "fallback_policy": {
+        "enabled": true,
+        "target_scope": "configured"
+      },
+      "thinking_level": "inherit",
+      "active_model": null
+    },
+    "QwenPaw_QA_Agent_0.2": {
+      "name": "QA Agent",
+      "language": "en",
+      "fallback_models": [],
+      "fallback_policy": {
+        "enabled": true,
+        "target_scope": "configured"
+      },
+      "thinking_level": "inherit",
+      "active_model": null
+    }
+  },
+  "chats": {
+    "default": {
+      "chat_count": 4,
+      "group_count": 3
+    },
+    "QwenPaw_QA_Agent_0.2": {
+      "chat_count": 0,
+      "group_count": 0
+    }
+  },
+  "history": {
+    "default": {
+      "rows": 13,
+      "kinds": {
+        "context_msg": 4,
+        "model_turn": 4,
+        "tool_result": 5
+      },
+      "roles": {
+        "assistant": 9,
+        "user": 4
+      },
+      "sessions": [
+        {
+          "session_id": "1794681601054-3i2fsfh",
+          "rows": 7
+        },
+        {
+          "session_id": "1794684113313-6yjl8dv",
+          "rows": 2
+        },
+        {
+          "session_id": "1794684768554-t49gp3v",
+          "rows": 4
+        }
+      ],
+      "range": [
+        "2026-11-14T18:40:02.679855",
+        "2026-11-15T01:03:56.173935"
+      ]
+    },
+    "QwenPaw_QA_Agent_0.2": {
+      "rows": 0,
+      "kinds": {},
+      "roles": {},
+      "sessions": [],
+      "range": [
+        null,
+        null
+      ]
+    }
+  },
+  "artifacts": {
+    "default": [
+      {
+        "mtime": "2026-11-14T19:40",
+        "size_bytes": 20469,
+        "path": "skill.json"
+      },
+      {
+        "mtime": "2026-11-14T19:33",
+        "size_bytes": 91,
+        "path": "state/last_dispatch.json"
+      },
+      {
+        "mtime": "2026-11-14T19:33",
+        "size_bytes": 6500,
+        "path": "sessions/console/default_1794684768554-t49gp3v.json"
+      },
+      {
+        "mtime": "2026-11-14T19:33",
+        "size_bytes": 3085,
+        "path": "chats.json"
+      },
+      {
+        "mtime": "2026-11-14T19:32",
+        "size_bytes": 7536,
+        "path": "skills/delegate/SKILL.md"
+      },
+      {
+        "mtime": "2026-11-14T19:31",
+        "size_bytes": 4249,
+        "path": "skills/build-page/SKILL.md"
+      },
+      {
+        "mtime": "2026-11-14T19:31",
+        "size_bytes": 3920,
+        "path": "skills/github/SKILL.md"
+      },
+      {
+        "mtime": "2026-11-14T19:21",
+        "size_bytes": 51,
+        "path": "checkpoints/gitattributes"
+      },
+      {
+        "mtime": "2026-11-14T19:21",
+        "size_bytes": 3843,
+        "path": "sessions/console/default_1794684113313-6yjl8dv.json"
+      },
+      {
+        "mtime": "2026-11-14T19:21",
+        "size_bytes": 0,
+        "path": "checkpoints/gitconfig"
+      },
+      {
+        "mtime": "2026-11-14T19:15",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_store/file_chunks_default_v1.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T19:15",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_graph/default.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T19:15",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_catalog/dream.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T19:15",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_catalog/digest.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T19:15",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_catalog/default.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T19:13",
+        "size_bytes": 9293,
+        "path": "skills/cron/SKILL.md"
+      },
+      {
+        "mtime": "2026-11-14T19:13",
+        "size_bytes": 8923,
+        "path": "skills/mailbox/SKILL.md"
+      },
+      {
+        "mtime": "2026-11-14T19:13",
+        "size_bytes": 6079,
+        "path": "skills/channel_message/SKILL.md"
+      },
+      {
+        "mtime": "2026-11-14T18:53",
+        "size_bytes": 1407,
+        "path": "BOOTSTRAP.md"
+      },
+      {
+        "mtime": "2026-11-14T18:48",
+        "size_bytes": 29005,
+        "path": "agent.json"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 726,
+        "path": "PROFILE.md"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 1870,
+        "path": "AGENTS.md"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 177,
+        "path": "CONTACTS.md"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 171,
+        "path": "HEARTBEAT.md"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 1679,
+        "path": "SOUL.md"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 1560,
+        "path": "MEMORY.md"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 1043,
+        "path": "MAIL_TRIAGE.md"
+      },
+      {
+        "mtime": "2026-11-14T18:40",
+        "size_bytes": 73,
+        "path": "checkpoints/shadow.git/description"
+      },
+      {
+        "mtime": "2026-11-14T18:40",
+        "size_bytes": 66,
+        "path": "checkpoints/shadow.git/config"
+      },
+      {
+        "mtime": "2026-11-14T18:40",
+        "size_bytes": 25813,
+        "path": "sessions/console/default_1794681601054-3i2fsfh.json"
+      },
+      {
+        "mtime": "2026-11-14T18:40",
+        "size_bytes": 251,
+        "path": "checkpoints/config.toml"
+      },
+      {
+        "mtime": "2026-11-14T18:40",
+        "size_bytes": 23,
+        "path": "checkpoints/shadow.git/HEAD"
+      },
+      {
+        "mtime": "2026-11-14T18:40",
+        "size_bytes": 0,
+        "path": ".bootstrap_completed"
+      },
+      {
+        "mtime": "2026-11-14T18:12",
+        "size_bytes": 681,
+        "path": "drivers/mcp/anysearch.yaml"
+      },
+      {
+        "mtime": "2026-11-14T18:12",
+        "size_bytes": 32,
+        "path": "jobs.json"
+      },
+      {
+        "mtime": "2026-11-14T18:12",
+        "size_bytes": 152,
+        "path": "drivers/.legacy_mcp_migration_report.yaml"
+      },
+      {
+        "mtime": "2026-11-11T11:11",
+        "size_bytes": 9653,
+        "path": "skills/pptx/SKILL.md"
+      },
+      {
+        "mtime": "2026-11-11T11:11",
+        "size_bytes": 9650,
+        "path": "skills/make-skill/SKILL.md"
+      },
+      {
+        "mtime": "2026-11-11T11:11",
+        "size_bytes": 8617,
+        "path": "skills/pdf/SKILL.md"
+      },
+      {
+        "mtime": "2026-11-11T11:11",
+        "size_bytes": 7094,
+        "path": "skills/pptx/editing.md"
+      }
+    ],
+    "QwenPaw_QA_Agent_0.2": [
+      {
+        "mtime": "2026-11-14T19:15",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_store/file_chunks_default_v1.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T19:15",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_graph/default.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T19:15",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_catalog/dream.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T19:15",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_catalog/digest.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T19:15",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_catalog/default.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T18:48",
+        "size_bytes": 27301,
+        "path": "agent.json"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 735,
+        "path": "PROFILE.md"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 1870,
+        "path": "AGENTS.md"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 177,
+        "path": "CONTACTS.md"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 171,
+        "path": "HEARTBEAT.md"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 1679,
+        "path": "SOUL.md"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 1560,
+        "path": "MEMORY.md"
+      },
+      {
+        "mtime": "2026-11-14T18:47",
+        "size_bytes": 1043,
+        "path": "MAIL_TRIAGE.md"
+      },
+      {
+        "mtime": "2026-11-14T18:12",
+        "size_bytes": 681,
+        "path": "drivers/mcp/anysearch.yaml"
+      },
+      {
+        "mtime": "2026-11-14T18:12",
+        "size_bytes": 33,
+        "path": "chats.json"
+      },
+      {
+        "mtime": "2026-11-14T18:12",
+        "size_bytes": 32,
+        "path": "jobs.json"
+      },
+      {
+        "mtime": "2026-11-14T18:12",
+        "size_bytes": 2286,
+        "path": "skill.json"
+      },
+      {
+        "mtime": "2026-11-14T18:12",
+        "size_bytes": 165,
+        "path": "drivers/.legacy_mcp_migration_report.yaml"
+      },
+      {
+        "mtime": "2026-11-11T11:11",
+        "size_bytes": 5722,
+        "path": "skills/guidance/SKILL.md"
+      },
+      {
+        "mtime": "2026-11-11T11:11",
+        "size_bytes": 4279,
+        "path": "skills/QA_source_index/SKILL.md"
+      }
+    ]
+  },
+  "last_dispatch": {
+    "default": {
+      "channel": "console",
+      "user_id": "default",
+      "session_id": "1794684768554-t49gp3v"
+    },
+    "QwenPaw_QA_Agent_0.2": null
+  },
+  "follow_ups": {
+    "shared": [
+      {
+        "done": false,
+        "text": "Give Rohan the ticket-board key (Worker secret BOARD_TOKEN) so he can open the board"
+      },
+      {
+        "done": false,
+        "text": "User decision needed: apply the model fallback chain in `config-patch.md` (PATCH /api/agents/default/model-settings) \u2014 needs user OK"
+      },
+      {
+        "done": false,
+        "text": "Add an OpenRouter API key in the console (Settings > Models) before OpenRouter can be used as a fallback slot"
+      }
+    ],
+    "default": [
+      {
+        "done": false,
+        "text": "Decide whether the QA agent (QwenPaw_QA_Agent_0.2) gets the same fallback chain as default"
+      }
+    ],
+    "QwenPaw_QA_Agent_0.2": [
+      {
+        "done": false,
+        "text": "QA agent has no history yet (0 rows) \u2014 run a first QA pass and confirm it records usage"
+      }
+    ]
+  },
+  "job_history": {},
+  "notes": [
+    "jobs.json is QwenPaw's scheduled-jobs (cron) store: each job is a CronJobSpec {id, name, enabled, schedule, task_type text|agent, dispatch}. Both workspaces currently report zero jobs, and no jobs_history exists yet (no job has ever run).",
+    "Artifacts are workspace files the agent produced (resource/, media/, digest/). Those directories are currently empty, so the artifact list is the recent workspace file listing instead.",
+    "history.db is read metadata-only (counts, kinds, sessions, date range). No message content is copied into this snapshot.",
+    "Follow-ups are per agent, like Rakazo's per-bot open-work list: edit follow-ups.md under '## default', '## QwenPaw_QA_Agent_0.2' or '## shared'."
+  ]
+}

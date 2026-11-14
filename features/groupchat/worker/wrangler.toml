@@ -1,0 +1,32 @@
+name = "qwenpaw-groupchat"
+main = "src/index.js"
+compatibility_date = "2026-11-14"
+
+# No cron trigger: this Worker is a thread store + turn-taking referee only.
+# The keepalive Worker (qwenpaw-keepalive) owns the cron. The machine-side
+# relay (../relay/relay.py) polls GET /thread — no Worker-side push
+# is possible, because nothing inbound can reach the InstaBox host except
+# the published 8088 port, which requires user auth.
+
+# Thread store: ONE SQLite-backed Durable Object ("main"). The first
+# version used a KV namespace for the thread and lost messages to KV's
+# eventual consistency (live-tested 2026-11-15: a user message was
+# overwritten by a stale read, turn state flapped between replicas).
+# A Durable Object is single-threaded and strongly consistent, so
+# read-check-append-save can never interleave. SQLite-backed DOs are the
+# only kind the Workers Free plan can create (100k req/day, 13,000 GB-s/day).
+# The old GROUPCHAT KV namespace (id 014a2c0ec84e4829aa5b420d9ccf441f) is
+# retired — kept in the account, unused. Do not point anything at it.
+[[durable_objects.bindings]]
+name = "GROUPCHAT_THREAD"
+class_name = "GroupChatThread"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GroupChatThread"]
+
+[vars]
+# No public vars. Auth is via secret GROUPCHAT_TOKEN (optional but
+# recommended before sharing the URL):
+#   npx wrangler secret put GROUPCHAT_TOKEN
+# or: python3 deploy-groupchat.py set-secret <token>  (see script)

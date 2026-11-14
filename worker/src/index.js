@@ -70,6 +70,15 @@ async function probeQwenPaw(env, { allowRetry = true } = {}) {
         signal: AbortSignal.timeout(PING_TIMEOUT_MS),
       });
     } catch (err) {
+      // Transient network error (DNS/TLS/reset on the way to InstaBox):
+      // retry once like the 503 path does, so a single blip does not
+      // flip the status to offline and does not trigger a needless
+      // API wake. Live /status?live=1 passes allowRetry=false, so it
+      // still answers fast without retrying.
+      if (allowRetry && attempt === 1) {
+        await sleep(RETRY_DELAY_MS);
+        continue;
+      }
       return { status: "offline", httpStatus: 0, note: `fetch failed (attempt ${attempt}): ${err?.name || "error"}` };
     }
 

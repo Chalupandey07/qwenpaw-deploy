@@ -1,0 +1,129 @@
+{
+  "generated_at_utc": "2026-11-14T19:45:00.829576+00:00",
+  "machine": "m_agq5wqqo2fvypym7rjlpvngc2m",
+  "source": "working/token_usage.json (read-only via ib exec)",
+  "active_model": {
+    "provider_id": "xingchiapi",
+    "model": "gpt-6-astra"
+  },
+  "pricing_facts": {
+    "kilo_auto": {
+      "pricing": {
+        "prompt": "0",
+        "completion": "0",
+        "input_cache_read": "0",
+        "input_cache_write": "0",
+        "request": "0",
+        "image": "0",
+        "web_search": "0",
+        "internal_reasoning": "0"
+      },
+      "billing": "free"
+    },
+    "astra": [
+      {
+        "id": "gpt-6-astra",
+        "pricing": {},
+        "billing": "unknown"
+      },
+      {
+        "id": "gpt-6.1-sol",
+        "pricing": {},
+        "billing": "unknown"
+      }
+    ],
+    "active_model": {
+      "provider_id": "xingchiapi",
+      "model": "gpt-6-astra"
+    }
+  },
+  "per_day": {
+    "2026-11-14": {
+      "prompt": 72121,
+      "completion": 1104,
+      "cache_read": 43360,
+      "calls": 5,
+      "cost_usd": 0.0,
+      "cost_known": true,
+      "models": {
+        "kilo/kilo-auto/free": {
+          "agent": "default",
+          "provider": "kilo",
+          "model": "kilo-auto/free",
+          "prompt": 72121,
+          "completion": 1104,
+          "cache_read": 43360,
+          "calls": 5,
+          "cost_usd": 0.0
+        }
+      }
+    },
+    "2026-11-15": {
+      "prompt": 48753,
+      "completion": 373,
+      "cache_read": 15360,
+      "calls": 5,
+      "cost_usd": 0.0,
+      "cost_known": false,
+      "models": {
+        "kilo/kilo-auto/free": {
+          "agent": "default",
+          "provider": "kilo",
+          "model": "kilo-auto/free",
+          "prompt": 13382,
+          "completion": 190,
+          "cache_read": 0,
+          "calls": 2,
+          "cost_usd": 0.0
+        },
+        "xingchiapi/gpt-6-astra": {
+          "agent": "default",
+          "provider": "xingchiapi",
+          "model": "gpt-6-astra",
+          "prompt": 35371,
+          "completion": 183,
+          "cache_read": 15360,
+          "calls": 3,
+          "cost_usd": null
+        }
+      }
+    }
+  },
+  "per_model": {
+    "kilo/kilo-auto/free": {
+      "prompt": 85503,
+      "completion": 1294,
+      "cache_read": 43360,
+      "calls": 7,
+      "cost_usd": 0.0,
+      "cost_known": true,
+      "days": [
+        "2026-11-14",
+        "2026-11-15"
+      ]
+    },
+    "xingchiapi/gpt-6-astra": {
+      "prompt": 35371,
+      "completion": 183,
+      "cache_read": 15360,
+      "calls": 3,
+      "cost_usd": 0.0,
+      "cost_known": false,
+      "days": [
+        "2026-11-15"
+      ]
+    }
+  },
+  "totals": {
+    "prompt": 120874,
+    "completion": 1477,
+    "calls": 10,
+    "cost_usd": 0.0,
+    "cost_known": false
+  },
+  "notes": [
+    "Cost is shown only where the provider catalog states a price. Kilo models are free ($0.00). xingchiapi (GPT Astra) models report no pricing, so their cost is UNKNOWN \u2014 never guessed.",
+    "GET /api/token-usage (and /details) on the console returns the same data live, but it is auth-gated: from the public Pages URL it returns 401 without a logged-in session (verified 2026-11-15). This page instead renders the token_usage.json file pulled read-only from the machine.",
+    "Thinking level is per-agent, not a global cost control: agent.json thinking_level is currently 'inherit' for both agents. See config-patch.md. Reasoning-effort options offered by the providers are none/minimal/low/medium/high/xhigh with a thinking budget range of 1-81920 tokens; a higher level means more reasoning tokens per call."
+  ]
+}

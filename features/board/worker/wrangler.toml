@@ -1,0 +1,17 @@
+name = "qwenpaw-board"
+main = "src/index.js"
+compatibility_date = "2026-11-14"
+
+# Ticket data lives in this KV namespace (created 2026-11-15 via the
+# Cloudflare API; id below). One KV key, "tickets", holds the whole board.
+[[kv_namespaces]]
+binding = "TICKETS"
+id = "90508a020d27455b83d137f8c0323774"
+
+# Secret (NOT in this file, set via the API):
+#   BOARD_TOKEN — shared board key; API calls need ?key= or X-Board-Key.
+#   PUT /client/v4/accounts/<account>/workers/scripts/qwenpaw-board/secrets
+#   {"name":"BOARD_TOKEN","text":"<random>","type":"secret_text"}
+#
+# Live URL: https://qwenpaw-board.qwenpaw-rohan.workers.dev
+# Deploy (no wrangler needed): see features/board/README.md

@@ -19,7 +19,7 @@ function wakingPage(retryAfter) {
     (retryAfter ? `<p>Retry after about ${retryAfter} seconds.</p>` : ``) +
     `<p><a style="color:#22c55e" href="/status">Status page</a></p>` +
     `</body></html>`,
-    { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Retry-After": "30" } },
+    { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Retry-After": "30", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
   );
 }
 
@@ -35,7 +35,7 @@ function cooldownPage(retryAfter) {
     `The 5-minute keep-alive Worker will bring it back automatically when the cooldown ends.</p>` +
     `<p><a style="color:#22c55e" href="/status">Status page</a></p>` +
     `</body></html>`,
-    { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", ...(retryAfter ? { "Retry-After": String(retryAfter) } : {}) } },
+    { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", ...(retryAfter ? { "Retry-After": String(retryAfter) } : {}) } },
   );
 }
 
@@ -92,8 +92,10 @@ async function proxy(request, url) {
   try {
     res = await fetch(buildRequest());
   } catch (err) {
-    return new Response(`QwenPaw origin unreachable: ${err?.message || err}`, {
-      status: 502, headers: { "Content-Type": "text/plain; charset=utf-8" },
+    // Deliberately generic: fetch error text can contain the origin URL
+    // or stack fragments — never reflect it to the visitor.
+    return new Response("QwenPaw origin unreachable. Try again in a moment.", {
+      status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
     });
   }
 
@@ -135,7 +137,7 @@ async function proxy(request, url) {
     if (code === "machine_cooldown") return cooldownPage(retryAfter);
     return new Response(
       `QwenPaw is busy with another operation (409 ${code || ""}). Retry in a moment.`,
-      { status: 409, headers: { "Content-Type": "text/plain; charset=utf-8" } },
+      { status: 409, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
     );
   }
 
