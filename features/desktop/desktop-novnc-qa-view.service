@@ -1,0 +1,13 @@
+[Unit]
+Description=noVNC for view-only QA display :2
+After=network.target desktop-vnc-qa-view.service
+
+[Service]
+Type=simple
+User=user
+ExecStart=/usr/bin/websockify --web /usr/share/novnc 127.0.0.1:6084 127.0.0.1:5903
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
