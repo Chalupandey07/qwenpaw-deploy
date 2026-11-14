@@ -475,7 +475,262 @@ bound as `DESKTOP_KV` on BOTH Pages projects, production + preview).
   (expected 503 until the key is set). The parent already verified the
   plain `/desktop` render at 04:11 IST (before this chrome existed).
 
-## Limits (honest)
+## Scope extension — the rest of Rakazo (2026-11-15 ~05:00 IST)
+
+The user asked for the REST of Rakazo too (teach-by-showing, needs-you,
+maintenance UI, per-bot computer + Team/Private, terminal tab, side-panel
+preview, tool-call display, generations + preview). All built, all
+protocol-verified; the harness is now **89/89** (tests 1–21 P0/P1 +
+22–31 extension). No container restart. The working XFCE 1920x1080
+desktop was NOT churned.
+
+### Per-bot computer + Team/Private — a real second display :2 (not a toggle-only stub)
+
+- **:2 display** (services in this folder): `desktop-xvfb-qa.service`
+  (Xvfb :2, 1920x1080) + `desktop-dbus-qa.service` (a DEDICATED session
+  bus `unix:path=/run/user/1000/qa/bus` — see below) + `desktop-wm-qa.service`
+  (xfwm4 on :2) + x11vnc view (5903) / control (5904) + websockify view
+  (6084) / control (6085). Ports 6084/6085 published **private**
+  (pv-6dnnzvsqjqzfrbwsida6d45x3q, pv-zcqckhcx6ezqvm5elgvtbxx4mm);
+  tokens = Worker secrets `DESKTOP_QA_VIEW_TOKEN` /
+  `DESKTOP_QA_ORIGIN_TOKEN` on both projects (never in git).
+- **Why a second bus:** the first attempt (DISPLAY=:2 only) failed —
+  `open-computer-use` lists apps via the shared AT-SPI registry, so the
+  :2 proxy saw the :1 apps (and `get_app_state xfwm4` matched the :1
+  one). A dedicated bus gives the :2 display its own AT-SPI registry,
+  so the QA proxy sees ONLY :2 apps.
+- **Why a wrapper script:** `mcp-proxy` spawns its server with a
+  MINIMAL env (only HOME/LOGNAME/PATH/SHELL/USER — verified in
+  `/proc/<pid>/environ`), so the display/bus set in the systemd unit
+  never reaches the server. `qa-server.sh` (in this folder) exports
+  `DISPLAY=:2`, `XDG_RUNTIME_DIR=/run/user/1000/qa`,
+  `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/qa/bus` and execs
+  the proxy directly — bypassing `/usr/local/bin/instabox-computer-use`,
+  which hardcodes `export DISPLAY=:1`. `mcp-computer-use-qa.service`
+  runs it on port 8897. The QA proxy's control file is
+  `/run/user/1000/qa/instabox-control` (separate lock, so a :1 takeover
+  never blocks the QA agent and vice versa).
+- **QA DriverCard:** `working/workspaces/QwenPaw_QA_Agent_0.2/drivers/
+  mcp/computer-use.yaml` (reference copy `computer-use-qa.yaml` here),
+  SSE `http://172.18.0.1:8897/sse`, same `effect: allow` policy as the
+  default card, description adapted to the private :2 screen (narrate
+  actions + raise needs-you). Hot-reloads via `driver_config_watcher`.
+- **Bridge:** `POST /desktop-open {"url", "agent": "qa"}` opens on :2
+  with a separate Chromium profile
+  (`--user-data-dir=/data/home/.config/chromium-qa` — two Chromiums
+  sharing one profile fight over the singleton lock) and the :2 bus.
+- **Per-computer lease + generation:** the Worker lease/generation are
+  now per-computer (`lease:default` / `lease:qa`,
+  `generation:default` / `generation:qa` in KV; the old un-suffixed
+  keys are legacy and no longer written). `__takeover` / `__heartbeat` /
+  `__release` take `{computer}`, `__lease` takes `?computer=`,
+  capabilities carry `computer` and are checked against that
+  computer's lease/generation. The lease-watcher polls BOTH and mirrors
+  each to its own control file; it also uploads a per-computer preview
+  (`preview:default` / `preview:qa`).
+- **Verification (live):** QA proxy `list_apps` shows ONLY :2 apps
+  (Chromium pid 111374 + xfwm4 pid 109672); RFB split on :2 (view 5903
+  ignores the pointer, control 5904 moves it); QA Chromium screenshot
+  1920x1048, 712 KB, distinct from the :1 screenshot. **Lease
+  end-to-end (live, via KV write):** qa lease → watcher wrote
+  `/run/user/1000/qa/instabox-control` (renewed every 5 s, epoch tracks
+  now), :1 control file stayed absent, QA `click` refused with the
+  exact refusal text, :1 `click` passed through; lease deleted → file
+  cleared after the ~60 s KV stale-read window, QA `click` passed
+  again. **Harness 22–24 cover the same logic** (independence,
+  heartbeat/release per-computer, capability routing to 6084/6085).
+- **Desktop Chromium is now a service:** the bridge restarts at
+  23:23 IST killed the :1 Chromium (it was a bridge subprocess;
+  `start_new_session=True` does NOT protect it — systemd kills by
+  cgroup, not process group). `desktop-chromium.service` (in this
+  folder) now owns the :1 Chromium (wordsolverx.com, session-bus env);
+  a bridge restart was re-tested and the Chromium (same pid 104998)
+  survived. The bridge's `/desktop-open` is now just a tab-opener when
+  Chromium is already running (Chromium singleton behaviour).
+
+### Teach-by-showing
+
+- Worker: `POST /desktop/__teach` (cookie-gated; saves `{id, name,
+  goal, playbook, events}` to KV `teach-skill:<id>`; server-side
+  `sanitizeTeachEvents` mirrors Rakazo's `sanitizeTeachRecordingEvent`
+  — sensitive events lose key/text, cap 500 events);
+  `GET /desktop/__pending-skills` + `POST /desktop/__pending-skills/ack`
+  (sync-token gated, for the watcher).
+- Chrome: "Teach a task" button (visible only while holding control);
+  teaching bar (goal input, Sensitive checkbox, "Stop & draft skill");
+  the noVNC shim forwards pointer/key/scroll/clipboard events to the
+  parent as `qwenpawTeachEvent` while teaching (never preventDefaults;
+  while Sensitive is on, key/clipboard VALUES are never sent); draft
+  editor modal with the 8 Rakazo fields (Name / When to use / Inputs /
+  Steps / How to check / What to return / Approval boundaries / Failure
+  handling) + Save / Test / Add to routine. Save → `POST
+  /desktop/__teach`. Test → copies `formatSkillRunPrompt(name,
+  playbook, test=true)` to clipboard + opens `/chat` in a new tab. Add
+  to routine → POSTs to the routines Worker `/api/routines` with
+  `X-Routine-Token` from localStorage (prompts the user to paste
+  ROUTINE_WEBHOOK_TOKEN once; stored only in the browser).
+- Watcher: every 30 s fetches pending taught skills and delivers each
+  to the skill pool. **Two bugs found by testing, fixed:** (a) the
+  SKILL.md frontmatter `name` MUST equal the skill-pool directory name
+  — `qwenpaw skills enable <name>` looks the skill up by that name.
+  (b) Installing only to the pool leaves the skill invisible — the
+  default workspace's `skills/` dir holds IDENTICAL COPIES of pool
+  skills, and `qwenpaw skills list` reads the workspace registry. The
+  watcher installs to BOTH `skill_pool/<slug>/` and
+  `workspaces/default/skills/<slug>/` (via `sudo install`; never
+  hand-edit `skill.json`). Verified: test skill
+  `taught-test-taught-skill` appeared in `qwenpaw skills list`
+  (19 skills), then was disabled + removed (cleaned up).
+- **Harness 27** covers save/list/ack + sensitive-event redaction.
+
+### Needs-you flow
+
+- Worker: `GET /desktop/__needs-you` (cookie-gated), `POST
+  /desktop/__needs-you` (sync-token gated — the bridge raises it),
+  `POST /desktop/__needs-you/resolve {action:"skip"|"done"}`
+  (cookie-gated). KV key `needsyou`.
+- Bridge (`/data/home/camoufox/bridge/bridge.py`, machine-only by
+  convention): `POST /needs-you` — a plain function `raise_needs_you`
+  (NOT via `WORKER.call()`, no browser needed) that POSTs to the Pages
+  Worker with `X-Desktop-Sync`. **Bug found by testing, fixed:**
+  Python urllib's default UA is 403'd by Cloudflare on the Pages
+  domain — the bridge's forward now sends `User-Agent:
+  qwenpaw-bridge/1.0`. Verified: bridge POST (with BRIDGE_TOKEN) →
+  `{"ok": true, "record": {...}}` → KV `needsyou` confirmed; unauth
+  bridge POST → 401. Test record deleted after verification.
+- Chrome: needs-you banner under the header (polls every 10 s; agent
+  text + live preview image from `/desktop/__preview` + Skip / I'm
+  done / Take control). Skip/I'm done clears the record and toasts
+  "Tell the agent in chat: 'skip that step' / 'done, continue'" — the
+  Worker cannot message the agent directly (the agent reads only the
+  console); this honest limitation is stated in the UI and the code.
+- DriverCard description (both cards) now instructs the agent: when
+  blocked, `curl -X POST http://172.18.0.1:8899/needs-you -H
+  'Authorization: Bearer $CAMOUFOX_BRIDGE_TOKEN' ...` and wait. Policy
+  unchanged (`effect: allow`). **Harness 25** covers raise/GET/resolve
+  + auth.
+- **Bug found by the harness (2026-11-15):** `POST /desktop/__mode`
+  read the request body TWICE (`readJsonBody` for the agent, then
+  again for the mode) — the second read returns `{}` because the
+  stream is consumed, so the mode always fell back to "team".
+  Fixed in `_worker.js` (read once, reuse). No other double-read in
+  the Worker (scanned).
+
+### Terminal tab
+
+- `pty-server.py` (in this folder, stdlib-only): binds
+  `/run/user/1000/terminal.sock`, one login shell per connection, cwd
+  `/data/home`; frame protocol `[kind:u8][length:u32be][payload]`
+  (kind 0 stdin, kind 1 resize cols/rows u16be), output raw bytes —
+  a direct mirror of Rakazo's `terminal-server.ts`.
+  `desktop-terminal.service` + `desktop-terminal-ws.service`
+  (websockify `127.0.0.1:6083 --unix-target=...`). Port 6083 published
+  **private** (pv-nu32td2toobnaoni5dzpipc2nm); token = Worker secret
+  `DESKTOP_TERMINAL_TOKEN` on both projects.
+  **6083 publish incident:** the first publish used `{"port": 6083,
+  "public": false}` and came back `access: "public"` with NO token —
+  a public websockify endpoint serving a login shell with no auth,
+  exposed for ~1 minute (URL never shared). Fixed immediately by
+  re-creating with `{"port": 6083, "access": "private", ...}`. **Rule:
+  the publish field is `"access": "private"`, never `"public":
+  false`.**
+- Worker: `DESKTOP_TERMINAL_ORIGIN` + mode "terminal" in
+  `verifyCapability` (requires a live lease, like control) +
+  `desktopSession` routes it. Chrome terminal tab uses xterm.js
+  (vendored `pages/public/vendor/xterm.js` 5.3.0 + `xterm.css`,
+  served via `/desktop/vendor/*` from the ASSETS binding — the
+  Worker's `desktop()` router intercepts all `/desktop/*`, so the
+  vendor files cannot be plain static assets). Shows "Take control to
+  use the terminal" + Take control button when the user does not hold
+  control. Verified: raw WebSocket to 6083 → 101; a BINARY frame
+  carrying `echo hello-terminal` got the shell echo back. (A TEXT
+  frame is rejected by websockify — the xterm.js client sends binary
+  frames, so this is correct, not a bug.) **Harness 29 + 31** cover
+  the capability + the vendor files.
+
+### Side-panel preview beside chat
+
+- The console SPA HTML is proxied by the Worker, and its CSP is only
+  `frame-ancestors 'self'` — NO script-src — so an injected
+  same-origin `<script>` runs. The SPA marker is `<div id="root"`
+  (verified in the live HTML). The injected script appends a floating
+  "Computer" button + a 316px right sidebar panel (iframe to
+  /desktop) to `document.body`, OUTSIDE React's `#root`, so React
+  re-renders can never remove it. Implemented in `proxy()`: for GET
+  200 text/html responses containing the SPA marker, inject
+  `consolePanelScript()` before `</body>` (defensive try/catch,
+  feature-detects `#root`, no-ops if already injected; open/closed
+  state in sessionStorage; "Open full" link to /desktop). API JSON,
+  SSE streams and assets are untouched. **Harness 30** covers
+  injection on the SPA + no injection on API JSON / /status.
+  **NOT yet verified in a real browser** — needs the parent's
+  logged-in check that the console still loads and the panel appears.
+
+### Chat tool-call display
+
+- The console already lists tool calls inline with per-call status
+  ("Completed N steps", expandable) — the gap vs Rakazo's inline
+  per-call succeeded/failed list is small and the console's React
+  rendering cannot be changed without rebuilding the image. The lever
+  that works is the agent instruction: both DriverCards' `description`
+  now tells the agent to narrate each desktop action in chat with its
+  result, and to raise needs-you when blocked. Policy unchanged.
+  Reference copies `computer-use.yaml` / `computer-use-qa.yaml` in
+  this folder are synced to the live cards.
+
+### Screen generations + preview in chat
+
+- Generation counter is per-computer in KV (bumped on
+  takeover/release, capability-checked) — see "Per-bot computer"
+  above.
+- Preview: the watcher captures `:1` AND `:2` via scrot every 15 s
+  and POSTs the PNGs to `/desktop/__preview-upload?computer=<name>`
+  (sync-token gated, 60 s TTL in KV, max 2 MB);
+  `GET /desktop/__preview?computer=<name>` (cookie-gated) returns
+  the PNG. Verified: KV holds `preview:default` + `preview:qa`. The
+  needs-you banner and the side-panel preview use it. The QwenPaw
+  chat itself cannot show the preview image without a console patch
+  (needs a rebuild) — the preview is shown in the /desktop banner
+  and the injected side panel instead; this limit is stated honestly.
+  **Harness 26** covers upload/GET per computer + auth.
+
+### Shared infrastructure (extension)
+
+- `DESKTOP_SYNC_TOKEN`: a NEW shared secret for the bridge↔Worker
+  and watcher↔Worker channel (NOT an InstaBox or Cloudflare key). Set
+  as a Worker secret on both Pages projects (per-key PATCH merges —
+  the other secrets survived). Written to
+  `/data/home/camoufox/.env` (bridge EnvironmentFile) and
+  `/data/home/mcp-proxy/.env` (chmod 600). **Its value must NOT be
+  written to git, memory, or reports.** The Worker checks it with a
+  constant-time-ish compare on header `X-Desktop-Sync`.
+- Worker new KV keys (all in DESKTOP_KV): `needsyou`,
+  `preview:default` / `preview:qa` (60 s TTL), `teach-skill:<id>`,
+  `computerMode:<agent>`, plus the per-computer `lease:<computer>` /
+  `generation:<computer>`.
+- **Token rotation (2026-11-15):** the first QA publish tokens were
+  briefly exposed in a tool-call error output (a Python syntax error
+  echoed the PATCH body). Both QA publishes were deleted (DELETE
+  `/v1/machines/{id}/ports/{port}` — the DELETE returns an empty
+  204, which the JSON parser reports as "not valid JSON"; the
+  publishes were confirmed gone) and re-created with fresh tokens
+  (6084 pv-6dnnzvsqjqzfrbwsida6d45x3q, 6085
+  pv-zcqckhcx6ezqvm5elgvtbxx4mm), then set as Worker secrets. The
+  exposed values are dead.
+- **Still needs the parent's real browser:** (a) logged-in /desktop
+  — new overlay chrome renders and stays rendered (teach button
+  appears only with control; terminal tab; Team/Private select);
+  (b) Take control flow (pill, heartbeat, release, held frame);
+  (c) Teach a task end-to-end (record → draft editor → Save → skill
+  appears in the console; Test copies the run prompt; Add to routine
+  with the token); (d) needs-you banner when the agent raises it
+  (needs a real blocked-browser session); (e) terminal tab opens a
+  shell; (f) side-panel "Computer" button + 316px panel beside the
+  chat, console still loads normally; (g) Team→Private switch
+  remounts the screen on :2.
+- **Still flagged:** `INSTABOX_API_KEY` is UNSET as a Worker secret
+  — the "…" maintenance endpoint returns 503 until it is set (then
+  redeploy). Do NOT invent the key.
 
 - The desktop dies when the Free VM pauses (30-min idle) or the run ends
   (~07:41 IST for the current run, then cooldown). The stream link works
