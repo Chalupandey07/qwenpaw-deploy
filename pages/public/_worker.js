@@ -14,6 +14,22 @@ const WAKE_WAIT_MS = 45_000;
 // first. This is the Rakazo-style embedded desktop: the user watches and
 // drives the desktop from the console's own domain, no separate link.
 const DESKTOP_ORIGIN = "https://6081-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
+// View-only desktop: a second, view-only x11vnc server on :1 (RFB 5902)
+// served by websockify on port 6082 (private publish). Its token is the
+// Worker secret DESKTOP_VIEW_TOKEN. The default /desktop view is this
+// view-only stream; driving it requires holding the control lease (P0).
+const DESKTOP_VIEW_ORIGIN = "https://6082-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
+// Keep-alive Worker: GET /ping is the public wake path (probing the public
+// console URL wakes a paused box); GET /status is its cached status.
+const KEEPALIVE_URL = "https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev";
+// Machine id, derived from ORIGIN (8088-<id-without-m_>.instabox.tech).
+const MACHINE_ID = "m_" + new URL(ORIGIN).hostname.split(".")[0].split("-").slice(1).join("-");
+// Rakazo-style control lease: 90 s lifetime, 15 s heartbeat (client-side,
+// only while the page is visible), release names the lease id.
+const LEASE_TTL_MS = 90_000;
+// Sealed screen capability (AES-256-GCM): 60-min TTL, scoped to the
+// generation + (for control) the lease id. See desktopCapability* below.
+const CAPABILITY_TTL_S = 3600;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -192,7 +208,7 @@ async function proxy(request, url) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -210,7 +226,7 @@ export default {
     // Embedded desktop — /desktop/* proxied to the noVNC origin, gated on
     // a valid QwenPaw session (see desktop() below).
     if (path === "/desktop" || path.startsWith("/desktop/")) {
-      return desktop(request, url, env);
+      return desktop(request, url, env, ctx);
     }
 
     return proxy(request, url);
@@ -417,7 +433,7 @@ function collectSetCookiePairs(res) {
   return list.map((c) => c.split(";")[0]).filter(Boolean);
 }
 
-async function fetchDesktopOrigin(request, url, env, originUrl) {
+async function fetchDesktopOrigin(request, url, env, originUrl, origin, token) {
   const setCookies = [];
   const buildReq = (target, extraCookies) => {
     const req = new Request(target, request);
@@ -449,7 +465,7 @@ async function fetchDesktopOrigin(request, url, env, originUrl) {
       // No usable proxy cookie: retry once with the server-side token.
       usedToken = true;
       target = new URL(originUrl);
-      target.searchParams.set("_token", env.DESKTOP_ORIGIN_TOKEN);
+      target.searchParams.set("_token", token);
       continue;
     }
     const loc = res.headers.get("Location");
@@ -462,7 +478,7 @@ async function fetchDesktopOrigin(request, url, env, originUrl) {
       } catch {
         return { res, setCookies };
       }
-      if (next.origin !== DESKTOP_ORIGIN) return { res, setCookies };
+      if (next.origin !== origin) return { res, setCookies };
       next.searchParams.delete("_token");
       target = next;
       continue;
@@ -472,7 +488,7 @@ async function fetchDesktopOrigin(request, url, env, originUrl) {
   return { res: null, setCookies };
 }
 
-async function desktop(request, url, env) {
+async function desktop(request, url, env, ctx) {
   if (!env.DESKTOP_ORIGIN_TOKEN) {
     return new Response("Desktop is not configured yet.", {
       status: 503, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
@@ -484,39 +500,414 @@ async function desktop(request, url, env) {
     return desktopVerify(request, env);
   }
 
-  // Session gate: a valid HMAC desktop cookie (minted by __verify after a
-  // real QwenPaw login) is the only proof accepted here — see the note at
-  // the top of this section for why a Cookie->healthz probe cannot work.
+  // Public lease read (no secrets in the answer — the machine-side
+  // lease-watcher polls this to mirror the lease into the desktop control
+  // file the computer-use MCP proxy honors).
+  if (path === "/desktop/__lease") {
+    return desktopLeaseRead(env);
+  }
+
+  // Sealed screen sessions: the capability in the path IS the auth
+  // (scoped, 60-min TTL, generation-checked). No desktop cookie needed.
+  if (path.startsWith("/desktop/session/")) {
+    return desktopSession(request, url, env, ctx);
+  }
+
+  // Everything below needs the desktop session cookie (minted by __verify
+  // after a real QwenPaw login) — see the note at the top of this section.
   if (!(await desktopCookieValid(request, env))) {
     return gatePage();
   }
 
+  if (path === "/desktop/__takeover") return desktopTakeover(request, env);
+  if (path === "/desktop/__heartbeat") return desktopHeartbeat(request, env);
+  if (path === "/desktop/__release") return desktopRelease(request, env);
+  if (path === "/desktop/__screen") return desktopScreen(request, env);
+  if (path === "/desktop/__status") return desktopStatus(request, url, env);
+  if (path === "/desktop/__wake") return desktopWake(request, env);
+  if (path === "/desktop/__action") return desktopAction(request, env);
+
+  // The Rakazo-style overlay chrome (desktop-chrome.html, a static asset):
+  // header + Take control / Release / "…" menu / Close above the screen
+  // iframe. The iframe's source is a sealed session capability URL, never
+  // a bare /desktop/vnc.html — the chrome is the only entry point.
   if (path === "/desktop" || path === "/desktop/") {
-    return Response.redirect(
-      url.origin + "/desktop/vnc.html?autoconnect=true&resize=scale&reconnect=true", 302,
-    );
+    if (!env.ASSETS) {
+      return new Response("Desktop assets are not bound.", { status: 500 });
+    }
+    return env.ASSETS.fetch(new Request(url.origin + "/desktop-chrome.html"));
   }
 
-  // Strip the /desktop prefix; the origin token is added server-side only
-  // (query param on the server-to-server fetch — never in the browser URL).
-  const stripped = path.slice("/desktop".length) || "/";
-  const originUrl = new URL(DESKTOP_ORIGIN + stripped + url.search);
+  // Legacy direct /desktop/* asset paths (bare vnc.html etc.) are closed:
+  // they bypassed the view/control split (anyone with a cookie could
+  // drive). Everything goes through the chrome + session capabilities now.
+  return Response.redirect(url.origin + "/desktop", 302);
+}
 
-  const { res, setCookies } = await fetchDesktopOrigin(request, url, env, originUrl);
+// --- Rakazo-style control lease + sealed screen capability (P0) ---------
+// State lives in the DESKTOP_KV binding (bound to both Pages projects):
+//   "lease"      -> {leaseId, holder:"user", grantedAt, expiresAt, fence}
+//   "generation" -> integer, bumped on every takeover/release so old
+//                   capabilities die (Rakazo's bot/computer generations).
+// The machine-side lease-watcher (desktop-lease-watcher.service) mirrors
+// the lease into /run/user/1000/instabox-control, the file the
+// computer-use MCP proxy already honors: while a user holds the lease the
+// agent's input tools are refused; on handback they pass again and the
+// agent re-reads the screen.
+const KV_LEASE_KEY = "lease";
+const KV_GENERATION_KEY = "generation";
+const KV_LAST_WAKE_KEY = "lastWake";
+
+function jsonResp(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+  });
+}
+
+function kvRequired(env) {
+  if (!env.DESKTOP_KV) {
+    return new Response(JSON.stringify({ ok: false, error: "desktop_store_unbound" }), {
+      status: 503,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    });
+  }
+  return null;
+}
+
+async function getLease(env) {
+  try {
+    return await env.DESKTOP_KV.get(KV_LEASE_KEY, "json");
+  } catch {
+    return null;
+  }
+}
+
+function leaseActive(lease) {
+  return !!lease && lease.holder === "user" && typeof lease.expiresAt === "number" && lease.expiresAt > Date.now();
+}
+
+async function getGeneration(env) {
+  try {
+    const v = await env.DESKTOP_KV.get(KV_GENERATION_KEY);
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function bumpGeneration(env) {
+  const gen = (await getGeneration(env)) + 1;
+  try {
+    await env.DESKTOP_KV.put(KV_GENERATION_KEY, String(gen));
+  } catch { /* best effort */ }
+  return gen;
+}
+
+async function readJsonBody(request) {
+  try {
+    const body = await request.json();
+    return body && typeof body === "object" ? body : {};
+  } catch {
+    return {};
+  }
+}
+
+// GET /desktop/__lease (public) — {holder, leaseId, expiresAt, generation}.
+// No secrets: the lease id is a random UUID and only names the holder.
+async function desktopLeaseRead(env) {
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const lease = await getLease(env);
+  const gen = await getGeneration(env);
+  if (leaseActive(lease)) {
+    return jsonResp({ holder: "user", leaseId: lease.leaseId, expiresAt: lease.expiresAt, fence: lease.fence, generation: gen });
+  }
+  return jsonResp({ holder: "agent", leaseId: null, expiresAt: null, fence: lease?.fence ?? 0, generation: gen });
+}
+
+// POST /desktop/__takeover — grant the 90 s lease (atomic-ish: KV has no
+// CAS, so read-then-write with an active-lease check; a single user means
+// the only race is two of their own tabs, and the 90 s expiry bounds it).
+async function desktopTakeover(request, env) {
+  if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const lease = await getLease(env);
+  if (leaseActive(lease)) {
+    return jsonResp({ ok: false, error: "held", leaseId: lease.leaseId, expiresAt: lease.expiresAt }, 409);
+  }
+  const now = Date.now();
+  const next = {
+    leaseId: crypto.randomUUID(),
+    holder: "user",
+    grantedAt: now,
+    expiresAt: now + LEASE_TTL_MS,
+    fence: (typeof lease?.fence === "number" ? lease.fence : 0) + 1,
+  };
+  await env.DESKTOP_KV.put(KV_LEASE_KEY, JSON.stringify(next));
+  const gen = await bumpGeneration(env);
+  return jsonResp({ ok: true, leaseId: next.leaseId, expiresAt: next.expiresAt, fence: next.fence, generation: gen });
+}
+
+// POST /desktop/__heartbeat {leaseId} — extend the lease by 90 s. Only
+// the visible page heartbeats (client-side); a hidden tab lapses control
+// ~90 s after it was hidden, exactly like Rakazo.
+async function desktopHeartbeat(request, env) {
+  if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const body = await readJsonBody(request);
+  const lease = await getLease(env);
+  if (!leaseActive(lease) || body.leaseId !== lease.leaseId) {
+    return jsonResp({ ok: false, error: "no_lease" }, 410);
+  }
+  lease.expiresAt = Date.now() + LEASE_TTL_MS;
+  await env.DESKTOP_KV.put(KV_LEASE_KEY, JSON.stringify(lease));
+  return jsonResp({ ok: true, expiresAt: lease.expiresAt });
+}
+
+// POST /desktop/__release {leaseId} — end control. The release NAMES the
+// lease, so a late release from an old page can never end newer control.
+async function desktopRelease(request, env) {
+  if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const body = await readJsonBody(request);
+  const lease = await getLease(env);
+  if (!lease || body.leaseId !== lease.leaseId) {
+    return jsonResp({ ok: false, error: "stale" });
+  }
+  await env.DESKTOP_KV.delete(KV_LEASE_KEY);
+  const gen = await bumpGeneration(env);
+  return jsonResp({ ok: true, released: true, generation: gen });
+}
+
+// --- Sealed screen capability (AES-256-GCM, WebCrypto) ------------------
+// Key: SHA-256 of the desktop origin token (deterministic, no new secret).
+// Token: base64url(iv || ciphertext) of JSON {mode, exp, gen, leaseId}.
+// Path: /desktop/session/{view|control}/{exp}.{token}
+function b64urlEncode(bytes) {
+  let s = "";
+  const arr = new Uint8Array(bytes);
+  for (let i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function b64urlDecode(str) {
+  const s = str.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(s + "=".repeat((4 - (s.length % 4)) % 4));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function capabilityKey(env) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("capability:" + env.DESKTOP_ORIGIN_TOKEN));
+  return crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+async function sealCapability(env, payload) {
+  const key = await capabilityKey(env);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = new TextEncoder().encode(JSON.stringify(payload));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data);
+  const combined = new Uint8Array(12 + ct.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(ct), 12);
+  return b64urlEncode(combined);
+}
+
+async function openCapability(env, token) {
+  try {
+    const key = await capabilityKey(env);
+    const combined = b64urlDecode(token);
+    if (combined.length < 13) return null;
+    const iv = combined.slice(0, 12);
+    const ct = combined.slice(12);
+    const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+    const payload = JSON.parse(new TextDecoder().decode(pt));
+    if (!payload || typeof payload !== "object") return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+// Full capability check: expiry, mode, generation, and (for control) a
+// live lease with the same id. Used on every session request and by the
+// WebSocket recheck loop.
+async function verifyCapability(env, mode, exp, token) {
+  if (!exp || !/^\d+$/.test(exp) || Number(exp) * 1000 < Date.now()) return null;
+  if (mode !== "view" && mode !== "control") return null;
+  const payload = await openCapability(env, token);
+  if (!payload) return null;
+  if (payload.mode !== mode || payload.exp !== Number(exp)) return null;
+  if (payload.gen !== (await getGeneration(env))) return null;
+  if (mode === "control") {
+    const lease = await getLease(env);
+    if (!leaseActive(lease) || lease.leaseId !== payload.leaseId) return null;
+  }
+  return payload;
+}
+
+// POST /desktop/__screen {mode:"view"|"control", leaseId?} — mint a
+// 60-min capability URL for the chrome iframe. Control requires holding
+// the lease; view needs only the session cookie.
+async function desktopScreen(request, env) {
+  if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const body = await readJsonBody(request);
+  const mode = body.mode === "control" ? "control" : "view";
+  const gen = await getGeneration(env);
+  const exp = Math.floor(Date.now() / 1000) + CAPABILITY_TTL_S;
+  if (mode === "control") {
+    const lease = await getLease(env);
+    if (!leaseActive(lease) || body.leaseId !== lease.leaseId) {
+      return jsonResp({ ok: false, error: "no_lease" }, 403);
+    }
+    const token = await sealCapability(env, { mode, exp, gen, leaseId: lease.leaseId });
+    return jsonResp({ ok: true, url: `/desktop/session/control/${exp}.${token}`, expiresAt: exp * 1000 });
+  }
+  const token = await sealCapability(env, { mode, exp, gen, leaseId: null });
+  return jsonResp({ ok: true, url: `/desktop/session/view/${exp}.${token}`, expiresAt: exp * 1000 });
+}
+
+// Re-check a live WebSocket's capability every second (Rakazo's
+// watchScreenAuthorization): a revoked/expired capability or a lost lease
+// closes the socket at once. Best-effort — the 60-min TTL bounds the
+// damage if the isolate is evicted. `serverSocket` is the upstream socket.
+async function watchCapability(env, mode, exp, token, serverSocket) {
+  for (;;) {
+    await sleep(1000);
+    try {
+      if (serverSocket.readyState !== 1) return;
+    } catch {
+      return;
+    }
+    const ok = await verifyCapability(env, mode, exp, token);
+    if (!ok) {
+      try {
+        serverSocket.close(1011, "screen capability revoked");
+      } catch { /* already closed */ }
+      return;
+    }
+  }
+}
+
+// The noVNC shim (Rakazo's injectNovncStorageShim, adapted): injected
+// into the proxied vnc.html before it reaches the browser. The iframe is
+// same-origin here, but the shim is kept for parity and robustness:
+//  - in-memory storage fallback if localStorage/sessionStorage throws;
+//  - hide #noVNC_status (it names the origin host) and, in view-only
+//    mode, the control bar;
+//  - report screen state to the parent via postMessage
+//    ({type:"qwenpawScreen", state, detail}) by watching noVNC's status
+//    text; accept one parent message ({qwenpawScreenFocus:true}) to focus
+//    the canvas after a reconnect;
+//  - delete window.VideoDecoder (Android H.264 probe hang), swallow
+//    extension script errors.
+function novncShimScript(mode) {
+  return `<script>
+window.__QWENPAW_DESKTOP_MODE = ${JSON.stringify(mode)};
+(function () {
+  try {
+    var probe = window.localStorage.getItem("__qwenpaw_probe__");
+  } catch (e) {
+    var mem = {};
+    var memStore = {
+      getItem: function (k) { return k in mem ? mem[k] : null; },
+      setItem: function (k, v) { mem[k] = String(v); },
+      removeItem: function (k) { delete mem[k]; },
+      clear: function () { mem = {}; },
+      key: function (i) { return Object.keys(mem)[i] || null; },
+      get length() { return Object.keys(mem).length; },
+    };
+    try { Object.defineProperty(window, "localStorage", { value: memStore }); } catch (e2) {}
+    try { Object.defineProperty(window, "sessionStorage", { value: memStore }); } catch (e2) {}
+  }
+  try { delete window.VideoDecoder; } catch (e) {}
+  window.addEventListener("error", function (ev) {
+    if (ev && ev.filename && ev.filename.indexOf("chrome-extension://") === 0) ev.preventDefault();
+  }, true);
+  var style = document.createElement("style");
+  style.textContent = "#noVNC_status{display:none!important}";
+  (document.head || document.documentElement).appendChild(style);
+  var lastState = "";
+  function stateFromText(t) {
+    t = (t || "").toLowerCase();
+    if (t.indexOf("connected") !== -1) return "connected";
+    if (t.indexOf("connecting") !== -1) return "connecting";
+    if (t.indexOf("failed") !== -1 || t.indexOf("error") !== -1) return "failed";
+    if (t.indexOf("disconnected") !== -1) return "disconnected";
+    return "loading";
+  }
+  function report() {
+    var el = document.getElementById("noVNC_status");
+    var text = el ? (el.textContent || "") : "";
+    var state = stateFromText(text);
+    if (state !== lastState) {
+      lastState = state;
+      try { window.parent.postMessage({ type: "qwenpawScreen", state: state, detail: text.slice(0, 200) }, window.location.origin); } catch (e) {}
+    }
+  }
+  window.addEventListener("message", function (ev) {
+    if (ev.origin !== window.location.origin) return;
+    if (ev.data && ev.data.qwenpawScreenFocus) {
+      var c = document.getElementById("noVNC_canvas");
+      if (c) { try { c.focus(); } catch (e) {} }
+    }
+  });
+  setInterval(report, 500);
+  report();
+})();
+</script>`;
+}
+
+// GET /desktop/session/{mode}/{exp}.{token}/... — capability-verified
+// proxy to the view-only (6082) or interactive (6081) noVNC origin.
+// Verifies the capability on EVERY request; WebSocket upgrades get a
+// 1 s recheck loop that closes the socket on revocation.
+async function desktopSession(request, url, env, ctx) {
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  const parts = url.pathname.split("/").filter(Boolean);
+  // ["desktop","session",mode,"exp.token",...rest]
+  if (parts.length < 4) return new Response("Screen link expired.", { status: 403 });
+  const mode = parts[2];
+  const [exp, token] = (parts[3] || "").split(".");
+  const payload = await verifyCapability(env, mode, exp, token);
+  if (!payload) {
+    return new Response("Screen link expired — open /desktop again for a fresh one.", {
+      status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+    });
+  }
+  const isView = mode === "view";
+  const origin = isView ? DESKTOP_VIEW_ORIGIN : DESKTOP_ORIGIN;
+  const originToken = isView ? env.DESKTOP_VIEW_TOKEN : env.DESKTOP_ORIGIN_TOKEN;
+  if (!originToken) {
+    return new Response("Desktop is not configured yet.", {
+      status: 503, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+    });
+  }
+  const rest = parts.slice(4).join("/");
+  const originUrl = new URL(origin + "/" + rest + url.search);
+  const isVncHtml = rest === "" || rest === "vnc.html" || rest.endsWith("/vnc.html");
+  let fetchReq = request;
+  if (isVncHtml) {
+    // Force an uncompressed fetch so the shim can be injected below.
+    fetchReq = new Request(request);
+    fetchReq.headers.set("Accept-Encoding", "identity");
+  }
+  const { res, setCookies } = await fetchDesktopOrigin(fetchReq, url, env, originUrl, origin, originToken);
   if (!res) {
     return new Response("Desktop origin unreachable. Try again in a moment.", {
       status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
     });
   }
-
-  // The machine is waking (503 from the InstaBox proxy): show the waking
-  // page rather than a bare error.
-  if (res.status === 503) {
-    return wakingPage(null);
-  }
-
-  // The private port answers 401 when its token is wrong — that is a server
-  // misconfiguration, never the visitor's fault; say so plainly.
+  if (res.status === 503) return wakingPage(null);
   if (res.status === 401) {
     return new Response("Desktop is temporarily unavailable (origin auth). Try again in a moment.", {
       status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
@@ -524,26 +915,22 @@ async function desktop(request, url, env) {
   }
 
   const headers = new Headers(res.headers);
-  // Keep the desktop on our own domain: a Location that survives the
-  // server-side redirect following (foreign redirect, or hop limit) is
-  // resolved against the desktop origin and re-scoped under /desktop/* —
-  // a root-relative Location must NEVER reach the browser, or it escapes
-  // to the console SPA (BUG 1, 2026-11-15). Foreign redirects are dropped.
+  // Re-scope any surviving redirect under this session path (never let a
+  // root-relative Location escape to the console SPA).
   const loc = headers.get("Location");
   if (loc) {
     let resolved = null;
     try {
-      resolved = new URL(loc, DESKTOP_ORIGIN);
+      resolved = new URL(loc, origin);
     } catch {
       resolved = null;
     }
-    if (resolved && resolved.origin === DESKTOP_ORIGIN) {
-      headers.set("Location", url.origin + "/desktop" + resolved.pathname + resolved.search + resolved.hash);
+    if (resolved && resolved.origin === origin) {
+      headers.set("Location", url.origin + "/desktop/session/" + mode + "/" + exp + "." + token + resolved.pathname + resolved.search + resolved.hash);
     } else {
       headers.delete("Location");
     }
   }
-  // Strip any Domain= on cookies so they become host-only for our domain.
   const resSetCookies = typeof res.headers.getSetCookie === "function"
     ? res.headers.getSetCookie()
     : (headers.get("Set-Cookie") ? [headers.get("Set-Cookie")] : []);
@@ -559,8 +946,6 @@ async function desktop(request, url, env) {
       headers.append("Set-Cookie", clean);
     }
   }
-  // Desktop HTML may be embedded in the console (same origin) later; allow
-  // same-origin framing, block everyone else.
   const contentType = headers.get("Content-Type") || "";
   if (contentType.includes("text/html")) {
     headers.set("X-Frame-Options", "SAMEORIGIN");
@@ -570,7 +955,149 @@ async function desktop(request, url, env) {
   headers.set("X-Content-Type-Options", "nosniff");
 
   if (res.status === 101 && res.webSocket) {
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(watchCapability(env, mode, exp, token, res.webSocket));
+    }
     return new Response(null, { status: 101, headers, webSocket: res.webSocket });
   }
+
+  // Shim injection for the noVNC page (uncompressed fetch above).
+  if (isVncHtml && contentType.includes("text/html")) {
+    let html = "";
+    try {
+      html = await res.text();
+    } catch {
+      html = "";
+    }
+    if (html) {
+      const shim = novncShimScript(mode);
+      // In view-only mode the noVNC control bar is hidden by an extra
+      // <style> (kept out of the JS shim so the two modes are visibly
+      // different in the served HTML).
+      const viewStyle = isView ? `<style>#noVNC_control_bar_anchor{display:none!important}</style>` : "";
+      const withShim = html.includes("<head>")
+        ? html.replace("<head>", "<head>" + shim + viewStyle)
+        : html.includes("</head>")
+          ? html.replace("</head>", shim + viewStyle + "</head>")
+          : shim + viewStyle + html;
+      headers.set("Cache-Control", "no-store, no-transform");
+      headers.delete("ETag");
+      headers.delete("Last-Modified");
+      return new Response(withShim, { status: res.status, statusText: res.statusText, headers });
+    }
+  }
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+// GET /desktop/__status — desktop + machine state for the chrome page.
+// Probes the view origin directly (200 = live desktop, 503 = waking,
+// fetch error = asleep/down) and reads the keep-alive Worker's cached
+// machine status for the machine side.
+async function desktopStatus(request, url, env) {
+  if (request.method !== "GET") return jsonResp({ ok: false, error: "method" }, 405);
+  let desktop = "unknown";
+  try {
+    const probeUrl = new URL(DESKTOP_VIEW_ORIGIN + "/");
+    const { res } = await fetchDesktopOrigin(
+      new Request(probeUrl, { method: "GET", headers: { "Accept-Encoding": "identity" } }),
+      url, env, probeUrl, DESKTOP_VIEW_ORIGIN, env.DESKTOP_VIEW_TOKEN || "",
+    );
+    if (res) {
+      if (res.status === 200) desktop = "up";
+      else if (res.status === 503) desktop = "waking";
+      else if (res.status === 401) desktop = "origin_auth";
+      else desktop = "down";
+      try { await res.body?.cancel().catch(() => {}); } catch { /* ignore */ }
+    } else {
+      desktop = "asleep";
+    }
+  } catch {
+    desktop = "asleep";
+  }
+  let machine = "unknown";
+  try {
+    const r = await fetch(KEEPALIVE_URL + "/status", { signal: AbortSignal.timeout(8000) });
+    const j = await r.json().catch(() => null);
+    if (j && typeof j.status === "string") machine = j.status;
+  } catch { /* keep unknown */ }
+  const lease = await getLease(env).catch(() => null);
+  const gen = await getGeneration(env);
+  return jsonResp({
+    desktop,
+    machine,
+    lease: leaseActive(lease) ? { holder: "user", leaseId: lease.leaseId, expiresAt: lease.expiresAt } : { holder: "agent", leaseId: null, expiresAt: null },
+    generation: gen,
+  });
+}
+
+// POST /desktop/__wake — wake a paused machine via the keep-alive
+// Worker's public /ping (probing the public console URL wakes a paused
+// box by InstaBox design). Throttled to one call per 60 s in KV.
+async function desktopWake(request, env) {
+  if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
+  const missing = kvRequired(env);
+  if (missing) return missing;
+  let lastWake = 0;
+  try {
+    lastWake = Number((await env.DESKTOP_KV.get(KV_LAST_WAKE_KEY)) || 0);
+  } catch { /* ignore */ }
+  const now = Date.now();
+  if (now - lastWake < 60_000) {
+    return jsonResp({ ok: false, error: "throttled", retryAfter: Math.ceil((60_000 - (now - lastWake)) / 1000) });
+  }
+  try {
+    await env.DESKTOP_KV.put(KV_LAST_WAKE_KEY, String(now));
+  } catch { /* best effort */ }
+  try {
+    const r = await fetch(KEEPALIVE_URL + "/ping", { signal: AbortSignal.timeout(15000) });
+    await r.body?.cancel().catch(() => {});
+    return jsonResp({ ok: true, pingStatus: r.status });
+  } catch {
+    return jsonResp({ ok: false, error: "wake_failed" }, 502);
+  }
+}
+
+// POST /desktop/__action {action} — maintenance actions from the "…"
+// menu. Stop calls the InstaBox desktop API; Recover/Reset/Update have
+// no matching InstaBox desktop API action and are reported honestly.
+// Requires INSTABOX_API_KEY as a Worker secret — currently UNSET, so
+// this returns 503 until the parent sets it (see the report).
+async function desktopAction(request, env) {
+  if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
+  const body = await readJsonBody(request);
+  const action = body.action;
+  if (!["stop", "recover", "reset", "update"].includes(action)) {
+    return jsonResp({ ok: false, error: "bad_action" }, 400);
+  }
+  if (!env.INSTABOX_API_KEY) {
+    return jsonResp({
+      ok: false,
+      error: "instabox_api_key_unset",
+      note: "Set INSTABOX_API_KEY as a Worker secret on both Pages projects (then redeploy) to enable maintenance actions.",
+    }, 503);
+  }
+  if (action !== "stop") {
+    return jsonResp({
+      ok: false,
+      error: "unsupported",
+      note: `The InstaBox desktop API has no "${action}" action (known: status/install/start/takeover/handback/stop).`,
+    }, 501);
+  }
+  let res;
+  try {
+    res = await fetch(`https://api.instabox.sh/v1/machines/${MACHINE_ID}/desktop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": env.INSTABOX_API_KEY },
+      body: JSON.stringify({ action: "stop" }),
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch {
+    return jsonResp({ ok: false, error: "api_unreachable" }, 502);
+  }
+  const text = await res.text().catch(() => "");
+  if (res.status >= 200 && res.status < 300) {
+    await bumpGeneration(env).catch(() => {});
+    return jsonResp({ ok: true, action: "stop" });
+  }
+  return jsonResp({ ok: false, error: "api_rejected", httpStatus: res.status, detail: text.slice(0, 200) }, 502);
 }
