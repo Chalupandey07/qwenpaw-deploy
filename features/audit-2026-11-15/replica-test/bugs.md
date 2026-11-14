@@ -361,3 +361,44 @@ an open S1.
   qwenpaw-query-token-leak lead).
 - The Astra stream-timeout fix re-test (test-plan F02-H2) — pending a
   logged-in browser session.
+
+## Re-test bugs (2026-11-15, retest-2026-11-15)
+
+### RT-001: routines public GETs returned full routine prompt text
+
+- Severity: S3 (LOW security: user-authored instruction text exposed to anyone
+  who knows the public Worker URL; no secrets/tokens involved)
+- Flow / case: R03 / R03-N2
+- Screen: routines Worker GET /, GET /api/status, GET /api/routines
+- Steps: unauthenticated `curl /api/routines` (or `/api/status`, or `/`)
+  and observe the full `prompt` text of every routine in the response.
+- Expected: public GETs return id/name/schedule/state only; prompt text is
+  never in an unauthenticated response.
+- Actual: full prompt text was returned (live-verified before the fix).
+- Evidence: retest REPORT.md §3 (RT-001); harness
+  `retest-2026-11-15/harnesses/routines-harness.mjs` 11/11.
+- Fix: `publicRoutine()` / `publicPending()` strip `prompt` from all public
+  GETs; token-gated POST responses unchanged. Deployed 2026-11-14T21:10:19Z;
+  live re-test: no `prompt` field in either JSON endpoint, 0 prompt matches
+  in GET / HTML, POST /trigger no token still 401, cron schedules intact.
+- Status: FIXED + LIVE-VERIFIED 2026-11-15.
+
+### RT-002: groupchat checkToken failed open when GROUPCHAT_TOKEN was unset
+
+- Severity: S3 (LOW security: no live exposure — token is set — but deleting
+  or mis-rotating the secret would silently reopen the thread)
+- Flow / case: R04 / R04-E1
+- Screen: groupchat Worker `checkToken()` (`features/groupchat/worker/src/index.js`)
+- Steps: with `GROUPCHAT_TOKEN` unset, any `GET /thread` or
+  `POST /thread/message` succeeds without a token (source-verified; the old
+  header comment documented the open behaviour).
+- Expected: fail closed — 401 on every gated endpoint when the secret is unset
+  (same pattern as routines/keepalive).
+- Actual: `checkToken()` returned `true` when the secret was unset.
+- Evidence: retest REPORT.md §3 (RT-002); harness
+  `retest-2026-11-15/harnesses/groupchat-harness.mjs` 15/15.
+- Fix: `checkToken()` returns `false` when unset; `GET /` stays public and
+  advertises `auth_required`. Deployed via `deploy-groupchat.py deploy`
+  (no migration; DO thread state preserved); live re-test: `GET /`
+  `auth_required:true`, `GET /thread` no/wrong/`?token=` token → 401.
+- Status: FIXED + LIVE-VERIFIED 2026-11-15.
