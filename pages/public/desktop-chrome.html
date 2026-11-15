@@ -201,6 +201,13 @@
 
   var leaseId = null, leaseExpiresAt = 0, mode = "view", capUrl = null;
   var computer = "default"; // "default" = shared :1, "qa" = private :2
+  // Latest generation per computer, as reported by the __takeover /
+  // __release responses. Passed back to __screen so a mint right after a
+  // takeover is not born dead on a stale KV read (see the Worker).
+  var knownGen = { "default": null, qa: null };
+  // Bounded wake wait (the parent watched "Booting…" for ~6 min with no
+  // failure path). Overridable for the harness: window.QWENPAW_WAKE_TIMEOUT_MS.
+  var WAKE_TIMEOUT_MS = (typeof window !== "undefined" && window.QWENPAW_WAKE_TIMEOUT_MS) || 180000;
   var heartbeatTimer = null, reconnectTimer = null, reconnectAttempts = 0;
   var currentFrame = null, heldFrame = null, heldTimer = null, connected = false;
   var statusPollTimer = null, toastTimer = null, needsYouTimer = null;
@@ -249,13 +256,30 @@
     teachBtn.style.display = hasControl ? "" : "none";
     if (!hasControl && teaching) stopTeaching(true);
     if (currentFrame) currentFrame.className = hasControl ? "control" : "view";
+    // The status pill is the LIVE indicator, never the control indicator:
+    // controlPill is the only "You have control" in the header. Releasing
+    // control must reset the status pill, or it stays "You have control"
+    // forever (the parent saw exactly that, 3-4 times).
+    if (!hasControl && connected) setPill("Live", "live");
+    // The terminal uses the SAME lease as the header (one hold, not two).
+    // Taking control must open the terminal if its tab is active; releasing
+    // must drop it back to the gate. Without this, the Terminal tab never
+    // left its "Take control to use the terminal" gate.
+    if (terminalWrap.classList.contains("show")) {
+      if (hasControl) openTerminal();
+      else { closeTerminal(); openTerminal(); }
+    }
   }
 
   function screenState(state, detail) {
     if (state === "connected") {
       connected = true;
       reconnectAttempts = 0;
-      setPill(mode === "control" ? "You have control" : "Live", "live");
+      // The status pill always says "Live" when the screen is connected.
+      // "You have control" belongs to controlPill alone — the old code set
+      // it here too, so the pill appeared TWICE in the header while in
+      // control, and never cleared on release.
+      setPill("Live", "live");
       hideOverlay();
       dropHeldFrame();
       if (currentFrame) {
@@ -272,7 +296,12 @@
   }
 
   function scheduleReconnect(detail) {
+    // The status pill must follow the reconnect state. The old code never
+    // touched it here, so after a failed remount the pill kept saying
+    // "You have control" while the screen was reconnecting.
+    setPill("Reconnecting…");
     if (reconnectAttempts >= 10) {
+      setPill("Screen not connected");
       showOverlay("Screen not connected", detail + " The desktop may have paused.", false,
         '<button id="retryBtn">Retry screen</button>');
       var b = document.getElementById("retryBtn");
@@ -292,7 +321,10 @@
   }
 
   async function mintScreen(wantMode, wantComputer) {
-    var r = await api("/desktop/__screen", "POST", { mode: wantMode, computer: wantComputer || computer, leaseId: leaseId });
+    var body = { mode: wantMode, computer: wantComputer || computer, leaseId: leaseId };
+    var g = knownGen[wantComputer || computer];
+    if (typeof g === "number") body.gen = g;
+    var r = await api("/desktop/__screen", "POST", body);
     if (r.status !== 200 || !r.json.url) return null;
     return r.json.url;
   }
@@ -666,9 +698,26 @@
     var want = modeSelect.value === "private" ? "private" : "team";
     var r = await api("/desktop/__mode", "POST", { agent: "default", mode: want });
     if (r.status !== 200 || !r.json.ok) { toast("Could not switch computer mode.", true); return; }
+    // Switching computers DROPS the old computer's control lease first.
+    // A lease for :1 can never mint a screen for :2 (the Worker 403s
+    // "no_lease"), and the old code kept the :1 leaseId and mounted :2 in
+    // control mode — so Private showed "Screen link expired" over the old
+    // frozen Team frame. The new computer always starts in view mode;
+    // take control again on it if you want to drive it.
+    if (leaseId) {
+      var oldComputer = computer;
+      var oldLease = leaseId;
+      leaseId = null;
+      clearInterval(heartbeatTimer);
+      setControlUI(false);
+      try {
+        var rel = await api("/desktop/__release", "POST", { leaseId: oldLease, computer: oldComputer });
+        if (rel.json && typeof rel.json.generation === "number") knownGen[oldComputer] = rel.json.generation;
+      } catch (e) {}
+    }
     computer = want === "private" ? "qa" : "default";
     closeTerminal();
-    await mountScreen(mode);
+    await mountScreen("view");
     toast(want === "private" ? "Private computer — the QA agent's own display (:2)." : "Team computer — the shared display (:1).");
   });
   async function loadMode() {
@@ -695,6 +744,7 @@
     }
     leaseId = r.json.leaseId;
     leaseExpiresAt = r.json.expiresAt;
+    if (typeof r.json.generation === "number") knownGen[computer] = r.json.generation;
     setControlUI(true);
     await mountScreen("control");
     clearInterval(heartbeatTimer);
@@ -722,7 +772,10 @@
     if (sendBeacon && navigator.sendBeacon) {
       try { navigator.sendBeacon("/desktop/__release", JSON.stringify({ leaseId: id, computer: computer })); } catch (e) {}
     } else {
-      try { await api("/desktop/__release", "POST", { leaseId: id, computer: computer }); } catch (e) {}
+      try {
+        var rel = await api("/desktop/__release", "POST", { leaseId: id, computer: computer });
+        if (rel.json && typeof rel.json.generation === "number") knownGen[computer] = rel.json.generation;
+      } catch (e) {}
     }
     await mountScreen("view");
   }
@@ -763,32 +816,62 @@
     });
   });
 
+  // Poll __status until the requested computer is up, or the bounded
+  // wait expires. The old code polled FOREVER with no failure path — the
+  // parent watched "Booting…" for ~6 minutes with no screen and no way
+  // out. The wait is capped at WAKE_TIMEOUT_MS (3 min); on expiry the
+  // overlay says so honestly, with Wake-again / Reload actions.
+  // Every status call carries ?computer= so Private polls :2, not :1.
+  function pollDesktopUp(started, onUp) {
+    clearInterval(statusPollTimer);
+    statusPollTimer = setInterval(async function () {
+      var s = await api("/desktop/__status?computer=" + computer, "GET");
+      if (s.status === 200 && s.json.desktop === "up") {
+        clearInterval(statusPollTimer);
+        if (s.json.screen === "unreachable") {
+          toast("The desktop is up, but its screen is not responding yet — it may recover on its own.", true);
+        }
+        await onUp();
+      } else if (s.status === 200 && s.json.desktop === "waking") {
+        showOverlay("Booting live desktop…", "The machine is starting.", true, "");
+      } else if (Date.now() - started > WAKE_TIMEOUT_MS) {
+        clearInterval(statusPollTimer);
+        setPill("Asleep");
+        showOverlay("The desktop did not come up",
+          "It has been more than " + Math.round(WAKE_TIMEOUT_MS / 60000) + " minutes and the desktop is still " +
+          (s.json && s.json.desktop ? s.json.desktop : "unreachable") +
+          ". Try waking again — if it keeps failing, the desktop process on the machine may need attention.",
+          false,
+          '<button id="wakeRetry2" class="primary">Wake again</button> <button id="wakeReload">Reload</button>');
+        document.getElementById("wakeRetry2").onclick = wake;
+        document.getElementById("wakeReload").onclick = function () { location.reload(); };
+      }
+    }, 5000);
+  }
+
   async function wake() {
-    showOverlay("Booting live desktop…", "Waking the machine. This usually takes under a minute.", true, "");
+    showOverlay("Booting live desktop…", "Waking the machine. If it was paused this usually takes under a minute; a cold desktop start can take a few minutes.", true, "");
     setPill("Booting…");
-    var r = await api("/desktop/__wake", "POST", {});
+    var r = await api("/desktop/__wake", "POST", { computer: computer });
     if (r.status !== 200 || !r.json.ok) {
       showOverlay("Could not wake the computer", r.json.error === "throttled" ? "Wake was requested a moment ago — please wait a little and try again." : "The wake request failed. Try again in a moment.", false,
         '<button id="wakeRetry">Try again</button>');
       document.getElementById("wakeRetry").onclick = wake;
       return;
     }
-    clearInterval(statusPollTimer);
-    statusPollTimer = setInterval(async function () {
-      var s = await api("/desktop/__status", "GET");
-      if (s.status === 200 && s.json.desktop === "up") {
-        clearInterval(statusPollTimer);
-        await mountScreen("view");
-      } else if (s.status === 200 && s.json.desktop === "waking") {
-        showOverlay("Booting live desktop…", "The machine is starting.", true, "");
-      }
-    }, 5000);
+    if (r.json.desktopStart === "unavailable") {
+      // Honest note: without the API key, Wake only woke the machine.
+      showOverlay("Booting live desktop…", "The machine is waking. The desktop itself could not be started from here (the InstaBox API key is not set) — if the screen stays asleep, the desktop process may need a start from the machine.", true, "");
+    } else if (r.json.desktopStart === "failed") {
+      showOverlay("Booting live desktop…", "The machine is waking, but starting the desktop itself failed (" + (r.json.desktopNote || "see the Worker logs") + "). If the screen stays asleep, try again.", true, "");
+    }
+    pollDesktopUp(Date.now(), async function () { await mountScreen("view"); });
   }
 
   async function init() {
     setControlUI(false);
     await loadMode();
-    var s = await api("/desktop/__status", "GET");
+    var s = await api("/desktop/__status?computer=" + computer, "GET");
     if (s.status !== 200) {
       showOverlay("Could not reach the desktop", "The status check failed. Reload to try again.", false,
         '<button onclick="location.reload()">Reload</button>');
@@ -796,21 +879,19 @@
     }
     if (s.json.desktop === "up") {
       setPill("Live", "live");
+      if (s.json.screen === "unreachable") {
+        toast("The desktop is up, but its screen is not responding yet — it may recover on its own.", true);
+      }
       takeBtn.style.display = "";
       await mountScreen("view");
     } else if (s.json.desktop === "waking") {
       showOverlay("Booting live desktop…", "The machine is starting.", true, "");
       setPill("Booting…");
-      clearInterval(statusPollTimer);
-      statusPollTimer = setInterval(async function () {
-        var s2 = await api("/desktop/__status", "GET");
-        if (s2.status === 200 && s2.json.desktop === "up") {
-          clearInterval(statusPollTimer);
-          setPill("Live", "live");
-          takeBtn.style.display = "";
-          await mountScreen("view");
-        }
-      }, 5000);
+      pollDesktopUp(Date.now(), async function () {
+        setPill("Live", "live");
+        takeBtn.style.display = "";
+        await mountScreen("view");
+      });
     } else {
       setPill("Asleep");
       showOverlay("Computer is asleep", "The desktop is not running. Wake it to watch and drive it.", false,
@@ -821,6 +902,29 @@
     needsYouTimer = setInterval(pollNeedsYou, 10000);
     pollNeedsYou();
   }
+
+  // Debug / test handle: the harness (and a live debug session) can drive
+  // the chrome's state machine without clicking. Harmless in production.
+  window.__qwenpawDesktop = {
+    get state() {
+      return {
+        mode: mode, computer: computer, leaseId: leaseId, connected: connected,
+        statusPill: statusPill.textContent,
+        controlPillVisible: controlPill.style.display !== "none",
+        controlPillText: controlPill.textContent,
+      };
+    },
+    getKnownGen: function () { return knownGen; },
+    setControlUI: setControlUI,
+    screenState: screenState,
+    scheduleReconnect: scheduleReconnect,
+    openTerminal: openTerminal,
+    takeControl: takeControl,
+    releaseControl: releaseControl,
+    wake: wake,
+    mountScreen: mountScreen,
+    setTab: setTab,
+  };
 
   init();
 })();
