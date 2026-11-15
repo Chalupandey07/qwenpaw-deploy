@@ -468,7 +468,7 @@
     // invalid." while the same URL returns 200 from curl. Fetch the vnc.html
     // screen page from the page itself and show the real status, so we know
     // whether the browser's request differs from curl's. Remove once diagnosed.
-    const screenPage = state.screenUrl + "/vnc.html?autoconnect=true&resize=scale&reconnect=true";
+    const screenPage = state.screenUrl + "/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=" + encodeURIComponent(state.screenUrl + "/websockify");
     try {
       const probe = await fetch(screenPage, { cache: "no-store" });
       const probeText = (await probe.text()).slice(0, 120);
@@ -494,7 +494,7 @@
     // sandboxed iframe never renders the desktop from it — the redirect is
     // the prime suspect. vnc.html is the real page and is what the Worker
     // serves the shim on.
-    const screenPage = state.screenUrl + "/vnc.html?autoconnect=true&resize=scale&reconnect=true";
+    const screenPage = state.screenUrl + "/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=" + encodeURIComponent(state.screenUrl + "/websockify");
     el.previewFrame.src = screenPage;
     el.ovFrame.src = screenPage;
     setPhase("loading");
