@@ -1,0 +1,304 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QwenPaw log-check — 2026-11-15</title><style>
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0; background: #0f1115; color: #e8eaf0; line-height: 1.5; }
+main { max-width: 980px; margin: 0 auto; padding: 2rem 1rem 4rem; }
+h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+h2 { font-size: 1.15rem; margin: 2rem 0 .5rem; border-bottom: 1px solid #2a2e3a;
+  padding-bottom: .3rem; }
+h3 { font-size: 1rem; margin: 1.2rem 0 .3rem; }
+p.sub { color: #9aa3b2; margin: 0 0 1rem; }
+.cards { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1rem 0; }
+.card { flex: 1 1 140px; background: #171a21; border: 1px solid #2a2e3a;
+  border-radius: 10px; padding: .8rem 1rem; }
+.card b { display: block; font-size: 1.7rem; line-height: 1.1; }
+.card span { color: #9aa3b2; font-size: .85rem; }
+.card.bad b { color: #ff6b6b; }
+.card.warn b { color: #f5b544; }
+.card.good b { color: #4ecb71; }
+.badge { display: inline-block; font-size: .75rem; font-weight: 700;
+  padding: .1rem .45rem; border-radius: 999px; vertical-align: middle; }
+.badge.new { background: #ff6b6b; color: #fff; }
+.badge.err { background: #5a1f1f; color: #ff9a9a; }
+.badge.warn { background: #4d3a10; color: #f5b544; }
+.badge.ok { background: #12351f; color: #4ecb71; }
+.badge.missing { background: #3a2a12; color: #f5b544; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #232733; }
+th { color: #9aa3b2; font-weight: 600; }
+td.num, th.num { text-align: right; }
+.issue { background: #171a21; border: 1px solid #2a2e3a; border-radius: 10px;
+  padding: .8rem 1rem; margin: .6rem 0; }
+.issue.is-new { border-color: #ff6b6b; box-shadow: 0 0 0 1px #ff6b6b inset; }
+.issue .key { font-weight: 600; word-break: break-word; }
+.issue .meta { color: #9aa3b2; font-size: .85rem; margin: .2rem 0 .4rem; }
+pre { background: #0b0d12; border: 1px solid #232733; border-radius: 8px;
+  padding: .6rem .8rem; overflow-x: auto; font-size: .8rem; white-space: pre-wrap;
+  word-break: break-word; margin: .4rem 0 0; }
+.src-head { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; }
+.src-head code { color: #9aa3b2; font-size: .85rem; }
+.muted { color: #9aa3b2; font-size: .9rem; }
+footer { margin-top: 3rem; color: #9aa3b2; font-size: .85rem;
+  border-top: 1px solid #2a2e3a; padding-top: 1rem; }
+</style></head><body><main><h1>QwenPaw log-check</h1><p class="sub">Collected 2026-11-15T01:36:43.137369+00:00 (UTC) &middot; machine m_agq5wqqo2fvypym7rjlpvngc2m &middot; last 500 lines per log source &middot; machine pull: ok</p><div class="cards"><div class="card bad"><b>125</b><span>errors (grouped occurrences)</span></div><div class="card warn"><b>31</b><span>warnings (grouped occurrences)</span></div><div class="card bad"><b>21</b><span>NEW issues since last check</span></div><div class="card"><b>16 / 16</b><span>sources ok</span></div></div><h2>New issues since the last check (21)</h2><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">Skipping skill &#x27;build-page&#x27; in workspace /app/working/workspaces/default: Environment variable not set: CLOUDFLARE_API_TOKEN</div><div class="meta">seen 10× &middot; first 2026-11-14T22:40:49+00:00 &middot; last 2026-11-14T22:54:04+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 04:10:49 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;build-page&#x27; in workspace /app/working/workspaces/default: Environment variable not set: CLOUDFLARE_API_TOKEN</pre><pre>2026-11-15 04:10:50 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;build-page&#x27; in workspace /app/working/workspaces/default: Environment variable not set: CLOUDFLARE_API_TOKEN</pre><pre>2026-11-15 04:13:30 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;build-page&#x27; in workspace /app/working/workspaces/default: Environment variable not set: CLOUDFLARE_API_TOKEN</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">Skipping skill &#x27;github&#x27; in workspace /app/working/workspaces/default: Environment variable not set: GITHUB_TOKEN</div><div class="meta">seen 10× &middot; first 2026-11-14T22:40:49+00:00 &middot; last 2026-11-14T22:54:04+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 04:10:49 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;github&#x27; in workspace /app/working/workspaces/default: Environment variable not set: GITHUB_TOKEN</pre><pre>2026-11-15 04:10:50 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;github&#x27; in workspace /app/working/workspaces/default: Environment variable not set: GITHUB_TOKEN</pre><pre>2026-11-15 04:13:30 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;github&#x27; in workspace /app/working/workspaces/default: Environment variable not set: GITHUB_TOKEN</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">Skipping skill &#x27;mailbox&#x27; in workspace /app/working/workspaces/default: MCP server not configured: qwenpawmail</div><div class="meta">seen 10× &middot; first 2026-11-14T22:40:49+00:00 &middot; last 2026-11-14T22:54:04+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 04:10:49 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;mailbox&#x27; in workspace /app/working/workspaces/default: MCP server not configured: qwenpawmail</pre><pre>2026-11-15 04:10:50 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;mailbox&#x27; in workspace /app/working/workspaces/default: MCP server not configured: qwenpawmail</pre><pre>2026-11-15 04:13:30 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;mailbox&#x27; in workspace /app/working/workspaces/default: MCP server not configured: qwenpawmail</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">yaml.scanner.ScannerError: mapping values are not allowed here</div><div class="meta">seen 2× &middot; first 2026-11-14T23:32:08+00:00 &middot; last 2026-11-14T23:42:37+00:00 &middot; source: QwenPaw app log</div><pre>Traceback (most recent call last):
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/storage.py&quot;, line 171, in load_card
+    raw = yaml.safe_load(path.read_text(encoding=&quot;utf-8&quot;))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/__init__.py&quot;, line 125, in safe_load
+    return load(stream, SafeLoader)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/__init__.py&quot;, line 81, in load
+    return loader.get_single_data()
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/constructor.py&quot;, line 49, in get_single_data
+    node = self.get_single_node()
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 36, in get_single_node
+    document = self.compose_document()
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 55, in compose_document
+    node = self.compose_node(None, None)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 84, in compose_node
+    node = self.compose_mapping_node(anchor)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 133, in compose_mapping_node
+    item_value = self.compose_node(node, item_key)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 84, in compose_node
+    node = self.compose_mapping_node(anchor)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 127, in compose_mapping_node
+    while not self.check_event(MappingEndEvent):
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/parser.py&quot;, line 98, in check_event
+    self.current_event = self.state()
+                         ^^^^^^</pre><pre>Traceback (most recent call last):
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/storage.py&quot;, line 171, in load_card
+    raw = yaml.safe_load(path.read_text(encoding=&quot;utf-8&quot;))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/__init__.py&quot;, line 125, in safe_load
+    return load(stream, SafeLoader)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/__init__.py&quot;, line 81, in load
+    return loader.get_single_data()
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/constructor.py&quot;, line 49, in get_single_data
+    node = self.get_single_node()
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 36, in get_single_node
+    document = self.compose_document()
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 55, in compose_document
+    node = self.compose_node(None, None)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 84, in compose_node
+    node = self.compose_mapping_node(anchor)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 133, in compose_mapping_node
+    item_value = self.compose_node(node, item_key)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 84, in compose_node
+    node = self.compose_mapping_node(anchor)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 127, in compose_mapping_node
+    while not self.check_event(MappingEndEvent):
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/parser.py&quot;, line 98, in check_event
+    self.current_event = self.state()
+                         ^^^^^^</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">browser.sdk.internal_error reason=QwenPaw Browser SDK internal failure detail=WireProtocolError: Page.goto: net::ERR_HTTP_RESPONSE_CODE_FAILURE at https://x.com/search?q=0xsatwik&amp;src=typed_query</div><div class="meta">seen 1× &middot; first 2026-11-14T22:54:12+00:00 &middot; last 2026-11-14T22:54:12+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 04:24:12 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/browser/tool_entrypoint.py:73 | browser.sdk.internal_error reason=QwenPaw Browser SDK internal failure detail=WireProtocolError: Page.goto: net::ERR_HTTP_RESPONSE_CODE_FAILURE at https://x.com/search?q=0xsatwik&amp;src=typed_query</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">qwenpaw.drivers.errors.DriverCardError: Failed to parse DriverCard YAML /app/working/workspaces/default/drivers/mcp/computer-use.yaml: mapping values are not allowed here</div><div class="meta">seen 1× &middot; first 2026-11-14T23:32:08+00:00 &middot; last 2026-11-14T23:32:08+00:00 &middot; source: QwenPaw app log</div><pre>Traceback (most recent call last):
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/app/driver_config_watcher.py&quot;, line 117, in _check_once
+    await self._driver_manager.refresh_driver(name)
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/manager.py&quot;, line 250, in refresh_driver
+    card = await self._card_store.load_path(path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/storage.py&quot;, line 86, in load_path
+    return await asyncio.to_thread(load_card, path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/opt/qwenpaw-python/python/lib/python3.11/asyncio/threads.py&quot;, line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/opt/qwenpaw-python/python/lib/python3.11/concurrent/futures/thread.py&quot;, line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/storage.py&quot;, line 177, in load_card
+    raise DriverCardError(
+qwenpaw.drivers.errors.DriverCardError: Failed to parse DriverCard YAML /app/working/workspaces/default/drivers/mcp/computer-use.yaml: mapping values are not allowed here
+  in &quot;&lt;unicode string&gt;&quot;, line 9, column 401:
+     ...  step), do NOT stall or retry it: raise a needs-you request with ... 
+                                         ^</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">qwenpaw.drivers.errors.DriverCardError: Failed to parse DriverCard YAML /app/working/workspaces/QwenPaw_QA_Agent_0.#/drivers/mcp/computer-use.yaml: mapping values are not allowed here</div><div class="meta">seen 1× &middot; first 2026-11-14T23:42:37+00:00 &middot; last 2026-11-14T23:42:37+00:00 &middot; source: QwenPaw app log</div><pre>Traceback (most recent call last):
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/app/driver_config_watcher.py&quot;, line 117, in _check_once
+    await self._driver_manager.refresh_driver(name)
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/manager.py&quot;, line 250, in refresh_driver
+    card = await self._card_store.load_path(path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/storage.py&quot;, line 86, in load_path
+    return await asyncio.to_thread(load_card, path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/opt/qwenpaw-python/python/lib/python3.11/asyncio/threads.py&quot;, line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/opt/qwenpaw-python/python/lib/python3.11/concurrent/futures/thread.py&quot;, line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/storage.py&quot;, line 177, in load_card
+    raise DriverCardError(
+qwenpaw.drivers.errors.DriverCardError: Failed to parse DriverCard YAML /app/working/workspaces/QwenPaw_QA_Agent_0.2/drivers/mcp/computer-use.yaml: mapping values are not allowed here
+  in &quot;&lt;unicode string&gt;&quot;, line 9, column 436:
+     ...  step), do NOT stall or retry it: raise a needs-you request with ... 
+                                         ^</pre></div><div class="issue is-new"><span class="badge warn">WARNING</span> <span class="badge new">NEW</span><div class="key">ResourceGovernor: sandbox not available — Cannot read /sys/kernel/security/lsm. SANDBOX_FALLBACK will escalate to ASK.</div><div class="meta">seen 5× &middot; first 2026-11-14T22:40:50+00:00 &middot; last 2026-11-14T22:54:04+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 04:10:50 | WARNING | venv/lib/python3.11/site-packages/qwenpaw/governance/resource_governor.py:201 | ResourceGovernor: sandbox not available — Cannot read /sys/kernel/security/lsm. SANDBOX_FALLBACK will escalate to ASK.</pre><pre>2026-11-15 04:13:30 | WARNING | venv/lib/python3.11/site-packages/qwenpaw/governance/resource_governor.py:201 | ResourceGovernor: sandbox not available — Cannot read /sys/kernel/security/lsm. SANDBOX_FALLBACK will escalate to ASK.</pre><pre>2026-11-15 04:21:37 | WARNING | venv/lib/python3.11/site-packages/qwenpaw/governance/resource_governor.py:201 | ResourceGovernor: sandbox not available — Cannot read /sys/kernel/security/lsm. SANDBOX_FALLBACK will escalate to ASK.</pre></div><div class="issue is-new"><span class="badge warn">WARNING</span> <span class="badge new">NEW</span><div class="key">Failed to refresh Driver &#x27;computer-use&#x27; after card change</div><div class="meta">seen 2× &middot; first 2026-11-14T23:32:08+00:00 &middot; last 2026-11-14T23:42:37+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 05:02:08 | WARNING | venv/lib/python3.11/site-packages/qwenpaw/app/driver_config_watcher.py:120 | Failed to refresh Driver &#x27;computer-use&#x27; after card change</pre><pre>2026-11-15 05:12:37 | WARNING | venv/lib/python3.11/site-packages/qwenpaw/app/driver_config_watcher.py:120 | Failed to refresh Driver &#x27;computer-use&#x27; after card change</pre></div><div class="issue is-new"><span class="badge warn">WARNING</span> <span class="badge new">NEW</span><div class="key">Ignoring proxy headers from untrusted source IP (add to security.trusted_proxies if legitimate)</div><div class="meta">seen 1× &middot; first 2026-11-14T22:49:53+00:00 &middot; last 2026-11-14T22:49:53+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 04:19:53 | WARNING | venv/lib/python3.11/site-packages/qwenpaw/app/auth.py:688 | Ignoring proxy headers from untrusted source 172.18.0.1 (add to security.trusted_proxies if legitimate)</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">Error: write EPIPE</div><div class="meta">seen 3× &middot; first 2026-11-14T21:12:59+00:00 &middot; last 2026-11-14T23:42:00+00:00 &middot; source: Camoufox bridge log</div><pre>2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]: Traceback (most recent call last):
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:   File &quot;/usr/lib/python3.13/socketserver.py&quot;, line 697, in process_request_thread
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     self.finish_request(request, client_address)
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:   File &quot;/usr/lib/python3.13/socketserver.py&quot;, line 362, in finish_request
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     self.RequestHandlerClass(request, client_address, self)
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:   File &quot;/usr/lib/python3.13/socketserver.py&quot;, line 766, in __init__
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     self.handle()
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     ~~~~~~~~~~~^^
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:   File &quot;/usr/lib/python3.13/http/server.py&quot;, line 436, in handle
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     self.handle_one_request()
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     ~~~~~~~~~~~~~~~~~~~~~~~^^
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:   File &quot;/usr/lib/python3.13/http/server.py&quot;, line 424, in handle_one_request
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     method()
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     ~~~~~~^^
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:   File &quot;/data/home/camoufox/bridge/bridge.py&quot;, line 319, in do_GET
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     self._route(&quot;GET&quot;)
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     ~~~~~~~~~~~^^^^^^^
+2026-11-14T21:12:59+00:00 instabox-qwenpaw p</pre><pre>2026-11-14T23:23:04+00:00 instabox-qwenpaw python[71824]: Error: write EPIPE</pre><pre>2026-11-14T23:42:00+00:00 instabox-qwenpaw python[105292]: Error: write EPIPE</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">Emitted &#x27;error&#x27; event on Socket instance at:</div><div class="meta">seen 3× &middot; first 2026-11-14T22:32:48+00:00 &middot; last 2026-11-14T23:42:00+00:00 &middot; source: Camoufox bridge log</div><pre>2026-11-14T22:32:48+00:00 instabox-qwenpaw python[60853]: Emitted &#x27;error&#x27; event on Socket instance at:</pre><pre>2026-11-14T23:23:04+00:00 instabox-qwenpaw python[71824]: Emitted &#x27;error&#x27; event on Socket instance at:</pre><pre>2026-11-14T23:42:00+00:00 instabox-qwenpaw python[105292]: Emitted &#x27;error&#x27; event on Socket instance at:</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">throw er; // Unhandled &#x27;error&#x27; event</div><div class="meta">seen 2× &middot; first 2026-11-14T23:23:04+00:00 &middot; last 2026-11-14T23:42:00+00:00 &middot; source: Camoufox bridge log</div><pre>2026-11-14T23:23:04+00:00 instabox-qwenpaw python[71824]:       throw er; // Unhandled &#x27;error&#x27; event</pre><pre>2026-11-14T23:42:00+00:00 instabox-qwenpaw python[105292]:       throw er; // Unhandled &#x27;error&#x27; event</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">Exception occurred during processing of request from (&#x27; IP &#x27;, #)</div><div class="meta">seen 1× &middot; first 2026-11-14T21:12:59+00:00 &middot; last 2026-11-14T21:12:59+00:00 &middot; source: Camoufox bridge log</div><pre>2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]: Exception occurred during processing of request from (&#x27;127.0.0.1&#x27;, 52554)</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">instabox-computer-use: refused click: a human controls the desktop</div><div class="meta">seen 2× &middot; first 2026-11-14T23:07:24+00:00 &middot; last 2026-11-14T23:07:40+00:00 &middot; source: Computer-use MCP proxy log (:1)</div><pre>2026-11-14T23:07:24+00:00 instabox-qwenpaw mcp-proxy[57096]: instabox-computer-use: refused click: a human controls the desktop</pre><pre>2026-11-14T23:07:40+00:00 instabox-qwenpaw mcp-proxy[57096]: instabox-computer-use: refused click: a human controls the desktop</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">[W root] Failed to validate request: # validation errors for ClientRequest</div><div class="meta">seen 1× &middot; first 2026-11-14T22:30:08+00:00 &middot; last 2026-11-14T22:30:08+00:00 &middot; source: Computer-use MCP proxy log (:1)</div><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]: [W 2026-11-14 22:30:08.563 root] Failed to validate request: 28 validation errors for ClientRequest</pre></div><div class="issue is-new"><span class="badge warn">WARNING</span> <span class="badge new">NEW</span><div class="key">Field required [type=missing, input_value={&#x27;method&#x27;: &#x27;notifications...sonrpc&#x27;: &#x27;#.#&#x27;, &#x27;id&#x27;: #}, input_type=dict]</div><div class="meta">seen 11× &middot; first 2026-11-14T22:30:08+00:00 &middot; last 2026-11-14T22:30:08+00:00 &middot; source: Computer-use MCP proxy log (:1)</div><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]:   Field required [type=missing, input_value={&#x27;method&#x27;: &#x27;notifications...sonrpc&#x27;: &#x27;2.0&#x27;, &#x27;id&#x27;: 2}, input_type=dict]</pre><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]:   Field required [type=missing, input_value={&#x27;method&#x27;: &#x27;notifications...sonrpc&#x27;: &#x27;2.0&#x27;, &#x27;id&#x27;: 2}, input_type=dict]</pre><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]:   Field required [type=missing, input_value={&#x27;method&#x27;: &#x27;notifications...sonrpc&#x27;: &#x27;2.0&#x27;, &#x27;id&#x27;: 2}, input_type=dict]</pre></div><div class="issue is-new"><span class="badge warn">WARNING</span> <span class="badge new">NEW</span><div class="key">For further information visit https://errors.pydantic.dev/#.#/v/missing</div><div class="meta">seen 11× &middot; first 2026-11-14T22:30:08+00:00 &middot; last 2026-11-14T22:30:08+00:00 &middot; source: Computer-use MCP proxy log (:1)</div><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]:     For further information visit https://errors.pydantic.dev/2.14/v/missing</pre><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]:     For further information visit https://errors.pydantic.dev/2.14/v/missing</pre><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]:     For further information visit https://errors.pydantic.dev/2.14/v/missing</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">action {&quot;time&quot;: &quot; &quot;, &quot;tool&quot;: &quot;click&quot;, &quot;args&quot;: {}, &quot;refused&quot;: true}</div><div class="meta">seen 2× &middot; first 2026-11-14T23:38:17+00:00 &middot; last 2026-11-14T23:38:17+00:00 &middot; source: Computer-use MCP proxy log (:2 / QA)</div><pre>2026-11-14T23:38:17+00:00 instabox-qwenpaw mcp-proxy[107144]: action {&quot;time&quot;: &quot;2026-11-14T23:07:24.773Z&quot;, &quot;tool&quot;: &quot;click&quot;, &quot;args&quot;: {}, &quot;refused&quot;: true}</pre><pre>2026-11-14T23:38:17+00:00 instabox-qwenpaw mcp-proxy[107144]: action {&quot;time&quot;: &quot;2026-11-14T23:07:40.125Z&quot;, &quot;tool&quot;: &quot;click&quot;, &quot;args&quot;: {}, &quot;refused&quot;: true}</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">instabox-computer-use: refused click: a human controls the desktop</div><div class="meta">seen 2× &middot; first 2026-11-14T23:48:36+00:00 &middot; last 2026-11-14T23:48:57+00:00 &middot; source: Computer-use MCP proxy log (:2 / QA)</div><pre>2026-11-14T23:48:36+00:00 instabox-qwenpaw mcp-proxy[110564]: instabox-computer-use: refused click: a human controls the desktop</pre><pre>2026-11-14T23:48:57+00:00 instabox-qwenpaw mcp-proxy[110564]: instabox-computer-use: refused click: a human controls the desktop</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">lease-watcher: lease fetch failed: HTTP Error #: Forbidden</div><div class="meta">seen 74× &middot; first 2026-11-14T22:59:19+00:00 &middot; last 2026-11-14T23:05:28+00:00 &middot; source: Desktop lease watcher log</div><pre>2026-11-14T22:59:19+00:00 instabox-qwenpaw python3[87154]: lease-watcher: lease fetch failed: HTTP Error 403: Forbidden</pre><pre>2026-11-14T22:59:25+00:00 instabox-qwenpaw python3[87154]: lease-watcher: lease fetch failed: HTTP Error 403: Forbidden</pre><pre>2026-11-14T22:59:30+00:00 instabox-qwenpaw python3[87154]: lease-watcher: lease fetch failed: HTTP Error 403: Forbidden</pre></div><div class="issue is-new"><span class="badge warn">WARNING</span> <span class="badge new">NEW</span><div class="key">[:#] Chromium window # (1920x1004) is IsUnMapped — re-mapping</div><div class="meta">seen 1× &middot; first 2026-11-15T00:28:58+00:00 &middot; last 2026-11-15T00:28:58+00:00 &middot; source: Desktop window watch log</div><pre>2026-11-15T00:28:58+00:00 instabox-qwenpaw python3[125624]: [:1] Chromium window 14680067 (1920x1004) is IsUnMapped — re-mapping</pre></div><h2>Per-source detail</h2><div class="src-head"><h3>QwenPaw app log</h3><span class="badge ok">OK</span></div><p class="muted"><code>/data/home/qwenpaw/working/qwenpaw.log</code></p><p>495 lines scanned &middot; 35 errors &middot; 8 warnings</p><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">Skipping skill &#x27;build-page&#x27; in workspace /app/working/workspaces/default: Environment variable not set: CLOUDFLARE_API_TOKEN</div><div class="meta">seen 10× &middot; first 2026-11-14T22:40:49+00:00 &middot; last 2026-11-14T22:54:04+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 04:10:49 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;build-page&#x27; in workspace /app/working/workspaces/default: Environment variable not set: CLOUDFLARE_API_TOKEN</pre><pre>2026-11-15 04:10:50 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;build-page&#x27; in workspace /app/working/workspaces/default: Environment variable not set: CLOUDFLARE_API_TOKEN</pre><pre>2026-11-15 04:13:30 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;build-page&#x27; in workspace /app/working/workspaces/default: Environment variable not set: CLOUDFLARE_API_TOKEN</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">Skipping skill &#x27;github&#x27; in workspace /app/working/workspaces/default: Environment variable not set: GITHUB_TOKEN</div><div class="meta">seen 10× &middot; first 2026-11-14T22:40:49+00:00 &middot; last 2026-11-14T22:54:04+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 04:10:49 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;github&#x27; in workspace /app/working/workspaces/default: Environment variable not set: GITHUB_TOKEN</pre><pre>2026-11-15 04:10:50 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;github&#x27; in workspace /app/working/workspaces/default: Environment variable not set: GITHUB_TOKEN</pre><pre>2026-11-15 04:13:30 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;github&#x27; in workspace /app/working/workspaces/default: Environment variable not set: GITHUB_TOKEN</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">Skipping skill &#x27;mailbox&#x27; in workspace /app/working/workspaces/default: MCP server not configured: qwenpawmail</div><div class="meta">seen 10× &middot; first 2026-11-14T22:40:49+00:00 &middot; last 2026-11-14T22:54:04+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 04:10:49 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;mailbox&#x27; in workspace /app/working/workspaces/default: MCP server not configured: qwenpawmail</pre><pre>2026-11-15 04:10:50 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;mailbox&#x27; in workspace /app/working/workspaces/default: MCP server not configured: qwenpawmail</pre><pre>2026-11-15 04:13:30 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/agents/skill_system/registry.py:1317 | Skipping skill &#x27;mailbox&#x27; in workspace /app/working/workspaces/default: MCP server not configured: qwenpawmail</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">yaml.scanner.ScannerError: mapping values are not allowed here</div><div class="meta">seen 2× &middot; first 2026-11-14T23:32:08+00:00 &middot; last 2026-11-14T23:42:37+00:00 &middot; source: QwenPaw app log</div><pre>Traceback (most recent call last):
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/storage.py&quot;, line 171, in load_card
+    raw = yaml.safe_load(path.read_text(encoding=&quot;utf-8&quot;))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/__init__.py&quot;, line 125, in safe_load
+    return load(stream, SafeLoader)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/__init__.py&quot;, line 81, in load
+    return loader.get_single_data()
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/constructor.py&quot;, line 49, in get_single_data
+    node = self.get_single_node()
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 36, in get_single_node
+    document = self.compose_document()
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 55, in compose_document
+    node = self.compose_node(None, None)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 84, in compose_node
+    node = self.compose_mapping_node(anchor)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 133, in compose_mapping_node
+    item_value = self.compose_node(node, item_key)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 84, in compose_node
+    node = self.compose_mapping_node(anchor)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 127, in compose_mapping_node
+    while not self.check_event(MappingEndEvent):
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/parser.py&quot;, line 98, in check_event
+    self.current_event = self.state()
+                         ^^^^^^</pre><pre>Traceback (most recent call last):
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/storage.py&quot;, line 171, in load_card
+    raw = yaml.safe_load(path.read_text(encoding=&quot;utf-8&quot;))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/__init__.py&quot;, line 125, in safe_load
+    return load(stream, SafeLoader)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/__init__.py&quot;, line 81, in load
+    return loader.get_single_data()
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/constructor.py&quot;, line 49, in get_single_data
+    node = self.get_single_node()
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 36, in get_single_node
+    document = self.compose_document()
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 55, in compose_document
+    node = self.compose_node(None, None)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 84, in compose_node
+    node = self.compose_mapping_node(anchor)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 133, in compose_mapping_node
+    item_value = self.compose_node(node, item_key)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 84, in compose_node
+    node = self.compose_mapping_node(anchor)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/composer.py&quot;, line 127, in compose_mapping_node
+    while not self.check_event(MappingEndEvent):
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/yaml/parser.py&quot;, line 98, in check_event
+    self.current_event = self.state()
+                         ^^^^^^</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">browser.sdk.internal_error reason=QwenPaw Browser SDK internal failure detail=WireProtocolError: Page.goto: net::ERR_HTTP_RESPONSE_CODE_FAILURE at https://x.com/search?q=0xsatwik&amp;src=typed_query</div><div class="meta">seen 1× &middot; first 2026-11-14T22:54:12+00:00 &middot; last 2026-11-14T22:54:12+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 04:24:12 | ERROR | venv/lib/python3.11/site-packages/qwenpaw/browser/tool_entrypoint.py:73 | browser.sdk.internal_error reason=QwenPaw Browser SDK internal failure detail=WireProtocolError: Page.goto: net::ERR_HTTP_RESPONSE_CODE_FAILURE at https://x.com/search?q=0xsatwik&amp;src=typed_query</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">qwenpaw.drivers.errors.DriverCardError: Failed to parse DriverCard YAML /app/working/workspaces/default/drivers/mcp/computer-use.yaml: mapping values are not allowed here</div><div class="meta">seen 1× &middot; first 2026-11-14T23:32:08+00:00 &middot; last 2026-11-14T23:32:08+00:00 &middot; source: QwenPaw app log</div><pre>Traceback (most recent call last):
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/app/driver_config_watcher.py&quot;, line 117, in _check_once
+    await self._driver_manager.refresh_driver(name)
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/manager.py&quot;, line 250, in refresh_driver
+    card = await self._card_store.load_path(path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/storage.py&quot;, line 86, in load_path
+    return await asyncio.to_thread(load_card, path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/opt/qwenpaw-python/python/lib/python3.11/asyncio/threads.py&quot;, line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/opt/qwenpaw-python/python/lib/python3.11/concurrent/futures/thread.py&quot;, line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/storage.py&quot;, line 177, in load_card
+    raise DriverCardError(
+qwenpaw.drivers.errors.DriverCardError: Failed to parse DriverCard YAML /app/working/workspaces/default/drivers/mcp/computer-use.yaml: mapping values are not allowed here
+  in &quot;&lt;unicode string&gt;&quot;, line 9, column 401:
+     ...  step), do NOT stall or retry it: raise a needs-you request with ... 
+                                         ^</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">qwenpaw.drivers.errors.DriverCardError: Failed to parse DriverCard YAML /app/working/workspaces/QwenPaw_QA_Agent_0.#/drivers/mcp/computer-use.yaml: mapping values are not allowed here</div><div class="meta">seen 1× &middot; first 2026-11-14T23:42:37+00:00 &middot; last 2026-11-14T23:42:37+00:00 &middot; source: QwenPaw app log</div><pre>Traceback (most recent call last):
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/app/driver_config_watcher.py&quot;, line 117, in _check_once
+    await self._driver_manager.refresh_driver(name)
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/manager.py&quot;, line 250, in refresh_driver
+    card = await self._card_store.load_path(path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/storage.py&quot;, line 86, in load_path
+    return await asyncio.to_thread(load_card, path)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/opt/qwenpaw-python/python/lib/python3.11/asyncio/threads.py&quot;, line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/opt/qwenpaw-python/python/lib/python3.11/concurrent/futures/thread.py&quot;, line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File &quot;/app/venv/lib/python3.11/site-packages/qwenpaw/drivers/storage.py&quot;, line 177, in load_card
+    raise DriverCardError(
+qwenpaw.drivers.errors.DriverCardError: Failed to parse DriverCard YAML /app/working/workspaces/QwenPaw_QA_Agent_0.2/drivers/mcp/computer-use.yaml: mapping values are not allowed here
+  in &quot;&lt;unicode string&gt;&quot;, line 9, column 436:
+     ...  step), do NOT stall or retry it: raise a needs-you request with ... 
+                                         ^</pre></div><div class="issue is-new"><span class="badge warn">WARNING</span> <span class="badge new">NEW</span><div class="key">ResourceGovernor: sandbox not available — Cannot read /sys/kernel/security/lsm. SANDBOX_FALLBACK will escalate to ASK.</div><div class="meta">seen 5× &middot; first 2026-11-14T22:40:50+00:00 &middot; last 2026-11-14T22:54:04+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 04:10:50 | WARNING | venv/lib/python3.11/site-packages/qwenpaw/governance/resource_governor.py:201 | ResourceGovernor: sandbox not available — Cannot read /sys/kernel/security/lsm. SANDBOX_FALLBACK will escalate to ASK.</pre><pre>2026-11-15 04:13:30 | WARNING | venv/lib/python3.11/site-packages/qwenpaw/governance/resource_governor.py:201 | ResourceGovernor: sandbox not available — Cannot read /sys/kernel/security/lsm. SANDBOX_FALLBACK will escalate to ASK.</pre><pre>2026-11-15 04:21:37 | WARNING | venv/lib/python3.11/site-packages/qwenpaw/governance/resource_governor.py:201 | ResourceGovernor: sandbox not available — Cannot read /sys/kernel/security/lsm. SANDBOX_FALLBACK will escalate to ASK.</pre></div><div class="issue is-new"><span class="badge warn">WARNING</span> <span class="badge new">NEW</span><div class="key">Failed to refresh Driver &#x27;computer-use&#x27; after card change</div><div class="meta">seen 2× &middot; first 2026-11-14T23:32:08+00:00 &middot; last 2026-11-14T23:42:37+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 05:02:08 | WARNING | venv/lib/python3.11/site-packages/qwenpaw/app/driver_config_watcher.py:120 | Failed to refresh Driver &#x27;computer-use&#x27; after card change</pre><pre>2026-11-15 05:12:37 | WARNING | venv/lib/python3.11/site-packages/qwenpaw/app/driver_config_watcher.py:120 | Failed to refresh Driver &#x27;computer-use&#x27; after card change</pre></div><div class="issue is-new"><span class="badge warn">WARNING</span> <span class="badge new">NEW</span><div class="key">Ignoring proxy headers from untrusted source IP (add to security.trusted_proxies if legitimate)</div><div class="meta">seen 1× &middot; first 2026-11-14T22:49:53+00:00 &middot; last 2026-11-14T22:49:53+00:00 &middot; source: QwenPaw app log</div><pre>2026-11-15 04:19:53 | WARNING | venv/lib/python3.11/site-packages/qwenpaw/app/auth.py:688 | Ignoring proxy headers from untrusted source 172.18.0.1 (add to security.trusted_proxies if legitimate)</pre></div><div class="src-head"><h3>QwenPaw container log (docker logs qwenpaw)</h3><span class="badge ok">OK</span></div><p class="muted"><code>docker logs qwenpaw</code></p><p>9 lines scanned &middot; 0 errors &middot; 0 warnings</p><p class="muted">No errors or warnings in this window.</p><div class="src-head"><h3>Camoufox bridge log</h3><span class="badge ok">OK</span></div><p class="muted"><code>journalctl -u camoufox-bridge.service</code></p><p>207 lines scanned &middot; 9 errors &middot; 0 warnings</p><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">Error: write EPIPE</div><div class="meta">seen 3× &middot; first 2026-11-14T21:12:59+00:00 &middot; last 2026-11-14T23:42:00+00:00 &middot; source: Camoufox bridge log</div><pre>2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]: Traceback (most recent call last):
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:   File &quot;/usr/lib/python3.13/socketserver.py&quot;, line 697, in process_request_thread
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     self.finish_request(request, client_address)
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:   File &quot;/usr/lib/python3.13/socketserver.py&quot;, line 362, in finish_request
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     self.RequestHandlerClass(request, client_address, self)
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:   File &quot;/usr/lib/python3.13/socketserver.py&quot;, line 766, in __init__
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     self.handle()
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     ~~~~~~~~~~~^^
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:   File &quot;/usr/lib/python3.13/http/server.py&quot;, line 436, in handle
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     self.handle_one_request()
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     ~~~~~~~~~~~~~~~~~~~~~~~^^
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:   File &quot;/usr/lib/python3.13/http/server.py&quot;, line 424, in handle_one_request
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     method()
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     ~~~~~~^^
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:   File &quot;/data/home/camoufox/bridge/bridge.py&quot;, line 319, in do_GET
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     self._route(&quot;GET&quot;)
+2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]:     ~~~~~~~~~~~^^^^^^^
+2026-11-14T21:12:59+00:00 instabox-qwenpaw p</pre><pre>2026-11-14T23:23:04+00:00 instabox-qwenpaw python[71824]: Error: write EPIPE</pre><pre>2026-11-14T23:42:00+00:00 instabox-qwenpaw python[105292]: Error: write EPIPE</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">Emitted &#x27;error&#x27; event on Socket instance at:</div><div class="meta">seen 3× &middot; first 2026-11-14T22:32:48+00:00 &middot; last 2026-11-14T23:42:00+00:00 &middot; source: Camoufox bridge log</div><pre>2026-11-14T22:32:48+00:00 instabox-qwenpaw python[60853]: Emitted &#x27;error&#x27; event on Socket instance at:</pre><pre>2026-11-14T23:23:04+00:00 instabox-qwenpaw python[71824]: Emitted &#x27;error&#x27; event on Socket instance at:</pre><pre>2026-11-14T23:42:00+00:00 instabox-qwenpaw python[105292]: Emitted &#x27;error&#x27; event on Socket instance at:</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">throw er; // Unhandled &#x27;error&#x27; event</div><div class="meta">seen 2× &middot; first 2026-11-14T23:23:04+00:00 &middot; last 2026-11-14T23:42:00+00:00 &middot; source: Camoufox bridge log</div><pre>2026-11-14T23:23:04+00:00 instabox-qwenpaw python[71824]:       throw er; // Unhandled &#x27;error&#x27; event</pre><pre>2026-11-14T23:42:00+00:00 instabox-qwenpaw python[105292]:       throw er; // Unhandled &#x27;error&#x27; event</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">Exception occurred during processing of request from (&#x27; IP &#x27;, #)</div><div class="meta">seen 1× &middot; first 2026-11-14T21:12:59+00:00 &middot; last 2026-11-14T21:12:59+00:00 &middot; source: Camoufox bridge log</div><pre>2026-11-14T21:12:59+00:00 instabox-qwenpaw python[43653]: Exception occurred during processing of request from (&#x27;127.0.0.1&#x27;, 52554)</pre></div><div class="src-head"><h3>Computer-use MCP proxy log (:1)</h3><span class="badge ok">OK</span></div><p class="muted"><code>journalctl -u mcp-computer-use.service</code></p><p>108 lines scanned &middot; 3 errors &middot; 22 warnings</p><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">instabox-computer-use: refused click: a human controls the desktop</div><div class="meta">seen 2× &middot; first 2026-11-14T23:07:24+00:00 &middot; last 2026-11-14T23:07:40+00:00 &middot; source: Computer-use MCP proxy log (:1)</div><pre>2026-11-14T23:07:24+00:00 instabox-qwenpaw mcp-proxy[57096]: instabox-computer-use: refused click: a human controls the desktop</pre><pre>2026-11-14T23:07:40+00:00 instabox-qwenpaw mcp-proxy[57096]: instabox-computer-use: refused click: a human controls the desktop</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">[W root] Failed to validate request: # validation errors for ClientRequest</div><div class="meta">seen 1× &middot; first 2026-11-14T22:30:08+00:00 &middot; last 2026-11-14T22:30:08+00:00 &middot; source: Computer-use MCP proxy log (:1)</div><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]: [W 2026-11-14 22:30:08.563 root] Failed to validate request: 28 validation errors for ClientRequest</pre></div><div class="issue is-new"><span class="badge warn">WARNING</span> <span class="badge new">NEW</span><div class="key">Field required [type=missing, input_value={&#x27;method&#x27;: &#x27;notifications...sonrpc&#x27;: &#x27;#.#&#x27;, &#x27;id&#x27;: #}, input_type=dict]</div><div class="meta">seen 11× &middot; first 2026-11-14T22:30:08+00:00 &middot; last 2026-11-14T22:30:08+00:00 &middot; source: Computer-use MCP proxy log (:1)</div><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]:   Field required [type=missing, input_value={&#x27;method&#x27;: &#x27;notifications...sonrpc&#x27;: &#x27;2.0&#x27;, &#x27;id&#x27;: 2}, input_type=dict]</pre><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]:   Field required [type=missing, input_value={&#x27;method&#x27;: &#x27;notifications...sonrpc&#x27;: &#x27;2.0&#x27;, &#x27;id&#x27;: 2}, input_type=dict]</pre><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]:   Field required [type=missing, input_value={&#x27;method&#x27;: &#x27;notifications...sonrpc&#x27;: &#x27;2.0&#x27;, &#x27;id&#x27;: 2}, input_type=dict]</pre></div><div class="issue is-new"><span class="badge warn">WARNING</span> <span class="badge new">NEW</span><div class="key">For further information visit https://errors.pydantic.dev/#.#/v/missing</div><div class="meta">seen 11× &middot; first 2026-11-14T22:30:08+00:00 &middot; last 2026-11-14T22:30:08+00:00 &middot; source: Computer-use MCP proxy log (:1)</div><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]:     For further information visit https://errors.pydantic.dev/2.14/v/missing</pre><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]:     For further information visit https://errors.pydantic.dev/2.14/v/missing</pre><pre>2026-11-14T22:30:08+00:00 instabox-qwenpaw mcp-proxy[57064]:     For further information visit https://errors.pydantic.dev/2.14/v/missing</pre></div><div class="src-head"><h3>Computer-use MCP proxy log (:2 / QA)</h3><span class="badge ok">OK</span></div><p class="muted"><code>journalctl -u mcp-computer-use-qa.service</code></p><p>92 lines scanned &middot; 4 errors &middot; 0 warnings</p><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">action {&quot;time&quot;: &quot; &quot;, &quot;tool&quot;: &quot;click&quot;, &quot;args&quot;: {}, &quot;refused&quot;: true}</div><div class="meta">seen 2× &middot; first 2026-11-14T23:38:17+00:00 &middot; last 2026-11-14T23:38:17+00:00 &middot; source: Computer-use MCP proxy log (:2 / QA)</div><pre>2026-11-14T23:38:17+00:00 instabox-qwenpaw mcp-proxy[107144]: action {&quot;time&quot;: &quot;2026-11-14T23:07:24.773Z&quot;, &quot;tool&quot;: &quot;click&quot;, &quot;args&quot;: {}, &quot;refused&quot;: true}</pre><pre>2026-11-14T23:38:17+00:00 instabox-qwenpaw mcp-proxy[107144]: action {&quot;time&quot;: &quot;2026-11-14T23:07:40.125Z&quot;, &quot;tool&quot;: &quot;click&quot;, &quot;args&quot;: {}, &quot;refused&quot;: true}</pre></div><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">instabox-computer-use: refused click: a human controls the desktop</div><div class="meta">seen 2× &middot; first 2026-11-14T23:48:36+00:00 &middot; last 2026-11-14T23:48:57+00:00 &middot; source: Computer-use MCP proxy log (:2 / QA)</div><pre>2026-11-14T23:48:36+00:00 instabox-qwenpaw mcp-proxy[110564]: instabox-computer-use: refused click: a human controls the desktop</pre><pre>2026-11-14T23:48:57+00:00 instabox-qwenpaw mcp-proxy[110564]: instabox-computer-use: refused click: a human controls the desktop</pre></div><div class="src-head"><h3>Desktop lease watcher log</h3><span class="badge ok">OK</span></div><p class="muted"><code>journalctl -u desktop-lease-watcher.service</code></p><p>125 lines scanned &middot; 74 errors &middot; 0 warnings</p><div class="issue is-new"><span class="badge err">ERROR</span> <span class="badge new">NEW</span><div class="key">lease-watcher: lease fetch failed: HTTP Error #: Forbidden</div><div class="meta">seen 74× &middot; first 2026-11-14T22:59:19+00:00 &middot; last 2026-11-14T23:05:28+00:00 &middot; source: Desktop lease watcher log</div><pre>2026-11-14T22:59:19+00:00 instabox-qwenpaw python3[87154]: lease-watcher: lease fetch failed: HTTP Error 403: Forbidden</pre><pre>2026-11-14T22:59:25+00:00 instabox-qwenpaw python3[87154]: lease-watcher: lease fetch failed: HTTP Error 403: Forbidden</pre><pre>2026-11-14T22:59:30+00:00 instabox-qwenpaw python3[87154]: lease-watcher: lease fetch failed: HTTP Error 403: Forbidden</pre></div><div class="src-head"><h3>Desktop window watch log</h3><span class="badge ok">OK</span></div><p class="muted"><code>journalctl -u desktop-window-watch.service</code></p><p>3 lines scanned &middot; 0 errors &middot; 1 warnings</p><div class="issue is-new"><span class="badge warn">WARNING</span> <span class="badge new">NEW</span><div class="key">[:#] Chromium window # (1920x1004) is IsUnMapped — re-mapping</div><div class="meta">seen 1× &middot; first 2026-11-15T00:28:58+00:00 &middot; last 2026-11-15T00:28:58+00:00 &middot; source: Desktop window watch log</div><pre>2026-11-15T00:28:58+00:00 instabox-qwenpaw python3[125624]: [:1] Chromium window 14680067 (1920x1004) is IsUnMapped — re-mapping</pre></div><div class="src-head"><h3>Terminal PTY server log</h3><span class="badge ok">OK</span></div><p class="muted"><code>journalctl -u desktop-terminal.service</code></p><p>1 lines scanned &middot; 0 errors &middot; 0 warnings</p><p class="muted">No errors or warnings in this window.</p><div class="src-head"><h3>Keep-alive Worker /status</h3><span class="badge ok">OK</span></div><p class="muted"><code>https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev/status</code></p><p>HTTP 200 &middot; 436 ms &middot; status field: up</p><pre>{&quot;status&quot;:&quot;up&quot;,&quot;httpStatus&quot;:200,&quot;note&quot;:&quot;QwenPaw console answered&quot;,&quot;source&quot;:&quot;manual-ping&quot;,&quot;checkedAt&quot;:&quot;2026-11-15T01:36:16.164Z&quot;,&quot;lastPingAt&quot;:&quot;2026-11-15T01:36:16.164Z&quot;,&quot;lastUpAt&quot;:&quot;2026-11-15T01:36:16.</pre><div class="src-head"><h3>Pages main console (qwenpawx) /</h3><span class="badge ok">OK</span></div><p class="muted"><code>https://qwenpawx.pages.dev/</code></p><p>HTTP 200 &middot; 624 ms</p><div class="src-head"><h3>Pages main /status</h3><span class="badge ok">OK</span></div><p class="muted"><code>https://qwenpawx.pages.dev/status</code></p><p>HTTP 200 &middot; 207 ms</p><div class="src-head"><h3>Pages backup console (qwenpaw-frontend) /</h3><span class="badge ok">OK</span></div><p class="muted"><code>https://qwenpaw-frontend.pages.dev/</code></p><p>HTTP 200 &middot; 763 ms</p><div class="src-head"><h3>Routines Worker /api/status</h3><span class="badge ok">OK</span></div><p class="muted"><code>https://qwenpaw-routines.qwenpaw-rohan.workers.dev/api/status</code></p><p>HTTP 200 &middot; 374 ms &middot; status field: up</p><pre>{
+  &quot;worker&quot;: &quot;qwenpaw-routines&quot;,
+  &quot;qwenpaw&quot;: {
+    &quot;status&quot;: &quot;up&quot;,
+    &quot;httpStatus&quot;: 200,
+    &quot;note&quot;: &quot;QwenPaw console answered&quot;
+  },
+  &quot;routines&quot;: [
+    {
+      &quot;id&quot;: &quot;daily-summary&quot;,
+      &quot;name&quot;:</pre><div class="src-head"><h3>Group chat Worker /</h3><span class="badge ok">OK</span></div><p class="muted"><code>https://qwenpaw-groupchat.qwenpaw-rohan.workers.dev/</code></p><p>HTTP 200 &middot; 2907 ms</p><div class="src-head"><h3>Ticket board Worker /</h3><span class="badge ok">OK</span></div><p class="muted"><code>https://qwenpaw-board.qwenpaw-rohan.workers.dev/</code></p><p>HTTP 200 &middot; 456 ms</p><div class="src-head"><h3>Bot Pages (qwenpaw-pages) /</h3><span class="badge ok">OK</span></div><p class="muted"><code>https://qwenpaw-pages.pages.dev/</code></p><p>HTTP 200 &middot; 266 ms</p><h2>Services on the machine</h2><p class="muted">container qwenpaw running health=healthy</p><table><tr><th>Unit</th><th>State</th></tr><tr><td><code>camoufox-bridge.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>mcp-computer-use.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>mcp-computer-use-qa.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>desktop-lease-watcher.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>desktop-window-watch.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>desktop-terminal.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>desktop-terminal-ws.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>desktop-chromium.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>desktop-novnc.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>desktop-novnc-view.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>desktop-novnc-qa.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>desktop-novnc-qa-view.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>desktop-xvfb-qa.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>desktop-vnc-qa.service</code></td><td><span class="badge ok">active</span></td></tr><tr><td><code>desktop-vnc-qa-view.service</code></td><td><span class="badge ok">active</span></td></tr></table><footer>Generated by features/test-project/logcheck — run <code>python3 collect.py &amp;&amp; python3 report.py</code> to refresh. NEW = normalized issue never seen in seen.json. Snapshot: latest.json in the same directory.</footer></main></body></html>
