@@ -39,6 +39,22 @@
 | 4 | **langfuse/langfuse** (Cloud free tier, *not* self-host) | QwenPaw already ships the integration — `observability/langfuse.py` + `hooks/observability/langfuse_hook.py` with a `PRE_EXECUTE` trace scope. It's three env vars. | ~30 min |
 | 5 | **UKGovernmentBEIS/inspect_ai** | Replaces the hand-rolled 5-case `features/infra/evals/run-evals.py` with 200+ maintained evals and proper scoring. | ~1–2 days |
 
+### Implementation status (AutoClaw, 2026-11-15)
+
+| # | Repo | Status |
+|---|---|---|
+| 1 | genai-prices | **DONE** — `features/board/pricing.py` (T77, 20 checks). Verified `gpt-6-astra` is in its 450-entry snapshot; made it OPTIONAL because it needs Python ≥3.11 + 5 packages. Never invents a price. |
+| 2 | semantic-router | **PARTIAL, deliberately** — `features/routing/policy.py` (T78, 27 checks) fills the same empty `RoutingPolicy.decide()` hook, but lexically. Its local backend is a resident ONNX encoder, and this box is 4 vCPU / 8 GiB already running QwenPaw + Chromium + two Xvfb displays — a resident embedding model is a local model, which the constraints forbid. The interface is shaped so a semantic router can replace `classify()` later without touching call sites. |
+| 3 | SkillSpector | **PARTIAL, deliberately** — `features/skills/scan.py` (T85, 41 checks) is the cheap always-on gate: offline, deterministic, no model call. SkillSpector is LLM-backed and needs an endpoint plus a code-comprehension model, so it stays the deep review for high-trust skills. Split documented in `features/skills/README.md`. |
+| 4 | langfuse | **NOT DONE** — needs a Langfuse Cloud account (free tier) and three env vars. Genuinely cheap; blocked only on the user creating the account. |
+| 5 | inspect_ai | **NOT DONE** — replaces the 5-case `features/infra/evals/run-evals.py`. Worth doing, but it is 1–2 days and adds a real dependency; not started rather than half-started. |
+
+**Why 2 and 3 are partial rather than complete:** in both cases the upstream
+tool's *backend* violates a hard constraint (resident local model; LLM call per
+skill), while the *shape* of the solution is right. Taking the shape and
+writing 200 lines matches this repo's constraints better than adopting the
+dependency and then disabling half of it.
+
 **Explicit non-recommendations:** don't add a memory framework, a sandbox, or a workflow engine. QwenPaw v2.3.0 already ships all three (details in each section). Adding them would duplicate working code — the exact mistake `features/memory/README.md` already documents avoiding.
 
 ---

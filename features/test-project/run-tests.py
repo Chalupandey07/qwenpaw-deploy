@@ -1337,6 +1337,21 @@ def t80():
 def t81():
     return _harness("features/infra/workers/email-router/harness-email-router.mjs", 24)
 
+def t85():
+    """Skill scanner: credential/RCE/injection patterns on third-party skills.
+
+    41 checks. Offline and deterministic, so it can gate every commit; the
+    LLM-backed SkillSpector stays the deep review for high-trust skills.
+    """
+    rc, out, err = run_local(
+        [sys.executable, str(REPO / "features/skills/scan.py"), "--selftest"],
+        timeout=180)
+    m = re.search(r"(\d+) passed, (\d+) failed", out)
+    ok = rc == 0 and m and int(m.group(2)) == 0 and int(m.group(1)) == 41
+    return ("PASS" if ok else "FAIL",
+            f"skills/scan --selftest: exit={rc} tally={m.group(0) if m else 'none'}")
+
+
 def t84():
     """Decision models (Jev/Drex): no key means no call, calibration, safety.
 
@@ -1452,6 +1467,7 @@ TESTS = [
     ("T82", "group-chat CORS: allowlist, never a wildcard", "groupchat", "protocol", t82),
     ("T83", "memory consolidation: logs -> candidates, never auto-accept", "memory", "protocol", t83),
     ("T84", "decision models: fail-closed, calibration, low-conf safety", "decisions", "protocol", t84),
+    ("T85", "skill scanner: credential/RCE/injection patterns", "skills", "protocol", t85),
 ]
 
 SKIP_NOTE = {
