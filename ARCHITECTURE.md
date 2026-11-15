@@ -105,7 +105,8 @@ verifies.
 | Keep-alive cron | Cloudflare Worker | a cron on a paused box cannot fire |
 | Routines | Worker (wake) + QwenPaw native cron (execution) | the Worker cannot hold a QwenPaw login; native cron is the scheduler of record |
 | Group chat | Worker + Durable Object | needs strong consistency for turn-taking; a DO is single-threaded |
-| Ticket board | Worker + KV today, D1 planned | see BUGS.md — single-key KV loses updates |
+| Ticket board | Worker + **KV** (D1 migration NOT landed) | still one KV value per board — BUGS.md B-3 is OPEN |
+| All other desktop state | Pages Worker → **D1** (`qwenpaw-state`, `USE_D1=1`) | queues, leases, generations, needs-you, previews, routines, budget; KV is the fallback flag only |
 | Bot pages | Pages project | static, free, fast |
 | Memory recall | inside the container (`history.db` FTS5) | the DB is already there and indexed |
 
@@ -114,7 +115,7 @@ verifies.
 ```
 user clicks "Take control"
   → POST /desktop/__takeover {computer}
-      Worker: read lease (KV/D1) → if active, 409
+      Worker: read lease (D1; KV fallback) → if active, 409
               write lease {leaseId, holder:"user", expiresAt:+90s, fence+1}
               bump generation
       → 200 {leaseId, expiresAt, generation}
@@ -150,23 +151,31 @@ Two details that cost hours to find, both documented in
 | Box auto-paused | origin 503 | proxy waits 45 s, retries, then serves "waking" page |
 | Max-run cooldown | origin 409 `machine_cooldown` | cooldown page with a retry window |
 | Desktop up, X frame unmapped | black screen | `desktop-window-watch.service` re-maps every 10 s |
-| Spend KV write quota | every write 500s, reads fine | `kvTry` → honest 503 `store_unavailable`; D1 migration removes the class |
+| Spend KV write quota | every write 500s, reads fine | store wrapper → honest 503 `store_unavailable`; D1 is now primary so this no longer breaks the desktop |
+| Exceed the daily write budget | non-essential writes refused | `budgetAllowed` circuit breaker → 503; essential writes (lease/generation) always attempted |
 | Store unreachable | capability check throws | 502 "try again", never "link expired" |
 | Stale capability | 403 | chrome re-mints once, then reports honestly |
 | Agent blocked on a login wall | needs-you banner | agent raises needs-you FIRST; never works around it |
 
 ## 7. Where the design is weak (read before extending)
 
-1. **KV is the wrong store** for leases, modes, and previews — eventually
-   consistent, 1,000 writes/day, last-writer-wins. The D1 migration (see
-   `features/storage/`) is the fix. Until then, treat every KV write as a
-   scarce resource.
-2. **The board keeps all tickets in one KV value.** Lost updates under any
-   concurrency. D1 fixes it.
-3. **A terminal capability outlives its lease** (60 min vs 90 s) — see
-   BUGS.md #3.
-4. **Preview images are stored base64 in KV.** They are 243–707 KB each.
-   They belong in R2.
-5. **The agent's own loop cannot use Code Mode.** QwenPaw is Python; Code
+1. **The board still keeps all tickets in one KV value.** Lost updates under
+   any concurrency, O(n) writes, unbounded growth. The desktop state moved to
+   D1; the board did not. BUGS.md B-3 is still OPEN.
+2. **Previews are stored as raw BLOBs in D1.** That works — 1,440 upserts/day,
+   <10 MB total, one row overwritten per computer — but a single D1 row caps
+   at **2,000,000 bytes** and the worker now refuses >1,500,000 to leave room
+   for row overhead. A 4K desktop screenshot at low compression could cross
+   that. R2 would remove the ceiling entirely.
+3. **The lease is not yet a single atomic statement.** D1 is strongly
+   consistent, so the current read-then-insert is far safer than KV was, but
+   `INSERT … ON CONFLICT DO UPDATE … WHERE expires_at < ?` would make
+   takeover atomic and remove the last read-modify-write in the hot path.
+4. **The agent's own loop cannot use Code Mode.** QwenPaw is Python; Code
    Mode is TypeScript/Workers. The pilot measures a *separate* Worker agent,
    which is honest but is not a QwenPaw speedup.
+5. **The storage layer has two implementations.** `store.js` presents one
+   interface over D1 and KV, and the KV path cannot be atomic. Every caller
+   must therefore treat KV as advisory — a difference that is easy to forget
+   when reading code that "works". Removing the fallback would remove the
+   class of bug; it is kept as a rollback lever for now.

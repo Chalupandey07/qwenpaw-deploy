@@ -104,7 +104,7 @@ generation that was not durably written. On D1 this collapses into the same
 
 ---
 
-### B-2 · P1 · Needs-you is one global record, not per-computer
+### B-2 · P1 · Needs-you is one global record, not per-computer — FIXED (per-computer keys)
 
 **File:** `pages/public/_worker.js` — `KV_NEEDSYOU_KEY` (a single key),
 `desktopNeedsYou` (~L1845), chrome `pollNeedsYou` (~L778).
@@ -123,7 +123,7 @@ the record for the computer it is displaying. On D1: the `needs_you` table in
 
 ---
 
-### B-3 · P1 · Board keeps every ticket in one KV value (lost updates, unbounded)
+### B-3 · P1 · Board keeps every ticket in one KV value (lost updates, unbounded) — **STILL OPEN** (migration not landed)
 
 **File:** `features/board/worker/src/index.js` — `loadTickets`/`saveTickets`
 (~L84–96), five call sites.
@@ -148,7 +148,7 @@ group chat) with `blockConcurrencyWhile` on mutations.
 
 ---
 
-### B-4 · P1 · A terminal capability outlives its lease by up to 59 minutes
+### B-4 · P1 · A terminal capability outlives its lease by up to 59 minutes — FIXED-CODE (re-applied after the D1 rebuild reverted it)
 
 **Files:** `pages/public/_worker.js` — `CAPABILITY_TTL_S = 3600` (~L36),
 `verifyCapability` (~L1080), `desktopSession` (~L1388).
@@ -176,7 +176,7 @@ root shell.
 
 ---
 
-### B-5 · P2 · Preview `<img>` is re-fetched every 10 s while a banner is open
+### B-5 · P2 · Preview `<img>` is re-fetched every 10 s while a banner is open — OPEN
 
 **File:** `pages/public/desktop-chrome.html` — `pollNeedsYou` (~L778–790),
 `needsYouTimer = setInterval(pollNeedsYou, 10000)` (~L1153).
@@ -193,7 +193,7 @@ see `features/storage/`.)
 
 ---
 
-### B-6 · P2 · `__pending-skills` is an N+1 KV read loop with no TTL
+### B-6 · P2 · `__pending-skills` is an N+1 KV read loop with no TTL — FIXED (single indexed SELECT + expiry)
 
 **File:** `pages/public/_worker.js` — `desktopPendingSkills` (~L2004).
 
@@ -250,7 +250,7 @@ Interim: accept it, and note in the README that history is best-effort.
 
 ---
 
-### B-9 · P2 · `Math.max(gen, clientGen)` lets a client inflate the generation
+### B-9 · P2 · `Math.max(gen, clientGen)` lets a client inflate the generation — FIXED-CODE (re-applied after the rebuild)
 
 **File:** `pages/public/_worker.js` — `desktopScreen` mint path (~L1136).
 
@@ -271,7 +271,7 @@ the stored value (a stale client is harmless; a future one is not).
 
 ---
 
-### B-10 · P2 · No rate limiting on any desktop endpoint
+### B-10 · P2 · No rate limiting on any desktop endpoint — OPEN (budget breaker exists; per-endpoint 429 does not)
 
 **File:** `pages/public/_worker.js` (all `/desktop/*` handlers).
 
@@ -286,7 +286,7 @@ Retry-After`. Cheap, and it converts a quota cliff into a soft failure.
 
 ---
 
-### B-11 · P2 · Preview upload does per-byte string building
+### B-11 · P2 · Preview upload does per-byte string building — FIXED-CODE (chunked, verified identical at 1.5 MB)
 
 **File:** `pages/public/_worker.js` — `desktopPreviewUpload` (~L1929).
 
@@ -305,7 +305,7 @@ it: `String.fromCharCode.apply(null, bytes.subarray(i, i+32768))` and join.
 
 ---
 
-### B-12 · P2 · Group-chat CORS is `*` on a token-authenticated API
+### B-12 · P2 · Group-chat CORS is `*` on a token-authenticated API — FIXED-CODE (allowlist; old code fails 8 of 13 checks)
 
 **File:** `features/groupchat/worker/src/index.js` — `CORS` (~L84).
 
@@ -322,7 +322,7 @@ header on the public read paths there).
 
 ---
 
-### B-13 · P2 · Pointless KV-staleness sleeps on the capability path
+### B-13 · P2 · Pointless KV-staleness sleeps on the capability path — OPEN on the KV fallback path
 
 **File:** `pages/public/_worker.js` — `verifyCapability` (~L1080–1105).
 
@@ -411,16 +411,69 @@ local harness runs.
 
 ---
 
+## Part 2b — Found in the D1-migration code (this pass)
+
+These are new: they exist only because the migration introduced new code.
+Both were documented as "follow-ups" in the code's own comments and left
+unfixed, which is fine for a plan and not fine for a store.
+
+### B-19 · P2 · The D1 budget counter was a read-modify-write — FIXED-CODE
+
+**File:** `features/storage/store.js` (`put` for `budget:<day>`), called from
+`pages/public/_worker.js::budgetNoteWrite`.
+
+The store's own header said "an atomic SQL increment is a follow-up". In the
+meantime the worker read the counter, added its batch of 25, and wrote it
+back. Two isolates flushing at once both read N and both write N+25, so 25
+increments vanish and the guard under-counts — the circuit breaker fails
+exactly when a burst is happening.
+
+**Fix:** `incr()` on both stores. D1 does `count = count + ?` in one
+statement. KV keeps read-modify-write but is now documented as **advisory
+only**, because KV has no atomic op and pretending otherwise is how the
+original bug happened. The worker feature-detects `incr` instead of assuming
+it (the first version called it on a plain KV mock and threw).
+**Test:** 20 concurrent increments must all land.
+
+### B-20 · P2 · `json()` needed the request for CORS and silently did not have it — FIXED-CODE
+
+**File:** `features/groupchat/worker/src/index.js`.
+
+Making CORS an allowlist means every response must see the request Origin.
+The mechanical rewrite threaded `request, env` through 21 call sites and used
+a **bare `env` inside the Durable Object**, where the binding is `this.env`.
+That produced a `ReferenceError` at runtime, caught by the new harness before
+any deploy.
+
+**Fix:** `this.env` at class scope. **Lesson:** when bulk-editing call sites,
+the harness is the compiler you do not have.
+
+### B-21 · P3 · `harness-desktop-gate.mjs` has 134 `check()` calls but runs 127 — NOT A BUG
+
+Recorded so the next person does not "fix" it: seven of the calls (40a–40g)
+are `try`/`catch` pairs, so exactly one of each pair executes. 127 is the
+correct denominator. Any future change to that count should be explained by
+adding or removing a case, not by tuning the number to match a run.
+
+---
+
 ## Part 3 — Summary
 
-| Severity | Open | Fixed in code this pass | Ids |
+| Severity | Open | Fixed in code | Ids |
 |---|---|---|---|
-| P0 | **0** | 1 | B-1 fixed |
-| P1 | **2** | 1 | open: B-2, B-3 · fixed: B-4 |
-| P2 | **7** | 2 | open: B-5, B-6, B-8, B-10, B-11, B-12, B-13 · fixed: B-7, B-9 |
+| P0 | **0** | 1 | B-1 fixed and re-applied |
+| P1 | **1** | 2 | open: **B-3 (board)** · fixed: B-2, B-4 |
+| P2 | **5** | 7 | open: B-5, B-8, B-10, B-13, B-21(n/a) · fixed: B-6, B-7, B-9, B-11, B-12, B-19, B-20 |
 | P3 | **5** | 0 | B-14…B-18 |
-| **Total** | **14 open** | **4 fixed** | of 18 new findings this pass |
+| **Total** | **11 open** | **10 fixed** | of 21 findings |
 | Audit findings (earlier) | — | 15 of 19 | see Part 1 |
+
+**What is left, in priority order:** **B-3** (board still one KV value — the
+only remaining data-loss bug, and the board migration is in progress
+elsewhere) → **B-10** (no per-endpoint 429; a stuck client loop can still
+burn the request budget, though the write budget is now guarded) → **B-5**
+(preview image refetch: 360 req/hour + ~198 MB/hour egress) → **B-8**
+(routines history read-modify-write) → the P3 hygiene set.
 
 **Fix order.** B-1 (security path, hides everything else) → B-3 (data loss)
 → B-2, B-4 (leaked authority) → then the D1 migration, which removes B-1's
