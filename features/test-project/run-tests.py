@@ -1337,6 +1337,22 @@ def t80():
 def t81():
     return _harness("features/infra/workers/email-router/harness-email-router.mjs", 24)
 
+def t84():
+    """Decision models (Jev/Drex): no key means no call, calibration, safety.
+
+    One stdlib client for both providers because they share /v1/systemone.
+    The important property is fail-closed: no key -> None, never a guess.
+    33 checks.
+    """
+    rc, out, err = run_local(
+        [sys.executable, str(REPO / "features/decisions/decide.py"), "--selftest"],
+        timeout=180)
+    m = re.search(r"(\d+) passed, (\d+) failed", out)
+    ok = rc == 0 and m and int(m.group(2)) == 0 and int(m.group(1)) == 33
+    return ("PASS" if ok else "FAIL",
+            f"decisions --selftest: exit={rc} tally={m.group(0) if m else 'none'}")
+
+
 def t83():
     """Memory consolidation: daily logs -> lesson CANDIDATES (never accepted).
 
@@ -1435,6 +1451,7 @@ TESTS = [
     ("T81", "email router: fail-closed allowlist + injection envelope", "infra", "protocol", t81),
     ("T82", "group-chat CORS: allowlist, never a wildcard", "groupchat", "protocol", t82),
     ("T83", "memory consolidation: logs -> candidates, never auto-accept", "memory", "protocol", t83),
+    ("T84", "decision models: fail-closed, calibration, low-conf safety", "decisions", "protocol", t84),
 ]
 
 SKIP_NOTE = {
