@@ -312,16 +312,26 @@ export async function putPreview(env, name, bytes, sha256) {
 
 export async function getPreview(env, name) {
   const d = requireDb(env);
+  // Read the blob as hex: D1's JS driver hands a BLOB back in a form that
+  // `new Response()` renders as an empty body (the /computer/preview endpoint
+  // answered 200 image/png with 0 bytes until this change, even though the
+  // row held 500 KB). Hex is a plain string; decoding it here gives real
+  // bytes the Response can carry.
   const row = await d.prepare(
-    `SELECT png, updated_at FROM previews WHERE computer = ?`,
+    `SELECT hex(png) AS png_hex, updated_at FROM previews WHERE computer = ?`,
   ).bind(name).first();
-  if (!row?.png) return null;
+  if (!row?.png_hex) return null;
+  const hex = row.png_hex;
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
   // The hash is read from metadata. Hashing 700 KB on every image request is
   // wasted CPU on the hottest byte path in the system; the fallback exists
   // only for rows written before preview_meta was introduced.
   const meta = await previewMeta(env, name);
-  const sha = meta?.sha256 ?? await sha256Hex(row.png);
-  return { png: row.png, sha256: sha, capturedAt: row.updated_at };
+  const sha = meta?.sha256 ?? await sha256Hex(bytes);
+  return { png: bytes, sha256: sha, capturedAt: row.updated_at };
 }
 
 // ------------------------------------------------------------------- teach
