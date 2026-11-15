@@ -838,6 +838,101 @@ was coincidental — `__action` recover/reset/update return 501 because
 the InstaBox desktop API has no such actions (only stop works via the
 API); Wake (now with the desktop-start step) is the real recovery path.
 
+## Fix round 2 — the STREAM FAILURE itself (2026-11-15 ~06:30 IST)
+
+The browser re-check (06:07–06:26 IST) showed the stream itself was
+still unreliable even though every protocol check passed: Wake sat
+>3 min and ended in the honest overlay ("still origin_auth"), the Team
+stream dropped to "Reconnecting… (502)", Private (:2) never rendered,
+and the side panel said "Asleep" while the desktop page said 502.
+Diagnosis was done LIVE on the machine + Worker + the real proxy:
+
+- Machine: running the whole time (runStartedAt 2026-11-14T18:11:43Z,
+  maxRun 480 min, ends ~07:41 IST); keep-alive "up", 0 failures.
+  Desktop stack: all services active, all 6 websockify ports listening
+  and answering GET 200 + WS 101 locally. The machine and the desktop
+  were never the problem.
+- Journals 00:37–01:00 UTC: ZERO WebSocket connections reached
+  websockify 6084/6085 (:2) during the whole browser session, and
+  nothing reached 6081 after 00:41:57 despite the browser retrying
+  until 00:56 — the 502s happened UPSTREAM of websockify, in the
+  Worker → InstaBox private-port proxy path.
+- Proxy behaviour measured live (scratch publish, deleted after):
+  no token/cookie → 401; wrong `_token` → 403; valid `_token` → 303 +
+  `Set-Cookie: __Host-instabox_port_auth` + relative Location;
+  follow-up with ONLY that cookie → proxied; the cookie is PER-PORT
+  (another port's cookie → 401); the proxy honors the FIRST
+  `__Host-instabox_port_auth` cookie when several are sent.
+
+ROOT CAUSE 1 — `fetch()` auto-follows the proxy's 303. Workers
+`fetch()` follows redirects by default, so `fetchDesktopOrigin` NEVER
+saw the 303: the auto-followed follow-up carried no cookie (Workers
+fetch has no cookie jar) and 401'd, so `__status` reported
+"origin_auth" while the desktop was up. WS upgrades are NOT
+auto-followed, which is why control worked once while GET probes always
+failed. The gate harness could never catch this: its mock fetch returns
+the 303 directly (no auto-follow).
+
+ROOT CAUSE 2 — cookie contamination. `buildReq` forwarded the
+browser's Cookie header FIRST and appended the Worker's collected
+proxy cookie LAST. The browser holds exactly ONE
+`__Host-instabox_port_auth` value (the Worker deduplicated Set-Cookie
+by name when passing it through), belonging to whichever origin was
+fetched first. On every later fetch to a DIFFERENT origin the stale
+per-port cookie went first → proxy took it → 401 → retry with `_token`
+→ 303 → follow-up sent [stale; fresh] → proxy took the first (stale)
+→ 401 → `desktopSession` 502 "origin auth". That is why the stream
+502'd right after the first successful control session and why Private
+never rendered.
+
+ROOT CAUSE 3 — a failed probe reported "asleep". `desktopStatus`
+mapped a thrown probe (and a fetch error) to "asleep", so the page
+told the user to Wake a machine that was already awake. The side-panel
+"disagreement" was the same chrome at two moments: the panel iframe
+loaded when probes threw ("Asleep"), the desktop page polled when
+probes 401'd (502) — both downstream of causes 1+2.
+
+FIXES (`pages/public/_worker.js`, `pages/public/desktop-chrome.html`):
+- `fetchDesktopOrigin` fetches with `redirect: "manual"` and follows
+  the proxy's 303 server-side with its Set-Cookie (max 3 hops).
+- `buildReq` drops the browser's Cookie header entirely (the origin
+  needs no browser cookies); only the Worker's own per-origin collected
+  cookies are sent. `desktopSession` no longer passes any dance cookie
+  through to the browser and strips `__Host-instabox_port_auth` from
+  the final response's Set-Cookie too — the proxy-auth cookie stays
+  server-side only.
+- `desktopStatus`: a thrown probe / non-200-503-401 status is "down",
+  never "asleep". Only when the keep-alive says the machine itself is
+  not up does a failed probe become "waking" (machine waking) or
+  "asleep" (machine cooldown/conflict — Wake is the path).
+- Chrome: new `pillForDesktop` + `init()` branches — "down" shows a
+  "Down" pill + "The desktop is not responding" overlay (Retry + Wake),
+  "origin_auth" shows "Auth error"; the wake-timeout pill uses the
+  same mapping. `init` is exposed on the `__qwenpawDesktop` debug
+  handle for tests.
+
+TESTS — new `features/desktop/harness-desktop-origin.mjs` (9 tests):
+real undici fetch (auto-follows like Workers) against 5 local HTTP
+servers that mimic the proxy exactly (per-port token/cookie, 401/403/
+303+Set-Cookie, first-cookie-wins). Fail-first proof: against the
+pre-fix worker it fails 5/9 — O1/O2/O4 "origin_auth", O3b 502, O5
+"asleep" (the exact browser symptoms); against the fixed worker 9/9
+pass. Gate harness extended (mock now first-cookie-wins, keep-alive
+status variable): tests 37–39b — dead origin + machine up → "down",
+dead origin + machine cooldown → "asleep", stale browser cookie →
+200 + shim, no proxy-auth cookie passed through. Fail-first: 37 and
+39 fail on the pre-fix worker (37 → "asleep", 39 → 502). Gate 105/105,
+chrome harness 13/13 (new D-h/D-i/D-j for the down/origin_auth
+overlays; the old chrome has 0 occurrences of those branches).
+Deployed qwenpawx `<id>` + frontend `<id>` (2026-11-15 ~01:2x UTC).
+Cleanup done in this round: diagnostic scratch publish port 9999
+(`pv-6jqdkvqiyfigkpab2di4b7qagu`) deleted (204, verified gone); leaked
+websockify child pid 121561 (stale test WS from 00:09 UTC) killed.
+No container restart, instabox2 never called, auth.json/chats
+untouched, computer-use.yaml policy still allow. Parent re-verifies in
+a real browser: Wake within ~3 min, pill, terminal, Private :2, idle
+~3 min, panel/page status agreement.
+
 ## Useful commands
 
 ```bash
