@@ -2,6 +2,9 @@
 """Deploy a Pages project (direct upload) including a _worker.js proxy.
 
 Flow (wrangler's direct-upload protocol):
+  0. bundle _worker.js with esbuild (required: direct-upload treats it as a
+     single-file Worker and cannot resolve its relative imports; an
+     unbundled _worker.js fails the deploy stage with no error message)
   1. upload-token JWT (account API token via custom.cloudflare surrogate)
   2. blake3 manifest hash per static file (excludes _worker.js)
   3. POST /client/v4/pages/assets/check-missing (JWT)
@@ -86,6 +89,52 @@ def collect(public_dir):
     return files
 
 
+def bundle_worker(public_dir):
+    """Bundle _worker.js + its relative imports into one self-contained file.
+
+    Pages direct-upload treats _worker.js as a single-file Worker: relative
+    imports (./computer/router.js etc.) are NOT resolved against the static
+    assets, so an unbundled _worker.js deploys but fails the 'deploy' stage
+    with no error message (seen 2026-11-16: three consecutive failures on
+    both projects; the bundled file deployed first try). esbuild is required.
+    Returns the path of the bundled file (a temp file, not the repo source).
+    """
+    import shutil
+    import subprocess
+    import tempfile
+    src = os.path.join(public_dir, "_worker.js")
+    esbuild = shutil.which("esbuild")
+    if not esbuild:
+        for cand in ("/tmp/node_modules/.bin/esbuild",
+                     os.path.expanduser("~/.npm-global/bin/esbuild")):
+            if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                esbuild = cand
+                break
+    if not esbuild:
+        print("esbuild not found: _worker.js must be bundled before deploy "
+              "(npm install -g esbuild, or npm install esbuild). Refusing to "
+              "deploy an unbundled _worker.js — it fails the deploy stage.",
+              file=sys.stderr)
+        sys.exit(2)
+    out = tempfile.NamedTemporaryFile(prefix="qwenpaw-worker-", suffix=".js", delete=False)
+    out.close()
+    r = subprocess.run(
+        [esbuild, src, "--bundle", "--format=esm", "--platform=browser",
+         "--target=es2022", f"--outfile={out.name}"],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        print("esbuild failed:", r.stdout, r.stderr, file=sys.stderr)
+        sys.exit(2)
+    with open(out.name, "rb") as f:
+        bundled = f.read()
+    if b'from "./' in bundled or b"from './" in bundled:
+        print("bundled _worker.js still has relative imports — refusing to deploy",
+              file=sys.stderr)
+        sys.exit(2)
+    print(f"_worker.js: bundled ({len(bundled)} bytes, was {os.path.getsize(src)})")
+    return out.name
+
+
 def main():
     project = sys.argv[1]
     public_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
@@ -95,6 +144,9 @@ def main():
     print(f"project={project} static_files={len(files)}")
     for p, _d, h, _c in files:
         print(f"  {p} {h}")
+    # Bundle _worker.js first: direct-upload cannot resolve its relative
+    # imports (see bundle_worker). The bundled file is what gets deployed.
+    worker_bundle = bundle_worker(public_dir)
 
     # 1. upload token JWT
     try:
@@ -132,7 +184,7 @@ def main():
         parts.append(
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode()
         )
-    worker_path = os.path.join(public_dir, "_worker.js")
+    worker_path = worker_bundle
     if os.path.exists(worker_path):
         with open(worker_path, "rb") as f:
             wdata = f.read()
