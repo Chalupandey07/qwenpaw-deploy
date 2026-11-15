@@ -1330,6 +1330,23 @@ def t94():
     return _py_script_harness(["features/codemode/vm/codemode-runner.py", "--selftest"], 64)
 
 
+def t97():
+    """The screen WebSocket upgrade is TUNNELLED (22 checks).
+
+    This is the black-screen bug: the /computer page loaded, minted a
+    capability, fetched the noVNC HTML (200), and then never connected. The
+    router proxied the HTTP request but dropped the 101 upgrade that follows —
+    the RFB banner only travels over that socket, so noVNC waited forever and
+    the UI timed out with "The screen did not respond."
+
+    The existing harness could not catch it: `harness-computer.mjs` asserts on
+    the TEXT of router.js, and a missing branch is the absence of code. This
+    one imports the real router and drives it with a fetch stub returning a
+    101, then asserts the SAME socket object comes back out.
+    """
+    return _harness("features/computer/harness-screen-upgrade.mjs", 22)
+
+
 def t95():
     """MCP client against a REAL SSE + JSON-RPC server (27 checks).
 
@@ -1646,6 +1663,7 @@ TESTS = [
     ("T94", "Code Mode VM runner: fixed job, bounds, per-step honesty", "codemode", "protocol", t94),
     ("T95", "MCP client vs a real SSE + JSON-RPC server", "codemode", "protocol", t95),
     ("T96", "Code Mode end to end: runner -> real MCP -> real HTTP", "codemode", "protocol", t96),
+    ("T97", "screen upgrade: the 101 WebSocket is tunnelled to the browser", "computer", "protocol", t97),
 ]
 
 SKIP_NOTE = {

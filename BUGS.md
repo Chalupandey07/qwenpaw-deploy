@@ -581,6 +581,81 @@ connected, is dropped on connect, and cannot take pointer events.
 
 ---
 
+## Part 2d — Found live, 2026-11-16 (the black screen)
+
+### B-28 · P0 · The screen WebSocket upgrade was never tunnelled — OPEN→FIXED-CODE
+
+**File:** `pages/public/computer/router.js` — `proxyScreen()`.
+
+`/computer` loaded clean, every tab worked, take/release worked as real leases,
+`/computer/state` returned `running`, the capability URL returned the real
+noVNC page (200, 24 KB) — and the desktop never appeared. The page sat on
+"The screen did not respond."
+
+**Cause.** noVNC renders nothing until its WebSocket is open: the RFB banner
+only travels over that socket. `proxyScreen()` proxied ordinary HTTP fine but
+had **no branch for a 101 upgrade**. In Workers, `fetch()` can carry an upgrade
+and returns `status: 101` with a `webSocket` property, but the caller must
+tunnel it back with `new Response(null, {status: 101, webSocket})`. Without
+that branch the response is either rejected by the runtime (status must be
+200-599) or streamed as an ordinary response, and the browser's socket never
+opens. The page HTML still renders — which is why the failure looked like
+"noVNC is broken" rather than "the proxy dropped the socket".
+
+**How it was introduced.** The retired implementation had this branch in two
+places (the console proxy and the desktop session proxy). The Rakazo rebuild,
+written from scratch against a design document rather than against the working
+code, did not include it. Nothing downstream noticed: the harnesses all
+asserted TEXT in `router.js`, and a missing branch is the *absence* of code —
+no amount of string matching can prove a branch exists.
+
+**Fix.** One branch, before the generic stream return: when upstream answers
+101 with a socket, hand that same socket back with `status: 101`. Headers are
+minimal on an upgrade (no `set-cookie`, no `content-type`, no page-level CSP) —
+the handshake already happened upstream, and page headers on a 101 invite the
+runtime to reject the tunnel.
+
+**Test.** T97 (`features/computer/harness-screen-upgrade.mjs`, 22 checks)
+imports the real router and drives it with a fetch stub returning a 101, then
+asserts the **same socket object** comes back. Fails 6/22 on the pre-fix tree;
+22/22 after. It also asserts the branch sits inside `proxyScreen` and before
+the body path — because an earlier version of this very test matched a
+`return new Response(res.body` in `serveUi` and passed against a broken file.
+
+**Verified against the LIVE deployment, read-only, 2026-11-16 05:34 GMT+8.**
+This stopped being a hypothesis. Forcing a real WebSocket handshake at the
+live capability path returned:
+
+```
+HTTP/1.1 500
+{"error":"computer_error",
+ "detail":"RangeError: Responses may only be constructed with status codes in
+          the range 200 to 599, inclusive."}
+```
+
+That is the deployed `proxyScreen()` hitting exactly the missing branch:
+upstream answers 101, the code tries to pass it through, the runtime refuses to
+construct a 101 `Response`, and the catch-all turns it into a 500. So the
+socket fails **at the proxy**, and:
+
+- noVNC never completes RFB, which is why the frame sits on "connecting" and
+  then reports "The screen did not respond";
+- the **fingerprint / credentials prompts are a symptom, not a cause.** The
+  screen is configured `-nopw` (no VNC password) and the study records
+  `SecurityTypes None`; noVNC only asks for credentials when it has a socket
+  that failed a security handshake, and it falls back to that dialog when the
+  connection dies mid-negotiation. Chasing VNC auth would have been the wrong
+  hunt — the handshake never got past the Worker.
+
+Also confirmed in the same session: `/computer/session` mints fine and
+`<cap>/vnc.html` returns 200 / 24,162 bytes with the shim injected. The page is
+fine. Only the upgrade fails.
+
+**Still not browser-verified.** The fix needs a deploy; whether the desktop
+actually renders is Muse's check and stays unclaimed until she reports it.
+
+---
+
 ## Part 3 — Summary
 
 | Severity | Open | Fixed in code | Ids |
@@ -589,10 +664,10 @@ connected, is dropped on connect, and cannot take pointer events.
 | P1 | **0** | 5 | fixed: B-2, B-3, B-4, B-22, B-23 |
 | P2 | **0** | 16 | fixed: B-5, B-6, B-7, B-8, B-9, B-10, B-11, B-12, B-13, B-19, B-20, B-24, B-25, B-26 |
 | P3 | **0** | 5 | fixed: B-14, B-15, B-16, B-17, B-27 |
-| **Total** | **0 open** | **27 fixed** | of 27 findings |
+| **Total** | **0 open** | **28 fixed** | of 28 findings |
 | Audit findings (earlier) | — | 15 of 19 | see Part 1 |
 
-**All 27 register findings are closed in code.** Zero open, zero data-loss
+**All 28 register findings are closed in code.** Zero open, zero data-loss
 items. Nothing here is live until Muse deploys and verifies it.
 
 ### The 2026-11-16 pass (this one)

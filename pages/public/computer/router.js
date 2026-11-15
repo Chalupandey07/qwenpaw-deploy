@@ -672,6 +672,34 @@ async function proxyScreen(request, env, url) {
     return new Response("Screen unavailable (upstream_timeout)", { status: 502 });
   }
 
+  // WebSocket upgrade. THIS IS THE LINE THE SCREEN DEPENDED ON AND DID NOT HAVE.
+  //
+  // A noVNC frame opens a WebSocket to <capability path>/websockify. `fetch()`
+  // in Workers CAN carry that upgrade — it returns status 101 with a
+  // `webSocket` property — but only if the caller tunnels it back with
+  // `new Response(null, {status: 101, webSocket})`. Without this branch the
+  // Response is constructed with status 101 and no tunnel, which the runtime
+  // rejects (status must be 200-599) or drops, so the browser's WebSocket
+  // never completes. Every symptom followed from that one omission:
+  // the page HTML loads (200), the shim reports "connecting", noVNC waits for
+  // an RFB banner that only travels over the socket, and the UI times out with
+  // "The screen did not respond."
+  //
+  // The retired implementation had exactly this branch twice (the console
+  // proxy and the desktop session proxy); the Rakazo rebuild dropped it. The
+  // existing harness could not see it because it only ever asserted TEXT in
+  // this file, never that a 101 is tunnelled.
+  if (res.status === 101 && res.webSocket) {
+    // Minimal headers on an upgrade: the handshake already happened upstream,
+    // and forwarding page-level headers (CSP, no-store, accept-encoding) onto
+    // a 101 invites the runtime to reject the tunnel.
+    const upgradeHeaders = new Headers(res.headers);
+    upgradeHeaders.delete("set-cookie");
+    upgradeHeaders.delete("content-length");
+    upgradeHeaders.delete("content-type");
+    return new Response(null, { status: 101, headers: upgradeHeaders, webSocket: res.webSocket });
+  }
+
   // noVNC pages get the shim; everything else streams through untouched.
   if (isNovncPage(upstream.pathname) && (res.headers.get("content-type") || "").includes("text/html")) {
     const text = await res.text();

@@ -174,6 +174,28 @@ default.
   `qa` are wired.
 - **Live verification of any of it.** That is Muse's, and it has not happened.
 
+## The black screen — fixed 2026-11-16 (B-28)
+
+The rebuilt computer loaded, took a lease, minted a capability, served the
+noVNC page (200) — and never connected. `proxyScreen()` had no branch for a
+**101 WebSocket upgrade**, so the socket that carries the RFB banner never
+opened and noVNC waited forever. The page HTML renders either way, which is why
+it looked like a noVNC fault rather than a proxy one.
+
+The branch is now there, with minimal headers on the upgrade. T97 drives the
+real router with a 101 and asserts the **same socket object** is handed back;
+it fails 6/22 without the branch and passes 22/22 with it.
+
+**Two things this fixed the hard way, worth keeping:**
+
+1. **A missing branch cannot be tested by reading the file.** Every existing
+   harness asserted text in `router.js`. The fix needed a test that *runs* the
+   function and inspects what it returns.
+2. **The first version of T97 was itself wrong** — it matched a
+   `return new Response(res.body` in `serveUi` rather than in `proxyScreen`,
+   so it passed against a broken file. It is now scoped to the function, and
+   that scoping is asserted.
+
 ## Built 2026-11-16: Terminal and Teach
 
 Both pieces the previous round listed as "deliberately not done" are now
