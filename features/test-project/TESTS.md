@@ -274,8 +274,8 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 ### T27 — board reachable, /health ok
 - Area: `board` · Method: `protocol`
 - Check: `curl -s -o /dev/null -w "%{http_code}\n" --max-time 30 https://qwenpaw-board.qwenpaw-rohan.workers.dev/` and `curl -s --max-time 30 https://qwenpaw-board.qwenpaw-rohan.workers.dev/health`
-- Expected: `/` → 200 `QwenPaw Ticket Board` HTML; `/health` → 200 `{"ok":true,"worker":"qwenpaw-board"}`. Source: `features/board/worker/src/index.js` (one KV key `tickets`).
-- Evidence: both statuses + `/health` body. (Verified live: 200 + 200.)
+- Expected: `/` → 200 `QwenPaw Ticket Board` HTML; `/health` → 200 `{"ok":true,"worker":"qwenpaw-board","store":"d1"}`. Source: `features/board/worker/src/index.js` — tickets live in D1 table `tickets` (one row per ticket) since the 2026-11-15 KV→D1 migration; KV is the fallback only.
+- Evidence: both statuses + `/health` body. (Verified live: 200 + 200, store d1.)
 
 ### T28 — unauthenticated board API call fails closed (401)
 - Area: `board` · Method: `protocol`
@@ -283,11 +283,12 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 - Expected: HTTP 401 `{"error":"unauthorized — send the board key as ?key= or X-Board-Key header"}`. The HTML page itself is public by design; the API is not.
 - Evidence: status + body. (Verified live: 401.)
 
-### T60 — board CRUD with the user-held board key — NEEDS-TOKEN
+### T60 — board CRUD with the user-held board key, on D1 — NEEDS-TOKEN
 - Area: `board` · Method: `needs-token`
-- Check (coordinator/parent step, key never written down): `POST /api/tickets {"title":"test ticket …","priority":"low"}` → 201; `GET /api/tickets/:id` → 200; `PATCH /api/tickets/:id {"column":"doing"}` → 200; `POST /api/tickets/:id/comments {"text":"…"}` → 200; `POST /api/tickets/:id/mark-sent` → 200; `DELETE /api/tickets/:id` → 200 (delete the test ticket afterwards). Also verify the audit fixes: `%FF` id → 400, empty PATCH → 400, strict-boolean `follow_up`.
-- Expected: the status codes above; the test ticket is gone at the end.
-- Evidence: status per step + final `GET /api/tickets` not containing the test ticket.
+- Check (coordinator/parent step, key never written down): `POST /api/tickets {"title":"test ticket …","priority":"low"}` → 201; `GET /api/tickets/:id` → 200; `PATCH /api/tickets/:id {"column":"doing"}` → 200; `POST /api/tickets/:id/comments {"text":"…"}` → 200; `POST /api/tickets/:id/mark-sent` → 200; `DELETE /api/tickets/:id` → 200 (delete the test ticket afterwards). Also verify the audit fixes: `%FF` id → 400, empty PATCH → 400, strict-boolean `follow_up`. While the ticket exists, verify the row in D1 directly: `SELECT COUNT(*) FROM tickets WHERE id='<id>'` → 1 with the same title — the proof storage is one row per ticket, not one KV value; after the delete it → 0.
+- Expected: the status codes above; the test ticket is gone at the end; D1 row count matches.
+- Evidence: status per step + final `GET /api/tickets` not containing the test ticket + D1 count.
+- History: rewritten 2026-11-15 for the KV→D1 migration (was: all tickets in one KV value `tickets`). The keyed part still awaits the user-held board key.
 
 ---
 
@@ -543,6 +544,14 @@ the parent runs them and pastes the outcome into RESULTS.md.
 - Check (local): `node features/desktop/harness-desktop-origin.mjs`
 - Expected: `9 passed, 0 failed` (real undici fetch vs 5 local mock proxy servers: per-port token/cookie, first-cookie-wins, 303 follow, `__status` down-vs-asleep).
 - Evidence: the final tally line. (Verified live: 9/9.)
+
+### T63 — board rate limit: unauthenticated burst → 429 + Retry-After (Durable Object)
+- Area: `board` · Method: `protocol`
+- Check: the burst MUST run from a stable IP — the InstaBox machine (`ib.py exec`, egress `16.148.199.63`, stable). 35 sequential unauthenticated `POST /api/tickets` from the machine → expect the first 30 to be 401 and the rest 429 with a `Retry-After` header (the DO counts failed-auth attempts at 30/min/IP). The runner retries once if no 429 appears (a burst straddling a minute boundary splits the count).
+- Expected: ≥1×429 within 35 requests; every non-429 is 401; no other status; the immediate follow-up request is 429 with `Retry-After` (seconds until the window resets, 1–60).
+- Evidence: the code tally + the follow-up `retry-after` value. (Verified live 2026-11-15: 30×401 + 5×429, follow-up `retry-after: 44`.)
+- Why the machine: the runner VM's egress IP rotates per connection (12 parallel curls → 12 distinct IPv6 / 5 distinct IPv4), so a burst from this VM never accumulates in one per-IP bucket — the same rotating-IP effect is also why the first in-memory limiter never fired. A real user (stable home IP) and the machine are both single-IP, so the cap bites for them. The DO is a singleton per id, so counts are exact regardless of Worker isolates.
+- History: added 2026-11-15 with the KV→D1 board migration; fixes audit bug `board-no-rate-limit-auth`. The first (in-memory) limiter was proven dead live (90 unauth POSTs → 0×429) and replaced by the DO.
 
 ---
 
