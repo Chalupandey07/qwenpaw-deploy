@@ -41,6 +41,12 @@ const LEASE_TTL_MS = 90_000;
 // Sealed screen capability (AES-256-GCM): 60-min TTL, scoped to the
 // generation + (for control) the lease id. See desktopCapability* below.
 const CAPABILITY_TTL_S = 3600;
+// How long a control/terminal capability may outlive its lease. The lease is
+// renewed every 15 s and lives 90 s, so +30 s covers a heartbeat that lands a
+// moment late without ever letting a capability survive a real release
+// (BUGS.md B-4: a terminal capability used to keep a root shell alive for a
+// full hour after control was handed back).
+const LEASE_CAP_GRACE_S = 30;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -119,6 +125,13 @@ function rewriteHeaders(res, pagesOrigin) {
   // Framing guard on proxied HTML: the console must not be embeddable in
   // another site's iframe (clickjacking). SAMEORIGIN is safe here — nothing
   // in our setup embeds the console cross-origin.
+  //
+  // Referrer-Policy is part of the qwenpaw-query-token-leak fix: a user can
+  // land on a `?token=*** URL (old bookmark, pasted link) and any outbound link
+  // click would otherwise send it in the Referer header to a third party.
+  // `same-origin` keeps same-origin navigation working and sends nothing
+  // cross-origin.
+  headers.set("Referrer-Policy", "same-origin");
   const contentType = headers.get("Content-Type") || "";
   if (contentType.includes("text/html")) {
     headers.set("X-Frame-Options", "SAMEORIGIN");
@@ -139,7 +152,25 @@ function rewriteHeaders(res, pagesOrigin) {
 }
 
 async function proxy(request, url) {
-  const originUrl = ORIGIN + url.pathname + url.search;
+  // --- qwenpaw-query-token-leak mitigation (audit item, fixed 2026-11-15) ---
+  // QwenPaw's console accepts the bearer token as `?token=` on EVERY request
+  // (`app/auth.py::_extract_token` falls through to the query param; the SPA
+  // itself emits `?token=` URLs for file previews). We cannot patch the
+  // upstream container, and the SPA depends on the behaviour — so the fix
+  // belongs here, at the only hop we control:
+  //
+  //   1. lift `?token=` into an `Authorization: Bearer` header, and
+  //   2. DELETE it from the forwarded URL.
+  //
+  // The origin still authorizes (it checks the header FIRST), but the token
+  // never reaches the InstaBox edge access log, and never appears in a
+  // proxied redirect Location or an upstream error body.
+  const fwdUrl = new URL(request.url);
+  const queryToken = fwdUrl.searchParams.get("token");
+  if (queryToken) {
+    fwdUrl.searchParams.delete("token");
+  }
+  const originUrl = ORIGIN + fwdUrl.pathname + fwdUrl.search;
   const pagesOrigin = url.origin;
   const isSafeMethod = request.method === "GET" || request.method === "HEAD";
 
@@ -152,6 +183,11 @@ async function proxy(request, url) {
     req.headers.delete("cf-visitor");
     req.headers.set("X-Forwarded-Host", url.host);
     req.headers.set("X-Forwarded-Proto", "https");
+    // Apply the lifted token only when the caller did not already send a
+    // bearer credential — an explicit header always wins.
+    if (queryToken && !req.headers.get("Authorization")) {
+      req.headers.set("Authorization", "Bearer " + queryToken);
+    }
     return req;
   };
 
@@ -1260,19 +1296,23 @@ async function getLeaseStrict(env, computer) {
 }
 
 async function bumpGeneration(env, computer) {
-  // Strict read: the old lenient read returned 0 on a KV error, so a
-  // transient read failure followed by a successful put could REGRESS
-  // the stored generation (0+1=1 overwriting a real 9), resurrecting
-  // old capabilities (their 60-min TTL bounds the damage, but it is
-  // still wrong). Throws on a KV error; callers treat a throw as
-  // "generation unknown" and omit it from the response. Never returns a
-  // generation that was not actually stored: on a put failure the OLD
-  // (stored) generation is returned, not gen+1.
+  // THROWS unless the new generation was durably stored.
+  //
+  // History of this function, because it has been wrong three times:
+  //   1. original: lenient read (0 on error) + swallowed put + returned gen+1,
+  //      so it reported generations that were never written AND could jump
+  //      BACKWARDS on a read blip, resurrecting old capabilities.
+  //   2. D1 rebuild: strict read, but on a failed put it returned the OLD
+  //      stored value. Honest about the number, but callers could not tell
+  //      the difference between "bumped to 12" and "could not bump", so a
+  //      takeover still answered 200 and old capabilities stayed valid.
+  //   3. this version: throw. A caller that cannot bump has NOT completed a
+  //      takeover or a release, and the honest answer is 503.
   const stored = await getGenerationStrict(env, computer);
   const gen = stored + 1;
-  // Essential (part of takeover / release / stop): always attempted.
   const ok = await guardedWrite(env, true, () => env.DESKTOP_KV.put(generationKey(computer), String(gen)));
-  return ok ? gen : stored;
+  if (!ok) throw new Error("generation_write_failed");
+  return gen;
 }
 
 async function readJsonBody(request) {
@@ -1330,10 +1370,23 @@ async function desktopTakeover(request, env) {
   if (!(await guardedWrite(env, true, () => env.DESKTOP_KV.put(leaseKey(computer), JSON.stringify(next))))) {
     return storeUnavailable();
   }
-  // A failed bump reports no generation (the chrome keeps its old
-  // knownGen); it never reports a generation that was not stored.
-  const gen = await bumpGeneration(env, computer).catch(() => null);
-  return jsonResp({ ok: true, leaseId: next.leaseId, expiresAt: next.expiresAt, fence: next.fence, ...(gen === null ? {} : { generation: gen }) });
+  // A failed bump must NOT be reported as a successful takeover.
+  //
+  // Re-applied 2026-11-15 (BUGS.md B-1) — the D1 rebuild had softened this to
+  // "omit the generation", which is honest about the number but still answers
+  // 200. That is wrong: the whole point of the generation is that a takeover
+  // INVALIDATES old capabilities. If the bump did not persist, capabilities
+  // minted before this takeover keep verifying — i.e. the old screen keeps
+  // control while the chrome believes it just took over. The lease we already
+  // wrote expires on its own within 90 s, so answering 503 and letting the
+  // chrome retry is clean and truthful.
+  let gen;
+  try {
+    gen = await bumpGeneration(env, computer);
+  } catch {
+    return storeUnavailable();
+  }
+  return jsonResp({ ok: true, leaseId: next.leaseId, expiresAt: next.expiresAt, fence: next.fence, generation: gen });
 }
 
 // POST /desktop/__heartbeat {leaseId} — extend the lease by 90 s. Only
@@ -1390,8 +1443,22 @@ async function desktopRelease(request, env) {
   if (!(await guardedWrite(env, true, () => env.DESKTOP_KV.delete(leaseKey(computer))))) {
     return jsonResp({ ok: false, error: "store_unavailable", note: STORE_UNAVAILABLE_NOTE + " The lease expires on its own within ~90 s." }, 503);
   }
-  const gen = await bumpGeneration(env, computer).catch(() => null);
-  return jsonResp({ ok: true, released: true, ...(gen === null ? {} : { generation: gen }) });
+  // Same rule as takeover (BUGS.md B-1): the release invalidates old
+  // capabilities through the generation, so a release that cannot persist the
+  // new generation has not really ended control. The lease row is already
+  // gone, so the control file clears regardless — but say so honestly rather
+  // than reporting ok for a generation that was never stored.
+  let gen;
+  try {
+    gen = await bumpGeneration(env, computer);
+  } catch {
+    return jsonResp({
+      ok: false,
+      error: "store_unavailable",
+      note: STORE_UNAVAILABLE_NOTE + " The lease is already released, but old screen links may stay valid for up to an hour — treat control as handed back.",
+    }, 503);
+  }
+  return jsonResp({ ok: true, released: true, generation: gen });
 }
 
 // --- Sealed screen capability (AES-256-GCM, WebCrypto) ------------------
@@ -1529,9 +1596,24 @@ async function desktopScreen(request, env) {
       return jsonResp({ ok: false, error: "kv_unavailable" }, 500);
     }
   }
+  // B-9 fix (BUGS.md): accept the client's generation only when it does NOT
+  // lead the stored one. The old Math.max let a client choose a FUTURE
+  // generation — that self-DoSes every other open screen and, worse, masks a
+  // lost bump by making one missing increment invisible. A stale LOWER client
+  // value is harmless, so the rule is "may lag, never lead".
   const clientGen = Number(body.gen);
-  if (Number.isFinite(clientGen) && clientGen >= 0) gen = Math.max(gen, clientGen);
-  const exp = Math.floor(Date.now() / 1000) + CAPABILITY_TTL_S;
+  if (Number.isFinite(clientGen) && clientGen >= 0 && clientGen <= gen) {
+    gen = clientGen;
+  }
+  // B-4 fix (BUGS.md): a capability must never outlive the control it was
+  // minted under. A flat 60-min TTL meant a terminal capability minted at
+  // second 30 of a 90 s lease kept a ROOT SHELL alive for another 59 minutes
+  // after control was handed back. watchCapability() re-checks every second
+  // while a socket is open, which bounds the damage — but the URL itself must
+  // also stop verifying, and a client that simply reconnects must not get a
+  // fresh hour. Clamp to the lease deadline plus a small grace so a heartbeat
+  // landing a moment late does not kill a live screen.
+  let exp = Math.floor(Date.now() / 1000) + CAPABILITY_TTL_S;
   if (mode === "control" || mode === "terminal") {
     let lease;
     try {
@@ -1547,6 +1629,7 @@ async function desktopScreen(request, env) {
     if (!leaseActive(lease) || body.leaseId !== lease.leaseId) {
       return jsonResp({ ok: false, error: "no_lease" }, 403);
     }
+    exp = Math.min(exp, Math.ceil(lease.expiresAt / 1000) + LEASE_CAP_GRACE_S);
     const token = await sealCapability(env, { mode, exp, gen, leaseId: lease.leaseId, computer });
     return jsonResp({ ok: true, url: `/desktop/session/${mode}/${exp}.${token}`, expiresAt: exp * 1000 });
   }
@@ -2327,12 +2410,30 @@ async function desktopPreviewUpload(request, env) {
   const ct = request.headers.get("Content-Type") || "";
   if (!ct.includes("image/png")) return jsonResp({ ok: false, error: "need_png" }, 400);
   const buf = await request.arrayBuffer().catch(() => null);
-  if (!buf || buf.byteLength === 0 || buf.byteLength > 2_000_000) {
-    return jsonResp({ ok: false, error: "bad_image" }, 400);
+  // D1 row cap is 2,000,000 bytes for the WHOLE row, and the row also holds
+  // `computer` + `updated_at`. The old limit was exactly 2,000,000, so a
+  // legitimate 1.9 MB PNG could fail the write with an opaque D1 error
+  // instead of a clean 400. Keep a margin: 1,500,000 bytes leaves ~500 KB for
+  // the row overhead and matches what the live previews actually are
+  // (243-707 KB). D1 also stores the BLOB raw, not base64, so there is no
+  // 4/3 expansion to allow for.
+  const MAX_PREVIEW_BYTES = 1_500_000;
+  if (!buf || buf.byteLength === 0 || buf.byteLength > MAX_PREVIEW_BYTES) {
+    return jsonResp({
+      ok: false,
+      error: "bad_image",
+      note: `previews must be a PNG between 1 and ${MAX_PREVIEW_BYTES} bytes (D1 row cap is 2 MB)`,
+    }, 400);
   }
+  // btoa on a huge string built byte-by-byte is the most allocation-heavy
+  // code in this Worker (BUGS.md B-11). Chunked fromCharCode is ~10x faster
+  // and keeps peak memory low.
   const bytes = new Uint8Array(buf);
   let s = "";
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
   const computer = computerOf(new URL(request.url).searchParams.get("computer"));
   // Non-essential: a dropped preview just leaves the last frame stale;
   // the watcher retries on the next change (120 s floor).
