@@ -1337,6 +1337,18 @@ def t80():
 def t81():
     return _harness("features/infra/workers/email-router/harness-email-router.mjs", 24)
 
+def t86():
+    """REBUILT computer: capability seal, lease atomicity, enforcement order.
+
+    63 checks, no machine. Covers the assertions that would have caught the
+    previous implementation's failures: a capability that cannot be replayed
+    as control, a control link requiring the LIVE lease, a takeover that fails
+    when the generation cannot be bumped, needs-you per computer, and previews
+    that only write when the hash changes.
+    """
+    return _harness("features/computer/harness-computer.mjs", 63)
+
+
 def t85():
     """Skill scanner: credential/RCE/injection patterns on third-party skills.
 
@@ -1499,6 +1511,7 @@ TESTS = [
     ("T83", "memory consolidation: logs -> candidates, never auto-accept", "memory", "protocol", t83),
     ("T84", "decision models: fail-closed, calibration, low-conf safety", "decisions", "protocol", t84),
     ("T85", "skill scanner: credential/RCE/injection patterns", "skills", "protocol", t85),
+    ("T86", "rebuilt computer: seal, lease atomicity, enforcement order", "computer", "protocol", t86),
 ]
 
 SKIP_NOTE = {

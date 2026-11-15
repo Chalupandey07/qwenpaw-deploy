@@ -10,6 +10,8 @@
 // from Rakazo's design rather than patched further; see features/computer/.
 // What remains is exactly the console proxy plus the wake/cooldown handling,
 // and that is the entire responsibility of this file.
+import { handleComputer } from "./computer/router.js";
+
 const ORIGIN = "https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
 const WAKE_WAIT_MS = 45_000;
 const KEEPALIVE_URL = "https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev";
@@ -207,8 +209,17 @@ export default {
       return env.ASSETS.fetch(new Request(url.origin + "/status-page.html"));
     }
 
-    // Computer removed 2026-11-15: no /desktop route lives in this Worker.
-    // The console proxy below is the whole surface.
+    // Computer (rebuilt from Rakazo's design, 2026-11-15). Everything under
+    // /computer is its own surface; the console proxy below is untouched.
+    if (path === "/computer" || path.startsWith("/computer/")) {
+      try {
+        return await handleComputer(request, env, url);
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "computer_error", detail: String(err).slice(0, 200) }), {
+          status: 500, headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
 
     return proxy(request, url);
   },

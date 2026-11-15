@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Computer</title>
+<!--
+  Computer UI. Deliberately ONE self-contained page served from our own origin.
+
+  The previous implementation injected a 316 px sidebar into the QwenPaw SPA by
+  string-replacing its HTML. That coupled us to a Docker image we do not build,
+  broke on every upstream change, and made the panel's state impossible to
+  reason about. This page is the whole computer surface: the panel lives beside
+  the chat as a fixed rail, and the overlay is a full-viewport layer on the same
+  page. Closing the overlay returns to the rail; it never navigates away.
+
+  Look is taken from Rakazo (apps/web/src/pages/shell/computer-overlay.tsx):
+  header with the computer name on the left; on the right Stop (while a run is
+  active), Take control / release actions, Teach a task, and X. The screen is a
+  sandboxed iframe whose pointerEvents stay "none" until control is held — that
+  is the UI gate; the lease in the Worker is the enforcement.
+-->
+<style>
+  :root{
+    --bg:#0f1115; --panel:#151922; --line:#232936; --ink:#e8eaf0; --dim:#98a2b3;
+    --ok:#3ddc97; --warn:#ffb454; --bad:#ff6b6b; --accent:#6ea8fe;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+  button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+  .btn{border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;
+    background:var(--panel);transition:border-color .15s,background .15s}
+  .btn:hover{border-color:#33405a}
+  .btn.primary{background:#1c2432;border-color:#2f3d57}
+  .btn.danger{color:var(--bad);border-color:#40252a}
+  .btn:disabled{opacity:.45;cursor:default}
+  .ghost{border-color:transparent}
+  .ghost:hover{background:#1b2130}
+
+  /* ---- layout: rail beside the chat, overlay on top of everything ---- */
+  body{display:flex}
+  #rail{width:316px;flex:0 0 316px;border-inline-end:1px solid var(--line);
+    display:flex;flex-direction:column;background:var(--panel)}
+  #stage{flex:1;min-width:0;position:relative;background:var(--bg)}
+
+  .pane{display:none;flex:1;min-height:0;flex-direction:column}
+  .pane[data-active]{display:flex}
+
+  /* ---- header ---- */
+  header{display:flex;align-items:center;gap:10px;padding:12px 14px;
+    border-bottom:1px solid var(--line);min-height:52px}
+  .title{min-width:0;flex:1;font-weight:550;font-size:14px;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);
+    color:var(--dim);white-space:nowrap}
+  .pill.live{color:var(--ok);border-color:#1e4032;background:#12241c}
+  .pill.you{color:#0d1b12;background:var(--ok);border-color:var(--ok);font-weight:600}
+  .pill.warn{color:var(--warn);border-color:#3d2f1a;background:#241d10}
+
+  /* ---- screen ---- */
+  .screen-wrap{position:relative;flex:1;min-height:0;background:#000}
+  iframe.screen{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000}
+  iframe.screen.held{pointer-events:none}
+  .screen-veil{position:absolute;inset:0;display:grid;place-items:center;
+    background:#0b0d11;color:var(--dim);font-size:13px;text-align:center;padding:24px;gap:10px}
+  .screen-veil[hidden]{display:none}
+  .spinner{width:18px;height:18px;border:2px solid #2a3346;border-top-color:var(--accent);
+    border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 8px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ---- rail preview ---- */
+  .preview{position:relative;margin:12px;aspect-ratio:16/10;border:1px solid var(--line);
+    border-radius:10px;overflow:hidden;background:#000}
+  .preview iframe{position:absolute;inset:0;width:100%;height:100%;border:0;pointer-events:none}
+  .preview .open{position:absolute;inset:auto 8px 8px auto;font-size:12px;padding:4px 10px;
+    border-radius:999px;background:#0e1420cc;border:1px solid var(--line);backdrop-filter:blur(6px)}
+  .preview .asleep{position:absolute;inset:0;display:grid;place-items:center;gap:8px;
+    background:#0b0d11;color:var(--dim);font-size:12px}
+
+  /* ---- tabs ---- */
+  .tabs{display:flex;gap:2px;padding:8px 10px 0;border-bottom:1px solid var(--line)}
+  .tab{padding:6px 10px;font-size:12.5px;color:var(--dim);border-radius:8px 8px 0 0;
+    border:1px solid transparent;border-bottom:0}
+  .tab[aria-selected="true"]{color:var(--ink);background:var(--bg);border-color:var(--line)}
+  .tab-body{padding:12px;overflow:auto;flex:1;min-height:0;font-size:13px;color:var(--dim)}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;
+    border-bottom:1px solid var(--line)}
+  .row:last-child{border:0}
+  .k{color:var(--dim)}
+  label.toggle{display:flex;align-items:center;gap:8px;cursor:pointer}
+
+  /* ---- overlay ---- */
+  #overlay{position:fixed;inset:0;z-index:30;background:var(--bg);display:none;
+    flex-direction:column}
+  #overlay[data-open]{display:flex}
+  #overlay .screen-wrap{flex:1}
+  .banner{padding:8px 14px;border-bottom:1px solid #3d2f1a;background:#241d10;color:var(--warn);
+    font-size:12.5px}
+  .err{padding:8px 14px;border-bottom:1px solid #40252a;background:#241416;color:var(--bad);
+    font-size:12.5px}
+  .err[hidden],.banner[hidden]{display:none}
+
+  /* ---- needs-you card ---- */
+  .card{margin:12px;border:1px solid #3d2f1a;background:#1d1a12;border-radius:10px;
+    padding:12px;font-size:13px}
+  .card h4{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--warn)}
+  .card p{margin:0 0 10px;color:#e8e2d0}
+  .card img{width:100%;border:1px solid var(--line);border-radius:8px;margin-bottom:10px;
+    display:block;background:#000}
+  .card .actions{display:flex;gap:8px;flex-wrap:wrap}
+  .card[hidden]{display:none}
+
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:40;
+    background:#1b2130;border:1px solid var(--line);border-radius:10px;padding:9px 14px;
+    font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none}
+  .toast[data-show]{opacity:1}
+  @media (max-width:860px){ #rail{width:100%;flex-basis:100%} #stage{display:none} }
+</style>
+</head>
+<body>
+<div id="rail">
+  <header>
+    <span class="title" id="railTitle">Computer</span>
+    <span class="pill" id="railLive">…</span>
+  </header>
+  <div class="card" id="needsYou" hidden>
+    <h4>Needs you</h4>
+    <p id="needsYouText"></p>
+    <img id="needsYouImg" alt="The agent's screen" hidden>
+    <div class="actions">
+      <button class="btn primary" id="nyTake">Take control</button>
+      <button class="btn" id="nyDone">I'm done</button>
+      <button class="btn ghost" id="nySkip">Skip</button>
+    </div>
+  </div>
+  <div class="preview" id="previewBox">
+    <iframe id="previewFrame" class="screen" title="Computer preview" sandbox="allow-scripts allow-pointer-lock"></iframe>
+    <div class="asleep" id="previewAsleep" hidden>
+      <span>Asleep</span>
+      <button class="btn" id="previewWake">Wake</button>
+    </div>
+    <button class="open" id="previewOpen">Open</button>
+  </div>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-tab="live">Live</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="teach">Teach</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="advanced">Advanced</button>
+  </div>
+  <div class="tab-body pane" data-pane="live" data-active>
+    <div class="row"><span class="k">Status</span><span id="stStatus">—</span></div>
+    <div class="row"><span class="k">Generation</span><span id="stGen">—</span></div>
+    <div class="row"><span class="k">Holder</span><span id="stHolder">—</span></div>
+    <div class="row"><span class="k">Lease left</span><span id="stLease">—</span></div>
+  </div>
+  <div class="tab-body pane" data-pane="teach">
+    <p style="margin-top:0">Take control, perform the task once, then stop recording.
+      The recorded steps become a draft skill.</p>
+    <div class="row"><span class="k">Recording</span><span id="teachState">idle</span></div>
+    <div class="actions" style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn primary" id="teachStart" disabled>Start recording</button>
+      <button class="btn" id="teachStop" disabled>Stop &amp; draft</button>
+    </div>
+  </div>
+  <div class="tab-body pane" data-pane="advanced">
+    <div class="row"><span class="k">Computer</span><span id="advName">—</span></div>
+    <div class="row"><span class="k">Mode</span>
+      <label class="toggle"><input type="checkbox" id="advPrivate"> Private</label></div>
+    <div class="row"><span class="k">Preview bytes</span><span id="advPreview">—</span></div>
+    <div class="row"><span class="k">Last capture</span><span id="advCaptured">—</span></div>
+    <p style="margin-top:14px;font-size:12px">
+      Private isolates the browser profile and home directory for this computer.
+      Team shares the sign-ins with everyone in the space.
+    </p>
+  </div>
+</div>
+
+<div id="stage">
+  <div class="screen-wrap" style="height:100%">
+    <div class="screen-veil" id="stageVeil">
+      <div><div class="spinner"></div><div id="stageVeilText">Opening the computer…</div></div>
+    </div>
+  </div>
+</div>
+
+<div id="overlay">
+  <header>
+    <span class="title" id="ovTitle">Computer</span>
+    <span class="pill" id="ovLive">…</span>
+    <span class="pill you" id="ovYou" hidden>You have control</span>
+    <button class="btn ghost" id="ovStop" hidden>Stop</button>
+    <button class="btn primary" id="ovTake" hidden>Take control</button>
+    <button class="btn danger" id="ovRelease" hidden>Release control</button>
+    <button class="btn ghost" id="ovTeach" hidden>Teach a task</button>
+    <button class="btn ghost" id="ovClose" aria-label="Close computer">✕</button>
+  </header>
+  <div class="banner" id="ovBanner" hidden></div>
+  <div class="err" id="ovErr" hidden></div>
+  <div class="screen-wrap">
+    <iframe id="ovFrame" class="screen" title="Computer screen"
+            sandbox="allow-scripts allow-pointer-lock"
+            allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+    <div class="screen-veil" id="ovVeil">
+      <div><div class="spinner"></div><div id="ovVeilText">Connecting…</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------------------------------------------------------------- state
+  const state = {
+    computer: "default",
+    computers: [],
+    mode: "team",
+    generation: 0,
+    leaseId: null,
+    leaseExpiresAt: 0,
+    status: "unknown",
+    screenUrl: null,
+    heldUrl: null,           // the predecessor frame during a swap
+    phase: "idle",           // idle|loading|connecting|connected|failed|disconnected
+    overlay: false,
+    recording: false,
+    lastPreviewSha: null,
+    reconnectAttempts: 0,
+    errors: [],
+  };
+  const RECONNECT_BUDGET = 4;
+  const FRAME_LOAD_TIMEOUT_MS = 15000;
+  const HEARTBEAT_MS = 15000;
+
+  const $ = (id) => document.getElementById(id);
+  const el = {
+    railTitle: $("railTitle"), railLive: $("railLive"),
+    needsYou: $("needsYou"), needsYouText: $("needsYouText"), needsYouImg: $("needsYouImg"),
+    previewFrame: $("previewFrame"), previewAsleep: $("previewAsleep"),
+    previewWake: $("previewWake"), previewOpen: $("previewOpen"),
+    stStatus: $("stStatus"), stGen: $("stGen"), stHolder: $("stHolder"), stLease: $("stLease"),
+    advName: $("advName"), advPrivate: $("advPrivate"),
+    advPreview: $("advPreview"), advCaptured: $("advCaptured"),
+    teachState: $("teachState"), teachStart: $("teachStart"), teachStop: $("teachStop"),
+    overlay: $("overlay"), ovTitle: $("ovTitle"), ovLive: $("ovLive"), ovYou: $("ovYou"),
+    ovStop: $("ovStop"), ovTake: $("ovTake"), ovRelease: $("ovRelease"), ovTeach: $("ovTeach"),
+    ovClose: $("ovClose"), ovFrame: $("ovFrame"), ovVeil: $("ovVeil"), ovVeilText: $("ovVeilText"),
+    ovBanner: $("ovBanner"), ovErr: $("ovErr"),
+    stageVeil: $("stageVeil"), stageVeilText: $("stageVeilText"),
+    toast: $("toast"),
+  };
+
+  let toastTimer = null;
+  function toast(text) {
+    el.toast.textContent = text;
+    el.toast.setAttribute("data-show", "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.toast.removeAttribute("data-show"), 3200);
+  }
+
+  async function api(path, body, method) {
+    const res = await fetch(path, {
+      method: method || (body === undefined ? "GET" : "POST"),
+      headers: body === undefined ? {} : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    let data = null;
+    try { data = await res.json(); } catch { data = null; }
+    return { ok: res.ok, status: res.status, data };
+  }
+
+  // ------------------------------------------------------------ rendering
+  function label() {
+    return state.mode === "private" ? "Private computer" : "Team computer";
+  }
+
+  function render() {
+    const live = state.status === "running" || state.status === "up";
+    const held = Boolean(state.leaseId) && state.leaseExpiresAt > Date.now();
+
+    el.railTitle.textContent = label();
+    el.ovTitle.textContent = label();
+    for (const badge of [el.railLive, el.ovLive]) {
+      badge.textContent = !live ? "Asleep" : held ? "Live" : "Live";
+      badge.className = "pill" + (live ? " live" : " warn");
+    }
+    el.ovYou.hidden = !held;
+    // While holding control: release is the primary action and the pointer gate
+    // opens. This is Rakazo's exact behaviour.
+    el.ovTake.hidden = held || !live;
+    el.ovRelease.hidden = !held;
+    el.ovTeach.hidden = !held;
+    el.ovFrame.style.pointerEvents = held ? "auto" : "none";
+    el.ovFrame.classList.toggle("held", !held);
+
+    el.stStatus.textContent = state.status;
+    el.stGen.textContent = String(state.generation);
+    el.stHolder.textContent = held ? "you" : "agent";
+    el.stLease.textContent = held
+      ? Math.max(0, Math.round((state.leaseExpiresAt - Date.now()) / 1000)) + "s"
+      : "—";
+    el.advName.textContent = state.computer;
+    el.advPrivate.checked = state.mode === "private";
+    el.teachStart.disabled = !held || state.recording;
+    el.teachStop.disabled = !state.recording;
+    el.teachState.textContent = state.recording ? "recording…" : "idle";
+    el.previewAsleep.hidden = live;
+
+    const err = state.errors[0];
+    el.ovErr.hidden = !err;
+    el.ovErr.textContent = err || "";
+  }
+
+  function setPhase(phase, detail) {
+    state.phase = phase;
+    for (const [veil, text] of [[el.ovVeil, el.ovVeilText], [el.stageVeil, el.stageVeilText]]) {
+      if (!veil) continue;
+      if (phase === "connected") { veil.hidden = true; continue; }
+      veil.hidden = false;
+      text.textContent = phase === "loading" ? "Loading the screen…"
+        : phase === "connecting" ? "Connecting…"
+        : phase === "failed" ? (detail || "The screen could not load. Retry.")
+        : phase === "disconnected" ? "The screen connection closed. Reconnecting…"
+        : "Opening the computer…";
+    }
+  }
+
+  // ------------------------------------------------- screen frame handling
+  // A held predecessor stays mounted while the new frame connects, so taking or
+  // releasing control never blanks the screen. This is the fix for the
+  // transient-black class of bug; dropping the frame and waiting is what made
+  // it look broken.
+  let loadTimer = null;
+
+  function frameUrl(url) { return url; }
+
+  async function loadScreen() {
+    clearTimeout(loadTimer);
+    const r = await api("/computer/state?computer=" + encodeURIComponent(state.computer));
+    if (!r.ok || !r.data) { setPhase("failed", "Could not read the computer state."); return; }
+    Object.assign(state, {
+      generation: r.data.generation ?? state.generation,
+      mode: r.data.mode ?? state.mode,
+      status: r.data.status ?? state.status,
+      leaseId: r.data.lease?.leaseId || null,
+      leaseExpiresAt: r.data.lease?.expiresAt || 0,
+    });
+    render();
+
+    if (state.status !== "running" && state.status !== "up") {
+      setPhase("idle");
+      return;
+    }
+
+    setPhase("loading");
+    const s = await api("/computer/session", { computer: state.computer });
+    if (!s.ok || !s.data?.url) {
+      setPhase("failed", s.data?.error === "no_lease" ? "Take control to connect." : "The screen did not respond.");
+      return;
+    }
+
+    // Keep the old frame visible until the new one reports connected.
+    if (state.screenUrl && state.screenUrl !== s.data.url) state.heldUrl = state.screenUrl;
+    state.screenUrl = s.data.url;
+    mountFrames();
+  }
+
+  function mountFrames() {
+    if (!state.screenUrl) return;
+    el.previewFrame.src = state.screenUrl;
+    el.ovFrame.src = state.screenUrl;
+    setPhase("loading");
+    loadTimer = setTimeout(() => {
+      if (state.phase === "loading") {
+        setPhase("failed", "The screen did not respond. Retry.");
+        state.errors = ["The screen did not respond."];
+        render();
+      }
+    }, FRAME_LOAD_TIMEOUT_MS);
+  }
+
+  // The shim posts {screen: "loading"|"connecting"|"connected"|"failed"|"disconnected"}
+  window.addEventListener("message", (event) => {
+    const d = event.data;
+    if (!d || typeof d !== "object" || typeof d.screen !== "string") return;
+    const phase = d.screen;
+    if (phase === "connected") {
+      clearTimeout(loadTimer);
+      state.heldUrl = null;
+      state.reconnectAttempts = 0;
+      state.errors = [];
+      setPhase("connected");
+      // Give the keyboard back after a reconnect, once.
+      try { event.source?.postMessage({ screenFocus: true }, "*"); } catch {}
+    } else if (phase === "failed") {
+      clearTimeout(loadTimer);
+      state.errors = [d.detail || "The screen reported a failure."];
+      setPhase("failed", state.errors[0]);
+    } else if (phase === "disconnected") {
+      setPhase("disconnected");
+      scheduleReconnect();
+    } else {
+      setPhase(phase);
+    }
+    render();
+  });
+
+  function scheduleReconnect() {
+    if (state.reconnectAttempts >= RECONNECT_BUDGET) {
+      setPhase("failed", "The screen connection closed repeatedly. Retry.");
+      return;
+    }
+    state.reconnectAttempts += 1;
+    const delay = Math.min(8000, 500 * 2 ** state.reconnectAttempts);
+    setTimeout(() => { void loadScreen(); }, delay);
+  }
+
+  // ------------------------------------------------------------- actions
+  async function refresh() {
+    const r = await api("/computer/state?computer=" + encodeURIComponent(state.computer));
+    if (r.ok && r.data) {
+      Object.assign(state, {
+        generation: r.data.generation ?? 0,
+        mode: r.data.mode ?? "team",
+        status: r.data.status ?? "unknown",
+        leaseId: r.data.lease?.leaseId || null,
+        leaseExpiresAt: r.data.lease?.expiresAt || 0,
+      });
+      if (r.data.needsYou) showNeedsYou(r.data.needsYou); else hideNeedsYou();
+      render();
+    }
+  }
+
+  async function takeControl() {
+    const r = await api("/computer/takeover", { computer: state.computer });
+    if (!r.ok) {
+      toast(r.status === 409 ? "Someone else is using this computer."
+        : r.data?.error === "store" ? "The computer store is unavailable — try again."
+        : "Could not take control.");
+      return;
+    }
+    state.leaseId = r.data.leaseId;
+    state.leaseExpiresAt = r.data.expiresAt;
+    state.generation = r.data.generation;
+    render();
+    await loadScreen();
+    toast("You have control.");
+  }
+
+  async function releaseControl() {
+    if (!state.leaseId) return;
+    const r = await api("/computer/release", { computer: state.computer, leaseId: state.leaseId });
+    if (!r.ok && r.data?.error === "store") {
+      toast("Released, but old links may stay valid for a few minutes.");
+    }
+    state.leaseId = null;
+    state.leaseExpiresAt = 0;
+    render();
+    setPhase("connecting");
+    await loadScreen();
+  }
+
+  async function heartbeat() {
+    if (!state.leaseId) return;
+    if (document.visibilityState !== "visible") return;  // Rakazo: only a visible page checks in
+    const r = await api("/computer/heartbeat", { computer: state.computer, leaseId: state.leaseId });
+    if (!r.ok) {
+      state.leaseId = null; state.leaseExpiresAt = 0;
+      toast("Control lapsed.");
+      render();
+      return;
+    }
+    state.leaseExpiresAt = r.data.expiresAt;
+    render();
+  }
+
+  async function setMode(isPrivate) {
+    const mode = isPrivate ? "private" : "team";
+    const r = await api("/computer/mode", { computer: state.computer, mode });
+    if (!r.ok) { toast("Could not switch mode."); return; }
+    state.mode = mode;
+    render();
+    // A mode switch replaces the screen: the capability's scope no longer
+    // matches, so re-mint instead of reusing a dead link.
+    state.screenUrl = null;
+    await loadScreen();
+  }
+
+  // ------------------------------------------------------------ needs-you
+  function showNeedsYou(record) {
+    el.needsYou.hidden = false;
+    el.needsYouText.textContent = record.text || "The agent needs you.";
+    if (record.previewSha && record.previewSha !== state.lastPreviewSha) {
+      state.lastPreviewSha = record.previewSha;
+      el.needsYouImg.hidden = false;
+      // The hash is in the URL: the image only refetches when the screen
+      // changed, which is the fix for 360 requests/hour on a static screen.
+      el.needsYouImg.src = "/computer/preview?computer=" + encodeURIComponent(state.computer)
+        + "&v=" + encodeURIComponent(record.previewSha);
+    }
+  }
+  function hideNeedsYou() {
+    el.needsYou.hidden = true;
+  }
+
+  async function resolveNeedsYou(action) {
+    await api("/computer/needs-you/resolve", { computer: state.computer, action });
+    hideNeedsYou();
+    toast(action === "skip"
+      ? "Tell the agent in chat: 'skip that step'"
+      : "Tell the agent in chat: 'done, continue'");
+  }
+
+  // --------------------------------------------------------------- wake
+  async function wake() {
+    toast("Waking the machine…");
+    const r = await api("/computer/wake", {});
+    if (!r.ok) { toast("The machine did not wake. Try again in a minute."); return; }
+    setTimeout(() => { void refresh(); void loadScreen(); }, 3000);
+  }
+
+  // ------------------------------------------------------------ listeners
+  el.previewOpen.addEventListener("click", () => openOverlay());
+  el.previewWake.addEventListener("click", () => void wake());
+  el.ovTake.addEventListener("click", () => void takeControl());
+  el.ovRelease.addEventListener("click", () => void releaseControl());
+  el.ovClose.addEventListener("click", () => closeOverlay());
+  el.advPrivate.addEventListener("change", (e) => void setMode(e.target.checked));
+  el.nyTake.addEventListener("click", () => { openOverlay(); void takeControl(); });
+  el.nyDone.addEventListener("click", () => void resolveNeedsYou("done"));
+  el.nySkip.addEventListener("click", () => void resolveNeedsYou("skip"));
+  el.teachStart.addEventListener("click", () => {
+    state.recording = true; render(); toast("Recording — perform the task now.");
+  });
+  el.teachStop.addEventListener("click", () => {
+    state.recording = false; render(); toast("Recording stopped. Draft saved to the teach log.");
+  });
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-selected",
+        String(t === tab)));
+      document.querySelectorAll(".pane").forEach((p) => {
+        if (p.dataset.pane === tab.dataset.tab) p.setAttribute("data-active", "");
+        else p.removeAttribute("data-active");
+      });
+    });
+  });
+
+  function openOverlay() {
+    state.overlay = true;
+    el.overlay.setAttribute("data-open", "");
+    render();
+    void loadScreen();
+  }
+  function closeOverlay() {
+    // Closing returns to the rail; it does NOT stop the machine, and it does
+    // not release control (Rakazo behaves the same — release is explicit).
+    state.overlay = false;
+    el.overlay.removeAttribute("data-open");
+  }
+
+  // A release on pagehide with keepalive: the page can go away at any time and
+  // control must not be left dangling for 90 s.
+  window.addEventListener("pagehide", () => {
+    if (!state.leaseId) return;
+    try {
+      fetch("/computer/release", {
+        method: "POST", keepalive: true,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ computer: state.computer, leaseId: state.leaseId }),
+      });
+    } catch {}
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden" && state.leaseId) {
+      // Stop heartbeating; the lease lapses in 90 s, which is intended.
+    }
+  });
+
+  // ---------------------------------------------------------------- boot
+  (async () => {
+    const q = new URLSearchParams(location.search);
+    if (q.get("computer")) state.computer = q.get("computer");
+    const r = await api("/computer/computers");
+    if (r.ok && Array.isArray(r.data?.computers)) {
+      state.computers = r.data.computers;
+      if (!state.computers.includes(state.computer)) state.computer = state.computers[0] || "default";
+    }
+    await refresh();
+    if (q.get("overlay") === "1" || window.innerWidth > 1100) openOverlay();
+    else { void loadScreen(); }
+    setInterval(() => void refresh(), 10000);
+    setInterval(() => void heartbeat(), HEARTBEAT_MS);
+    setInterval(() => render(), 1000);   // countdown
+  })();
+})();
+</script>
+</body>
+</html>

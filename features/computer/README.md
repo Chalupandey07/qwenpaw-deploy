@@ -1,92 +1,103 @@
-# Computer — REMOVED 2026-11-15, awaiting the Rakazo rebuild
+# Computer — rebuilt from Rakazo's design
 
-**Nothing in here is deployed. The computer is gone from this repo until a
-rebuild lands.**
+**Status: code complete, NOT deployed.** Muse deploys and is the only one who
+can call it live. Nothing in here claims to render until Muse has seen it.
 
-## What was removed, and why
+## What this is
 
-The computer worked but was never smooth, and the implementation — not the
-idea — was the problem. Patching it further would have meant carrying a design
-that was wrong at several layers:
+A rebuild, not a patch. The previous implementation (8,399 lines) was removed
+because its *design* was wrong at several layers, and patching it is how it got
+to 8,399 lines. This is Rakazo's architecture, ported to this deployment's
+constraints.
 
-- a 12-hour HMAC cookie standing in for a scoped, short-lived capability;
-- no real view/control split in the URL path (one interactive stream that
-  anyone reaching `/desktop` could drive);
-- no held frame during view↔control swaps, so taking or releasing control
-  blanked the screen;
-- the console-side panel injected by string-replacing the SPA's HTML — a
-  fragile coupling to a Docker image we do not build;
-- previews uploaded unconditionally every 15 s, which burned the KV write
-  quota and took the whole desktop down for a day;
-- needs-you as a single global record rather than per computer;
-- and repeatedly, security fixes that were silently reverted by later
-  rewrites.
+Source of truth: `elie222/rakazo` @ `d343d83`, read directly —
+`apps/web/src/pages/shell/computer-overlay.tsx` (the look),
+`apps/web/src/lib/computer-screen.ts` (the state machine),
+`apps/web/src/novnc-html.ts` (the shim),
+`packages/core/src/node/screen-capability.ts` (the seal),
+`packages/core/src/screen-reconnect.ts` (the lease constants).
+`rakazo-computer-study.md` beside this file is the analysis.
 
-Rakazo's implementation is the reference. Rather than keep diffing ours toward
-it, the computer was deleted and will be re-added following
-`rakazo-computer-study.md` — which is preserved in this directory because it
-is the specification.
+## The shape
 
-## What was deleted
+```
+pages/public/computer/
+  capability.js   AES-256-GCM seal + noVNC shim        (port of screen-capability.ts + novnc-html.ts)
+  state.js        lease, generations, needs-you, previews (port of computer-control.ts, on D1)
+  router.js       the /computer surface + stream proxy  (port of routes/computer.ts + screen-proxy.ts)
+  ui.html         panel + overlay, one self-contained page (port of computer-panel/overlay.tsx)
+```
 
-| Path | What it was |
+`pages/public/_worker.js` delegates `/computer*` to the router and is otherwise
+untouched — it is a console proxy again.
+
+## Three deliberate divergences from Rakazo
+
+| Rakazo | Here | Why |
+|---|---|---|
+| noVNC proxied by the web server, capability resolved by a **separate API** over a bearer secret | both in one Worker, capability opened in-process | Rakazo splits them because they are different services. We are one Worker; a network hop would exist only to reproduce a boundary we do not have. |
+| capability TTL **60 min** | **10 min** | A link here is minted immediately before a frame loads it. Ten minutes survives a slow wake and dies long before a leaked link is useful. |
+| recheck every **1 s** through the API | recheck the live lease on **every request** | Same isolate, same D1 call, so the check is free. Rakazo's 1 s recheck exists because its authority is across a network; ours is a local query. |
+
+Everything else is preserved, because each part prevents a specific failure
+recorded in `BUGS.md`:
+
+| Preserved | Prevents |
 |---|---|
-| `pages/public/_worker.js` `/desktop*` routes | gate page, noVNC proxy, WebSocket relay |
-| same file: `desktop()` + 20 `desktop*()` functions | lease, capabilities, previews, needs-you, teach, modes, wake, maintenance |
-| same file: `createStore`, `kvTry`, `budgetAllowed`, `bumpGeneration`, seal/verify | the desktop's storage and capability layer |
-| same file: console-side panel injection | the 316 px sidebar injected into the QwenPaw SPA |
-| `pages/public/desktop-chrome.html` (removed) | the chrome UI (tabs, take/release, terminal, teach) |
-| `features/desktop/` | lease-watcher, PTY server, 17 systemd units, 3 harnesses, MCP configs |
-| `features/camoufox/` | anti-detect bridge, browser skill, profile setup |
+| policy + expiry in the **AAD** | a view link replayed as control |
+| scope = `{computer, generation, leaseId}` | a link surviving a takeover or a screen replace |
+| the provider token **inside** the seal | a token in a cookie, in a redirect, or in the browser at all (the stale per-port cookie bug) |
+| deterministic IV per identical seal | two tabs invalidating each other's handshake |
+| `redirect: "manual"` upstream | auto-follow without a cookie jar reporting a healthy desktop as down |
+| drop the browser `Cookie` header | a stale per-port cookie 401ing every other port |
+| a **held predecessor frame** | the screen blanking on take/release |
+| the shim's state reports | a silent frame showing black with no diagnosis |
+| `pointer-events: none` until control | driving a screen you do not hold (UI gate; the lease is enforcement) |
+| heartbeat only while **visible** | a forgotten tab holding control forever |
+| release **names the lease** | a late release from an old page ending newer control |
 
-`pages/public/_worker.js` went from 2,572 to 216 lines. What remains is
-exactly the console proxy: `/` → QwenPaw, `/status` → static page, the wake and
-cooldown handling, the `?token=` → `Authorization` lift, and the header
-rewrites. That file's entire job is now proxying, which is what it is good at.
+## Two bugs this rebuild's own harness caught
 
-## What was NOT removed
+Both would have shipped broken, and both are why the harness runs before the
+commit rather than after the deploy:
 
-- **The console proxy**, which is the reason the domain exists.
-- **`features/storage/`** — D1 schema, store wrapper, migration. The board and
-  routines still use it.
-- **The MCP proxy and `computer-use.yaml` DriverCard** — machine-side, not in
-  this repo's control, and removing the YAML would break the running agent
-  before the replacement exists. It is marked stale in its own header.
-- **Tests T07–T17, T46–T57, T75** — kept and marked `NEEDS-REBUILD`. They are
-  the acceptance criteria for the rebuild; deleting them would delete the
-  specification of what "smooth" means.
+1. **The IV was never written into the token.** `crypto.subtle.encrypt` used it
+   but the token held only the ciphertext, so every screen link was
+   well-formed and dead on arrival. The harness opened a freshly sealed
+   capability and got `null`.
+2. **The AES-GCM tag split.** `node:crypto` takes the auth tag as a separate
+   argument; WebCrypto returns `ciphertext || tag` as one buffer. Porting the
+   split verbatim fails every open.
 
-## Why the tests were kept rather than deleted
+Neither is visible by reading the code — both need the round trip.
 
-A red suite for a deliberately deleted feature teaches people to ignore red. A
-deleted test loses the only precise record of what the feature had to do. So
-the runner now reports `NEEDS-REBUILD` for those ids with an explanation, and
-they flip back to real assertions when the new computer lands.
+## Deployment (Muse)
 
-## The rebuild
+1. **D1 binding.** The router expects `COMPUTER_DB` bound to the
+   `qwenpaw-state` database. The schema is created idempotently on first use
+   (`state.js::ensureSchema`), so no separate migrate step is needed.
+2. **Secrets** (never in git, never in chat):
+   `COMPUTER_CAPABILITY_SECRET` (32+ random bytes), `COMPUTER_CONTROL_ORIGIN` +
+   `COMPUTER_CONTROL_TOKEN`, `COMPUTER_VIEW_ORIGIN` + `COMPUTER_VIEW_TOKEN`,
+   the same four with `QA_` for the second display, and `COMPUTER_SYNC_TOKEN`
+   for the agent-facing endpoints.
+3. **Machine side** (Muse's job, per the brief): the view-only and interactive
+   x11vnc/websockify pairs on published ports, and the preview uploader. The
+   uploader must be **change-only with a floor** — that is what burned the KV
+   quota, and the D1 write budget is now the thing to protect.
+4. **Verify in a real browser.** Not with a protocol check. The previous rounds
+   that skipped this shipped a broken screen every time.
 
-Specification: `rakazo-computer-study.md` in this directory — architecture,
-the lease, the capability, the shim, the UI, and the gap list. Read it before
-writing code; it is more precise than any summary.
+## Not done
 
-Non-negotiables carried over from the failures above, to be asserted in the
-new code's own tests:
-
-1. **A capability is scoped and short-lived** — `{computer, generation,
-   leaseId}`, minutes not hours, re-checked while a socket is open.
-2. **View and control are different URLs**, and the control one requires a
-   live lease. The UI gate (`pointer-events: none`) is a convenience, never
-   the enforcement.
-3. **A held frame during swaps** — the screen must never blank when control is
-   taken or released.
-4. **No injected HTML into the QwenPaw SPA.** If the panel cannot be a native
-   console feature, it is an overlay on our own origin — not a string
-   replacement on a page we do not build.
-5. **Uploads are change-only with a floor**, and the write budget is checked
-   before the upload, not after it fails.
-6. **Needs-you is per computer** and carries the preview's hash so the image
-   only refetches when the screen changes.
-7. **A generation bump that fails means the takeover failed.** Never report
-   success for a capability that cannot verify.
-8. **No claim is live until it is rendered in a real browser.** Every previous
-   round that skipped this shipped a broken screen.
+- **Terminal tab**: the UI has the tab and the workspace, but the PTY service
+  was removed with the old computer and has not been rebuilt. It needs the
+  `pty-server.py` equivalent back on the machine — deferred deliberately
+  because a root shell is the highest-risk surface and it should land with its
+  own lease tests, not folded into this.
+- **Teach recording**: the UI records start/stop and says a draft was saved;
+  there is no input recorder or draft editor yet. Same reasoning.
+- **Per-bot computers**: the schema has a `computer` row per name and the
+  router takes `?computer=`, so the model supports it, but only `default` and
+  `qa` are wired.
+- **Live verification of any of it.** That is Muse's, and it has not happened.
