@@ -23,9 +23,16 @@ Polls GET https://qwenpawx.pages.dev/desktop/__lease?computer=<name> every
 
 Every 15 s: capture each desktop (scrot :1 and :2) and POST the PNGs to
 the Worker /desktop/__preview-upload?computer=<name> (the needs-you
-banner and the chat preview read them from there). The screenshots go
-to /data/home, never /tmp — the machine's /tmp is a 512 MB tmpfs that
-fills up.
+banner and the chat preview read them from there) — but ONLY when the
+screenshot actually changed since the last upload, and at most once per
+120 s per computer. The old policy uploaded unconditionally every 15 s
+(2 KV writes per 15 s = ~11,500/day), which spent Cloudflare's free
+1,000 KV writes/day budget by mid-morning and broke EVERY write path
+at once (__takeover, __mode and the needs-you raise all answered 500
+on 2026-11-15 while reads kept working). The Worker stores previews
+with a 600 s TTL, so a changed screen is refreshed within 2 minutes and
+a static one costs nothing. The screenshots go to /data/home, never
+/tmp — the machine's /tmp is a 512 MB tmpfs that fills up.
 
 Every 30 s: fetch pending taught skills from the Worker
 (/desktop/__pending-skills) and deliver each to the QwenPaw skill pool
@@ -39,6 +46,7 @@ Worker calls from here send a Mozilla User-Agent — Python urllib's
 default UA is 403'd by Cloudflare on the Pages domain.
 Diagnostics to stderr (journalctl -u desktop-lease-watcher).
 """
+import hashlib
 import json
 import os
 import subprocess
@@ -57,7 +65,11 @@ CONTROL_FILES = {
     "qa": "/run/user/1000/qa/instabox-control",
 }
 POLL_S = 5
-PREVIEW_S = 15
+# Preview uploads: change-only, at most once per 120 s per computer.
+# (Unconditional 15 s uploads burned the free KV write budget — see the
+# module docstring. The Worker's preview TTL is 600 s, so a static
+# desktop costs zero writes and a changed one refreshes within 2 min.)
+PREVIEW_MIN_S = 120
 SKILLS_S = 30
 PREVIEW_PNG = "/data/home/mcp-proxy/preview.png"
 PREVIEW_PNG_QA = "/data/home/mcp-proxy/preview-qa.png"
@@ -153,8 +165,18 @@ def worker_call(method, path, data=None, content_type="application/json"):
         return None, None
 
 
+# Last successful preview upload, per computer: (epoch seconds, sha256).
+# A re-upload happens only when the screenshot changed AND the minimum
+# interval has passed — an unchanged desktop costs zero KV writes.
+last_preview = {}
+
+
 def upload_preview(computer):
-    """scrot the computer's display -> POST the PNG to the Worker (60 s TTL in KV)."""
+    """scrot the computer's display -> POST the PNG to the Worker (600 s TTL in KV).
+
+    Change-only with a 120 s floor: an unchanged desktop is never
+    re-uploaded. Returns True when an upload was attempted.
+    """
     display = ":2" if computer == "qa" else ":1"
     png_path = PREVIEW_PNG_QA if computer == "qa" else PREVIEW_PNG
     try:
@@ -164,18 +186,28 @@ def upload_preview(computer):
             capture_output=True, timeout=15, check=True)
     except Exception as e:
         log("scrot failed (%s): %s" % (computer, e))
-        return
+        return False
     try:
         with open(png_path, "rb") as f:
             png = f.read()
     except OSError as e:
         log("preview read failed (%s): %s" % (computer, e))
-        return
+        return False
     if not png:
-        return
+        return False
+    digest = hashlib.sha256(png).hexdigest()
+    now = time.time()
+    prev_at, prev_hash = last_preview.get(computer, (0, ""))
+    if digest == prev_hash:
+        return False  # unchanged — no KV write spent
+    if now - prev_at < PREVIEW_MIN_S:
+        return False  # changed again too soon — the last upload is fresh
     status, _ = worker_call("POST", "/desktop/__preview-upload?computer=" + computer, png, "image/png")
     if status != 200:
         log("preview upload failed (%s): HTTP %s" % (computer, status))
+        return False
+    last_preview[computer] = (now, digest)
+    return True
 
 
 def slugify(name):
@@ -285,7 +317,7 @@ def deliver_skills():
 
 def main():
     log("started, polling %s (default + qa)" % LEASE_URL)
-    last_preview = 0
+    last_preview_check = 0
     last_skills = 0
     while True:
         try:
@@ -294,8 +326,8 @@ def main():
         except Exception as e:
             log("poll error: %s" % e)
         now = time.time()
-        if now - last_preview >= PREVIEW_S:
-            last_preview = now
+        if now - last_preview_check >= POLL_S * 3:  # re-check screens every 15 s
+            last_preview_check = now
             upload_preview("default")
             upload_preview("qa")
         if now - last_skills >= SKILLS_S:
