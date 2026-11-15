@@ -21,7 +21,7 @@ public pricing), plus a readiness script.
    endpoint returns 503 / "Voice channel is not available."
 3. **No ElevenLabs integration anywhere in the installed QwenPaw source**
    (grep over `site-packages/qwenpaw/` returned nothing).
-4. Run `scripts/voice-readiness.py` on the machine any time to re-check
+4. Run `features/infra/scripts/voice-readiness.py` on the machine any time to re-check
    which fields are set (names only, never values).
 
 ## Paths, and exactly what each needs

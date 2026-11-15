@@ -1,6 +1,6 @@
 # #11 — Fleet manager
 
-Status: **Done (read + dry-run only).** `scripts/fleet.py` lists the real
+Status: **Done (read + dry-run only).** `features/infra/scripts/fleet.py` lists the real
 fleet from the live config. Enable/schedule are **dry-run only by design**.
 
 ## Verified config keys (read live 2026-11-15, QwenPaw v2.3.0)
@@ -39,10 +39,10 @@ fleet config — not verified here, not claimed).
 
 ```
 # on the machine (config.json is root-owned, so sudo):
-sudo python3 scripts/fleet.py list
-sudo python3 scripts/fleet.py show QwenPaw_QA_Agent_0.2
-sudo python3 scripts/fleet.py enable --dry-run <agent-id>
-sudo python3 scripts/fleet.py schedule --dry-run <agent-id> [--every 6h]
+sudo python3 features/infra/scripts/fleet.py list
+sudo python3 features/infra/scripts/fleet.py show QwenPaw_QA_Agent_0.2
+sudo python3 features/infra/scripts/fleet.py enable --dry-run <agent-id>
+sudo python3 features/infra/scripts/fleet.py schedule --dry-run <agent-id> [--every 6h]
 ```
 
 - `list`: active agent, agent order, active model, heartbeat defaults,

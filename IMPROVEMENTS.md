@@ -85,7 +85,7 @@ Pages project.
 
 | # | Improvement | Why | How |
 |---|---|---|---|
-| 6.1 | **Per-page manifest + delete** | Deploying replaces the whole project; there is no way to remove one old page | Keep `pages/manifest.json` (name → file, created, checksum). `deploy-page.py` prunes files not in the manifest plus the incoming page. |
+| 6.1 | **Per-page manifest + delete** | Deploying replaces the whole project; there is no way to remove one old page | Add a manifest file under `pages/` (name → target, created, checksum). `deploy-page.py` prunes files not in the manifest plus the incoming page. |
 | 6.2 | **Size guard** | A page with inline base64 images can be huge | Refuse >2 MB with a clear message; suggest linking instead of inlining. |
 | 6.3 | **CSP by default** | Pages served from `qwenpaw-pages.pages.dev` run inline JS | Add a default `Content-Security-Policy` header in the Pages config; document that inline `<script>` needs a nonce or `'unsafe-inline'`. |
 | 6.4 | **Preview before publish** | The user cannot see the page until it is public | Deploy to a preview branch first (Pages supports preview deployments), show the URL, then promote. |

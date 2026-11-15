@@ -681,6 +681,63 @@ than asserting it helps. See `features/codemode/README.md` and
 
 ---
 
+## (k) Quota discipline — local, no deploy
+
+These two exist because the free-tier quotas are the constraint that shapes
+the whole architecture, and both had a real burn before they were fixed.
+
+### T68 — keep-alive Worker: KV write-on-change + fail-closed /wake
+- Area: `keepalive` · Method: `protocol`
+- Check (local): `node worker/harness-keepalive.mjs`
+- Expected: `19 passed, 0 failed`. Runs the real Worker with a mock KV and
+  mock fetch. Asserts the write-on-change contract: the first tick writes
+  (unknown → up), **nine further healthy ticks add zero writes**, a real
+  transition writes exactly once, and recovery resets the failure counter.
+  Also asserts `lastPingAt` is not persisted (it would defeat the guard) but
+  is still returned to the caller; `/status` reads cached without writing;
+  `/wake` fails closed with no token, 401s a wrong token, and never accepts
+  the token in the query string; and a failed KV write still returns a live
+  status rather than a false error.
+- Evidence: the final tally line. The old Worker fails 2 of these.
+- **Not covered:** real Cloudflare KV behaviour (mock only).
+
+### T69 — lease-watcher: adaptive polling + safety invariants
+- Area: `desktop` · Method: `protocol`
+- Check (local): `python3 features/desktop/test_lease_watcher.py`
+- Expected: `28 passed, 0 failed`. Asserts the cadence constants are
+  coherent (idle 30 s ≤ the control file's own 30 s staleness bound, active
+  5 s < 10 s, preview check < preview floor), that `main()` selects the
+  interval from `lease_held` rather than a fixed sleep, and the quota
+  arithmetic (idle ≤ 10,000 requests/day, ≥75% saved versus the old fixed
+  5 s). Also pins the safety invariants that must not regress: the watcher
+  only ever clears a control file it owns (`worker-lease`), a Worker outage
+  leaves state unchanged (fail-open for the agent), previews never go to
+  `/tmp`, uploads stay change-only, the sync token is never logged, and a
+  browser User-Agent is sent because Cloudflare 403s python-urllib's default.
+- Evidence: the final tally line.
+
+---
+
+## (d) Docs integrity — local
+
+### T70 — every relative link and repo path resolves
+- Area: `docs` · Method: `protocol`
+- Check (local): `python3 scripts/check-links.py`
+- Expected: `all links and paths resolve`, exit 0. Scans every markdown file
+  for (a) relative `[text](path)` links and (b) backticked repo paths that
+  start with a known top-level directory, and asserts each exists.
+- Why it matters: a broken link in `AGENTS.md` sends a new agent to a file
+  that does not exist. This check found **four real stale paths** left behind
+  when the infra scripts moved into `features/infra/scripts/` — the docs still
+  said `scripts/fleet.py` etc., so anyone following them got "No such file".
+- Excluded on purpose: `features/jev/awesome-jev-tools-full-list.md` is a
+  verbatim copy of upstream READMEs, so its relative links resolve against
+  github.com/<repo>, not our tree — checking them yields guaranteed false
+  positives.
+- Evidence: the summary line.
+
+---
+
 ## Out of scope for this catalogue (do not add tests here without a new decision)
 
 - **JEV / Drex** — not implemented (PLAN.md Phase 2/3). No tests until they land.

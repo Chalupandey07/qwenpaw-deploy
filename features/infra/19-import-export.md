@@ -5,7 +5,7 @@ live QA workspace (never the live workspace). 3 starter templates built.
 
 ## What is built
 
-### `scripts/workspace-export.py`
+### `features/infra/scripts/workspace-export.py`
 
 Usage (run on the machine via `ib.py exec`, or anywhere with a workspace
 copy):
@@ -59,7 +59,7 @@ Three English templates, each a ready-to-import workspace folder
 | `code-helper/` | Code review + small fixes, tests before claiming done, no destructive commands |
 
 Import a template with:
-`python3 scripts/workspace-export.py import` — no: templates are plain
+`python3 features/infra/scripts/workspace-export.py import` — no: templates are plain
 folders, copy one to `/data/home/qwenpaw/working/workspaces/<new-id>/`
 on the machine (coordinator step — creating a workspace is a write to the
 live tree, so it is not done by this build), then restart is required for

@@ -19,6 +19,7 @@ keys · no local models.
 | Contribute code (rules, tests, quota discipline) | **[AGENTS.md](AGENTS.md)** |
 | See every known bug, with severity and fix | **[BUGS.md](BUGS.md)** |
 | Find the next thing worth building | **[IMPROVEMENTS.md](IMPROVEMENTS.md)** |
+| Understand the agent design philosophy | **[AGENT-DESIGN.md](AGENT-DESIGN.md)** |
 | Know what Muse hit and fixed, in detail | [HANDOFF-AUTOCLAW.md](HANDOFF-AUTOCLAW.md) · `features/desktop/README.md` |
 
 ## Live
@@ -67,6 +68,7 @@ PLAN.md            roadmap and status (rewritten, not appended)
 STATUS.md          implemented vs wanted, one page
 BUGS.md            every known defect, severity, fix
 IMPROVEMENTS.md    every improvement, by area, ranked
+AGENT-DESIGN.md    the design philosophy: ground truth, cheap senses, bounded memory
 HANDOFF-AUTOCLAW.md  the incident log and root causes from the original build
 
 instabox/          machine deploy: docker-compose, .env.example, systemd, setup.sh

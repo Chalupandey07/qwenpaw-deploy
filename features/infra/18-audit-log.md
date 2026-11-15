@@ -46,10 +46,10 @@ No structured audit fields; it is a debug log, not an audit trail.
 
 ## What is built
 
-`scripts/audit-report.py` (read-only; run on the machine with sudo):
+`features/infra/scripts/audit-report.py` (read-only; run on the machine with sudo):
 
 ```
-sudo python3 scripts/audit-report.py [--lines 200] [--events 20] [--out report.txt]
+sudo python3 features/infra/scripts/audit-report.py [--lines 200] [--events 20] [--out report.txt]
 ```
 
 It prints: audit DB row counts by decision/tool + latest events;

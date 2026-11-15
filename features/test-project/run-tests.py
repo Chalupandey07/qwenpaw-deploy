@@ -1151,6 +1151,20 @@ def t64():
             f"tally={m.group(0) if m else 'none'}")
 
 
+def t70():
+    """Docs integrity: every relative link and repo path resolves.
+
+    A broken link in AGENTS.md sends a new agent somewhere that does not
+    exist, which is worse than no link. This also caught four stale paths left
+    behind when the infra scripts moved to features/infra/scripts/.
+    """
+    rc, out, err = run_local([sys.executable, str(REPO / "scripts/check-links.py")], timeout=120)
+    ok = rc == 0 and "all links and paths resolve" in out
+    return ("PASS" if ok else "FAIL",
+            f"check-links.py exit={rc} "
+            f"tail={one_line(out.strip().splitlines()[-1] if out.strip() else err, 160)}")
+
+
 def t69():
     """Lease-watcher: adaptive polling cadence + safety invariants.
 
@@ -1373,6 +1387,7 @@ TESTS = [
     ("T67", "Ripwire installer: safety invariants + skill honesty", "memory", "protocol", t67),
     ("T68", "keep-alive Worker: KV write-on-change + fail-closed /wake", "keepalive", "protocol", t68),
     ("T69", "lease-watcher: adaptive polling + safety invariants", "desktop", "protocol", t69),
+    ("T70", "docs: every relative link + repo path resolves", "docs", "protocol", t70),
     ("T50", "__status per computer, full (cookie)", "desktop", "browser", None),
     ("T51", "side-panel renders beside chat", "desktop", "browser", None),
     ("T52", "/desktop chrome: take/release + terminal shell", "desktop", "browser", None),
