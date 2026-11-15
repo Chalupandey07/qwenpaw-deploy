@@ -58,6 +58,9 @@ detail, severity and fixes in **`BUGS.md`**.
 | B-4 terminal capability outlived its lease by ~59 min (P1) | **CODE** — clamped to lease + 30 s grace; 42a/42a2/42b |
 | B-9 client could inflate the generation (P2) | **CODE** — "may lag, never lead"; test 43 |
 | Idle-adaptive lease-watcher polling (IMPROVEMENTS §9.2) | **CODE** — 34,560 → 6,480 req/day idle (83%); 28 checks (T69) |
+| Pricing resolver for custom providers (T71) | **CODE** — never invents a price; optional catalogue; 20 checks |
+| Content-aware routing (T72) | **CODE** — fills QwenPaw's empty `RoutingPolicy.decide()`; abstains when unsure; 27 checks |
+| Docs: AGENTS/ARCHITECTURE/BUGS/STATUS/IMPROVEMENTS/AGENT-DESIGN + link checker (T70) | **CODE** — 4 stale doc paths found and fixed |
 | B-3 board stores all tickets in one KV value (P1) | **TODO** — fixed by the D1 migration |
 | B-2 needs-you is one global record (P1) | **TODO** — per-computer keys |
 | B-5 preview `<img>` refetched every 10 s (P2) | **TODO** |
@@ -70,7 +73,7 @@ detail, severity and fixes in **`BUGS.md`**.
 | B-13 KV-staleness sleeps on the capability path (P2) | **TODO** — goes away with D1 |
 | B-14…B-18 (P3 hygiene) | **TODO** |
 
-Gate harness went 116 → 127 checks this pass. Machine-free suite: **425 checks**, all green.
+Gate harness went 116 → 127 checks this pass. Machine-free suite: **472 checks**, all green (T46–T48, T62–T72).
 
 ## Phase 2 — D1 migration (next, unblocks 6 bug classes)
 

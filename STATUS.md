@@ -60,7 +60,10 @@ Last updated: 2026-11-15 (after the correctness pass).
 | Memory: bounded recall / lessons / ReMe doctor / ripwire | `features/memory/` | Code, 149 checks; T65 needs sync |
 | Code Mode measurement pilot | `features/codemode/` | Code, 59 checks; live path gated |
 | Security audit (19 findings, 6 fix batches) | `features/audit-2026-11-15/` | **Yes** |
-| Docs: AGENTS / ARCHITECTURE / BUGS / PLAN / IMPROVEMENTS / STATUS | repo root | n/a |
+| Docs: AGENTS / ARCHITECTURE / BUGS / PLAN / IMPROVEMENTS / STATUS / AGENT-DESIGN | repo root | n/a |
+| Pricing resolver (honest UNKNOWN, optional catalogue) | `features/board/pricing.py` | Code, 20 checks |
+| Content-aware routing (fills QwenPaw's empty hook) | `features/routing/` | Code, 27 checks |
+| Docs link checker | `scripts/check-links.py` | Code, T70 |
 
 ### Skills installed in QwenPaw
 

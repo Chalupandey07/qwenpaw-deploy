@@ -739,6 +739,41 @@ the whole architecture, and both had a real burn before they were fixed.
 
 ---
 
+## (u) Routing + cost — local, no deploy
+
+### T72 — content-aware routing: classify, abstain, bounded scan
+- Area: `routing` · Method: `protocol`
+- Check (local): `python3 features/routing/policy.py --selftest`
+- Expected: `27 passed, 0 failed`. Asserts each route classifies its own
+  vocabulary; that an empty input, an unmatched input, and a genuine tie all
+  **abstain** with `route=None` (never a silently-substituted default); that
+  `decide_with_default()` is the only place the default is applied; that a
+  route needing tools is penalised when tools are absent; that a 36 KB prompt
+  classifies in <50 ms (the scan is capped, it is a prefilter); that the same
+  input always gives the same decision; and that a missing routes file
+  degrades to "always abstain" rather than raising.
+- Context: fills the seam in QwenPaw's `RoutingPolicy.decide()`, which
+  ignores content entirely (verified in v2.3.0 source).
+- Evidence: the final tally line.
+
+### T71 — pricing resolver: honest UNKNOWN, optional catalogue
+- Area: `cost` · Method: `protocol`
+- Check (local): `python3 features/board/pricing.py --selftest`
+- Expected: `20 passed, 0 failed`. Asserts a local override resolves with its
+  source and `as_of`; cost arithmetic for input / output / cached / combined;
+  per-provider overrides beat generic ones; an unknown model stays
+  `resolved=false` with `cost() is None` (never 0); a **partial** price
+  (input known, output unknown) also yields no cost, because a partial total
+  is a wrong total; negative token counts raise; and the optional
+  `genai-prices` dependency never raises whether it is installed, absent, or
+  half-installed.
+- Context: the dashboard showed UNKNOWN for GPT Astra. Verified that
+  `genai-prices` 0.2.3 carries `gpt-6-astra` (450 provider entries), and that
+  it needs Python >= 3.11 plus a deep dependency chain — hence optional.
+- Evidence: the final tally line.
+
+---
+
 ## Out of scope for this catalogue (do not add tests here without a new decision)
 
 - **JEV / Drex** — not implemented (PLAN.md Phase 2/3). No tests until they land.

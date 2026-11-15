@@ -1151,6 +1151,25 @@ def t64():
             f"tally={m.group(0) if m else 'none'}")
 
 
+def t72():
+    """Content-aware routing: classification, abstention, bounded scan.
+
+    Fills the verified-empty seam in QwenPaw's RoutingPolicy.decide() (which
+    does `del text, channel, tools_available` and returns a constant).
+    Dependency-free on purpose: the box cannot host a resident embedding model
+    (4 vCPU / 8 GiB shared with QwenPaw + Chromium + two Xvfb displays).
+    27 checks.
+    """
+    rc, out, err = run_local(
+        [sys.executable, str(REPO / "features/routing/policy.py"), "--selftest"],
+        timeout=120)
+    m = re.search(r"(\d+) passed, (\d+) failed", out)
+    ok = rc == 0 and m and int(m.group(2)) == 0 and int(m.group(1)) == 27
+    return ("PASS" if ok else "FAIL",
+            f"routing --selftest: exit={rc} "
+            f"tally={m.group(0) if m else 'none'}")
+
+
 def t71():
     """Pricing resolver: never invents a price, degrades without the library.
 
@@ -1407,6 +1426,7 @@ TESTS = [
     ("T69", "lease-watcher: adaptive polling + safety invariants", "desktop", "protocol", t69),
     ("T70", "docs: every relative link + repo path resolves", "docs", "protocol", t70),
     ("T71", "pricing resolver: honest UNKNOWN, optional catalogue", "cost", "protocol", t71),
+    ("T72", "content-aware routing: classify, abstain, bounded scan", "routing", "protocol", t72),
     ("T50", "__status per computer, full (cookie)", "desktop", "browser", None),
     ("T51", "side-panel renders beside chat", "desktop", "browser", None),
     ("T52", "/desktop chrome: take/release + terminal shell", "desktop", "browser", None),
