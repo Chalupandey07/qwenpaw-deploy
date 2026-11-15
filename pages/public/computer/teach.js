@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Teach recording — the input recorder, the playbook builder, and the draft.
  *
