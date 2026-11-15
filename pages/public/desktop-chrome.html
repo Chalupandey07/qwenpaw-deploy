@@ -239,6 +239,17 @@
     dot.className = "dot" + (text === "Asleep" ? " asleep" : "");
   }
 
+  // The status pill for a __status `desktop` value. "down" and
+  // "origin_auth" are NOT "Asleep": the machine is up and the desktop /
+  // proxy path is what failed, so the pill must say so instead of
+  // telling the user to Wake a machine that is already awake.
+  function pillForDesktop(d) {
+    if (d === "down") return "Down";
+    if (d === "origin_auth") return "Auth error";
+    if (d === "waking") return "Booting…";
+    return "Asleep";
+  }
+
   function showOverlay(title, text, spinner, actionsHtml) {
     overlayTitle.textContent = title;
     overlayText.textContent = text || "";
@@ -836,7 +847,7 @@
         showOverlay("Booting live desktop…", "The machine is starting.", true, "");
       } else if (Date.now() - started > WAKE_TIMEOUT_MS) {
         clearInterval(statusPollTimer);
-        setPill("Asleep");
+        setPill(pillForDesktop(s.json && s.json.desktop ? s.json.desktop : "asleep"));
         showOverlay("The desktop did not come up",
           "It has been more than " + Math.round(WAKE_TIMEOUT_MS / 60000) + " minutes and the desktop is still " +
           (s.json && s.json.desktop ? s.json.desktop : "unreachable") +
@@ -892,6 +903,22 @@
         takeBtn.style.display = "";
         await mountScreen("view");
       });
+    } else if (s.json.desktop === "down") {
+      // The machine is up but the desktop did not answer — a broken
+      // desktop/proxy path, not a sleeping machine. Offer Retry first
+      // (it is usually transient); Wake is the fallback, it restarts
+      // the desktop. Never label this "Asleep".
+      setPill("Down");
+      showOverlay("The desktop is not responding", "The machine is up, but the desktop on it did not answer. This is usually transient — retry first. If it keeps failing, waking restarts the desktop.", false,
+        '<button id="retryBtn" class="primary">Retry</button> <button id="wakeBtn">Wake computer</button>');
+      document.getElementById("retryBtn").onclick = function () { init(); };
+      document.getElementById("wakeBtn").onclick = wake;
+    } else if (s.json.desktop === "origin_auth") {
+      // The desktop origin refused the Worker's credentials. Retry; the
+      // Worker re-mints its proxy auth on the next probe.
+      setPill("Auth error");
+      showOverlay("Could not reach the desktop", "The desktop origin refused the Worker's credentials (origin auth). Retry in a moment — if it keeps failing, the desktop port's token may need attention.", false,
+        '<button onclick="location.reload()">Retry</button>');
     } else {
       setPill("Asleep");
       showOverlay("Computer is asleep", "The desktop is not running. Wake it to watch and drive it.", false,
@@ -922,6 +949,7 @@
     takeControl: takeControl,
     releaseControl: releaseControl,
     wake: wake,
+    init: init,
     mountScreen: mountScreen,
     setTab: setTab,
   };
