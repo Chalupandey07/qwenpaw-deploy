@@ -50,6 +50,19 @@
   #screenWrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
   #screenWrap iframe.view { pointer-events: none; }
   #screenWrap iframe.control { pointer-events: auto; }
+  /* A held predecessor frame is VIEW-ONLY: it must never accept input
+     (after a release the old control frame stays mounted until the new
+     view frame connects — if it kept pointer-events:auto the user could
+     still drive the old control session). The chrome forces
+     heldFrame.className = "view" on every swap; this rule is the same
+     guarantee from the CSS side. */
+  #screenWrap iframe.held { pointer-events: none; }
+  /* The overlay is an EMPTY-STATE, never a cover: while any frame is
+     mounted it cannot show, whatever the caller does (Rakazo's overlay
+     replaces the frames instead of sitting on top of a live one). This
+     is what kills the "Connecting…" flash on every take/release and
+     tab switch — the pill reports the state, the frame stays visible. */
+  #screenWrap.has-frame #screenOverlay { display: none !important; }
   #screenOverlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 14px; background: rgba(15,17,21,.92); z-index: 30; text-align: center; padding: 2rem; }
   #screenOverlay.show { display: flex; }
   #screenOverlay h2 { margin: 0; font-size: 18px; }
@@ -79,7 +92,7 @@
   <header>
     <span class="dot" id="dot"></span>
     <span class="title">QwenPaw</span>
-    <span class="subtitle">QwenPaw&rsquo;s computer</span>
+    <span class="subtitle" id="computerLabel">QwenPaw&rsquo;s computer</span>
     <span class="pill" id="statusPill">Connecting&hellip;</span>
     <span class="spacer"></span>
     <select id="modeSelect" title="Team = shared computer (:1). Private = the QA agent's own computer (:2).">
@@ -177,6 +190,7 @@
   var overlaySpinner = document.getElementById("overlaySpinner");
   var statusPill = document.getElementById("statusPill");
   var dot = document.getElementById("dot");
+  var computerLabel = document.getElementById("computerLabel");
   var takeBtn = document.getElementById("takeBtn");
   var releaseBtn = document.getElementById("releaseBtn");
   var controlPill = document.getElementById("controlPill");
@@ -214,6 +228,45 @@
   var term = null, termSocket = null, termCapUrl = null;
   var teaching = null; // {goal, events:[], sensitive}
   var draftSkill = null; // {name, playbook, events}
+  // --- Rakazo screen state machine (ported from
+  // apps/web/src/pages/shell/use-computer.tsx + packages/core/src/screen-reconnect.ts) ---
+  // screenToken: latest-request-wins — every mount/probe/reconnect run
+  // carries the token it started with; a stale run that finishes after
+  // a newer one is ignored, so a slow probe for the old computer can
+  // never mount over the current one (the T53 stale-frame class of bug).
+  var screenToken = 0;
+  // frameConnected: the CURRENT frame reported "connected" at least once.
+  // Only a screen that HAD connected may reconnect itself (Rakazo's
+  // createScreenReconnect); a first load that never connected errors
+  // immediately instead of retrying forever.
+  var frameConnected = false;
+  var connectedAt = 0;      // when the current frame last connected
+  var stableTimer = null;   // resets reconnectAttempts after 5 s stable
+  var frameReportAt = 0;    // last shim report (any state) — the silence timer
+  var silenceTimer = null;  // 15 s with no report at all -> screenLoadError
+  var screenHadFocus = false; // the frame had focus when it dropped (refocus once)
+  // Timing overrides (read fresh on every use so the harness can shrink
+  // them mid-run): QWENPAW_HELD_TIMEOUT_MS (15000), QWENPAW_RECONNECT_DELAY_MS
+  // (1000), QWENPAW_RECONNECT_WAIT_MS (15000), QWENPAW_RECONNECT_STABLE_MS
+  // (5000), QWENPAW_FRAME_SILENCE_MS (15000), QWENPAW_HEARTBEAT_MS (15000),
+  // QWENPAW_MENU_ARM_MS (5000).
+  function optMs(name, def) {
+    var v = (typeof window !== "undefined" && window[name]);
+    return (typeof v === "number" && v >= 0) ? v : def;
+  }
+  function heldTimeoutMs() { return optMs("QWENPAW_HELD_TIMEOUT_MS", 15000); }
+  function reconnectDelayMs() { return optMs("QWENPAW_RECONNECT_DELAY_MS", 1000); }
+  function reconnectWaitMs() { return optMs("QWENPAW_RECONNECT_WAIT_MS", 15000); }
+  function reconnectStableMs() { return optMs("QWENPAW_RECONNECT_STABLE_MS", 5000); }
+  function frameSilenceMs() { return optMs("QWENPAW_FRAME_SILENCE_MS", 15000); }
+  function heartbeatIntervalMs() { return optMs("QWENPAW_HEARTBEAT_MS", 15000); }
+  function menuArmMs() { return optMs("QWENPAW_MENU_ARM_MS", 5000); }
+
+  // Rakazo's computerLabel: "Team Computer" for the shared display,
+  // "Private Computer" for the per-agent one.
+  function setComputerLabel() {
+    if (computerLabel) computerLabel.textContent = computer === "qa" ? "Private Computer" : "Team Computer";
+  }
 
   function toast(msg, isErr) {
     toastEl.textContent = msg;
@@ -282,53 +335,113 @@
     }
   }
 
+  // The overlay is an EMPTY-STATE: it replaces the frames (Rakazo's
+  // computer-overlay shows boot/asleep/error INSTEAD of the frames),
+  // never a cover over a live one. So showing it first drops every
+  // frame — a frozen stale frame with no indication is worse than an
+  // honest error. The CSS guard (#screenWrap.has-frame #screenOverlay)
+  // is the second line of defence for any stray showOverlay call.
+  function showEmptyState(title, text, actionsHtml) {
+    dropHeldFrame();
+    if (currentFrame) { try { currentFrame.remove(); } catch (e) {} currentFrame = null; }
+    updateFrameClass();
+    showOverlay(title, text, false, actionsHtml);
+  }
+
+  function updateFrameClass() {
+    var has = !!(currentFrame || heldFrame);
+    if (wrap.classList) {
+      if (has) wrap.classList.add("has-frame");
+      else wrap.classList.remove("has-frame");
+    }
+  }
+
+  // Rakazo's screenFrameMessage handler (use-computer.tsx message effect):
+  // the shim posts loading/connecting/connected/failed/disconnected.
+  // "loading"/"connecting" only ever change the PILL — the overlay is
+  // never shown over a mounted frame, so a healthy socket's reconnect
+  // or a control change is invisible (no "Connecting…" flash). The
+  // overlay appears only on first load, when there is no frame yet.
   function screenState(state, detail) {
+    frameReportAt = Date.now();
+    clearTimeout(silenceTimer);
+    silenceTimer = null;
     if (state === "connected") {
       connected = true;
-      reconnectAttempts = 0;
-      // The status pill always says "Live" when the screen is connected.
-      // "You have control" belongs to controlPill alone — the old code set
-      // it here too, so the pill appeared TWICE in the header while in
-      // control, and never cleared on release.
+      frameConnected = true;
+      connectedAt = Date.now();
       setPill("Live", "live");
       hideOverlay();
       dropHeldFrame();
-      if (currentFrame) {
+      // Stable >= 5 s resets the trouble count (Rakazo's
+      // SCREEN_RECONNECT_STABLE_MS) — a flapping screen inside the
+      // window keeps accumulating attempts.
+      clearTimeout(stableTimer);
+      stableTimer = setTimeout(function () { reconnectAttempts = 0; }, reconnectStableMs());
+      // Refocus only if the screen had focus when it dropped, once per
+      // drop (Rakazo's createScreenRefocus) — never steal focus otherwise.
+      if (screenHadFocus && currentFrame) {
+        screenHadFocus = false;
         try { currentFrame.contentWindow.postMessage({ qwenpawScreenFocus: true }, window.location.origin); } catch (e) {}
       }
     } else if (state === "connecting" || state === "loading") {
       setPill("Connecting…");
-      showOverlay("Connecting to the desktop…", "", true, "");
+      if (!currentFrame && !heldFrame) showOverlay("Connecting to the desktop…", "", true, "");
     } else if (state === "failed" || state === "disconnected") {
       connected = false;
-      setPill("Screen not connected");
+      // Remember focus for the refocus-on-reconnect (see above).
+      try { screenHadFocus = (typeof document !== "undefined" && document.activeElement === currentFrame); } catch (e) { screenHadFocus = false; }
       scheduleReconnect(detail || "The screen connection dropped.");
     }
   }
 
+  // Rakazo's createScreenReconnect (packages/core/src/screen-reconnect.ts):
+  // only a screen that HAD connected may reconnect itself; a first load
+  // that never connected errors immediately. Tries <= 3, delay 1 s
+  // doubling (1 s, 2 s, 4 s). The pill reports the state; the held frame
+  // stays visible throughout — there is no overlay over a mounted frame.
   function scheduleReconnect(detail) {
-    // The status pill must follow the reconnect state. The old code never
-    // touched it here, so after a failed remount the pill kept saying
-    // "You have control" while the screen was reconnecting.
-    setPill("Reconnecting…");
-    if (reconnectAttempts >= 10) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    if (!frameConnected) {
       setPill("Screen not connected");
-      showOverlay("Screen not connected", detail + " The desktop may have paused.", false,
-        '<button id="retryBtn">Retry screen</button>');
+      showEmptyState("Screen not connected", (detail || "The screen connection dropped.") + " The desktop may have paused.", '<button id="retryBtn">Retry screen</button>');
       var b = document.getElementById("retryBtn");
       if (b) b.onclick = function () { reconnectAttempts = 0; mountScreen(mode); };
       return;
     }
-    var delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+    if (reconnectAttempts >= 3) {
+      setPill("Screen not connected");
+      showEmptyState("Screen not connected", (detail || "The screen connection dropped.") + " The desktop may have paused.", '<button id="retryBtn">Retry screen</button>');
+      var b2 = document.getElementById("retryBtn");
+      if (b2) b2.onclick = function () { reconnectAttempts = 0; mountScreen(mode); };
+      return;
+    }
+    setPill("Reconnecting…");
+    var delay = reconnectDelayMs() * Math.pow(2, reconnectAttempts);
     reconnectAttempts++;
-    showOverlay("Reconnecting…", detail, true, "");
-    clearTimeout(reconnectTimer);
+    if (!currentFrame && !heldFrame) showOverlay("Reconnecting…", detail, true, "");
     reconnectTimer = setTimeout(function () { mountScreen(mode); }, delay);
+  }
+
+  // The frame never reported at all (the page did not load within the
+  // silence window): the new frame's error is authoritative, so the
+  // held frame is dropped and the error state replaces the frames
+  // (Rakazo drops the held frame on screenLoadError).
+  function screenLoadError(detail) {
+    connected = false;
+    frameConnected = false;
+    setPill("Screen not connected");
+    showEmptyState("Screen not connected", (detail || "The screen did not load.") + " The desktop may have paused.", '<button id="retryBtn">Retry screen</button>');
+    var b = document.getElementById("retryBtn");
+    if (b) b.onclick = function () { reconnectAttempts = 0; mountScreen(mode); };
   }
 
   function dropHeldFrame() {
     clearTimeout(heldTimer);
+    heldTimer = null;
     if (heldFrame) { try { heldFrame.remove(); } catch (e) {} heldFrame = null; }
+    updateFrameClass();
   }
 
   async function mintScreen(wantMode, wantComputer) {
@@ -346,51 +459,113 @@
       "&path=" + encodeURIComponent(path);
   }
 
+  // Cheap screen probe (Rakazo's probeScreen / screenProbeUrl): the
+  // session URL with ?qwenpaw_probe=1 — the Worker answers 204 without
+  // touching the origin. Returns the HTTP status, 0 on a network error
+  // (not yet — ride it out, do not treat it as refused).
+  async function probeScreenUrl(capPath) {
+    try {
+      var r = await fetch(capPath + "?qwenpaw_probe=1", { redirect: "manual" });
+      try { await r.body.cancel(); } catch (e) {}
+      return r.status;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  // Rakazo's waitForScreenPage (screen-reconnect.ts): before a dropped
+  // screen loads again, probe every 1 s up to 15 s. 2xx = ready; a 403
+  // is re-minted once (the cap may have been born on a stale
+  // generation); 502/503/504 or a network error = not yet, wait; anything
+  // else = refused. Returns the (possibly re-minted) capability URL, or
+  // null when the screen never became ready. The latest-request-wins
+  // token aborts the wait if a newer mount superseded this one.
+  async function waitForScreenPage(capPath, myToken) {
+    var deadline = Date.now() + reconnectWaitMs();
+    var reminted = false;
+    for (;;) {
+      if (myToken !== screenToken) return null;
+      var status = await probeScreenUrl(capPath);
+      if (myToken !== screenToken) return null;
+      if (status >= 200 && status < 300) return capPath;
+      if (status === 403 && !reminted) {
+        reminted = true;
+        var url2 = await mintScreen(mode, computer);
+        if (myToken !== screenToken) return null;
+        if (url2) { capPath = url2; continue; }
+        return null;
+      }
+      if (status !== 0 && status !== 502 && status !== 503 && status !== 504) return null;
+      if (Date.now() >= deadline) return null;
+      await new Promise(function (res) { setTimeout(res, 1000); });
+    }
+  }
+
   async function mountScreen(wantMode) {
+    var myToken = ++screenToken; // latest-request-wins (Rakazo's isCurrent)
     mode = wantMode;
+    // First load (no frame yet) shows Rakazo's boot state — "Booting live
+    // desktop…" — instead of a black screen. On a swap the held frame
+    // stays visible, so no overlay is shown at all — and any stale
+    // overlay from an earlier flow (e.g. a wake timeout) is hidden.
+    if (currentFrame || heldFrame) hideOverlay();
+    else showOverlay("Booting live desktop…", "Connecting to the desktop…", true, "");
+    setPill("Connecting…");
+    // Cheap pre-probe BEFORE mounting (Rakazo's probeScreen): the old
+    // code fetched the FULL vnc.html through the session proxy and then
+    // the frame fetched it AGAIN — that double fetch through the proxy
+    // dance is why first load sat on a black screen for 60-90 s.
     var url = await mintScreen(wantMode, computer);
+    if (myToken !== screenToken) return;
     if (!url) {
-      showOverlay("Screen link expired", "Could not mint a screen link. Please reload /desktop.", false,
-        '<button onclick="location.reload()">Reload</button>');
+      showEmptyState("Screen link expired", "Could not mint a screen link. Please reload /desktop.", '<button onclick="location.reload()">Reload</button>');
+      return;
+    }
+    url = await waitForScreenPage(url, myToken);
+    if (myToken !== screenToken) return;
+    if (!url) {
+      screenLoadError("The screen did not respond.");
       return;
     }
     capUrl = url;
     var vncUrl = buildVncUrl(url, wantMode);
-    // Pre-probe (Rakazo): 403 = link expired (re-mint once), other errors
-    // = screen did not respond. The held predecessor frame stays mounted
-    // on top while the new frame connects, so the screen never blanks.
-    try {
-      var probe = await fetch(vncUrl, { redirect: "manual" });
-      if (probe.status === 403) {
-        url = await mintScreen(wantMode, computer);
-        if (!url) { showOverlay("Screen link expired", "Please reload /desktop.", false, '<button onclick="location.reload()">Reload</button>'); return; }
-        capUrl = url;
-        vncUrl = buildVncUrl(url, wantMode);
-      } else if (probe.status >= 400) {
-        scheduleReconnect("The screen did not respond (" + probe.status + ").");
-        return;
-      }
-      try { await probe.body.cancel(); } catch (e) {}
-    } catch (e) {
-      scheduleReconnect("The screen did not respond.");
-      return;
-    }
     var frame = document.createElement("iframe");
     frame.className = wantMode === "control" ? "control" : "view";
     frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-pointer-lock");
     frame.setAttribute("allow", "clipboard-read; clipboard-write; fullscreen");
     frame.src = vncUrl;
+    // The held predecessor stays mounted (Rakazo's screenFrames: held
+    // first in DOM, live second) so the screen never blanks during a
+    // view<->control swap. It is forced to VIEW-ONLY: after a release
+    // the old control frame must not keep accepting input while the new
+    // view frame connects. There is ever exactly ONE held frame: the
+    // previous held frame is dropped here, or every swap orphans it —
+    // its noVNC socket stays alive and dead iframes accumulate (the
+    // harness caught this: frameCount grew on every mount).
     if (currentFrame) {
+      if (heldFrame) { try { heldFrame.remove(); } catch (e) {} heldFrame = null; }
       heldFrame = currentFrame;
+      heldFrame.className = "view held";
       heldFrame.style.zIndex = "2";
     }
     currentFrame = frame;
     frame.style.zIndex = "1";
     wrap.appendChild(frame);
+    updateFrameClass();
     connected = false;
-    screenState("loading");
+    frameConnected = false;
+    frameReportAt = 0;
+    // Silence timeout (Rakazo's SCREEN_FRAME_LOAD_TIMEOUT_MS): if the
+    // frame never reports at all within 15 s, the page did not load.
+    // Any shim report (loading/connecting/connected) cancels it, so a
+    // slow-but-loading screen is never killed for being slow.
+    clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(function () {
+      if (myToken !== screenToken) return;
+      if (!frameConnected && frameReportAt === 0) screenLoadError("The screen did not load.");
+    }, frameSilenceMs());
     clearTimeout(heldTimer);
-    heldTimer = setTimeout(dropHeldFrame, 15000);
+    heldTimer = setTimeout(dropHeldFrame, heldTimeoutMs());
     // If teaching was on, re-arm the new frame's capture.
     if (teaching) sendTeachState();
   }
@@ -708,7 +883,16 @@
   modeSelect.addEventListener("change", async function () {
     var want = modeSelect.value === "private" ? "private" : "team";
     var r = await api("/desktop/__mode", "POST", { agent: "default", mode: want });
-    if (r.status !== 200 || !r.json.ok) { toast("Could not switch computer mode.", true); return; }
+    if (r.status !== 200 || !r.json.ok) {
+      // T53 (2026-11-15): the select already shows the new value when
+      // the POST fails, so the label lied ("Team" over a stale Private
+      // frame, reverted only on reload). Reset it to the computer we
+      // are actually on, and say why the switch failed.
+      modeSelect.value = computer === "qa" ? "private" : "team";
+      toast("Could not switch computer mode (" + (r.json.error || r.status) + ")." +
+        (r.json.note ? " " + r.json.note : ""), true);
+      return;
+    }
     // Switching computers DROPS the old computer's control lease first.
     // A lease for :1 can never mint a screen for :2 (the Worker 403s
     // "no_lease"), and the old code kept the :1 leaseId and mounted :2 in
@@ -727,6 +911,7 @@
       } catch (e) {}
     }
     computer = want === "private" ? "qa" : "default";
+    setComputerLabel();
     closeTerminal();
     await mountScreen("view");
     toast(want === "private" ? "Private computer — the QA agent's own display (:2)." : "Team computer — the shared display (:1).");
@@ -739,6 +924,7 @@
         modeSelect.value = r.json.mode;
       }
     } catch (e) { /* default stays team */ }
+    setComputerLabel();
   }
 
   async function takeControl() {
@@ -748,6 +934,11 @@
     if (r.status !== 200 || !r.json.ok) {
       if (r.json.error === "held") {
         toast("Someone else is using this computer — the hold expires in about 90 s if their tab goes away. Try again shortly.", true);
+      } else if (r.json.error === "store_unavailable") {
+        // T52 (2026-11-15): the KV daily write budget was spent, so
+        // __takeover answered 500 and the toast said only "(500)". The
+        // Worker now answers 503 store_unavailable — surface the note.
+        toast("Could not take control — " + (r.json.note || "the desktop store is temporarily unavailable. Try again later."), true);
       } else {
         toast("Could not take control (" + (r.json.error || r.status) + ").", true);
       }
@@ -762,16 +953,23 @@
     heartbeatTimer = setInterval(async function () {
       if (document.visibilityState !== "visible" || !leaseId) return;
       var h = await api("/desktop/__heartbeat", "POST", { leaseId: leaseId, computer: computer });
-      if (h.status !== 200 || !h.json.ok) {
+      if (h.status === 200 && h.json.ok) {
+        leaseExpiresAt = h.json.expiresAt;
+      } else if (h.status === 410 || (h.json && h.json.error === "no_lease")) {
+        // Only a real loss of the lease drops control. A 503 (the
+        // store refused the write) or a network blip keeps control —
+        // the lease still exists server-side with its old expiry, and
+        // the next heartbeat retries. The old code dropped control on
+        // ANY heartbeat failure.
         clearInterval(heartbeatTimer);
         leaseId = null;
         setControlUI(false);
         toast("Control expired — back to watching.", true);
         await mountScreen("view");
-      } else {
-        leaseExpiresAt = h.json.expiresAt;
       }
-    }, 15000);
+      // Any other failure (503 store_unavailable, network error): keep
+      // control and retry on the next tick.
+    }, heartbeatIntervalMs());
   }
 
   async function releaseControl(sendBeacon) {
@@ -786,6 +984,9 @@
       try {
         var rel = await api("/desktop/__release", "POST", { leaseId: id, computer: computer });
         if (rel.json && typeof rel.json.generation === "number") knownGen[computer] = rel.json.generation;
+        if (rel.json && rel.json.error === "store_unavailable") {
+          toast("The release did not stick (the desktop store is temporarily unavailable) — the lease expires on its own within ~90 s.", true);
+        }
       } catch (e) {}
     }
     await mountScreen("view");
@@ -804,14 +1005,36 @@
     menu.classList.toggle("open");
   });
   document.addEventListener("click", function () { menu.classList.remove("open"); });
+  // Arm/disarm for the destructive maintenance actions. The old code
+  // used window.confirm for Recover/Reset — in an automated browser (and
+  // in some popup-blocked sessions) the native dialog is dismissed
+  // silently, so Recover/Reset were SILENT no-ops (T54, 2026-11-15) while
+  // Stop/Update (no confirm) showed their toast. The arm is in-chrome:
+  // first click arms the button ("Confirm recover?"), second click
+  // within 5 s executes; it disarms itself after the window.
+  function disarmMenuBtn(btn) {
+    clearTimeout(btn._qwenpawArmTimer);
+    if (btn._qwenpawArmed) {
+      btn._qwenpawArmed = false;
+      if (btn._qwenpawArmedLabel !== undefined) btn.textContent = btn._qwenpawArmedLabel;
+    }
+  }
   menu.querySelectorAll("button[data-action]").forEach(function (btn) {
-    btn.addEventListener("click", async function () {
+    btn.addEventListener("click", async function (e) {
       var action = btn.getAttribute("data-action");
-      menu.classList.remove("open");
-      if ((action === "reset" || action === "recover") &&
-          !window.confirm("Are you sure you want to " + action + " the computer? Unsaved work on the desktop may be lost.")) {
+      if ((action === "reset" || action === "recover") && !btn._qwenpawArmed) {
+        // Keep the menu open for the confirming click: the document
+        // click-closer would otherwise close it on this bubble.
+        if (e && e.stopPropagation) e.stopPropagation();
+        btn._qwenpawArmed = true;
+        btn._qwenpawArmedLabel = btn.textContent;
+        btn.textContent = "Confirm " + action + "?";
+        menu.classList.add("open");
+        btn._qwenpawArmTimer = setTimeout(function () { disarmMenuBtn(btn); }, menuArmMs());
         return;
       }
+      disarmMenuBtn(btn);
+      menu.classList.remove("open");
       var r = await api("/desktop/__action", "POST", { action: action });
       if (r.status === 200 && r.json.ok) {
         toast("Computer " + action + " requested.");
@@ -882,6 +1105,7 @@
   async function init() {
     setControlUI(false);
     await loadMode();
+    setComputerLabel();
     var s = await api("/desktop/__status?computer=" + computer, "GET");
     if (s.status !== 200) {
       showOverlay("Could not reach the desktop", "The status check failed. Reload to try again.", false,
@@ -939,12 +1163,24 @@
         statusPill: statusPill.textContent,
         controlPillVisible: controlPill.style.display !== "none",
         controlPillText: controlPill.textContent,
+        computerLabel: computerLabel ? computerLabel.textContent : "",
+        // How many screen frames are currently mounted (held + live),
+        // whether the held predecessor is still up, and whether the
+        // empty-state overlay is showing (it must never show while a
+        // frame is mounted).
+        frameCount: wrap.children.filter(function (c) { return !c._removed; }).length,
+        heldFramePresent: !!(heldFrame && !heldFrame._removed),
+        overlayShown: overlay.classList.contains("show"),
+        overlayTitle: overlayTitle.textContent,
+        reconnectAttempts: reconnectAttempts,
+        frameConnected: frameConnected,
       };
     },
     getKnownGen: function () { return knownGen; },
     setControlUI: setControlUI,
     screenState: screenState,
     scheduleReconnect: scheduleReconnect,
+    screenLoadError: screenLoadError,
     openTerminal: openTerminal,
     takeControl: takeControl,
     releaseControl: releaseControl,
