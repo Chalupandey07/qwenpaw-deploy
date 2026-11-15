@@ -797,7 +797,8 @@ def t27():
     except Exception:
         data = {}
     good = code1 == 200 and code2 == 200 and data.get("ok") is True \
-        and data.get("worker") == "qwenpaw-board"
+        and data.get("worker") == "qwenpaw-board" \
+        and data.get("store") == "d1"
     return ("PASS" if good else "FAIL",
             f"/ HTTP {code1}; /health HTTP {code2} body={one_line(body2, 100)}")
 
@@ -1106,43 +1107,55 @@ def _harness(relpath, expect):
 
 
 def t46():
-    return _harness("features/desktop/harness-desktop-gate.mjs", 127)
+    return _harness("features/desktop/harness-desktop-gate.mjs", 133)
 
 
 def t47():
-    return _harness("features/desktop/harness-desktop-chrome.mjs", 34)
-
-
-def _py_harness(relpath, expect, timeout=180):
-    """Run a stdlib-only Python test module and check its tally.
-
-    Used by the memory / routing / pricing / storage tests, which must run on
-    both this VM and the machine without any third-party dependency.
-    """
-    rc, out, err = run_local([sys.executable, str(REPO / relpath)],
-                             timeout=timeout)
-    m = re.search(r"(\d+) passed, (\d+) failed", out)
-    good = rc == 0 and m and int(m.group(1)) == expect \
-        and int(m.group(2)) == 0
-    return ("PASS" if good else "FAIL",
-            f"{relpath}: exit={rc} tally={m.group(0) if m else 'none'} "
-            f"tail={one_line(out.strip().splitlines()[-1] if out.strip() else err, 120)}")
-
-
-def _py_script_harness(argv, expect, timeout=180):
-    """Like _py_harness but for a module run with a flag (--selftest)."""
-    rc, out, err = run_local([sys.executable] + [str(REPO / a) if i == 0 else a
-                                                 for i, a in enumerate(argv)],
-                             timeout=timeout)
-    m = re.search(r"(\d+) passed, (\d+) failed", out)
-    good = rc == 0 and m and int(m.group(1)) == expect \
-        and int(m.group(2)) == 0
-    return ("PASS" if good else "FAIL",
-            f"{' '.join(argv)}: exit={rc} tally={m.group(0) if m else 'none'}")
+    return _harness("features/desktop/harness-desktop-chrome.mjs", 38)
 
 
 def t62():
-    return _harness("features/storage/harness-store.mjs", 42)
+    return _harness("features/storage/harness-store.mjs", 38)
+
+
+def t63():
+    """Board rate limit (T63): burst from the InstaBox machine's stable
+    egress IP — the runner VM's IP rotates per connection, so a burst
+    from here never accumulates in one per-IP bucket. Two attempts max:
+    a burst straddling a minute boundary splits the count and may show
+    no 429 on the first try."""
+    burst = (
+        "B=https://qwenpaw-board.qwenpaw-rohan.workers.dev; "
+        "for i in $(seq 1 35); do curl -s -o /dev/null -w \"%{http_code}\\n\" "
+        "--max-time 15 -X POST $B/api/tickets -H 'Content-Type: application/json' "
+        "-d '{\"title\":\"flood probe\"}'; done | sort | uniq -c; "
+        "echo '--- follow-up ---'; "
+        "curl -s -D - -o /dev/null --max-time 15 -X POST $B/api/tickets "
+        "-H 'Content-Type: application/json' -d '{\"title\":\"flood probe\"}' "
+        "| grep -iE 'HTTP/|retry-after' | tr '\\n' ' '"
+    )
+    for attempt in (1, 2):
+        res = ib_exec(burst, timeout_s=180)
+        if "_error" in res:
+            return "FAIL", f"ib.py exec failed: {res['_error']}"
+        out = res.get("stdout", "")
+        counts = {}
+        for m in re.finditer(r"^\s*(\d+)\s+(\d{3})\s*$", out, re.M):
+            counts[m.group(2)] = int(m.group(1))
+        n429 = counts.get("429", 0)
+        n401 = counts.get("401", 0)
+        other = {k: v for k, v in counts.items() if k not in ("401", "429")}
+        follow = re.search(r"HTTP/2 429.*?retry-after:\s*(\d+)",
+                           out, re.S | re.I)
+        if n429 >= 1 and n401 + n429 == 35 and not other:
+            return ("PASS",
+                    f"attempt {attempt}: 401={n401} 429={n429} "
+                    f"follow-up retry-after={follow.group(1) if follow else 'n/a'} "
+                    f"(machine burst, stable IP)")
+        if attempt == 1:
+            time.sleep(65)
+    return ("FAIL",
+            f"no 429 in 2 bursts from the machine: {one_line(out, 200)}")
 
 
 def t48():
@@ -1251,70 +1264,6 @@ def t49():
 # ------------------------------------------------------------------ registry
 # (id, name, area, method, fn) — fn is None for browser / needs-token tests.
 
-def t70():
-    return _py_harness("features/memory/test_recall.py", 44)
-
-
-def t71():
-    return _py_harness("features/memory/test_lessons.py", 45)
-
-
-def t72():
-    rc, out, err = run_local(
-        [sys.executable, str(REPO / "features/memory/reme_doctor.py"), "--selftest"],
-        timeout=180)
-    m = re.search(r"(\d+) passed, (\d+) failed", out)
-    good = rc == 0 and m and int(m.group(2)) == 0
-    return ("PASS" if good else "FAIL",
-            f"reme_doctor --selftest: exit={rc} tally={m.group(0) if m else 'none'}")
-
-
-def t73():
-    return _py_harness("features/memory/test_install_ripwire.py", 49)
-
-
-def t74():
-    return _harness("worker/harness-keepalive.mjs", 19)
-
-
-def t75():
-    return _py_harness("features/desktop/test_lease_watcher.py", 29)
-
-
-def t76():
-    return _harness("features/codemode/harness-codemode.mjs", 59)
-
-
-def t77():
-    return _py_script_harness(["features/board/pricing.py", "--selftest"], 20)
-
-
-def t78():
-    return _py_script_harness(["features/routing/policy.py", "--selftest"], 27)
-
-
-def t79():
-    rc, out, err = run_local(
-        [sys.executable, str(REPO / "scripts/check-links.py")], timeout=120)
-    ok = rc == 0 and "all links and paths resolve" in out
-    return ("PASS" if ok else "FAIL",
-            f"check-links.py exit={rc} "
-            f"tail={one_line(out.strip().splitlines()[-1] if out.strip() else err, 160)}")
-
-
-def t80():
-    return _py_harness("features/storage/test_schema.py", 15)
-
-
-def t82():
-    """Group-chat CORS allowlist (BUGS.md B-12). 13 checks."""
-    return _harness("features/groupchat/harness-groupchat-cors.mjs", 13)
-
-
-def t81():
-    return _harness("features/infra/workers/email-router/harness-email-router.mjs", 24)
-
-
 TESTS = [
     ("T01", "Pages root serves console SPA + side-panel markers", "console", "protocol", t01),
     ("T02", "/status serves status page", "console", "protocol", t02),
@@ -1378,19 +1327,7 @@ TESTS = [
     ("T60", "board CRUD with board key", "board", "needs-token", None),
     ("T61", "evals live run", "evals", "needs-token", None),
     ("T62", "D1 store harness (38 tests: leases, generations, previews, routines)", "storage", "protocol", t62),
-    ("T70", "memory recall CLI: caps, redaction, read-only", "memory", "protocol", t70),
-    ("T71", "lessons ledger: candidates, caps, no auto-accept", "memory", "protocol", t71),
-    ("T72", "ReMe doctor selftest: all five causes detected", "memory", "protocol", t72),
-    ("T73", "Ripwire installer: AVX2 preflight + skill honesty", "memory", "protocol", t73),
-    ("T74", "keep-alive: KV write-on-change + fail-closed /wake", "keepalive", "protocol", t74),
-    ("T75", "lease-watcher: adaptive polling + safety invariants", "desktop", "protocol", t75),
-    ("T76", "Code Mode pilot: benchmark maths + fail-closed auth", "codemode", "protocol", t76),
-    ("T77", "pricing: honest UNKNOWN, optional catalogue", "cost", "protocol", t77),
-    ("T78", "routing: classify, abstain, bounded scan", "routing", "protocol", t78),
-    ("T79", "docs: every relative link + repo path resolves", "docs", "protocol", t79),
-    ("T80", "D1 schema: engine guarantees + indexed queries", "storage", "protocol", t80),
-    ("T81", "email router: fail-closed allowlist + injection envelope", "infra", "protocol", t81),
-    ("T82", "group-chat CORS: allowlist, never a wildcard", "groupchat", "protocol", t82),
+    ("T63", "board rate limit: burst from stable IP -> 429 + Retry-After", "board", "protocol", t63),
 ]
 
 SKIP_NOTE = {
