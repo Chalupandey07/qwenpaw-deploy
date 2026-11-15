@@ -1,0 +1,13 @@
+[Unit]
+Description=Re-map unmapped Chromium windows on :1 and :2 (desktop self-healing)
+After=network.target
+
+[Service]
+Type=simple
+User=user
+ExecStart=/usr/bin/python3 /data/home/camoufox/window-watch.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
