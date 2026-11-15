@@ -9,12 +9,22 @@ restart; no secrets in git.
 - **URL:** https://qwenpaw-board.qwenpaw-rohan.workers.dev
 - **Worker:** `qwenpaw-board` (Cloudflare account
   `ca85fe3692c3f378200950999df9a35e`, subdomain `qwenpaw-rohan`)
-- **KV namespace:** `qwenpaw-board-tickets`
-  (`90508a020d27455b83d137f8c0323774`) — one key, `tickets`, holds the
-  whole board as JSON.
+- **Storage:** D1 database `qwenpaw-state`
+  (`5f58a2f8-e4bb-45e5-8a94-4fc283b90871`) — table `tickets`, one row
+  per ticket (migrated 2026-11-15; see "Board v3 (D1)" below). KV
+  namespace `qwenpaw-board-tickets`
+  (`90508a020d27455b83d137f8c0323774`) is kept as the **fallback only**
+  (`USE_D1="0"`); `/health` reports which store is live
+  (`"store":"d1"`).
+- **Rate limiting:** Durable Object `BoardRateLimiter` (see "Rate
+  limiting" below) — failed-auth attempts capped at 30/min/IP,
+  authenticated mutations at 30/min/IP + 1,000/day/IP; over-cap →
+  429 with `Retry-After`. Fixes audit bug `board-no-rate-limit-auth`.
 - **Source:** `worker/src/index.js` (no build step),
   `worker/wrangler.toml` (reference; deploys were done via the
-  Cloudflare API, see below).
+  Cloudflare API, see below), `worker/harness-board.mjs` (67 checks:
+  CRUD round trip, all audit fixes, DO rate-limit buckets, D1-down →
+  503, KV fallback).
 - **Auth:** shared board key in the Worker secret `BOARD_TOKEN`. Every
   `/api/*` call needs it as `?key=` or `X-Board-Key` header. The HTML
   page asks for it once and stores it in `localStorage`. The key value
@@ -69,29 +79,98 @@ Request shape (verified from `_extract_session_and_payload`):
 an outbound message to a channel user/session, it does not ask the
 agent to do work.)
 
-### KV eventual-consistency caveat (observed, not hidden)
+### Board v3 (D1, 2026-11-15) — KV → D1 migration + rate limit
 
-Cloudflare KV is eventually consistent. During live tests, rapid
-create → move → move → delete → list cycles showed stale reads: a
-deleted ticket briefly reappeared in a list read from another edge
-replica, while the authoritative KV value (read via the API) showed the
-delete had already persisted. Worst observed lag was ~60 seconds; the
-board converged to the correct state on its own every time. Mitigation
-shipped in the board UI: mutations update the screen immediately from
-the mutation response (which already carries the authoritative ticket)
-and only re-fetch in the background 4 seconds later — so a user never
-sees their own action "undone" by a stale read. In normal single-user
-use (one click at a time) this is barely noticeable, but do not
-rapid-fire moves and expect every reload in the next minute to agree.
+- **Why:** KV writes were spent account-wide for 2026-11-15 UTC
+  (error 10048), so board KV writes failed; and one KV value held
+  ALL tickets, so every mutation rewrote the whole board and
+  concurrent writes could lose tickets (KV has no CAS).
+- **Export first:** live KV value was `{"tickets": [], "updated_at":
+  "2026-11-14T19:43:31.275Z"}` — **0 tickets** (the board was empty;
+  the last live test had deleted its test ticket). Backup:
+  `features/storage/board-kv-export-2026-11-15.json`.
+- **Table** (`qwenpaw-state`, DDL in `features/storage/SCHEMA.md`):
+  `tickets(id, title, description, column, agent, priority,
+  follow_up INTEGER, comments JSON TEXT, qwenpaw_session,
+  sent_to_qwenpaw_at, created_at, updated_at)` + index on `column`.
+  Import: 0 rows; D1 `COUNT(*)` = KV count = 0, verified.
+- **Worker:** same API shape and response format; D1 data layer
+  (`d1List/d1Get/d1Insert/d1Update/d1Delete`) + KV fallback, selected
+  by `USE_D1`. All audit fixes preserved (constant-time compare,
+  `%FF` id → 400, strict-boolean `follow_up`, idempotent mark-sent,
+  empty PATCH → 400). `/health` reports `"store":"d1"`.
+- **Harness:** `worker/harness-board.mjs` — **67 passed, 0 failed**
+  (mock D1 over real SQLite + mock KV + the real `BoardRateLimiter`
+  class with a mock ctx).
+- **Live:** `/` → 200 (HTML says "stored in Cloudflare D1"), `/health`
+  → 200 `{"ok":true,"worker":"qwenpaw-board","store":"d1"}`, unauth
+  `GET /api/tickets` → 401, D1 count 0. Keyed CRUD (T60) still awaits
+  the user-held board key.
+- **Deploy note:** the first deploy with the DO class MUST include
+  the migration block (`"migrations":{"tag":"v1",
+  "new_sqlite_classes":["BoardRateLimiter"]}`); redeploys must OMIT
+  it — re-sending `new_sqlite_classes` for an existing class is
+  rejected with API error 10074 (same rule as the groupchat deploy).
+
+### Rate limiting (Durable Object — fixes `board-no-rate-limit-auth`)
+
+- **Caps:** failed-auth attempts 30/min/IP (checked before the 401,
+  so key-guessing floods cost zero D1 rows); authenticated mutations
+  30/min/IP + 1,000/day/IP. Reads are not capped beyond the
+  failed-auth throttle. Over-cap → **429 with `Retry-After`**
+  (seconds until the window resets, 1–60).
+- **Why a Durable Object:** the first version used in-memory
+  per-isolate counters — live testing proved them dead: 90
+  unauthenticated POSTs → 0×429, because a low-traffic Worker
+  rotates isolates per request. One DO (`BoardRateLimiter`,
+  `idFromName("board")`, a singleton) counts exactly, in
+  `ctx.storage` buckets (`fail:<ip>`, `mut:<ip>`), with stale-window
+  pruning and a 1,000-bucket cap. If the DO is unbound, the worker
+  falls back to the in-memory bucket (same caps, best-effort).
+- **Live proof 2026-11-15:** 35 unauthenticated POSTs from the
+  InstaBox machine (stable egress IP `16.148.199.63`) → **30×401 +
+  5×429**, follow-up 429 with `retry-after: 44`. Test T63 in the
+  test project runs this burst from the machine every round.
+- **Test-method caveat (important):** the runner VM's egress IP
+  rotates per connection (12 parallel curls → 12 distinct IPv6 / 5
+  distinct IPv4), so a burst from this VM never accumulates in one
+  per-IP bucket and can NEVER trigger the cap — that is also why the
+  in-memory limiter looked dead. A real user (stable home IP) and the
+  machine are single-IP, so the cap bites for them. T63 therefore
+  bursts from the machine, not from the runner VM.
+
+### KV eventual-consistency caveat (observed, not hidden — D1 path only)
+
+Cloudflare KV is eventually consistent. During live tests (v1/v2, KV
+store), rapid create → move → move → delete → list cycles showed
+stale reads: a deleted ticket briefly reappeared in a list read from
+another edge replica, while the authoritative KV value (read via the
+API) showed the delete had already persisted. Worst observed lag was
+~60 seconds; the board converged to the correct state on its own
+every time. **Since v3 the live store is D1 (read replication
+disabled, strongly consistent), so this lag no longer applies to the
+normal path** — it only returns if the worker falls back to KV
+(`USE_D1="0"` or D1 down). The UI mitigation stays shipped anyway:
+mutations update the screen immediately from the mutation response
+(which already carries the authoritative ticket) and only re-fetch in
+the background 4 seconds later.
 
 ### Deploy / redeploy
 
 ```bash
-# 1. Upload the Worker (multipart via cf.py)
+# 1. Upload the Worker (multipart via cf.py) — metadata JSON in a file:
+#    main_module index.js, compatibility_date 2026-11-14, bindings:
+#    KV TICKETS (90508a020d27455b83d137f8c0323774, fallback),
+#    D1 QWENPAW_DB (5f58a2f8-e4bb-45e5-8a94-4fc283b90871),
+#    durable_object_namespace RATE_LIMITER / BoardRateLimiter,
+#    plain_text USE_D1=1.
+#    FIRST deploy with the DO class only, also add:
+#    "migrations":{"tag":"v1","new_sqlite_classes":["BoardRateLimiter"]}
+#    Redeploys MUST omit the migrations block (error 10074 otherwise).
 python3 ~/workspace/custom-connectors/custom.cloudflare/bin/cf.py put-worker \
   /client/v4/accounts/ca85fe3692c3f378200950999df9a35e/workers/scripts/qwenpaw-board \
   worker/src/index.js \
-  '{"main_module":"index.js","compatibility_date":"2026-11-14","bindings":[{"type":"kv_namespace","name":"TICKETS","namespace_id":"90508a020d27455b83d137f8c0323774"}]}'
+  @/tmp/meta-board-d1-do.json
 # 2. Enable the workers.dev route (fresh API-uploaded scripts have it OFF —
 #    without this the URL returns Cloudflare error 1042 / 404)
 python3 ~/workspace/custom-connectors/custom.cloudflare/bin/cf.py post \
@@ -103,9 +182,12 @@ python3 ~/workspace/custom-connectors/custom.cloudflare/bin/cf.py put \
   '{"name":"BOARD_TOKEN","text":"<new random key>","type":"secret_text"}'
 ```
 
-Free-tier notes: no cron, no Durable Objects, one small KV key, a
-handful of requests per board visit — far inside the 100k req/day
-Free allowance.
+Free-tier notes: one Durable Object (rate limiter — DO requests share
+the 100k/day Workers allowance; each rate check is one DO subrequest,
+not a D1 row), one D1 table, one small KV fallback key, a handful of
+requests per board visit — far inside the Free allowances. Board write
+budget: worst case per IP/day is 1,000 ticket ops (the mutation cap);
+see `features/storage/QUOTA-BUDGET.md`.
 
 ## #20 — Open work / artifacts / follow-ups
 
@@ -205,6 +287,14 @@ Free allowance.
   and comments included in the task text; move to Won't do; delete →
   `{"deleted": true}`; list + authoritative KV read → `[]` after
   convergence (see KV caveat — worst observed stale-read lag ~60 s).
+- **Board v3 full flow (D1, 2026-11-15):** `/` → 200 (HTML says
+  "stored in Cloudflare D1"); `/health` → 200
+  `{"ok":true,"worker":"qwenpaw-board","store":"d1"}`; unauth `GET
+  /api/tickets` → 401; D1 `SELECT COUNT(*) FROM tickets` → 0 (=
+  exported KV count 0). Rate limit, from the machine: 35 unauth
+  POSTs → 30×401 + 5×429, follow-up `retry-after: 44`. Harness
+  `worker/harness-board.mjs` → **67 passed, 0 failed**. Keyed CRUD
+  (T60) still awaits the user-held board key.
 - **Refresh scripts:** both re-run clean; outputs re-generated with
   fresh timestamps; HTML parses; `open-work-data.json` shows per-agent
   follow-ups parsed correctly and `job_history: {}` (none exist yet);
@@ -283,6 +373,7 @@ silently, because each needs something this task cannot assume.
 |---|---|
 | `worker/src/index.js` | Ticket board Worker (deployed) |
 | `worker/wrangler.toml` | Worker config reference |
+| `worker/harness-board.mjs` | 67-check harness (CRUD, audit fixes, DO rate limit, KV fallback) |
 | `open-work.html` / `open-work-data.json` | Open-work snapshot page + data |
 | `refresh-open-work.py` | Regenerates the open-work snapshot (read-only) |
 | `cost.html` / `cost-data.json` | Cost/usage snapshot page + data |
