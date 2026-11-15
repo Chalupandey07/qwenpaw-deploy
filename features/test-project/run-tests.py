@@ -1105,15 +1105,87 @@ def _harness(relpath, expect):
 
 
 def t46():
-    return _harness("features/desktop/harness-desktop-gate.mjs", 105)
+    return _harness("features/desktop/harness-desktop-gate.mjs", 116)
 
 
 def t47():
-    return _harness("features/desktop/harness-desktop-chrome.mjs", 13)
+    return _harness("features/desktop/harness-desktop-chrome.mjs", 34)
 
 
 def t48():
     return _harness("features/desktop/harness-desktop-origin.mjs", 9)
+
+
+def _py_harness(relpath, expect, timeout=180):
+    """Run a stdlib-only Python test module and check its tally.
+
+    Used by the memory tests (Phase 4), which must run on both this VM and
+    the machine without any third-party dependency.
+    """
+    rc, out, err = run_local([sys.executable, str(REPO / relpath)],
+                             timeout=timeout)
+    m = re.search(r"(\d+) passed, (\d+) failed", out)
+    good = rc == 0 and m and int(m.group(1)) == expect \
+        and int(m.group(2)) == 0
+    return ("PASS" if good else "FAIL",
+            f"{relpath}: exit={rc} tally={m.group(0) if m else 'none'} "
+            f"tail={one_line(out.strip().splitlines()[-1] if out.strip() else err, 120)}")
+
+
+def t62():
+    return _py_harness("features/memory/test_recall.py", 44)
+
+
+def t63():
+    return _py_harness("features/memory/test_lessons.py", 45)
+
+
+def t64():
+    rc, out, err = run_local(
+        [sys.executable, str(REPO / "features/memory/reme_doctor.py"),
+         "--selftest"], timeout=180)
+    m = re.search(r"(\d+) passed, (\d+) failed", out)
+    good = rc == 0 and m and int(m.group(2)) == 0
+    return ("PASS" if good else "FAIL",
+            f"reme_doctor --selftest: exit={rc} "
+            f"tally={m.group(0) if m else 'none'}")
+
+
+def t65():
+    """Live ReMe diagnosis on the machine (read-only).
+
+    Reports the real cause when memory/ is empty. A box with no notes yet is
+    NOT a test failure — the doctor's job is to name a cause or say the box
+    is healthy. Fails only if the doctor itself cannot run.
+    """
+    script = (
+        "python3 /data/home/qwenpaw/working/memory-tools/reme_doctor.py "
+        "--root /data/home/qwenpaw/working --agent default --json "
+        "2>&1 || true"
+    )
+    ok, out, info = ib_stdout(script, 120)
+    if not ok:
+        return "FAIL", f"machine exec failed: {one_line(info, 160)}"
+    payload = None
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+    if not payload:
+        return ("NEEDS-VERIFICATION",
+                "reme_doctor.py not present on the machine yet — sync "
+                "features/memory/ to /data/home/qwenpaw/working/memory-tools/ "
+                "and re-run (see features/memory/README.md)")
+    codes = [c.get("code") for c in payload.get("causes", [])]
+    return "PASS", (
+        f"status={'OK' if payload.get('ok') else 'BLOCKED'} "
+        f"causes={codes or 'none'} "
+        f"notes={ {k: v.get('md_files') for k, v in (payload.get('notes') or {}).items()} } "
+        f"interval={(payload.get('config') or {}).get('auto_memory_interval')}"
+    )
 
 
 def _lease_qa():
@@ -1260,6 +1332,10 @@ TESTS = [
     ("T47", "harness chrome 13/13", "harness", "protocol", t47),
     ("T48", "harness origin 9/9", "harness", "protocol", t48),
     ("T49", "lease take/release via KV write (qa)", "lease", "protocol", t49),
+    ("T62", "memory recall CLI: caps, redaction, read-only", "memory", "protocol", t62),
+    ("T63", "lessons ledger: candidates, caps, no auto-accept", "memory", "protocol", t63),
+    ("T64", "ReMe doctor selftest: all five causes detected", "memory", "protocol", t64),
+    ("T65", "ReMe doctor live diagnosis (read-only, machine)", "memory", "protocol", t65),
     ("T50", "__status per computer, full (cookie)", "desktop", "browser", None),
     ("T51", "side-panel renders beside chat", "desktop", "browser", None),
     ("T52", "/desktop chrome: take/release + terminal shell", "desktop", "browser", None),

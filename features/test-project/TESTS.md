@@ -520,29 +520,93 @@ the parent runs them and pastes the outcome into RESULTS.md.
 
 ## Harness tests (local, no machine)
 
-### T46 — desktop gate harness 105/105
+### T46 — desktop gate harness 116/116
 - Area: `harness` · Method: `protocol`
 - Check (local): `node features/desktop/harness-desktop-gate.mjs`
-- Expected: `105 passed, 0 failed` (gate, verify, cookie, legacy redirect, lease grant/409/heartbeat-410, capability mint, session routing, shim injection, generation bump, tampered capability 403, `__status`, `__wake` throttle, `__action` 503, foreign redirect dropped, per-computer lease, needs-you, preview, teach, mode, terminal, side-panel, vendor, origin-auth cases).
-- Evidence: the final tally line. (Verified live 2026-11-15: 105/105.)
+- Expected: `116 passed, 0 failed` (gate, verify, cookie, legacy redirect, lease grant/409/heartbeat-410, capability mint, session routing, shim injection, generation bump, tampered capability 403, `__status`, `__wake` throttle, `__action` 503, foreign redirect dropped, per-computer lease, needs-you, preview, teach, mode, terminal, side-panel, vendor, origin-auth cases; plus 40a-40j: KV-write failure to 503,
+  probe protocol binary, cheap-probe 204, 4 s-late banner still live).
+- Evidence: the final tally line. (Verified 2026-11-15 by AutoClaw: 116/116.)
 
-### T47 — desktop chrome harness 13/13
+### T47 — desktop chrome harness 34/34
 - Area: `harness` · Method: `protocol`
 - Check (local): `node features/desktop/harness-desktop-chrome.mjs`
-- Expected: `13 passed, 0 failed` (DOM shim over the real chrome page: pill, terminal lease sharing, mode switch, wake timeout, Down/Auth-error states).
-- Evidence: the final tally line. (Verified live: 13/13.)
+- Expected: `34 passed, 0 failed` (DOM shim over the real chrome page: pill, terminal lease sharing, mode switch, wake timeout, Down/Auth-error states).
+- Evidence: the final tally line. (Verified 2026-11-15 by AutoClaw: 34/34.)
 
 ### T48 — desktop origin harness 9/9
 - Area: `harness` · Method: `protocol`
 - Check (local): `node features/desktop/harness-desktop-origin.mjs`
 - Expected: `9 passed, 0 failed` (real undici fetch vs 5 local mock proxy servers: per-port token/cookie, first-cookie-wins, 303 follow, `__status` down-vs-asleep).
-- Evidence: the final tally line. (Verified live: 9/9.)
+- Evidence: the final tally line. (Verified 2026-11-15 by AutoClaw: 9/9.)
+
+---
+
+## (m) Memory — Phase 4 (local + machine)
+
+These four tests cover `features/memory/` (bounded recall, lessons ledger,
+ReMe doctor). T62–T64 are local and dependency-free; T65 runs on the
+machine and is read-only. **Upstream context:** QwenPaw v2.3.0 already
+ships FTS5 history recall (`recall_history(op="search")` over
+`conversation_history_fts`); these tests do NOT re-test that path — they
+test the token budget, redaction, lessons workflow and ReMe diagnosis that
+upstream does not provide. See `features/memory/README.md`.
+
+### T62 — memory recall CLI: caps, redaction, read-only
+- Area: `memory` · Method: `protocol`
+- Check (local): `python3 features/memory/test_recall.py`
+- Expected: `44 passed, 0 failed`. Builds a throwaway `history.db` with
+  QwenPaw's **exact** v2.3.0 schema (external-content FTS5, porter unicode61)
+  and asserts: ≤3 results by default, ≤2,000-token budget that a flag cannot
+  raise, excerpt windows only (never a full session), GitHub/Slack/AWS/JWT/
+  bearer/assignment redaction, tool-result rows excluded by default, the
+  `recall_history` self-pollution guard, agent/since/kind filters, FTS5
+  punctuation safety (`C++ foo-bar`), and that writes are denied while FTS5
+  still works.
+- Evidence: the final tally line.
+
+### T63 — lessons ledger: candidates, caps, no auto-accept
+- Area: `memory` · Method: `protocol`
+- Check (local): `python3 features/memory/test_lessons.py`
+- Expected: `45 passed, 0 failed`. Asserts: `propose` writes a **candidate
+  only**; `accept` is separate and requires `--why`; ≤10 accepted / ≤3
+  candidates / ≤800 words enforced; `L-001` ids never reused; accepted
+  entries require Evidence; secret-shaped fields are **rejected** (file left
+  byte-identical) rather than scrubbed; everything outside the
+  `## Important Decisions and Lessons` section survives a rewrite verbatim.
+- Evidence: the final tally line.
+
+### T64 — ReMe doctor selftest: all five causes detected
+- Area: `memory` · Method: `protocol`
+- Check (local): `python3 features/memory/reme_doctor.py --selftest`
+- Expected: `11 passed, 0 failed`. Synthetic workspaces prove the doctor
+  detects each real gate: `interval_disabled`, `reme_not_started`,
+  `reme_disabled`, `automation_only`, `below_interval`, `no_workspace`, plus
+  the healthy case.
+- Evidence: the final tally line.
+
+### T65 — ReMe doctor live diagnosis (read-only, machine)
+- Area: `memory` · Method: `protocol`
+- Check: `ib.py exec` →
+  `python3 /data/home/qwenpaw/working/memory-tools/reme_doctor.py
+  --root /data/home/qwenpaw/working --agent default --json`
+- Expected: the doctor reports `status=OK` or names the blocking cause
+  code(s). **An empty `memory/` directory is not itself a failure** — v2.3.0
+  scopes ReMe to `daily_dir`+`digest_dir` markdown by design, so "no notes"
+  is only a bug when no cause explains it. Until `features/memory/` is synced
+  to the machine this row is `NEEDS-VERIFICATION` (never a false PASS).
+- Evidence: `status`, `causes`, per-directory `md_files`, `interval`.
+- **Sync map (Muse):** `features/memory/*.py` →
+  `/data/home/qwenpaw/working/memory-tools/`. Read-only; no restart, no write
+  to `.env`/`auth.json`/chats.
 
 ---
 
 ## Out of scope for this catalogue (do not add tests here without a new decision)
 
 - **JEV / Drex** — not implemented (PLAN.md Phase 2/3). No tests until they land.
+- **Ripwire / deja-vu** — deliberately not installed (Phase 4, see
+  `features/memory/README.md` "Deliberately not done"). No tests until a
+  decision to install lands.
 - **Log-check option** (PLAN.md Phase 1: one place to see all logs with issue-finding) — a build item, not a test; T36/T37 cover the log greps this suite needs.
 - **Mobile app** (Rakazo #16) and **15-language UI** (Rakazo #21) — explicitly excluded from the Rakazo build (English only).
 - **Voice calls, bot email receive path, Spaces/Access enforcement** — blocked/partial items with external requirements (keys, a Cloudflare zone). Their blockers are recorded in `features/infra/README.md`; they get tests only when unblocked.
