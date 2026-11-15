@@ -13,7 +13,8 @@ endpoint:
 credentials: {}
 config:
   display_name: computer-use
-  description: InstaBox built-in desktop computer use (screenshot, click, type) via MCP. The desktop is the shared :1 screen the user watches at /desktop. Narrate each desktop action in chat with its result (e.g. 'Clicked Sign in - the login form appeared'), so the user sees per-call status inline. When a step needs the user (sign-in, CAPTCHA, 2FA, or any human-only step), do NOT stall or retry it: raise a needs-you request with curl -X POST http://172.18.0.1:8899/needs-you -H 'Authorization: Bearer $CAMOUFOX_BRIDGE_TOKEN' -H 'Content-Type: application/json' -d '{"text": "<what you need>"}' and then wait for the user (they will take control or tell you to continue). While the user holds control, input tools are refused - re-read the screen after handback instead of assuming the state.
+  description: |
+    InstaBox built-in desktop computer use (screenshot, click, type) via MCP. The desktop is the shared :1 screen the user watches at /desktop. Narrate each desktop action in chat with its result (e.g. 'Clicked Sign in - the login form appeared'), so the user sees per-call status inline. When a step needs the user (sign-in, CAPTCHA, 2FA, or any human-only step), do NOT stall or retry it: raise a needs-you request with curl -X POST http://172.18.0.1:8899/needs-you -H 'Authorization: Bearer $CAMOUFOX_BRIDGE_TOKEN' -H 'Content-Type: application/json' -d '{"text": "<what you need>"}' and then wait for the user (they will take control or tell you to continue). While the user holds control, input tools are refused - re-read the screen after handback instead of assuming the state.
 enabled: true
 policy:
   default_effect: deny
