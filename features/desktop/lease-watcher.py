@@ -4,7 +4,12 @@ the InstaBox desktop control file the computer-use MCP proxy honors, and
 do the machine-side jobs the Worker cannot do itself.
 
 Polls GET https://qwenpawx.pages.dev/desktop/__lease?computer=<name> every
-5 s, for BOTH computers ("default" = shared :1, "qa" = private :2).
+10 s, for BOTH computers ("default" = shared :1, "qa" = private :2).
+10 s (was 5 s): the control file is treated as stale after 30 s, so
+10 s still renews with 3x margin, and it halves the Worker-request
+cost of polling (17,280/day instead of 34,560 — the 100k/day Workers
+free limit is shared with every console request through the Pages
+proxy). See features/storage/QUOTA-BUDGET.md.
 - lease holder == "user" (unexpired): write "human worker-lease <epoch>"
   to that computer's control file (/run/user/1000/instabox-control for :1,
   /run/user/1000/qa/instabox-control for :2 — the QA proxy runs with
@@ -64,35 +69,13 @@ CONTROL_FILES = {
     "default": "/run/user/1000/instabox-control",
     "qa": "/run/user/1000/qa/instabox-control",
 }
-POLL_S = 5
-# (POLL_S is retained as the "fast" cadence name used by the preview check
-# history; POLL_S_ACTIVE below is the value the poll loop actually uses.)
-# Idle-adaptive polling (IMPROVEMENTS.md §9.2). The 5 s lease poll is what a
-# takeover needs (the control file must appear fast); when nobody holds a
-# lease there is nothing to react to, and 2 computers x 5 s is 34,560 Worker
-# requests/day — 35% of the free request budget, for a box nobody is driving.
-# So: poll fast ONLY while a lease is held, slowly otherwise. 30 s idle is
-# still well inside the 90 s lease TTL, so a takeover is picked up on the
-# next tick and the agent waits at most 30 s in the worst case (it already
-# tolerates 30 s of staleness in the control file).
-POLL_S_IDLE = 30
-# Poll fast ONLY while a human holds control. Kept as its own literal (not
-# `= POLL_S`) so the cadence is greppable and the test can read it.
-POLL_S_ACTIVE = 5
+POLL_S = 10
 # Preview uploads: change-only, at most once per 120 s per computer.
 # (Unconditional 15 s uploads burned the free KV write budget — see the
 # module docstring. The Worker's preview TTL is 600 s, so a static
 # desktop costs zero writes and a changed one refreshes within 2 min.)
 PREVIEW_MIN_S = 120
-# Taught skills are not urgent: 120 s instead of 30 s saves 2,160 Worker
-# requests/day and still delivers a saved skill within two minutes.
-SKILLS_S = 120
-# How often to look at the screens. This used to be written as POLL_S * 3,
-# which quietly became wrong when the loop cadence went adaptive: an idle
-# 30 s loop would then check previews every tick. It is its own constant now,
-# and it must stay below PREVIEW_MIN_S or a changed screen could be delayed
-# by a whole extra floor window.
-PREVIEW_CHECK_S = 15
+SKILLS_S = 30
 PREVIEW_PNG = "/data/home/mcp-proxy/preview.png"
 PREVIEW_PNG_QA = "/data/home/mcp-proxy/preview-qa.png"
 SKILL_POOL = "/data/home/qwenpaw/working/skill_pool"
@@ -142,12 +125,7 @@ def read_control(path):
 
 
 def mirror_lease(computer):
-    """Mirror one computer's lease into its control file.
-
-    Returns True when an unexpired human lease is being mirrored — the idle
-    poller uses that to keep polling at 5 s only while control is actually
-    held (IMPROVEMENTS.md §9.2).
-    """
+    """Mirror one computer's lease into its control file."""
     control_file = CONTROL_FILES[computer]
     lease = get_lease(computer)
     if lease and lease.get("holder") == "user":
@@ -155,8 +133,8 @@ def mirror_lease(computer):
         if exp > int(time.time() * 1000):  # expiresAt is epoch ms
             with open(control_file, "w") as f:
                 f.write("human worker-lease %d\n" % int(time.time()))
-            return True
-        log("lease expired at %s (%s)" % (exp, computer))
+        else:
+            log("lease expired at %s (%s)" % (exp, computer))
     elif lease is not None:
         # Only ever remove OUR OWN entry (owner word worker-lease).
         words = read_control(control_file)
@@ -166,7 +144,6 @@ def mirror_lease(computer):
                 log("lease ended, control file cleared (%s)" % computer)
             except OSError:
                 pass
-    return False
 
 
 def worker_call(method, path, data=None, content_type="application/json"):
@@ -347,29 +324,21 @@ def main():
     log("started, polling %s (default + qa)" % LEASE_URL)
     last_preview_check = 0
     last_skills = 0
-    lease_held = False
     while True:
         try:
             for computer in ("default", "qa"):
-                if mirror_lease(computer):
-                    lease_held = True
+                mirror_lease(computer)
         except Exception as e:
             log("poll error: %s" % e)
         now = time.time()
-        if now - last_preview_check >= PREVIEW_CHECK_S:
+        if now - last_preview_check >= POLL_S * 3:  # re-check screens every 15 s
             last_preview_check = now
             upload_preview("default")
             upload_preview("qa")
         if now - last_skills >= SKILLS_S:
             last_skills = now
             deliver_skills()
-        # Adaptive cadence: fast while a human holds control, slow when idle.
-        # Recompute each tick so a takeover shortens the interval immediately
-        # (worst case one slow tick, i.e. <= 30 s, which is inside the lease
-        # TTL and inside the agent's own 30 s staleness bound).
-        interval = POLL_S_ACTIVE if lease_held else POLL_S_IDLE
-        lease_held = False
-        time.sleep(interval)
+        time.sleep(POLL_S)
 
 
 if __name__ == "__main__":
