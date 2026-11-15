@@ -145,6 +145,7 @@
   </div>
   <div class="tabs" role="tablist">
     <button class="tab" role="tab" aria-selected="true" data-tab="live">Live</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="terminal">Terminal</button>
     <button class="tab" role="tab" aria-selected="false" data-tab="teach">Teach</button>
     <button class="tab" role="tab" aria-selected="false" data-tab="advanced">Advanced</button>
   </div>
@@ -154,14 +155,46 @@
     <div class="row"><span class="k">Holder</span><span id="stHolder">—</span></div>
     <div class="row"><span class="k">Lease left</span><span id="stLease">—</span></div>
   </div>
+  <!--
+    Terminal. A ROOT SHELL, so the tab is deliberately inert until control is
+    held: the button is disabled, and the note says why. Opening it mints a
+    capability bound to the live lease; the shell dies when that lease does.
+    xterm is vendored (pages/public/vendor/) rather than loaded from a CDN —
+    a CDN script on a page that also drives a shell is a supply-chain risk we
+    do not need.
+  -->
+  <div class="tab-body pane" data-pane="terminal" style="display:flex;flex-direction:column;padding:8px">
+    <div class="row" style="padding:0 0 8px">
+      <span class="k">Session</span>
+      <span id="termState">not connected</span>
+    </div>
+    <div id="termHost" style="flex:1;min-height:220px;background:#000;border:1px solid var(--line);border-radius:8px;padding:6px;overflow:hidden"></div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn primary" id="termOpen" disabled>Open terminal</button>
+      <button class="btn" id="termClose" disabled>Close</button>
+    </div>
+    <p id="termNote" style="margin:8px 0 0;font-size:12px">
+      Take control to open a shell. The shell ends when you release control.
+    </p>
+  </div>
   <div class="tab-body pane" data-pane="teach">
     <p style="margin-top:0">Take control, perform the task once, then stop recording.
       The recorded steps become a draft skill.</p>
     <div class="row"><span class="k">Recording</span><span id="teachState">idle</span></div>
+    <div class="row"><span class="k">Goal</span></div>
+    <input type="text" id="teachGoal" placeholder="What are you teaching? e.g. Check the inbox and summarise new mail"
+           style="width:100%;font:inherit;font-size:13px;padding:7px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)">
+    <label class="toggle" style="margin-top:10px">
+      <input type="checkbox" id="teachSensitive"> Sensitive (hide what I type or paste)
+    </label>
     <div class="actions" style="display:flex;gap:8px;margin-top:10px">
       <button class="btn primary" id="teachStart" disabled>Start recording</button>
       <button class="btn" id="teachStop" disabled>Stop &amp; draft</button>
     </div>
+    <p id="teachHint" style="margin:10px 0 0;font-size:12px">
+      Recording captures clicks, typing, scrolling and navigation on the screen.
+      Nothing is captured while recording is off.
+    </p>
   </div>
   <div class="tab-body pane" data-pane="advanced">
     <div class="row"><span class="k">Computer</span><span id="advName">—</span></div>
@@ -212,6 +245,26 @@
 
 <div class="toast" id="toast"></div>
 
+<!--
+  Draft editor. Opened by "Stop & draft" with the recorder's build() output
+  already in the fields, so the user edits a draft instead of writing one.
+  Save validates first: a skill with no steps is refused here rather than
+  reported as saved (the old UI's failure).
+-->
+<div id="editor" role="dialog" aria-modal="true" aria-labelledby="edTitle"
+     style="position:fixed;inset:0;z-index:60;background:#0b0d11cc;display:none;align-items:center;justify-content:center;padding:20px">
+  <div style="width:min(680px,100%);max-height:90vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px">
+    <h2 id="edTitle" style="margin:0 0 12px;font-size:15px">Draft skill</h2>
+    <div id="edFields"></div>
+    <p id="edProblems" style="color:var(--bad);font-size:12px;margin:8px 0 0"></p>
+    <div class="actions" style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end">
+      <button class="btn ghost" id="edClose">Cancel</button>
+      <button class="btn" id="edTest">Test (copy prompt)</button>
+      <button class="btn primary" id="edSave">Save skill</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (() => {
   "use strict";
@@ -230,6 +283,9 @@
     phase: "idle",           // idle|loading|connecting|connected|failed|disconnected
     overlay: false,
     recording: false,
+    recorder: null,          // a Teach.Recorder while recording
+    draft: null,             // the draft the editor is showing
+    terminal: null,          // an open shell session, or null
     lastPreviewSha: null,
     reconnectAttempts: 0,
     errors: [],
@@ -248,6 +304,11 @@
     advName: $("advName"), advPrivate: $("advPrivate"),
     advPreview: $("advPreview"), advCaptured: $("advCaptured"),
     teachState: $("teachState"), teachStart: $("teachStart"), teachStop: $("teachStop"),
+    teachGoal: $("teachGoal"), teachSensitive: $("teachSensitive"), teachHint: $("teachHint"),
+    editor: $("editor"), edFields: $("edFields"), edProblems: $("edProblems"),
+    edClose: $("edClose"), edTest: $("edTest"), edSave: $("edSave"),
+    termHost: $("termHost"), termState: $("termState"), termOpen: $("termOpen"),
+    termClose: $("termClose"), termNote: $("termNote"),
     overlay: $("overlay"), ovTitle: $("ovTitle"), ovLive: $("ovLive"), ovYou: $("ovYou"),
     ovStop: $("ovStop"), ovTake: $("ovTake"), ovRelease: $("ovRelease"), ovTeach: $("ovTeach"),
     ovClose: $("ovClose"), ovFrame: $("ovFrame"), ovHeld: $("ovHeld"),
@@ -313,6 +374,12 @@
     el.teachStart.disabled = !held || state.recording;
     el.teachStop.disabled = !state.recording;
     el.teachState.textContent = state.recording ? "recording…" : "idle";
+    // The terminal is gated on control, and opening it also closes it: a shell
+    // must not survive a release, so releasing control tears the session down
+    // here as well as on the server.
+    el.termOpen.disabled = !held || state.terminal !== null;
+    el.termClose.disabled = state.terminal === null;
+    if (!held && state.terminal !== null) closeTerminal("Control released.");
     el.previewAsleep.hidden = live;
 
     const err = state.errors[0];
@@ -436,6 +503,155 @@
   }
 
   // ------------------------------------------------------------- actions
+  // ---------------------------------------------------------------- terminal
+  // The browser speaks a WebSocket to websockify, which terminates it and
+  // dials the PTY server's Unix socket. Our frames are the PTY protocol:
+  //   [kind:u8][len:u32be][payload]   kind 0 = stdin, 1 = resize, 2 = ping
+  //
+  // Why frames and not raw bytes: a resize has to travel on the same channel
+  // as input, and a length-prefixed frame is the only way to tell a control
+  // message from something the user typed. websockify passes binary frames
+  // through untouched, which is all this needs.
+  //
+  // The session is torn down locally on release AND bounded server-side by the
+  // signed deadline. Local teardown is the courtesy; the deadline is the
+  // enforcement (a browser that crashes must not hold a shell).
+  function encodeFrame(kind, payload) {
+    const body = payload || new Uint8Array(0);
+    const buf = new Uint8Array(5 + body.length);
+    buf[0] = kind;
+    new DataView(buf.buffer).setUint32(1, body.length, false);
+    buf.set(body, 5);
+    return buf;
+  }
+
+  async function openTerminal() {
+    if (!state.leaseId) { toast("Take control first — a shell needs the lease."); return; }
+    if (state.terminal) return;
+    el.termState.textContent = "starting…";
+    el.termNote.textContent = "Opening a shell…";
+    const r = await api("/computer/terminal/session", {
+      computer: state.computer, leaseId: state.leaseId,
+    });
+    if (!r.ok || !r.data?.url) {
+      el.termState.textContent = "not connected";
+      el.termNote.textContent = r.status === 409
+        ? "Someone else has control of this computer."
+        : r.status === 503 ? "The terminal is not configured on the server."
+        : "Could not open a shell — take control first.";
+      return;
+    }
+    const deadline = r.data.deadlineMs || 0;
+    // The capability path is same-origin; websockify wants a ws:// or wss://
+    // URL, so the scheme follows the page.
+    const socketUrl = (location.protocol === "https:" ? "wss://" : "ws://")
+      + location.host + r.data.url + "/websockify";
+    let socket;
+    try {
+      socket = new WebSocket(socketUrl, ["binary"]);
+    } catch {
+      el.termState.textContent = "failed";
+      el.termNote.textContent = "The shell could not be reached.";
+      return;
+    }
+    socket.binaryType = "arraybuffer";
+
+    // xterm is vendored; it is loaded lazily so the Live tab costs nothing.
+    if (!window.Terminal) {
+      await new Promise((resolve) => {
+        const s = document.createElement("script");
+        s.src = "/vendor/xterm.js";
+        s.onload = resolve;
+        s.onerror = resolve;
+        document.head.appendChild(s);
+      });
+    }
+    const term = window.Terminal
+      ? new window.Terminal({ fontSize: 12, theme: { background: "#000000" }, cursorBlink: true })
+      : null;
+    if (term && el.termHost) {
+      el.termHost.innerHTML = "";
+      term.open(el.termHost);
+      term.write("Connecting to the computer's terminal…\r\n");
+    }
+
+    const session = { socket, term, deadline, timer: null, sentResize: null };
+    state.terminal = session;
+    render();
+
+    socket.addEventListener("open", () => {
+      el.termState.textContent = "connected";
+      el.termNote.textContent = deadline
+        ? "This shell ends with your control session."
+        : "This shell ends when you release control.";
+      if (term) {
+        term.onData((data) => {
+          if (socket.readyState !== WebSocket.OPEN) return;
+          socket.send(encodeFrame(0, new TextEncoder().encode(data)));
+        });
+        term.onResize(({ cols, rows }) => sendResize(session, cols, rows));
+        sendResize(session, term.cols, term.rows);
+      }
+    });
+
+    socket.addEventListener("message", (ev) => {
+      const data = ev.data;
+      if (!term) return;
+      if (typeof data === "string") term.write(data);
+      else term.write(new Uint8Array(data));
+    });
+
+    socket.addEventListener("close", () => {
+      if (state.terminal === session) {
+        state.terminal = null;
+        el.termState.textContent = "closed";
+        el.termNote.textContent = "The shell closed. Take control again to reopen it.";
+        render();
+      }
+      if (term) term.write("\r\n[connection closed]\r\n");
+    });
+
+    socket.addEventListener("error", () => {
+      el.termState.textContent = "failed";
+      el.termNote.textContent = "The shell connection failed.";
+    });
+
+    // A local safety net: close the socket a few seconds before the server's
+    // deadline so the user sees "closed" rather than a dead terminal.
+    if (deadline) {
+      const ms = Math.max(0, deadline - Date.now() - 3000);
+      session.timer = setTimeout(() => closeTerminal("Session ended."), ms);
+    }
+  }
+
+  function sendResize(session, cols, rows) {
+    if (!session || session.socket.readyState !== WebSocket.OPEN) return;
+    // Clamp before sending: the server ignores out-of-range values (B-17), but
+    // sending a sane one means the shell actually gets resized.
+    const c = Math.max(1, Math.min(1000, ColsOr(cols)));
+    const r = Math.max(1, Math.min(1000, ColsOr(rows)));
+    function ColsOr(v) { return Number.isFinite(v) ? Math.round(v) : 80; }
+    const key = c + "x" + r;
+    if (session.sentResize === key) return;
+    session.sentResize = key;
+    const payload = new Uint8Array(4);
+    new DataView(payload.buffer).setUint16(0, c, false);
+    new DataView(payload.buffer).setUint16(2, r, false);
+    session.socket.send(encodeFrame(1, payload));
+  }
+
+  function closeTerminal(reason) {
+    const session = state.terminal;
+    if (!session) return;
+    state.terminal = null;
+    clearTimeout(session.timer);
+    try { session.socket.close(); } catch {}
+    try { session.term?.dispose?.(); } catch {}
+    el.termState.textContent = "closed";
+    if (reason) el.termNote.textContent = reason;
+    render();
+  }
+
   async function refresh() {
     const r = await api("/computer/state?computer=" + encodeURIComponent(state.computer));
     if (r.ok && r.data) {
@@ -469,6 +685,10 @@
 
   async function releaseControl() {
     if (!state.leaseId) return;
+    // A shell must not outlive the control it was granted under. Closing it
+    // here is the courtesy; the signed deadline in the PTY server is the
+    // enforcement, because a crashed browser never runs this line.
+    closeTerminal("Control released — the shell was closed.");
     const r = await api("/computer/release", { computer: state.computer, leaseId: state.leaseId });
     if (!r.ok && r.data?.error === "store") {
       toast("Released, but old links may stay valid for a few minutes.");
@@ -519,6 +739,153 @@
   }
 
   // ------------------------------------------------------------ needs-you
+  // ---------------------------------------------------------------- teach
+  // Capture plumbing. The recorder itself lives in teach.js so it can be
+  // tested; this only moves events into it.
+  //
+  // The events come from two places, because the screen is a cross-origin
+  // sandboxed iframe and the parent cannot see into it:
+  //   1. the shim injected into the noVNC page forwards pointer/key/scroll
+  //      messages while teaching is on (armTeachCapture posts the flag);
+  //   2. the parent records its own UI actions (goal changes, tab switches).
+  // A recorder that only did (2) would record nothing the user actually did.
+  let Teach = null;
+
+  async function loadTeach() {
+    if (Teach) return Teach;
+    Teach = await import("/computer/teach.js").catch(() => null);
+    return Teach;
+  }
+
+  function armTeachCapture(on) {
+    const frame = state.overlay ? el.ovFrame : el.previewFrame;
+    try {
+      frame.contentWindow.postMessage(
+        { qwenpawTeach: !!on, sensitive: Boolean(el.teachSensitive.checked) },
+        location.origin,
+      );
+    } catch { /* the frame may not be loaded; the recorder just sees less */ }
+  }
+
+  // The shim posts {qwenpawTeachEvent: {...}}. Origin is checked, and the
+  // event is dropped unless recording is on — a recorder that runs while the
+  // UI says "idle" is exactly the kind of surprise this must not have.
+  window.addEventListener("message", (event) => {
+    if (event.origin !== location.origin) return;
+    const d = event.data;
+    if (!d || typeof d !== "object") return;
+    if (typeof d.qwenpawTeachSensitive === "boolean" && el.teachSensitive) {
+      el.teachSensitive.checked = d.qwenpawTeachSensitive;
+      state.recorder?.setSensitive(d.qwenpawTeachSensitive);
+    }
+    if (d.qwenpawTeachEvent && state.recording && state.recorder) {
+      state.recorder.record(d.qwenpawTeachEvent);
+      el.teachHint.textContent = `Recording — ${state.recorder.count} event${state.recorder.count === 1 ? "" : "s"} captured.`;
+    }
+  });
+
+  el.teachSensitive.addEventListener("change", () => {
+    state.recorder?.setSensitive(el.teachSensitive.checked);
+    if (state.recording) armTeachCapture(true);
+  });
+
+  /** Render the draft into the 8 editor fields. */
+  function openEditor(draft, eventCount) {
+    state.draft = draft;
+    el.edFields.innerHTML = "";
+    for (const field of Teach.DRAFT_FIELDS) {
+      const wrap = document.createElement("label");
+      wrap.style.cssText = "display:block;margin-bottom:10px";
+      const label = document.createElement("div");
+      label.textContent = field.label + (field.required ? " *" : "");
+      label.style.cssText = "font-size:12px;color:var(--dim);margin-bottom:4px";
+      const input = document.createElement(field.kind === "lines" ? "textarea" : "input");
+      input.id = "ed_" + field.key;
+      input.dataset.key = field.key;
+      input.style.cssText = "width:100%;font:inherit;font-size:13px;padding:6px 9px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)";
+      if (field.kind === "lines") {
+        input.rows = field.key === "steps" ? 8 : 3;
+        input.value = (draft[field.key] || []).join("\n");
+      } else {
+        input.value = draft[field.key] == null ? "" : String(draft[field.key]);
+      }
+      wrap.appendChild(label);
+      wrap.appendChild(input);
+      el.edFields.appendChild(wrap);
+    }
+    el.edProblems.textContent = eventCount === 0
+      ? "No events were captured — the draft below is a placeholder. Edit it, or record again."
+      : "";
+    el.editor.style.display = "flex";
+  }
+
+  /** Read the editor back into a draft-shaped object. */
+  function readEditor() {
+    const out = {};
+    for (const field of Teach.DRAFT_FIELDS) {
+      const input = document.getElementById("ed_" + field.key);
+      const raw = input ? input.value : "";
+      out[field.key] = field.kind === "lines"
+        ? raw.split("\n").map((s) => s.trim()).filter(Boolean)
+        : raw.trim();
+    }
+    return out;
+  }
+
+  function closeEditor() {
+    el.editor.style.display = "none";
+    state.draft = null;
+  }
+
+  el.edClose.addEventListener("click", closeEditor);
+  el.edSave.addEventListener("click", async () => {
+    const draft = readEditor();
+    const problems = Teach.validateDraft(draft);
+    const blocking = problems.filter((p) => !p.warn);
+    if (blocking.length) {
+      // Refused here, not toasted as success. This is the whole fix.
+      el.edProblems.textContent = blocking.map((p) => `${p.field}: ${p.problem}`).join("; ");
+      return;
+    }
+    el.edProblems.textContent = "";
+    const r = await api("/computer/teach", {
+      computer: state.computer,
+      name: draft.name,
+      goal: state.draft?.whenToUse || "",
+      playbook: {
+        whenToUse: draft.whenToUse,
+        inputs: draft.inputs,
+        steps: draft.steps,
+        howToCheck: draft.howToCheck,
+        whatToReturn: draft.whatToReturn,
+        approvalBoundaries: draft.approvalBoundaries,
+        failureHandling: draft.failureHandling,
+      },
+    });
+    if (!r.ok) {
+      el.edProblems.textContent = r.data?.error
+        ? `Could not save (${r.data.error}).`
+        : "Could not save the skill.";
+      return;
+    }
+    closeEditor();
+    toast("Skill saved — it is in the pending list for the agent.");
+  });
+  el.edTest.addEventListener("click", async () => {
+    const draft = readEditor();
+    const prompt = Teach.formatSkillRunPrompt(draft.name, {
+      whenToUse: draft.whenToUse, inputs: draft.inputs, steps: draft.steps,
+      howToCheck: draft.howToCheck, whatToReturn: draft.whatToReturn,
+      approvalBoundaries: draft.approvalBoundaries, failureHandling: draft.failureHandling,
+    }, { test: true });
+    try {
+      await navigator.clipboard.writeText(prompt);
+      toast("Test prompt copied — paste it in a new chat.");
+    } catch {
+      el.edProblems.textContent = prompt;
+    }
+  });
+
   function showNeedsYou(record) {
     el.needsYou.hidden = false;
     el.needsYouText.textContent = record.text || "The agent needs you.";
@@ -556,16 +923,35 @@
   el.previewWake.addEventListener("click", () => void wake());
   el.ovTake.addEventListener("click", () => void takeControl());
   el.ovRelease.addEventListener("click", () => void releaseControl());
+  el.termOpen.addEventListener("click", () => void openTerminal());
+  el.termClose.addEventListener("click", () => closeTerminal("Shell closed."));
   el.ovClose.addEventListener("click", () => closeOverlay());
   el.advPrivate.addEventListener("change", (e) => void setMode(e.target.checked));
   el.nyTake.addEventListener("click", () => { openOverlay(); void takeControl(); });
   el.nyDone.addEventListener("click", () => void resolveNeedsYou("done"));
   el.nySkip.addEventListener("click", () => void resolveNeedsYou("skip"));
   el.teachStart.addEventListener("click", () => {
-    state.recording = true; render(); toast("Recording — perform the task now.");
+    // The real recorder. The previous version set a boolean and showed a
+    // toast; nothing listened, so "a draft was saved" was a false claim.
+    if (!state.leaseId) { toast("Take control first — teaching records your own demonstration."); return; }
+    state.recorder = new Teach.Recorder({
+      goal: el.teachGoal.value.trim(),
+      sensitive: el.teachSensitive.checked,
+    }).start();
+    state.recording = true;
+    armTeachCapture(true);
+    render();
+    toast("Recording — perform the task now.");
   });
   el.teachStop.addEventListener("click", () => {
-    state.recording = false; render(); toast("Recording stopped. Draft saved to the teach log.");
+    if (!state.recorder) { state.recording = false; render(); return; }
+    state.recording = false;
+    armTeachCapture(false);
+    const draft = state.recorder.build();
+    const count = state.recorder.count;
+    state.recorder = null;
+    render();
+    openEditor(draft, count);
   });
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -594,6 +980,10 @@
   // A release on pagehide with keepalive: the page can go away at any time and
   // control must not be left dangling for 90 s.
   window.addEventListener("pagehide", () => {
+    // The socket dies with the page anyway, and the PTY server kills the
+    // shell when the connection drops; the deadline covers the case where it
+    // does not.
+    closeTerminal(null);
     if (!state.leaseId) return;
     try {
       fetch("/computer/release", {
@@ -614,6 +1004,9 @@
   (async () => {
     const q = new URLSearchParams(location.search);
     if (q.get("computer")) state.computer = q.get("computer");
+    // teach.js is loaded once at boot: the recorder handlers must not depend on
+    // a lazy import that may still be in flight when the user clicks Start.
+    await loadTeach();
     const r = await api("/computer/computers");
     if (r.ok && Array.isArray(r.data?.computers)) {
       state.computers = r.data.computers;

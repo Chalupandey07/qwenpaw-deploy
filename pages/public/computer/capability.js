@@ -70,8 +70,14 @@ async function hmacBytes(secret, text) {
  * `target` is the upstream URL including its provider token, plus the headers
  * the origin needs. None of it is visible to the browser after this call.
  */
-export async function sealCapability(secret, { policy, expiresAt, target, scope }) {
+export async function sealCapability(secret, { policy, expiresAt, target, scope, prefix }) {
   if (policy !== "view" && policy !== "control") throw new Error("bad policy");
+  // The mount point is a parameter because there are two surfaces with the
+  // same seal and different URL shapes: the screen (`/computer/session/...`)
+  // and the terminal (`/computer/terminal/...`). Hardcoding one made the
+  // terminal's own capability unopenable — `openCapability()` could never
+  // match a path it had not been told about.
+  const base = prefix || "/computer/session";
   const key = await keyFor(secret);
   const aad = te.encode(`${policy}:${expiresAt}`);
   const plaintext = te.encode(JSON.stringify({ target, scope }));
@@ -84,7 +90,7 @@ export async function sealCapability(secret, { policy, expiresAt, target, scope 
   // without it the opener has nothing to decrypt with. Writing only the
   // ciphertext produced links that looked well-formed and never opened.
   const token = b64url(new Uint8Array([...iv, ...new Uint8Array(ct)]));
-  return `/computer/session/${policy}/${expiresAt}.${token}`;
+  return `${base}/${policy}/${expiresAt}.${token}`;
 }
 
 /**
@@ -93,7 +99,9 @@ export async function sealCapability(secret, { policy, expiresAt, target, scope 
  * screen request and a throw would be a 500 where a 403 belongs.
  */
 export async function openCapability(secret, pathname) {
-  const match = /^\/computer\/session\/(view|control)\/(\d+)\.([A-Za-z0-9_-]+)(\/.*)?$/.exec(pathname);
+  // Both surfaces. Kept as one alternation rather than two functions so the
+  // refusal rules (expiry, AAD, policy) can never drift apart.
+  const match = /^\/computer\/(?:session|terminal)\/(view|control)\/(\d+)\.([A-Za-z0-9_-]+)(\/.*)?$/.exec(pathname);
   if (!match) return null;
   const [, policy, expText, token] = match;
   const expiresAt = Number(expText);
@@ -232,6 +240,83 @@ export function novncShim(viewOnly) {
   report("loading");
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", observe);
   else observe();
+
+  // ---- teach recording ----
+  // The parent cannot see into this sandboxed frame, so the recorder lives on
+  // the parent and the EVENTS come from here. This is the piece the previous
+  // UI was missing entirely: it had a Start button and no recorder.
+  //
+  // Two rules, both load-bearing:
+  //   * nothing is sent while teachOn is false — a recorder that runs when the
+  //     UI says "idle" is a keylogger with a nice interface;
+  //   * while sensitive is on, VALUES are never sent. The parent redacts as a
+  //     backstop too (teach.js), because a toggle is a promise the user has to
+  //     keep and a password in a skill file is permanent.
+  //
+  // Never preventDefault: noVNC must still receive every event, or recording
+  // one demonstration would break the thing being demonstrated.
+  let teachOn = false, teachSensitive = false, lastMoveAt = 0;
+  const send = (event) => {
+    if (!teachOn) return;
+    try { window.parent.postMessage({ qwenpawTeachEvent: event }, "*"); } catch {}
+  };
+  const point = (canvas, e) => {
+    const r = canvas ? canvas.getBoundingClientRect() : null;
+    const x = r ? Math.round(e.clientX - r.left) : Math.round(e.clientX || 0);
+    const y = r ? Math.round(e.clientY - r.top) : Math.round(e.clientY || 0);
+    const button = e.button === 2 ? 2 : e.button === 1 ? 1 : 0;
+    return { x, y, button };
+  };
+  window.addEventListener("message", (e) => {
+    const d = e.data;
+    if (e.source !== window.parent || !d || typeof d !== "object") return;
+    if (typeof d.qwenpawTeach === "boolean") {
+      teachOn = d.qwenpawTeach;
+      teachSensitive = Boolean(d.sensitive);
+    }
+    if (typeof d.qwenpawTeachSensitive === "boolean") teachSensitive = d.qwenpawTeachSensitive;
+  });
+  const canvasOf = () => document.getElementById("noVNC_canvas") || document.querySelector("#screen canvas");
+  document.addEventListener("pointerdown", (e) => {
+    const p = point(canvasOf(), e);
+    send({ kind: "pointer", type: "down", ...p });
+  }, true);
+  document.addEventListener("pointerup", (e) => {
+    const p = point(canvasOf(), e);
+    send({ kind: "pointer", type: "up", ...p });
+  }, true);
+  document.addEventListener("pointermove", (e) => {
+    if (!teachOn) return;
+    const now = Date.now();
+    // 500 ms sampling: a drag still resolves, and a minute of hovering does
+    // not produce 60,000 events.
+    if (now - lastMoveAt < 500) return;
+    lastMoveAt = now;
+    const p = point(canvasOf(), e);
+    send({ kind: "pointer", type: "move", ...p });
+  }, true);
+  document.addEventListener("wheel", (e) => {
+    if (!teachOn) return;
+    const dir = Math.abs(e.deltaX) > Math.abs(e.deltaY)
+      ? (e.deltaX < 0 ? "left" : "right")
+      : (e.deltaY < 0 ? "up" : "down");
+    const p = point(canvasOf(), e);
+    send({ kind: "scroll", type: dir, amount: 3, x: p.x, y: p.y });
+  }, true);
+  document.addEventListener("keydown", (e) => {
+    if (!teachOn) return;
+    if (teachSensitive) { send({ kind: "key", key: "", redacted: true }); return; }
+    const k = e.key || "";
+    if (!k) return;
+    send({ kind: "key", key: k });
+  }, true);
+  document.addEventListener("paste", (e) => {
+    if (!teachOn) return;
+    if (teachSensitive) { send({ kind: "clipboard", text: "", redacted: true }); return; }
+    let text = "";
+    try { text = (e.clipboardData || window.clipboardData).getData("text") || ""; } catch {}
+    send({ kind: "clipboard", text: String(text).slice(0, 500) });
+  }, true);
 })();
 </script>`;
 }

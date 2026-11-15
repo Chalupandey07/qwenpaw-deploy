@@ -35,6 +35,9 @@ import * as S from "./state.js";
 // it because no harness ever imported this file.
 import { LEASE_CAP_GRACE_MS } from "./state.js";
 import { enforce as rateLimit } from "./rate-limit.js";
+import {
+  mintTerminal, authorizeTerminal, requireSyncToken, MAX_TERM_DIM,
+} from "./terminal.js";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -62,6 +65,10 @@ function limitClass(path, method) {
   if (path === "/computer/preview") return "preview";
   if (path === "/computer/preview-upload") return "upload";
   if (path === "/computer/needs-you" && method === "POST") return "upload";
+  if (path === "/computer/teach") return "teach";
+  if (path === "/computer/terminal/session") return "terminal";
+  if (path === "/computer/terminal/recording") return "teach";
+  if (path.startsWith("/computer/terminal/")) return "terminal";
   if (path === "/computer/wake") return "mutation";
   if (method === "POST") return "mutation";
   return null;
@@ -312,10 +319,8 @@ export async function handleComputer(request, env, url) {
     // The agent calls this. Token-gated, constant-time, and fail-closed when
     // no token is configured (BUGS.md B-16: a plain `!==` on a token leaks it
     // by timing; an unset secret is a config error, not permission).
-    // Token-gated. (The constant-time helper lands with the terminal commit.)
-    if (env.COMPUTER_SYNC_TOKEN && request.headers.get("X-Computer-Token") !== env.COMPUTER_SYNC_TOKEN) {
-      return json({ error: "unauthorized" }, 401);
-    }
+    const denied = await requireSyncToken(request, env);
+    if (denied) return denied;
     let r;
     try {
       r = await S.raiseNeedsYou(env, b.computer || "default", b.text, b.runId);
@@ -360,10 +365,8 @@ export async function handleComputer(request, env, url) {
     });
   }
   if (path === "/computer/preview-upload" && request.method === "POST") {
-    // Token-gated. (The constant-time helper lands with the terminal commit.)
-    if (env.COMPUTER_SYNC_TOKEN && request.headers.get("X-Computer-Token") !== env.COMPUTER_SYNC_TOKEN) {
-      return json({ error: "unauthorized" }, 401);
-    }
+    const denied = await requireSyncToken(request, env);
+    if (denied) return denied;
     const computer = q.get("computer") || "default";
     const buf = await request.arrayBuffer().catch(() => null);
     // D1's row cap is 2,000,000 bytes for the WHOLE row; leave headroom.
@@ -386,6 +389,93 @@ export async function handleComputer(request, env, url) {
     } catch {
       return json({ ok: false, error: "wake_failed" }, 503);
     }
+  }
+
+  // ---- teach ----
+  // Saving a draft. Deliberately NOT token-gated for the browser: the caller
+  // is the authenticated UI acting on the user's own demonstration. Reading
+  // the pending list IS token-gated, because that is the agent-facing side.
+  if (path === "/computer/teach" && request.method === "POST") {
+    const b = await request.json().catch(() => null);
+    if (!b || !b.name || !b.playbook || !Array.isArray(b.playbook.steps) || b.playbook.steps.length === 0) {
+      // The endpoint refuses what the editor refuses. A skill with no steps
+      // reaching the store is how "Saved" became a lie in the old UI.
+      return json({ error: "invalid_skill", detail: "needs a name and at least one step" }, 400);
+    }
+    try {
+      return json(await S.putTaughtSkill(env, b.computer || "default", b));
+    } catch (e) {
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
+  }
+  if (path === "/computer/teach/pending" && request.method === "GET") {
+    const denied = await requireSyncToken(request, env);
+    if (denied) return denied;
+    const computer = q.get("computer") || "default";
+    try {
+      return json({ skills: await S.listTaughtSkills(env, computer) });
+    } catch (e) {
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
+  }
+  if (path === "/computer/teach/ack" && request.method === "POST") {
+    const denied = await requireSyncToken(request, env);
+    if (denied) return denied;
+    const b = await request.json().catch(() => ({}));
+    if (!b.id) return json({ error: "bad_request" }, 400);
+    try {
+      return json(await S.deleteTaughtSkill(env, b.id));
+    } catch (e) {
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
+  }
+
+  // ---- terminal (the highest-risk surface: a shell) ----
+  // Minting requires the caller to name a lease they actually hold; opening
+  // the socket re-checks the LIVE lease and the generation. There is no
+  // view-only terminal and no fallback: a read-only shell is still a shell.
+  if (path === "/computer/terminal/session" && request.method === "POST") {
+    const { computer = "default", leaseId } = await request.json().catch(() => ({}));
+    if (!leaseId) return json({ error: "no_lease" }, 403);
+    let r;
+    try {
+      r = await mintTerminal(env, computer, leaseId);
+    } catch (e) {
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
+    if (!r.ok) {
+      // `not_holder` is a 409 (someone else has it); `no_lease` a 403 (take
+      // control first); `unconfigured` a 503 (a deploy error, not a refusal).
+      const status = r.error === "not_holder" ? 409 : r.error === "unconfigured" ? 503 : 403;
+      return json({ error: r.error }, status);
+    }
+    // `deadlineMs` is the wall clock at which the PTY server kills the shell.
+    // The browser shows it as a countdown so a user is never surprised.
+    return json({ url: r.url, deadlineMs: r.deadlineMs, expiresAt: r.expiresAt });
+  }
+
+  // The websocket/stream upgrade itself. websockify terminates the browser's
+  // WS and dials the PTY server on the machine; this route authorises each
+  // attempt against live state and 302s to the signed upstream URL. The
+  // capability is a path segment, never a query parameter (B-16).
+  if (path.startsWith("/computer/terminal/")) {
+    const auth = await authorizeTerminal(env, path, q.get("computer"));
+    if (!auth.ok) {
+      const body = auth.error === "store" ? "Terminal unavailable (store)."
+        : auth.error === "released" ? "Control was released."
+        : "Terminal link expired.";
+      return new Response(body, { status: auth.status });
+    }
+    return json({
+      ok: true,
+      computer: auth.computer,
+      // Never the provider token: the preamble is the PTY server's contract
+      // and it is handed over server-side, not to the browser.
+      deadlineMs: Number(auth.target.deadlineMs || 0) || null,
+      // The dimension cap is published so the client clamps before sending,
+      // instead of relying on the server to ignore a bad frame (B-17).
+      maxDim: MAX_TERM_DIM,
+    });
   }
 
   // ---- the stream + assets ----

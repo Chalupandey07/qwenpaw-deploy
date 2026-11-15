@@ -141,20 +141,30 @@ await (async () => {
   check("needs-you is keyed per computer",
     /FROM needs_you WHERE computer = \?/.test(stateSrc));
   check("previews are upserted in place, not appended",
-    stateSrc.includes("ON CONFLICT(computer) DO UPDATE SET png"));
+    /ON CONFLICT\(computer\) DO UPDATE SET png/.test(stateSrc));
   check("previews only write when the hash changes",
-    stateSrc.includes("if (prevSha === sha256) return { ok: true, unchanged: true"),
+    // The comparison moved from the blob to the metadata row (a 700 KB read
+    // plus SHA-256 became a ~40-byte read) but the RULE is unchanged, so the
+    // assertion is written against the rule, not the old expression.
+    /if \(meta && meta\.sha256 === sha256\) return \{ ok: true, unchanged: true/.test(stateSrc),
     "unconditional uploads burned the KV quota");
   // The whole point of matching live tables: a second schema beside the real
   // one would look like it worked and lose every existing lease and preview.
   // Strip comments first: the file explains the defect it is avoiding, and a
   // naive substring check would flag its own explanation.
+  // Strip block comments too: the module now documents the preview_meta DDL it
+  // legitimately owns, and a naive `CREATE TABLE` check would flag that
+  // explanation. What must never appear is a DDL for a LIVE table.
   const stateCode = stateSrc
+    .replace(/\/\*[\s\S]*?\*\//g, "")
     .split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
   check("state.js uses the LIVE table names, not its own parallel schema",
     ["FROM leases", "FROM generations", "FROM needs_you", "FROM previews", "FROM modes"]
       .every((t) => stateCode.includes(t))
-    && !stateCode.includes("computer_lease") && !stateCode.includes("CREATE TABLE"),
+    && !stateCode.includes("computer_lease") && !stateCode.includes("computer_preview")
+    // The one table it may create is its own additive metadata table.
+    && [...stateCode.matchAll(/CREATE TABLE IF NOT EXISTS (\w+)/g)]
+      .every((m) => m[1] === "preview_meta"),
     "a parallel schema is a silent data fork");
 
   console.log("router: enforcement order");
@@ -182,7 +192,12 @@ await (async () => {
   check("the preview 304s on an unchanged hash",
     routerSrc.includes("If-None-Match") && routerSrc.includes("304"));
   check("the agent-facing endpoints are token-gated",
-    routerSrc.includes("X-Computer-Token"));
+    // Still token-gated, now through one constant-time helper instead of two
+    // inline `!==` comparisons (B-16). Assert the helper is used AND that no
+    // raw comparison crept back in.
+    /requireSyncToken\(request, env\)/.test(routerSrc)
+    && !/headers\.get\("X-Computer-Token"\)\s*!==/.test(routerSrc),
+    "an inline token compare leaks by timing and can fail open when unset");
 
   console.log("ui: the behaviours that were broken before");
   const ui = readFileSync(resolve(REPO, "pages/public/computer/ui.html"), "utf8");
@@ -212,7 +227,20 @@ await (async () => {
   check("the preview image is keyed by the screen hash",
     ui.includes("/computer/preview?computer=") && ui.includes("previewSha"));
   check("Team vs Private is a real control", ui.includes("advPrivate") && ui.includes("setMode"));
-  check("the terminal tab exists", ui.includes('data-tab="teach"') || ui.includes("Terminal"));
+  check("the terminal tab exists",
+    ui.includes('data-tab="terminal"') && ui.includes('id="termHost"'),
+    "a tab without a host is the old half-built terminal");
+  check("the terminal is gated on control",
+    /el\.termOpen\.disabled = !held/.test(ui),
+    "a shell must not open without the lease");
+  check("the terminal closes when control is released",
+    /closeTerminal\("Control released/.test(ui),
+    "B-4: the shell must die with the lease");
+  check("the frame protocol is length-prefixed",
+    ui.includes("encodeFrame(0") && ui.includes("setUint32(1"),
+    "raw bytes cannot carry a resize on the same channel");
+  check("the client clamps resize dimensions before sending",
+    /Math\.min\(1000/.test(ui), "B-17");
   check("no injected SPA coupling: the page is self-contained",
     !ui.includes("qwenpaw-root") && ui.includes("<!doctype html>"));
 
