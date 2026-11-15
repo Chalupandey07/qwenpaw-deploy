@@ -284,3 +284,69 @@ Protocol run by the runner; browser / needs-token rows were recorded as skipped,
 
 ### Notes (non-pass rows)
 - **T33** (KNOWN-GAP): mailbox row present; mcp.clients={'anysearch': {'name': 'anysearch_mcp', 'description': 'AnySearch web search via MCP', 'enabled': False, 'transport': 's; log mentions qwenpawmail: False (Gmail MCP never configured)
+
+## Round 5 — local-only run, 2026-11-15 (AutoClaw, NOT a full round)
+
+**Read this before reading the table.** AutoClaw has GitHub access to this
+repo but **no machine access, no Cloudflare connector and no browser** in
+this environment (`ib.py`, `cf.py`, `auth.json` and the live console are all
+absent here). Everything below therefore ran in the local workspace only.
+Machine, browser and needs-token rows are recorded honestly as
+`NEEDS-BROWSER` / `NEEDS-TOKEN` / `NOT-RUN-HERE` — they are **not** passes,
+and no protocol test that needs the live box was attempted.
+
+Purpose of this round: prove the new Phase 4/5 code is correct and
+self-consistent **before** Muse spends a machine run or a browser session on
+it, and fix the stale expectations that would have produced false failures.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T46 | harness | local | PASS | gate harness 116/116 (expectation corrected from a stale 105 — see note) |
+| T47 | harness | local | PASS | chrome harness 34/34 (expectation corrected from a stale 13) |
+| T48 | harness | local | PASS | origin harness 9/9 |
+| T62 | memory | local | PASS | recall CLI: 44 checks, 0 failed |
+| T63 | memory | local | PASS | lessons ledger: 45 checks, 0 failed |
+| T64 | memory | local | PASS | ReMe doctor selftest: 11 checks, 0 failed |
+| T66 | codemode | local | PASS | Code Mode harness: 59 checks, 0 failed |
+| T01–T45, T49 | all | machine/http | NOT-RUN-HERE | needs the live machine + connectors — **not attempted by AutoClaw** |
+| T50–T57 | desktop | browser | NEEDS-BROWSER | unchanged; Muse must run these (see the preflight below) |
+| T58–T61 | — | needs-token | NEEDS-TOKEN | unchanged; user-held secrets |
+| T65 | memory | machine | NEEDS-VERIFICATION | `features/memory/` must first be synced to `/data/home/qwenpaw/working/memory-tools/` |
+
+### Notes (non-pass rows)
+
+- **T46/T47 stale expectation (fixed).** `run-tests.py` asserted 105 and 13
+  passed checks while the committed harnesses emit 116 and 34. That is a
+  latent false-FAIL: the tests were correct and the bookkeeping was wrong.
+  Corrected in `run-tests.py`, together with TESTS.md. No harness logic was
+  changed.
+- **T65 is not a pass.** The doctor binary does not exist on the machine yet.
+  T65 reports `NEEDS-VERIFICATION` (never PASS) until Muse syncs
+  `features/memory/*.py` to `/data/home/qwenpaw/working/memory-tools/`.
+- **Nothing in this round ran against QwenPaw, Cloudflare or a browser.** If
+  Muse wants a real protocol round, that is a separate run on the box.
+
+### New preflight — run this BEFORE the next browser round
+
+`features/test-project/preflight.py` exists because the 11:27–11:38 browser
+round lost T52/T53/T56 to a spent Cloudflare KV write quota that no
+protocol test could see. It answers, in about ten seconds:
+
+1. is the machine up (not `waking`/`cooldown`/`conflict`)?
+2. is the KV write budget still available? (`--probe-write` does **one**
+   scratch write + delete and looks for error 10048)
+3. is the watcher throttle that bounded the burn actually deployed?
+4. are the desktop services and the gate healthy?
+
+```bash
+python3 features/test-project/preflight.py --probe-write
+```
+
+Exit `0` = clear, `3` = BLOCKED with the reason, and `INCOMPLETE` when the
+connectors are absent (a wrong-host run must not masquerade as a real block).
+Without `--probe-write` it performs zero writes, because on a spent-quota day
+every probe write is one you cannot get back.
+
+**Timing:** the KV quota resets at midnight UTC = **05:30 IST on 16 Nov** —
+about 16.5 h from this round. A browser round before then will fail the same
+way it did at 11:27 unless preflight says otherwise.

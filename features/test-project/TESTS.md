@@ -541,6 +541,30 @@ the parent runs them and pastes the outcome into RESULTS.md.
 
 ---
 
+## (p) Preflight — run BEFORE any browser round
+
+### P1 — preflight: machine, KV write budget, watcher throttle, services
+- Area: `preflight` · Method: `protocol` (read-only script; run by Muse)
+- Check: `python3 features/test-project/preflight.py --probe-write`
+- Why: the 2026-11-15 11:27 browser round lost T52/T53/T56 to a spent
+  Cloudflare KV write quota that **no protocol test could see** — reads all
+  looked healthy while every write answered 500. This runs first so a browser
+  session is never spent discovering that again.
+- Expected: exit `0` and `CLEAR`. It checks (1) the machine is `up`, not
+  `waking`/`cooldown`/`conflict`; (2) the KV write budget, via **one**
+  scratch write + delete looking for Cloudflare error `10048`; (3) the live
+  lease-watcher actually carries the change-only/throttle markers that
+  bounded the burn; (4) the desktop services are active; (5) the gate and
+  console answer.
+- Exit `3` = BLOCKED with the reason (do not schedule a browser round).
+  A run where the connectors are absent prints `INCOMPLETE` and exit `0` —
+  a wrong-host run must not masquerade as a real block.
+- Without `--probe-write` it performs **zero** writes; on a spent-quota day
+  every probe write is one you cannot get back, so that is opt-in.
+- Timing: the quota resets at midnight UTC = 05:30 IST.
+
+---
+
 ## (m) Memory — Phase 4 (local + machine)
 
 These four tests cover `features/memory/` (bounded recall, lessons ledger,
