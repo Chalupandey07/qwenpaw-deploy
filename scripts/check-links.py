@@ -115,6 +115,12 @@ def main() -> int:
             if not looks_like_repo_path(cand):
                 continue
             checked_paths += 1
+            # A path annotated as removed is intentionally gone: the docs keep
+            # the name so the history is readable, with a pointer to where the
+            # thing lives now. Flagging it would force us to delete history.
+            tail = text[m.end():m.end() + 60]
+            if "(removed" in tail:
+                continue
             if not (REPO / cand).exists():
                 line = text[: m.start()].count("\n") + 1
                 problems.append(f"{rel}:{line}  missing path -> {cand}")

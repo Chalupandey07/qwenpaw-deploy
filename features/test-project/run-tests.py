@@ -1388,6 +1388,37 @@ def t82():
     return _harness("features/groupchat/harness-groupchat-cors.mjs", 13)
 
 
+# Tests that exercise the REMOVED computer. They are kept because they are the
+# acceptance criteria for the Rakazo rebuild, but they must report
+# NEEDS-REBUILD rather than FAIL while no computer exists — a red suite for a
+# deliberately-deleted feature teaches people to ignore red.
+NEEDS_REBUILD_IDS = {
+    "T07",
+    "T08",
+    "T09",
+    "T10",
+    "T11",
+    "T12",
+    "T13",
+    "T14",
+    "T15",
+    "T16",
+    "T17",
+    "T46",
+    "T47",
+    "T48",
+    "T49",
+    "T50",
+    "T51",
+    "T52",
+    "T53",
+    "T54",
+    "T55",
+    "T56",
+    "T57",
+    "T75",
+}
+
 TESTS = [
     ("T01", "Pages root serves console SPA + side-panel markers", "console", "protocol", t01),
     ("T02", "/status serves status page", "console", "protocol", t02),
@@ -1473,6 +1504,11 @@ TESTS = [
 SKIP_NOTE = {
     "browser": "needs a real logged-in browser (parent agent) — see TESTS.md",
     "needs-token": "needs a user-held secret — never invented; see TESTS.md",
+    "needs-rebuild": (
+        "the computer was REMOVED 2026-11-15 and is being rebuilt from "
+        "Rakazo's design; this test is its acceptance criterion and is "
+        "expected to pass again once the rebuild lands (features/computer/)"
+    ),
 }
 
 
@@ -1545,7 +1581,11 @@ def main():
     rows = []
     counts = {}
     for tid, name, area, method, fn in selected:
-        if method != "protocol" or fn is None:
+        if tid in NEEDS_REBUILD_IDS:
+            result = "NEEDS-REBUILD"
+            ev = SKIP_NOTE["needs-rebuild"]
+            print(f"{tid} [{area}/{method}] {result} — {ev}", flush=True)
+        elif method != "protocol" or fn is None:
             result = "NEEDS-BROWSER" if method == "browser" else "NEEDS-TOKEN"
             ev = SKIP_NOTE[method]
             print(f"{tid} [{area}/{method}] {result} — {ev}", flush=True)

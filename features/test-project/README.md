@@ -155,7 +155,7 @@ they affect.
 | `README.md` | This file. |
 
 Repo files the suite reads (never edits): `pages/public/_worker.js`,
-`pages/public/desktop-chrome.html`, `features/desktop/*` (services,
+`pages/public/desktop-chrome.html` (removed 2026-11-15 → features/computer/README.md), `features/desktop/*` (services,
 `lease-watcher.py`, `computer-use*.yaml`, harnesses),
 `features/routines/worker/*`, `features/groupchat/worker/*`,
 `features/board/worker/*`, `features/infra/scripts/fleet.py`,

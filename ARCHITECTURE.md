@@ -134,7 +134,7 @@ user clicks "Take control"
 ```
 
 Two details that cost hours to find, both documented in
-`features/desktop/README.md`:
+`features/desktop/README.md` (removed 2026-11-15 → features/computer/README.md):
 
 - **`redirect: "manual"` is mandatory.** Workers `fetch()` auto-follows the
   InstaBox proxy's `303 + Set-Cookie` *without a cookie jar*, so the follow-up

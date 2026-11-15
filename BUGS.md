@@ -2,7 +2,7 @@
 
 Every known bug and issue, with severity and a fix. This supersedes the
 scattered lists in `features/audit-2026-11-15/` (which stays as the audit of
-record for the 19 findings it raised) and `features/desktop/README.md` (which
+record for the 19 findings it raised) and `features/desktop/README.md` (removed 2026-11-15 → features/computer/README.md) (which
 records fixes already applied).
 
 **Severity** = likelihood × impact, judged for *this* deployment (one user,
@@ -48,7 +48,7 @@ fix batches were applied and live-tested. Listed so nobody re-litigates them.
 | A-18 | Info | Activity-feed Worker unauth | Accepted (read-only public feed) |
 | A-19 | Info | Group-chat DO turn-taking | FIXED (DO + storage-backed limits) |
 
-Also already fixed and live-verified (from `features/desktop/README.md`), no
+Also already fixed and live-verified (from `features/desktop/README.md` (removed 2026-11-15 → features/computer/README.md)), no
 action needed: pill-never-clears, terminal-never-opens, Team→Private 502,
 Private 303 cookie contamination, `__status` false "asleep", wake timeout,
 `DriverCard` YAML parse, missing `CAMOUFOX_BRIDGE_TOKEN`, Chromium 10×10
@@ -180,7 +180,7 @@ root shell.
 
 ### B-5 · P2 · Preview `<img>` is re-fetched every 10 s while a banner is open — OPEN
 
-**File:** `pages/public/desktop-chrome.html` — `pollNeedsYou` (~L778–790),
+**File:** `pages/public/desktop-chrome.html` (removed 2026-11-15 → features/computer/README.md) — `pollNeedsYou` (~L778–790),
 `needsYouTimer = setInterval(pollNeedsYou, 10000)` (~L1153).
 
 `nyPreview.src` is reassigned on **every** poll while a needs-you record
@@ -368,7 +368,7 @@ from "fresh computer", which is precisely the ambiguity that confused the
 
 ### B-16 · P3 · Bridge: token accepted via query string, compared non-constant-time, and `/eval` is RCE
 
-**File:** `features/camoufox/bridge/bridge.py` — auth (~L316–330),
+**File:** `features/camoufox/bridge/bridge.py` (removed 2026-11-15 → features/computer/README.md) — auth (~L316–330),
 `/eval` (~L227), `/watch` (~L287).
 
 Three issues, one file:
@@ -390,7 +390,7 @@ short-lived signed path segment); bind the bridge to `127.0.0.1` +
 
 ### B-17 · P3 · PTY server: no frame-size validation on resize frames
 
-**File:** `features/desktop/pty-server.py` — frame loop (~L60+).
+**File:** `features/desktop/pty-server.py` (removed 2026-11-15 → features/computer/README.md) — frame loop (~L60+).
 
 `kind 1` reads `cols, rows` as `u16be` without bounding them. A malformed
 frame sets a 65535×65535 terminal, which some programs then try to allocate

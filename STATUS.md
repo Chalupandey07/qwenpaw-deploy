@@ -24,7 +24,7 @@ Last updated: 2026-11-15 (after the correctness pass).
 
 | Thing | Where | Verified live? |
 |---|---|---|
-| Embedded desktop (Team `:1`, Private `:2`) | `pages/public/desktop-chrome.html` | **Yes** — both render |
+| Embedded desktop (Team `:1`, Private `:2`) | `pages/public/desktop-chrome.html` (removed 2026-11-15 → features/computer/README.md) | **Yes** — both render |
 | View/control split + 90 s lease + heartbeat | `_worker.js` | **Yes** |
 | Sealed capabilities (AES-GCM, generation-scoped) | `_worker.js` | **Yes** |
 | Terminal (PTY over websockify) | `pty-server.py` | **Yes** — real shell prompt |

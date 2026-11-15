@@ -320,7 +320,7 @@ MCP (`mcp-proxy`, DriverCard `computer-use.yaml`, `open-computer-use`
    level too (Rakazo sets it on `/vnc.html` via `screenPolicyPath`).
    Files: new systemd unit `desktop-novnc-view.service` (machine),
    `pages/public/_worker.js` (`/desktop` branch: view vs control
-   origin), `features/desktop/README.md`. Also publish the view port
+   origin), `features/computer/README.md`. Also publish the view port
    private (like 6081) and keep its token server-side only.
 2. **Take-control lease in the Worker** — implement Rakazo's lease in
    Cloudflare KV: `POST /desktop/__takeover` mints a lease
@@ -332,8 +332,8 @@ MCP (`mcp-proxy`, DriverCard `computer-use.yaml`, `open-computer-use`
    the lease (agent holds it while running; a user takeover revokes it
    and the agent re-reads the screen on handback — mirroring Rakazo's
    execution-lease fence). Files: `pages/public/_worker.js`,
-   `features/desktop/mcp-computer-use.service` (proxy side),
-   `features/desktop/computer-use.yaml` (policy note).
+   `features/desktop/mcp-computer-use.service` (removed 2026-11-15 → features/computer/README.md) (proxy side),
+   `features/desktop/computer-use.yaml` (removed 2026-11-15 → features/computer/README.md) (policy note).
 3. **Capability URLs with scope + short TTL + recheck** — replace the
    12 h HMAC cookie with a sealed capability (AES-GCM via WebCrypto in
    the Worker): 60-min TTL, scope `{leaseId, generation}`, path
@@ -342,7 +342,7 @@ MCP (`mcp-proxy`, DriverCard `computer-use.yaml`, `open-computer-use`
    old URLs die. The worker re-validates the capability on every
    request (and, for the WebSocket, on a 1 s recheck that closes the
    socket on denial — Rakazo's `watchScreenAuthorization` pattern).
-   Files: `pages/public/_worker.js`, `features/desktop/harness-desktop-gate.mjs`
+   Files: `pages/public/_worker.js`, `features/desktop/harness-desktop-gate.mjs` (removed 2026-11-15 → features/computer/README.md) (removed 2026-11-15 → features/computer/README.md)
    (extend: capability mint/verify, generation bump, WS recheck).
 
 ### P1 — UX parity (the things the user actually saw on grokagent.pages.dev)
@@ -366,21 +366,21 @@ MCP (`mcp-proxy`, DriverCard `computer-use.yaml`, `open-computer-use`
    auto-reconnect with backoff; keep a held predecessor iframe during
    view↔control swaps so the screen never blanks (this directly fixes
    the transient-black class of bug). Files: `pages/public/_worker.js`,
-   `features/desktop/harness-desktop-gate.mjs`.
+   `features/desktop/harness-desktop-gate.mjs` (removed 2026-11-15 → features/computer/README.md) (removed 2026-11-15 → features/computer/README.md).
 6. **Wake / Asleep / booting states in `/desktop`** — when the desktop
    or VM is down, show "Computer is asleep" + **Wake** (calls the
    existing keep-alive wake path) and "Booting live desktop…" while it
    wakes; auto-wake on opening `/desktop` is optional (Rakazo auto-boots
    on panel open; on Free, a wake costs run time, so keep it a button
    first). Files: `pages/public/_worker.js` (status via the keep-alive
-   Worker's KV status), `features/desktop/README.md`.
+   Worker's KV status), `features/computer/README.md`.
 7. **Maintenance actions in the `…` menu** — Stop / Recover / Reset /
    Update, calling the InstaBox desktop API through a Worker endpoint.
    Needs `INSTABOX_API_KEY` as a Worker secret (currently NOT set on
    the keep-alive Worker — the wake path works without it; this needs
    it). Confirm dialogs for Reset/Recover, as Rakazo does. Files:
    `pages/public/_worker.js` (new `POST /desktop/__action`), Worker
-   secret setup, `features/desktop/README.md`.
+   secret setup, `features/computer/README.md`.
 
 ### P2 — agent-side parity
 

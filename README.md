@@ -20,7 +20,7 @@ keys · no local models.
 | See every known bug, with severity and fix | **[BUGS.md](BUGS.md)** |
 | Find the next thing worth building | **[IMPROVEMENTS.md](IMPROVEMENTS.md)** |
 | Understand the agent design philosophy | **[AGENT-DESIGN.md](AGENT-DESIGN.md)** |
-| Know what Muse hit and fixed, in detail | [HANDOFF-AUTOCLAW.md](HANDOFF-AUTOCLAW.md) · `features/desktop/README.md` |
+| Know what Muse hit and fixed, in detail | [HANDOFF-AUTOCLAW.md](HANDOFF-AUTOCLAW.md) · `features/desktop/README.md` (removed 2026-11-15 → features/computer/README.md) |
 
 ## Live
 

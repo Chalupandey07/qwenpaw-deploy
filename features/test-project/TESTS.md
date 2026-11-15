@@ -110,7 +110,7 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 
 ### T09 — terminal WebSocket 101 + frame echo on 6083 (on-machine)
 - Area: `desktop` · Method: `protocol`
-- Check (via `ib.py exec`, Python stdlib only — `run-tests.py` embeds this script): raw TCP to `127.0.0.1:6083`, HTTP upgrade `GET /websockify`, then send one masked binary WS frame carrying a pty frame `[0x00][len u32be][b"echo hello-terminal\n"]` (frame protocol in `features/desktop/pty-server.py`: kind 0 = stdin, kind 1 = resize) and read until `hello-terminal` comes back.
+- Check (via `ib.py exec`, Python stdlib only — `run-tests.py` embeds this script): raw TCP to `127.0.0.1:6083`, HTTP upgrade `GET /websockify`, then send one masked binary WS frame carrying a pty frame `[0x00][len u32be][b"echo hello-terminal\n"]` (frame protocol in `features/desktop/pty-server.py` (removed 2026-11-15 → features/computer/README.md): kind 0 = stdin, kind 1 = resize) and read until `hello-terminal` comes back.
 - Expected: upgrade status `HTTP/1.1 101 Switching Protocols`, `echo_found: true`. (A TEXT frame is rejected by websockify — the xterm.js client sends binary frames, so binary is correct, not a bug.)
 - Evidence: WS status line + echo_found + bytes read. (Verified live 2026-11-15: 101, echo found, 23 bytes.)
 - Notes: this proves the pty path end-to-end. Whether the Terminal *tab* opens a shell in the browser is T52 (browser).
@@ -118,7 +118,7 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 ### T10 — MCP proxies answer SSE 200 (on-machine)
 - Area: `mcp` · Method: `protocol`
 - Check (via `ib.py exec`): `curl -s -o /dev/null -w "%{http_code}" --max-time 4 http://172.18.0.1:8898/sse` and the same for `http://172.18.0.1:8897/sse`
-- Expected: both `200`. (8898 = :1 computer-use proxy, `features/desktop/mcp-computer-use.service`; 8897 = :2 QA proxy, `mcp-computer-use-qa.service` + `qa-server.sh` wrapper, which is required because `mcp-proxy` spawns its server with a minimal env.)
+- Expected: both `200`. (8898 = :1 computer-use proxy, `features/desktop/mcp-computer-use.service` (removed 2026-11-15 → features/computer/README.md); 8897 = :2 QA proxy, `mcp-computer-use-qa.service` + `qa-server.sh` wrapper, which is required because `mcp-proxy` spawns its server with a minimal env.)
 - Evidence: both codes. (Verified live: 8898 → 200, 8897 → 200. WARNING: plain `curl` against an SSE endpoint never ends — always use `--max-time`; an earlier probe without a cap ate the whole 60 s exec budget.)
 
 ### T11 — MCP list_apps on 8898 shows ONLY the :1 display's apps (on-machine)
@@ -131,7 +131,7 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 ### T12 — MCP list_apps on 8897 shows ONLY the :2 display's apps (on-machine)
 - Area: `mcp` · Method: `protocol`
 - Check: same MCP client as T11, against port `8897`.
-- Expected: server `open-computer-use 1.1.4`; same 9 tools; `list_apps` lists `Chromium` (pid 111374 at verification time, window `Daily Puzzle Answers, Solvers & Wordle Tools - Chromium`) and `xfwm4` ONLY — no `xfce4-panel`, no `xfdesktop`, no :1 Chromium pid. This is the proof that :2 is a real separate display with its own D-Bus/AT-SPI registry (`features/desktop/desktop-dbus-qa.service`, `qa-server.sh`).
+- Expected: server `open-computer-use 1.1.4`; same 9 tools; `list_apps` lists `Chromium` (pid 111374 at verification time, window `Daily Puzzle Answers, Solvers & Wordle Tools - Chromium`) and `xfwm4` ONLY — no `xfce4-panel`, no `xfdesktop`, no :1 Chromium pid. This is the proof that :2 is a real separate display with its own D-Bus/AT-SPI registry (`features/desktop/desktop-dbus-qa.service` (removed 2026-11-15 → features/computer/README.md), `qa-server.sh`).
 - Evidence: full `list_apps` text. (Verified live 2026-11-15.)
 
 ### T13 — teach endpoints exist (protocol half)
@@ -161,7 +161,7 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
   3. Public: `curl -s -w "\nHTTP %{http_code}\n" --max-time 30 -X POST https://qwenpawx.pages.dev/desktop/__preview-upload?computer=default` → 401 (sync-token gated, `desktopPreviewUpload`); `curl -s -o /dev/null -w "%{http_code}\n" --max-time 30 "https://qwenpawx.pages.dev/desktop/__preview?computer=default"` → 200 gate page (cookie-gated, `desktopPreview`).
 - Expected: all three sub-checks pass; `__lease` generations are per-computer and non-zero after use (T05).
 - Evidence: `PREVIEW_MIN_S` value, both mtimes + ages, both status codes. (Verified live 2026-11-15: PREVIEW_MIN_S=120; upload 401; preview gate 200. D1 previews rows: default 500,429 B, qa 707,640 B, updated 08:12 UTC. Preview PNG freshness is checked by the runner on the machine each round.)
-- Notes: the QwenPaw chat itself cannot show the preview image without a console rebuild — the preview is shown in the /desktop needs-you banner and the injected side panel instead (honest limit, `features/desktop/README.md`).
+- Notes: the QwenPaw chat itself cannot show the preview image without a console rebuild — the preview is shown in the /desktop needs-you banner and the injected side panel instead (honest limit, `features/desktop/README.md` (removed 2026-11-15 → features/computer/README.md)).
 
 ### T17 — agent screenshot: mss in the container is 1920x1080 and matches host scrot
 - Area: `screenshot` · Method: `protocol`
@@ -171,7 +171,7 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
   3. Compare with the stdlib PNG decoder in `run-tests.py` (`png_mean`): dimensions + mean luminance of both files.
 - Expected: mss monitors `[{width:1920,height:1080}, {width:1920,height:1080, output:'VNC-0'}]`; both PNGs `1920 x 1080, 8-bit/color RGB`; both sizes > 100 KB and within 2x of each other; mean luminance within 15% (a bare/unmapped desktop and a Chromium window differ far more than that in size and mean). No eyeballing.
 - Evidence: `file` output for both, both byte sizes, both mean-luminance values. (Verified live 2026-11-15: mss 1920x1080, 188,623 B, mean 161.66; scrot 1920x1080, 243,014 B, mean 161.66 — identical means.)
-- Notes: if an agent screenshot ever comes back bare again, first check `xwininfo` map state of the Chromium window; if unmapped, re-open via the bridge — do not re-diagnose the capture path (`features/desktop/README.md`).
+- Notes: if an agent screenshot ever comes back bare again, first check `xwininfo` map state of the Chromium window; if unmapped, re-open via the bridge — do not re-diagnose the capture path (`features/desktop/README.md` (removed 2026-11-15 → features/computer/README.md)).
 
 ---
 
@@ -204,7 +204,7 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 
 ### T19 — Camoufox on x.com/0xsatwik (navigates the browser — state-changing test)
 - Area: `bridge` · Method: `protocol`
-- Check (via `ib.py exec` — token is read from the machine file INSIDE the shell and never printed, exactly the pattern in `features/camoufox/README.md`): `T=$(grep '^BRIDGE_TOKEN=' /data/home/camoufox/.env | cut -d= -f2-); curl -s --max-time 60 -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"url":"https://x.com/0xsatwik"}' http://127.0.0.1:8899/goto`
+- Check (via `ib.py exec` — token is read from the machine file INSIDE the shell and never printed, exactly the pattern in `features/camoufox/README.md` (removed 2026-11-15 → features/computer/README.md)): `T=$(grep '^BRIDGE_TOKEN=' /data/home/camoufox/.env | cut -d= -f2-); curl -s --max-time 60 -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"url":"https://x.com/0xsatwik"}' http://127.0.0.1:8899/goto`
 - Expected: HTTP 200, JSON with `url` containing `x.com/0xsatwik` and `title` containing `Satwik` (verified shape 2026-11-15: `https://x.com/0xsatwik` → 200, title `Satwik Samanta (@0xSatwik) / X`). X search still redirects to login — that is expected, not tested here.
 - Evidence: `url` + `title` + HTTP status ONLY — never the token, never the full response if it ever echoed a credential (it does not).
 - Notes: `/health` showed `about:blank` at verification time, so this test (re-)navigates as its own setup. That is intentional: the test asserts the end state, not the prior state.
@@ -318,7 +318,7 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 - Check (via `ib.py exec`): `docker exec qwenpaw qwenpaw skills list`
 - Expected: output ends `Showing: 19 of 19 skills, 19 enabled, 0 disabled` and every row shows `✓ enabled`. **Count correction:** the task brief said 18; the live list on 2026-11-15 07:03 IST is **19** (the 19th is builtin `QA_source_index`). The expected value in this catalogue is the live one (19); if a round shows 18, record which skill is missing/disabled rather than assuming the brief was right.
 - Evidence: the `Showing:` line + full row list. (Verified live 2026-11-15.)
-- Notes: the list reads the workspace registry (`working/workspaces/default/skills/`); a skill installed only to the pool (`skill_pool/`) is invisible until also installed to the workspace dir — see the teach-skill bug in `features/desktop/README.md`.
+- Notes: the list reads the workspace registry (`working/workspaces/default/skills/`); a skill installed only to the pool (`skill_pool/`) is invisible until also installed to the workspace dir — see the teach-skill bug in `features/desktop/README.md` (removed 2026-11-15 → features/computer/README.md).
 
 ### T32 — delegate, github, build-page skills present and enabled
 - Area: `skills` · Method: `protocol`

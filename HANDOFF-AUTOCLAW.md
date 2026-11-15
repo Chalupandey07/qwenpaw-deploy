@@ -4,7 +4,7 @@
 > **Date:** 2026-11-15. **Written by:** Muse (the user's personal agent), who built and deployed everything below.
 > **Your job:** write code for the TODO list in §3, commit it to `Ratulbaba7/qwenpaw-deploy` (branch `main`).
 > **Division of labour:** you code + commit to GitHub. **Muse deploys and tests here** (Cloudflare Pages/Workers + the live InstaBox machine + real-browser checks) and reports results back. Do NOT claim anything is live or verified until Muse has tested it here — Muse is the only one with machine/browser access in this setup.
-> **Read first:** `PLAN.md` (the full plan + status log), `README.md`, `features/desktop/README.md`, `features/test-project/TESTS.md`.
+> **Read first:** `PLAN.md` (the full plan + status log), `README.md`, `features/desktop/README.md` (removed 2026-11-15 → features/computer/README.md), `features/test-project/TESTS.md`.
 
 ## 1. What this is
 
