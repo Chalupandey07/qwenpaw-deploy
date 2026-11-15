@@ -31,7 +31,7 @@ Browser / needs-token rows are recorded by the parent agent by hand.
 | `PASS` | Check ran, expected result observed. |
 | `FAIL` | Check ran, expected result NOT observed. Fix the system, not the test — unless the test itself is wrong, in which case fix TESTS.md + the runner and say so in the round notes. |
 | `KNOWN-GAP` | Expected outcome is a documented gap (currently only T33, mailbox/qwenpawmail). Not a failure. |
-| `NEEDS-VERIFICATION` | The check command itself is unproven (currently only T49, the Cloudflare KV write call). Record the exact open question; a FAIL here would be misleading. |
+| `NEEDS-VERIFICATION` | The check command itself is unproven (currently none — T49's KV write call was verified in Round 2; the runner keeps this result as a guard if a future write call errors). Record the exact open question; a FAIL here would be misleading. |
 | `NEEDS-BROWSER` | Not run — needs a real logged-in browser. |
 | `NEEDS-TOKEN` | Not run — needs a user-held secret. |
 | `BLOCKED` | Not run — the machine was paused / in cooldown, or an external dependency was down. Say which. |
