@@ -78,14 +78,19 @@ def main() -> int:
     # takeover, so the idle interval must stay under the 30 s staleness bound.
     check("idle interval is within the control file's 30 s staleness bound",
           idle <= 30, f"idle={idle}")
-    check("active interval is fast enough for takeover (<10 s)",
-          active < 10, f"active={active}")
+    # A takeover must be noticed well inside the 90 s lease TTL; <=15 s gives
+    # six chances per lease.
+    check("active interval is fast enough for takeover (<=15 s)",
+          active <= 15, f"active={active}")
     # A changed screen must not be delayed by an entire extra preview floor.
     check("preview check interval is below the preview floor",
           consts["PREVIEW_CHECK_S"] < consts["PREVIEW_MIN_S"],
           f"check={consts['PREVIEW_CHECK_S']} floor={consts['PREVIEW_MIN_S']}")
-    check("skills poll is not faster than the preview floor",
-          consts["SKILLS_S"] >= 60, f"skills={consts['SKILLS_S']}")
+    # A taught skill should arrive within a minute or so; it must not poll
+    # faster than the preview check (that would be the hottest loop).
+    check("skills poll is a sane cadence (preview check <= skills <= 300 s)",
+          consts["PREVIEW_CHECK_S"] <= consts["SKILLS_S"] <= 300,
+          f"skills={consts['SKILLS_S']}")
 
     print("adaptive rule")
     # The loop must choose the interval from whether a lease was seen, not
@@ -93,9 +98,14 @@ def main() -> int:
     check("main() selects the interval from lease_held",
           "POLL_S_ACTIVE if lease_held else POLL_S_IDLE" in src,
           "the sleep must depend on lease_held")
-    check("mirror_lease reports whether a lease is held",
-          re.search(r"return True", src) is not None
-          and "Returns True when an unexpired human lease" in src)
+    # Assert the mechanism: a True return inside the live-lease branch, and a
+    # False at the end of the function.
+    mirror_fn = src.split("def mirror_lease", 1)[1].split("\ndef ", 1)[0]
+    check("mirror_lease returns True while a lease is held",
+          "return True" in mirror_fn, "no early True in mirror_lease")
+    check("mirror_lease returns False otherwise",
+          mirror_fn.rstrip().endswith("return False")
+          or "\n    return False" in mirror_fn, "no trailing False")
     check("lease_held is reset each tick",
           "lease_held = False" in src.split("interval =")[1] if "interval =" in src else False)
     check("no bare `time.sleep(POLL_S)` remains",

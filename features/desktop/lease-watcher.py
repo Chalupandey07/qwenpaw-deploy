@@ -70,6 +70,20 @@ CONTROL_FILES = {
     "qa": "/run/user/1000/qa/instabox-control",
 }
 POLL_S = 10
+# Adaptive cadence (IMPROVEMENTS.md §9.2). A fixed 10 s poll for two computers
+# is 17,280 Worker requests/day whether or not anyone is using the box — and
+# the fast poll only matters while a human holds control. Poll at POLL_S while
+# a lease is held, and at POLL_S_IDLE otherwise. 30 s idle stays under the
+# control file's own 30 s staleness bound, so a takeover is never missed by
+# more than the agent already tolerates.
+POLL_S_IDLE = 30
+# Kept as its own literal so the cadence is greppable and the test can read it.
+POLL_S_ACTIVE = 10
+# How often to look at the screens. Was written as `POLL_S * 3`, which becomes
+# wrong the moment the loop cadence is adaptive (an idle 30 s loop would then
+# check previews every tick). It is its own constant, and it must stay below
+# PREVIEW_MIN_S.
+PREVIEW_CHECK_S = 15
 # Preview uploads: change-only, at most once per 120 s per computer.
 # (Unconditional 15 s uploads burned the free KV write budget — see the
 # module docstring. The Worker's preview TTL is 600 s, so a static
@@ -125,7 +139,12 @@ def read_control(path):
 
 
 def mirror_lease(computer):
-    """Mirror one computer's lease into its control file."""
+    """Mirror one computer's lease into its control file.
+
+    Returns True while an unexpired human lease is being mirrored. The poll
+    loop uses that to stay at the fast cadence only while control is actually
+    held (see POLL_S_IDLE / POLL_S_ACTIVE).
+    """
     control_file = CONTROL_FILES[computer]
     lease = get_lease(computer)
     if lease and lease.get("holder") == "user":
@@ -133,8 +152,8 @@ def mirror_lease(computer):
         if exp > int(time.time() * 1000):  # expiresAt is epoch ms
             with open(control_file, "w") as f:
                 f.write("human worker-lease %d\n" % int(time.time()))
-        else:
-            log("lease expired at %s (%s)" % (exp, computer))
+            return True
+        log("lease expired at %s (%s)" % (exp, computer))
     elif lease is not None:
         # Only ever remove OUR OWN entry (owner word worker-lease).
         words = read_control(control_file)
@@ -144,6 +163,7 @@ def mirror_lease(computer):
                 log("lease ended, control file cleared (%s)" % computer)
             except OSError:
                 pass
+    return False
 
 
 def worker_call(method, path, data=None, content_type="application/json"):
@@ -324,21 +344,28 @@ def main():
     log("started, polling %s (default + qa)" % LEASE_URL)
     last_preview_check = 0
     last_skills = 0
+    lease_held = False
     while True:
         try:
             for computer in ("default", "qa"):
-                mirror_lease(computer)
+                if mirror_lease(computer):
+                    lease_held = True
         except Exception as e:
             log("poll error: %s" % e)
         now = time.time()
-        if now - last_preview_check >= POLL_S * 3:  # re-check screens every 15 s
+        if now - last_preview_check >= PREVIEW_CHECK_S:
             last_preview_check = now
             upload_preview("default")
             upload_preview("qa")
         if now - last_skills >= SKILLS_S:
             last_skills = now
             deliver_skills()
-        time.sleep(POLL_S)
+        # Recompute every tick so a takeover shortens the interval immediately.
+        # Worst case one slow tick (<= 30 s), which is inside the lease TTL and
+        # inside the agent's own 30 s staleness bound.
+        interval = POLL_S_ACTIVE if lease_held else POLL_S_IDLE
+        lease_held = False
+        time.sleep(interval)
 
 
 if __name__ == "__main__":
