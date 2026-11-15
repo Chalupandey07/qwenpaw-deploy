@@ -15,24 +15,37 @@ Research note: `features/research/code-mode.md`. Package:
 | HTML status page reporting the measurement + deploy-time state | **done** |
 | Token-authenticated `POST /api/run`, fail-closed when unset | **done** |
 | Audit trail of run attempts (in-memory) | **done** |
-| Live sandbox execution (`createCodemodeRuntime` + `McpConnector`) | **deliberately gated** — returns `501` with the reason, never a fake success |
+| Live sandbox execution (Worker Loader + MCP connector) | **implemented** — runs a fixed, auditable script; tested against a mock loader (success, MCP-down, sandbox-throw) |
 
-### Why the live path is gated, not stubbed
+### The live path, and the two facts it still depends on
 
-Two facts can only be established at deploy time, and neither can be
-honestly guessed from here:
+`POST /api/run` **executes** when both bindings exist. It previously returned
+`501` unconditionally, which was right about the deploy-time facts and wrong
+about the code: a 501 in the success path is a permanently stubbed feature
+wearing a disclaimer.
 
-1. **`worker_loaders` on the free tier is undocumented.** The research note
-   says so explicitly. `wrangler.toml` keeps the binding commented out;
-   uncomment, deploy, then check `/health` for `loader: "bound"`.
+What it does now:
+- builds a Worker Loader sandbox via `LOADER.get(id, factory)` and runs a
+  **fixed, auditable script** over the 10 bench steps. Fixed on purpose: this
+  pilot measures whether the *runtime* works, and a model-generated script
+  would confound "the sandbox failed" with "the model wrote bad code".
+- gives the sandbox **`globalOutbound: null`** — no network of its own — and
+  an `MCP` binding as the only way to reach a tool.
+- reports per-step outcomes. If MCP is down, every step says `ok:false`
+  rather than the run pretending to have worked.
+- returns **502 + the real error** if the sandbox throws, with a note saying
+  it is a failure rather than a missing capability.
+
+The two facts only Muse can establish:
+1. **`worker_loaders` on the free tier is undocumented.** `wrangler.toml`
+   keeps the binding commented out; uncomment, deploy, and check `/health`
+   for `loader: "bound"`.
 2. **The MCP SSE endpoint is not reachable from Cloudflare's edge.** The
-   computer-use MCP proxy listens on the Docker gateway `172.18.0.1:8898`
-   *inside* the VM. It needs a published, token-authenticated InstaBox port
-   (or a Pages `/mcp` route) before a Worker can connect at all.
+   computer-use MCP proxy listens on `172.18.0.1:8898` *inside* the VM and
+   needs a published, token-authenticated InstaBox port.
 
-`POST /api/run` therefore returns the missing pieces by name and records the
-attempt. A pilot that printed "success" without a loader would be worse than
-no pilot.
+Until both are true, `/api/run` answers `503` and names them — which is a
+statement about the deployment, not about the code.
 
 ## The measurement (the actual deliverable)
 

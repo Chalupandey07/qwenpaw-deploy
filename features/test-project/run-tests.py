@@ -1315,7 +1315,7 @@ def t75():
     return _py_harness("features/desktop/test_lease_watcher.py", 29)
 
 def t76():
-    return _harness("features/codemode/harness-codemode.mjs", 59)
+    return _harness("features/codemode/harness-codemode.mjs", 68)
 
 def t77():
     return _py_script_harness(["features/board/pricing.py", "--selftest"], 20)

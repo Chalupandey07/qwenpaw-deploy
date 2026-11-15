@@ -193,8 +193,10 @@ console.log("run endpoint — fail closed");
     req("/api/run?token=s3cret-token-value", { method: "POST" }),
     env,
   );
-  check("token accepted via query param",
-    gq.status === 503, String(gq.status));
+  // The query-param path was REMOVED (BUGS.md B-18): a correct token in
+  // the URL must be rejected — it lands in history, Referer, proxy logs.
+  check("a correct token in the query string is still rejected",
+    gq.status === 401, String(gq.status));
   const gqw = await worker.fetch(
     req("/api/run?token=wrong", { method: "POST" }),
     env,
@@ -202,21 +204,110 @@ console.log("run endpoint — fail closed");
   check("wrong query token -> 401", gqw.status === 401, String(gqw.status));
 }
 
+// A MOCK LOADER: enough of the real contract (get(id, factory) ->
+// { getEntrypoint().fetch() }) to prove the sandbox path is wired, without a
+// Cloudflare account. The factory's return value is inspected so we can
+// assert the sandbox gets NO outbound network and DOES get an MCP binding.
+function makeLoader({ sandboxFails = false, mcpOk = true } = {}) {
+  const seen = {};
+  return {
+    seen,
+    get(id, factory) {
+      seen.id = id;
+      const mod = factory();
+      seen.mod = mod;
+      return {
+        getEntrypoint() {
+          return {
+            async fetch() {
+              if (sandboxFails) throw new Error("sandbox exploded");
+              // Execute the real generated program against supplied bindings.
+              const src = mod.modules["sandbox.js"]
+                .replace("export default", "const __prog =");
+              const fn = new Function("env", `
+                ${src}
+                return __prog.fetch(undefined, env);
+              `);
+              return await fn({
+                MCP: {
+                  call: async (tool) => (mcpOk
+                    ? { ok: true, status: 200, body: { tool } }
+                    : { ok: false, status: 503 }),
+                },
+              });
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
 {
+  // POST /api/run must NOT accept the token in the query string.
+  const env = { CODEMODE_TOKEN: "***" };
+  const r = await worker.fetch(req("/api/run?token=***", { method: "POST" }), env);
+  check("query-string token rejected even when it is the right value",
+    r.status === 401, String(r.status));
+}
+
+{
+  const loader = makeLoader();
   const env = {
-    CODEMODE_TOKEN: "t",
-    LOADER: { fake: true },
-    MCP_SSE_URL: "https://example.invalid/mcp",
+    CODEMODE_TOKEN: "***",
+    LOADER: loader,
+    MCP_SSE_URL: "https://mcp.test/sse",
+    MCP_SSE_TOKEN: "***",
   };
   const res = await worker.fetch(
-    req("/api/run", { method: "POST", headers: { "X-Codemode-Token": "t" } }),
+    req("/api/run", { method: "POST", headers: { "X-Codemode-Token": "***" } }),
     env,
   );
-  check("with bindings but unverified -> 501", res.status === 501, String(res.status));
   const body = await json(res);
-  check("does not fake success", /not_implemented/.test(body.status), body.status);
-  check("explains the deploy-time gate",
-    /Muse/.test(body.note) && /free-tier/i.test(body.note), body.note);
+  check("with both bindings the run EXECUTES (200, not 501)",
+    res.status === 200, `${res.status} ${JSON.stringify(body).slice(0, 200)}`);
+  check("status is ok", body.status === "ok", String(body.status));
+  check("the result carries the per-tool outcome",
+    Array.isArray(body.result?.steps) && body.result.steps.length > 0,
+    JSON.stringify(body.result).slice(0, 160));
+  check("the sandbox was given no outbound network",
+    loader.seen.mod.globalOutbound === null,
+    String(loader.seen.mod.globalOutbound));
+  check("the sandbox got an MCP binding, not raw env",
+    !!loader.seen.mod.bindings?.MCP?.call,
+    JSON.stringify(Object.keys(loader.seen.mod.bindings || {})));
+  check("every step reports ok when MCP succeeds",
+    body.result.steps.every((s) => s.ok === true),
+    JSON.stringify(body.result.steps.slice(0, 3)));
+  check("never claims a run that did not happen",
+    !/not_implemented/.test(body.status), body.status);
+}
+
+{
+  // MCP down: the run still completes and reports per-step failures rather
+  // than pretending everything worked.
+  const loader = makeLoader({ mcpOk: false });
+  const env = { CODEMODE_TOKEN: "***", LOADER: loader, MCP_SSE_URL: "https://mcp.test/sse" };
+  const res = await worker.fetch(
+    req("/api/run", { method: "POST", headers: { "X-Codemode-Token": "***" } }), env);
+  const body = await json(res);
+  check("a failing MCP is reported per step, not swallowed",
+    body.result.steps.every((s) => s.ok === false),
+    JSON.stringify(body.result.steps.slice(0, 2)));
+}
+
+{
+  // A throwing sandbox is a real failure and must be surfaced.
+  const loader = makeLoader({ sandboxFails: true });
+  const env = { CODEMODE_TOKEN: "***", LOADER: loader, MCP_SSE_URL: "https://mcp.test/sse" };
+  const res = await worker.fetch(
+    req("/api/run", { method: "POST", headers: { "X-Codemode-Token": "***" } }), env);
+  const body = await json(res);
+  check("a sandbox error returns 502", res.status === 502, String(res.status));
+  check("the error names the cause", /sandbox exploded/.test(body.error || ""),
+    String(body.error));
+  check("the note says it is a real failure, not a missing capability",
+    /real failure/.test(body.note || ""), String(body.note));
 }
 
 {

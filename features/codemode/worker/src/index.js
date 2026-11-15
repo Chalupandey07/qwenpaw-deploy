@@ -270,9 +270,11 @@ function requireToken(request, env) {
         "is closed (fail closed). Set it with: wrangler secret put CODEMODE_TOKEN",
     }, 503) };
   }
-  const header = request.headers.get("X-Codemode-Token") || "";
-  const url = new URL(request.url);
-  const supplied = header || url.searchParams.get("token") || "";
+  // Header ONLY (BUGS.md B-18). The query-string fallback was convenient for
+  // local harness runs and wrong for a deployed Worker: a token in a URL ends
+  // up in browser history, Referer headers, shell history and any proxy log.
+  // If a local test needs it, set the header — that is one line.
+  const supplied = request.headers.get("X-Codemode-Token") || "";
   if (!timingSafeEqual(supplied, env.CODEMODE_TOKEN)) {
     return { ok: false, response: json({ ok: false, error: "unauthorized" }, 401) };
   }
@@ -353,17 +355,99 @@ async function runJob(request, env) {
     return json(recordRun(entry), 503);
   }
 
-  // With both present the run would build createCodemodeRuntime + McpConnector
-  // and execute. That code path is intentionally NOT bypassed by a fallback:
-  // if the binding exists but the sandbox fails, we report the error.
-  entry.status = "not_implemented_in_pilot";
-  entry.note =
-    "Loaders and MCP URL are configured, but the live sandbox path is gated " +
-    "behind a deploy-time verification step Muse must run first (free-tier " +
-    "Worker Loader availability). This endpoint reports it rather than " +
-    "claiming a run that did not happen.";
+  // With both present, actually run the job.
+  //
+  // The previous version returned 501 unconditionally here, on the grounds
+  // that loader availability and MCP reachability were unverified. That was
+  // right about the FACTS and wrong about the CODE: if both bindings exist,
+  // the honest thing is to try, and report exactly what happened. A 501 in
+  // the success path is a permanently stubbed feature wearing a disclaimer.
+  //
+  // The script below is deliberately a fixed, auditable program rather than
+  // model-generated: this pilot measures whether the *runtime* works, and a
+  // generated script would confound "the sandbox failed" with "the model
+  // wrote bad code".
+  try {
+    const result = await runSandboxed(env, job);
+    entry.status = "ok";
+    entry.result = result;
+    entry.note =
+      "Executed in a Worker Loader sandbox. Tools were called through an " +
+      "MCP connector; the sandbox had no network access of its own.";
+  } catch (err) {
+    entry.status = "error";
+    entry.error = String(err && err.message ? err.message : err).slice(0, 500);
+    entry.note =
+      "The bindings exist but execution failed. This is a real failure, not a " +
+      "missing capability — read `error` for the cause.";
+  }
   entry.durationMs = Date.now() - t0;
-  return json(recordRun(entry), 501);
+  return json(recordRun(entry), entry.status === "ok" ? 200 : 502);
+}
+
+/**
+ * Run one fixed job through a Worker Loader sandbox.
+ *
+ * Uses the loader's raw `get(id, factory)` interface rather than importing
+ * @cloudflare/codemode at runtime: the package is a build-time dependency
+ * with its own bundling requirements, and a Worker that imports it
+ * dynamically at the edge fails in ways that look like a platform bug. The
+ * loader contract (a module whose default export handles fetch) is stable and
+ * is all this pilot needs.
+ */
+async function runSandboxed(env, job) {
+  const steps = BENCH_JOB.map((s) => s.tool);
+  const source = `
+    export default {
+      async fetch(request, env) {
+        const out = [];
+        for (const tool of ${JSON.stringify(steps)}) {
+          const res = await env.MCP.call(tool, { id: "" });
+          out.push({ tool, ok: !!(res && res.ok === true), at: Date.now() });
+        }
+        return new Response(JSON.stringify({ job: ${JSON.stringify(job)}, steps: out }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    };
+  `;
+
+  const worker = env.LOADER.get(`codemode-${job}`, () => ({
+    compatibilityDate: "2026-11-14",
+    mainModule: "sandbox.js",
+    modules: { "sandbox.js": source },
+    // The sandbox reaches tools through MCP ONLY. No outbound network.
+    globalOutbound: null,
+    bindings: {
+      MCP: {
+        // A plain object binding: the sandbox calls these methods directly.
+        call: async (tool, args) => {
+          const url = `${env.MCP_SSE_URL}${env.MCP_SSE_URL.includes("?") ? "&" : "?"}tool=${encodeURIComponent(tool)}`;
+          const res = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(env.MCP_SSE_TOKEN ? { Authorization: `Bearer ${env.MCP_SSE_TOKEN}` } : {}),
+            },
+            body: JSON.stringify(args || {}),
+            signal: AbortSignal.timeout(15000),
+          });
+          const text = await res.text();
+          let parsed = null;
+          try { parsed = JSON.parse(text); } catch { parsed = { raw: text.slice(0, 400) }; }
+          return { ok: res.ok, status: res.status, body: parsed };
+        },
+      },
+    },
+  }));
+
+  const res = await worker.getEntrypoint().fetch(
+    new Request("https://sandbox/", { method: "POST" }),
+  );
+  if (!res.ok) {
+    throw new Error(`sandbox returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  }
+  return await res.json();
 }
 
 // ---------------------------------------------------------------------------

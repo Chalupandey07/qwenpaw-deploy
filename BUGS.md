@@ -401,15 +401,17 @@ a robustness issue, not a security hole.
 
 ---
 
-### B-18 · P3 · Code Mode pilot accepts the run token via query string
+### B-18 · P3 · Code Mode pilot accepts the run token via query string — FIXED-CODE (header only)
 
 **File:** `features/codemode/worker/src/index.js` — `requireToken`.
 
 Same class as A-5/B-16: `?token=` in the URL leaks via logs/`Referer`. It is
 my own file from this session.
 
-**Fix.** Header only; keep the query path behind an explicit opt-in flag for
-local harness runs.
+**Fix.** Header only. The query path is gone entirely — a correct token in
+the URL is now rejected with 401, because a URL token lands in browser
+history, Referer and proxy logs. The harness asserts that a *right* token in
+the query string still fails.
 
 ---
 
