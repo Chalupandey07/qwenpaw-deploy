@@ -933,6 +933,106 @@ untouched, computer-use.yaml policy still allow. Parent re-verifies in
 a real browser: Wake within ~3 min, pill, terminal, Private :2, idle
 ~3 min, panel/page status agreement.
 
+## Rakazo screen port + T50–T57 fixes (2026-11-15, NOT deployed)
+
+Browser tests T50–T57 ran 11:27–11:38 IST: T50 PASS (with a lying screen
+probe), T51 PASS, T52 FAIL (Take control 500 ×5 — regression vs 06:58),
+T53 FAIL (mode switch), T54 PARTIAL FAIL (Recover/Reset silent no-ops),
+T55 BLOCKED (needs Take control), T56 FAIL (no needs-you banner), T57 PASS.
+Root causes, all proven live (not guessed):
+
+- **T52 + T53 + T56 share ONE root cause: the Cloudflare KV free-tier
+  daily write budget (1,000 writes/day/account) was spent.** A direct KV
+  write via the API returns error 10048 ("your account has reached the
+  free usage limit for this operation for today"); reads still worked,
+  which is why status/lease/frames were fine while every WRITE path
+  (__takeover, __mode, the needs-you raise) answered 500. The burn was
+  the lease-watcher's unconditional preview uploads: 2 KV writes per
+  15 s ≈ 11,500/day. Fixes: (a) the Worker wraps EVERY user-facing KV
+  write (takeover/heartbeat/release/mode/needs-you/preview-upload/teach)
+  and answers **503 `store_unavailable`** with an honest note instead of
+  a bare 500 (a failed heartbeat write is NOT a lost lease — the chrome
+  keeps control and retries; only 410 drops it); (b) the watcher now
+  uploads previews **change-only (sha256) with a 120 s floor** and the
+  Worker's preview TTL is 600 s (was 60 s) — a static desktop costs zero
+  writes, a changed screen refreshes within 2 min. The quota resets
+  daily (UTC); the write volume is now bounded well under 1,000/day.
+  A diagnostic needs-you raise from inside the container returned 500
+  `worker_500` during the incident (the path works, the KV put threw) —
+  no banner was created, nothing to clean up.
+- **T50 (lying screen probe):** the probe waited only 3 s for the RFB
+  banner, but the WS handshake rides the same proxied 303 dance as the
+  session (401 → _token → 303 → cookie → 101), which can take seconds —
+  the live session proves it (60–90 s first loads). The probe now waits
+  **10 s** and carries `Sec-WebSocket-Protocol: binary`, exactly like
+  noVNC's own handshake. Gate test 40j proves it: a banner at 4 s is
+  "live" under the new budget.
+- **T54 (silent Recover/Reset):** the chrome used `window.confirm` for
+  those two actions; in an automated browser the native dialog is
+  dismissed silently, so the handler returned before any API call —
+  while Stop/Update (no confirm) showed their toast. Replaced with an
+  in-chrome two-step arm: first click arms ("Confirm recover?"), second
+  click within 5 s executes, self-disarming after the window. The
+  Worker's 501 `unsupported` is now reachable and toasted honestly.
+- **T53 (mode switch):** same KV cause for the failure itself; the chrome
+  additionally reset the select to the computer actually in use and now
+  surfaces the error detail instead of a bare message.
+- **T56 (needs-you never raised):** two causes — the KV failure above
+  (the raise would have 500'd) AND the agent's workaround: it hit the
+  Gmail sign-in, wrote "handing it back to you", then worked around via
+  desktop Chromium for 31 steps. Both DriverCards now say explicitly:
+  do NOT work around a sign-in/CAPTCHA/2FA wall by opening the same page
+  in desktop Chromium — that is still the same human-only step; raise
+  needs-you FIRST and wait; if the raise itself fails, say so in chat
+  and stop. The bridge endpoint itself was verified live (exists, active,
+  token present in the container).
+
+Rakazo-faithful screen port (from elie222/rakazo commit `0c97840`):
+`apps/web/src/lib/computer-screen.ts`, `apps/web/src/pages/shell/use-computer.tsx`,
+`apps/web/src/pages/shell/computer-overlay.tsx`,
+`apps/web/src/pages/shell/computer-panel.tsx`, `apps/web/src/novnc-html.ts`,
+`packages/core/src/screen-reconnect.ts` (plus the earlier
+`features/desktop/rakazo-computer-study.md`). Ported logic: cheap
+pre-probe (`?qwenpaw_probe=1` → 204, no origin touch — the old probe
+fetched the FULL vnc.html through the session proxy, then the frame
+fetched it AGAIN, which is why first load sat black for 60–90 s) +
+`waitForScreenPage` (probe every 1 s up to 15 s; 403 re-minted once;
+502/503/network = not yet; anything else = refused); latest-request-wins
+token (a slow probe for the old computer can never mount over the
+current one); held predecessor frame (exactly ONE — the harness caught
+a real leak: every swap orphaned the previous held frame, its noVNC
+socket staying alive; the chrome now drops the old held frame on every
+swap and forces it view-only); the overlay is an EMPTY-STATE only (never
+on top of a live frame — the CSS guard `#screenWrap.has-frame
+#screenOverlay { display: none !important; }` is the second line of
+defence; the pill reports loading/reconnecting instead); reconnect
+budget (only a screen that HAD connected may reconnect; first load that
+never connected errors immediately; ≤3 tries, 1 s doubling, stable ≥5 s
+resets); refocus only if the screen had focus when it dropped; header
+label "Team Computer" / "Private Computer" (Rakazo's computerLabel);
+15 s frame-silence timeout (any shim report cancels it, so a slow-but-
+loading screen is never killed for being slow). The side-panel preview
+(16:10, view-only iframe + "Open in full window" pill on hover) and the
+noVNC shim (in-memory storage, CSS-class state machine, single-key
+focus messages) were already ported in the previous half of this task
+and are unchanged here except the shim's probe fallback.
+
+Harnesses: gate **116/116** (new 40a–40j: KV-write failure → 503 on
+takeover/mode/needs-you/preview-upload/teach/heartbeat/release, probe
+protocol binary, cheap-probe 204 with no origin fetch, 4 s-late banner
+→ live); chrome DOM-shim **34/34** (13 D + 13 R + 8 T: frame stays
+mounted across tab switch/take/release, held frame during swaps, cheap
+pre-probe, no overlay on control change, reconnect budget incl.
+never-connected → immediate error and stable-reset, held-frame drop on
+connect/timeout, failed mode switch resets the select, takeover 503
+honest toast, Recover arm/disarm, heartbeat 503 keeps control); origin
+**9/9**. NOT DEPLOYED (parent deploys after the browser test reports).
+The machine run ended ~11:54 IST, so live re-verification of
+takeover/mode/needs-you must wait for the next run AND the KV quota
+reset (midnight UTC) — the watcher throttle is what keeps it from
+recurring. No container restart, instabox2 never called, auth.json and
+user chats untouched, computer-use.yaml policy still allow.
+
 ## Useful commands
 
 ```bash
