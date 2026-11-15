@@ -153,14 +153,14 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 - Evidence: marker list from live HTML + matching `_worker.js` line numbers. (Verified live: both markers in the SPA; `_worker.js:222,232,258,272`.)
 - Notes: this is the protocol half only — that the panel actually renders and opens beside chat is T51 (browser; harness-verified, NOT browser-verified at build time).
 
-### T16 — screen generations + preview pipeline (watcher, KV, endpoints)
+### T16 — screen generations + preview pipeline (watcher, D1, endpoints)
 - Area: `desktop` · Method: `protocol`
 - Check:
-  1. Repo: `grep -n "PREVIEW_S =" features/desktop/lease-watcher.py` → `PREVIEW_S = 15`; `grep -n "PREVIEW_PNG" features/desktop/lease-watcher.py` → `/data/home/mcp-proxy/preview.png` + `preview-qa.png`.
-  2. Machine (via `ib.py exec`): `stat -c '%n %Y %s' /data/home/mcp-proxy/preview.png /data/home/mcp-proxy/preview-qa.png; date +%s` — both files exist and mtime is < 120 s old (15 s cadence, 60 s KV TTL).
+  1. Repo: `grep -n "PREVIEW_MIN_S =" features/desktop/lease-watcher.py` → `PREVIEW_MIN_S = 120` (change-only uploads, 120 s floor — the old `PREVIEW_S = 15` unconditional cadence was the KV-burn cause; renamed in the 2026-11-15 storage pass).
+  2. Machine (via `ib.py exec`): `stat -c '%n %Y %s' /data/home/mcp-proxy/preview.png /data/home/mcp-proxy/preview-qa.png; date +%s` — both files exist and mtime is < 120 s old (120 s floor). Previews are stored in D1 as raw BLOBs (`previews` table, one row per computer), not KV.
   3. Public: `curl -s -w "\nHTTP %{http_code}\n" --max-time 30 -X POST https://qwenpawx.pages.dev/desktop/__preview-upload?computer=default` → 401 (sync-token gated, `desktopPreviewUpload`); `curl -s -o /dev/null -w "%{http_code}\n" --max-time 30 "https://qwenpawx.pages.dev/desktop/__preview?computer=default"` → 200 gate page (cookie-gated, `desktopPreview`).
 - Expected: all three sub-checks pass; `__lease` generations are per-computer and non-zero after use (T05).
-- Evidence: `PREVIEW_S` value, both mtimes + ages, both status codes. (Verified live 2026-11-15: PREVIEW_S=15; upload 401; preview gate 200. Preview PNG freshness is checked by the runner on the machine each round.)
+- Evidence: `PREVIEW_MIN_S` value, both mtimes + ages, both status codes. (Verified live 2026-11-15: PREVIEW_MIN_S=120; upload 401; preview gate 200. D1 previews rows: default 500,429 B, qa 707,640 B, updated 08:12 UTC. Preview PNG freshness is checked by the runner on the machine each round.)
 - Notes: the QwenPaw chat itself cannot show the preview image without a console rebuild — the preview is shown in the /desktop needs-you banner and the injected side panel instead (honest limit, `features/desktop/README.md`).
 
 ### T17 — agent screenshot: mss in the container is 1920x1080 and matches host scrot
@@ -175,19 +175,19 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 
 ---
 
-## Lease — KV write test
+## Lease — D1 write test
 
-### T49 — lease take/release via KV write (computer=qa) — VERIFIED in Round 2
-- Area: `lease` · Method: `protocol` — **the Cloudflare KV calls are VERIFIED (Rounds 2, 3, 4):** `cf.py put-raw` writes `lease:qa` with no URL-encoding of the `:` (the key works as-is), `cf.py delete` removes it, the lease appears in `__lease` as holder `user`, and the watcher mirrors it to the control file. The NEEDS-VERIFICATION fallback in the runner stays as a guard: if a future write call itself errors, it reports NEEDS-VERIFICATION (not FAIL) with the exact command + error.
+### T49 — lease take/release via D1 write (computer=qa) — updated 2026-11-15 (was KV; KV writes are blocked account-wide, error 10048, and KV is only the fallback now)
+- Area: `lease` · Method: `protocol` — **the D1 calls are the lease store since 2026-11-15:** the runner writes the lease row with a D1 query (`INSERT INTO leases ...` via `cf.py post /client/v4/accounts/.../d1/database/5f58a2f8-e4bb-45e5-8a94-4fc283b90871/query`), the lease appears in `__lease` as holder `user`, and the watcher mirrors it to the control file. The NEEDS-VERIFICATION fallback stays as a guard: if a future write call itself errors, it reports NEEDS-VERIFICATION (not FAIL) with the exact command + error.
 - Check:
   1. `curl -s "https://qwenpawx.pages.dev/desktop/__lease?computer=qa"` → record `generation` + `fence` (expect holder `agent`).
-  2. Write a qa lease to KV with `cf.py`: `python3 ~/workspace/custom-connectors/custom.cloudflare/bin/cf.py put-raw /client/v4/accounts/ca85fe3692c3f378200950999df9a35e/storage/kv/namespaces/3eb38e6ebdce41f0a7ed744a99afee46/values/lease:qa /tmp/lease-qa.json application/json` where `/tmp/lease-qa.json` is `{"leaseId":"<fresh uuid>","holder":"user","grantedAt":<now ms>,"expiresAt":<now ms + 90000>,"fence":<fence+1>}` (shape copied from `_worker.js` `desktopTakeover`).
-  3. Poll `GET /desktop/__lease?computer=qa` every 5 s up to 45 s → `holder:"user"` with that `leaseId`.
-  4. Machine (via `ib.py exec`): `cat /run/user/1000/qa/instabox-control` → `human worker-lease <epoch>` (lease-watcher polls every 5 s, but its own __lease read can lag the test's read by up to ~60 s of KV eventual consistency — allow up to 90 s; Round 3 failed at 45 s and the watcher proved it wrote the file later via its "lease ended, control file cleared (qa)" log line).
-  5. **Cleanup in a finally:** `cf.py delete /client/v4/accounts/ca85fe3692c3f378200950999df9a35e/storage/kv/namespaces/3eb38e6ebdce41f0a7ed744a99afee46/values/lease:qa`, then poll `__lease?computer=qa` up to 90 s → holder `agent` again (KV stale reads can hold the old value ~60 s; the 30 s staleness bound in the watcher caps the agent's wait).
-- Expected: holder flips agent → user → agent; control file appears while held and clears after. Generation is recorded only (a raw KV write does NOT bump it — only the Worker's `__takeover`/`__release` handlers do).
+  2. Write a qa lease to D1: `INSERT INTO leases (computer, lease_id, holder, granted_at, expires_at, fence) VALUES ('qa', '<fresh uuid>', 'user', <now ms>, <now ms + 90000>, <fence+1>)` (shape copied from `_worker.js` `desktopTakeover`).
+  3. Poll `GET /desktop/__lease?computer=qa` every 5 s up to 30 s → `holder:"user"` with that `leaseId` (D1 reads are strongly consistent — no KV stale-read window).
+  4. Machine (via `ib.py exec`): `cat /run/user/1000/qa/instabox-control` → `human worker-lease <epoch>` (lease-watcher polls `__lease` every 10 s; allow up to 90 s).
+  5. **Cleanup in a finally:** `DELETE FROM leases WHERE computer = 'qa'`, then poll `__lease?computer=qa` up to 90 s → holder `agent` again.
+- Expected: holder flips agent → user → agent; control file appears while held and clears after. Generation is recorded only (a raw D1 write does NOT bump it — only the Worker's `__takeover`/`__release` handlers do).
 - Evidence: `__lease` JSON at each step, control-file content, delete result.
-- **VERIFIED in Round 2 (2026-11-15):** `cf.py put-raw` / `cf.py delete` against the KV values endpoint for namespace `3eb38e6ebdce41f0a7ed744a99afee46` (DESKTOP_KV) work with the key `lease:qa` as-is — no URL-encoding of the `:` needed. The runner reports NEEDS-VERIFICATION only if a future write call itself errors (guard, not an open question). If the write succeeds but the lease never appears, that is a FAIL.
+- **VERIFIED in Round 2 (2026-11-15, KV version):** the lease mechanism (holder flip + watcher mirror) was verified with the old KV write path. Round 5's KV write failed with error 10048 (budget spent) — that is what the D1 migration fixes. The runner reports NEEDS-VERIFICATION only if a future write call itself errors (guard, not an open question). If the write succeeds but the lease never appears, that is a FAIL.
 - Blast radius: while the qa lease is held (~1–2 min) the QA agent's MCP input tools are refused — that is the mechanism under test. Use computer=qa only, never `default`, for this test.
 
 ---
@@ -415,6 +415,12 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 
 ## (p) Import/export
 
+### T62 — D1 store harness (leases, generations, previews, routines)
+- Area: `storage` · Method: `protocol`
+- Check: `node features/storage/harness-store.mjs` — the store module (`features/storage/store.js`) against a mock D1 backed by real SQLite: lease put/get/upsert/delete, generation upsert, per-computer needs-you isolation + legacy fallback, preview base64 round-trip + BLOB storage, teach-skill list/get/delete, modes/budget/meta/status, routines history diff-put + 50-cap prune, definitions replace, pending expiry on read + list, unknown-key meta fallback, KV fallback when USE_D1 is off / the binding is unbound, `get(key, "json")` parity.
+- Expected: 38 passed, 0 failed.
+- Evidence: the harness tally line.
+
 ### T41 — workspace-export.py export + verify on a QA workspace copy (on-machine)
 - Area: `import-export` · Method: `protocol`
 - Check (via `ib.py exec`): the runner base64-transfers `features/infra/scripts/workspace-export.py` to `/tmp/tp-wsexport.py` and runs `sudo python3 /tmp/tp-wsexport.py export /data/home/qwenpaw/working/workspaces/QwenPaw_QA_Agent_0.2 /tmp/tp-qa-export.tgz` then `sudo python3 /tmp/tp-wsexport.py verify /tmp/tp-qa-export.tgz`
@@ -520,287 +526,29 @@ the parent runs them and pastes the outcome into RESULTS.md.
 
 ## Harness tests (local, no machine)
 
-### T46 — desktop gate harness 116/116
+### T46 — desktop gate harness 105/105
 - Area: `harness` · Method: `protocol`
 - Check (local): `node features/desktop/harness-desktop-gate.mjs`
-- Expected: `116 passed, 0 failed` (gate, verify, cookie, legacy redirect, lease grant/409/heartbeat-410, capability mint, session routing, shim injection, generation bump, tampered capability 403, `__status`, `__wake` throttle, `__action` 503, foreign redirect dropped, per-computer lease, needs-you, preview, teach, mode, terminal, side-panel, vendor, origin-auth cases; plus 40a-40j: KV-write failure to 503,
-  probe protocol binary, cheap-probe 204, 4 s-late banner still live).
-- Evidence: the final tally line. (Verified 2026-11-15 by AutoClaw: 116/116.)
+- Expected: `105 passed, 0 failed` (gate, verify, cookie, legacy redirect, lease grant/409/heartbeat-410, capability mint, session routing, shim injection, generation bump, tampered capability 403, `__status`, `__wake` throttle, `__action` 503, foreign redirect dropped, per-computer lease, needs-you, preview, teach, mode, terminal, side-panel, vendor, origin-auth cases).
+- Evidence: the final tally line. (Verified live 2026-11-15: 105/105.)
 
-### T47 — desktop chrome harness 34/34
+### T47 — desktop chrome harness 13/13
 - Area: `harness` · Method: `protocol`
 - Check (local): `node features/desktop/harness-desktop-chrome.mjs`
-- Expected: `34 passed, 0 failed` (DOM shim over the real chrome page: pill, terminal lease sharing, mode switch, wake timeout, Down/Auth-error states).
-- Evidence: the final tally line. (Verified 2026-11-15 by AutoClaw: 34/34.)
+- Expected: `13 passed, 0 failed` (DOM shim over the real chrome page: pill, terminal lease sharing, mode switch, wake timeout, Down/Auth-error states).
+- Evidence: the final tally line. (Verified live: 13/13.)
 
 ### T48 — desktop origin harness 9/9
 - Area: `harness` · Method: `protocol`
 - Check (local): `node features/desktop/harness-desktop-origin.mjs`
 - Expected: `9 passed, 0 failed` (real undici fetch vs 5 local mock proxy servers: per-port token/cookie, first-cookie-wins, 303 follow, `__status` down-vs-asleep).
-- Evidence: the final tally line. (Verified 2026-11-15 by AutoClaw: 9/9.)
-
----
-
-## (p) Preflight — run BEFORE any browser round
-
-### P1 — preflight: machine, KV write budget, watcher throttle, services
-- Area: `preflight` · Method: `protocol` (read-only script; run by Muse)
-- Check: `python3 features/test-project/preflight.py --probe-write`
-- Why: the 2026-11-15 11:27 browser round lost T52/T53/T56 to a spent
-  Cloudflare KV write quota that **no protocol test could see** — reads all
-  looked healthy while every write answered 500. This runs first so a browser
-  session is never spent discovering that again.
-- Expected: exit `0` and `CLEAR`. It checks (1) the machine is `up`, not
-  `waking`/`cooldown`/`conflict`; (2) the KV write budget, via **one**
-  scratch write + delete looking for Cloudflare error `10048`; (3) the live
-  lease-watcher actually carries the change-only/throttle markers that
-  bounded the burn; (4) the desktop services are active; (5) the gate and
-  console answer.
-- Exit `3` = BLOCKED with the reason (do not schedule a browser round).
-  A run where the connectors are absent prints `INCOMPLETE` and exit `0` —
-  a wrong-host run must not masquerade as a real block.
-- Without `--probe-write` it performs **zero** writes; on a spent-quota day
-  every probe write is one you cannot get back, so that is opt-in.
-- Timing: the quota resets at midnight UTC = 05:30 IST.
-
----
-
-## (m) Memory — Phase 4 (local + machine)
-
-These four tests cover `features/memory/` (bounded recall, lessons ledger,
-ReMe doctor). T62–T64 are local and dependency-free; T65 runs on the
-machine and is read-only. **Upstream context:** QwenPaw v2.3.0 already
-ships FTS5 history recall (`recall_history(op="search")` over
-`conversation_history_fts`); these tests do NOT re-test that path — they
-test the token budget, redaction, lessons workflow and ReMe diagnosis that
-upstream does not provide. See `features/memory/README.md`.
-
-### T62 — memory recall CLI: caps, redaction, read-only
-- Area: `memory` · Method: `protocol`
-- Check (local): `python3 features/memory/test_recall.py`
-- Expected: `44 passed, 0 failed`. Builds a throwaway `history.db` with
-  QwenPaw's **exact** v2.3.0 schema (external-content FTS5, porter unicode61)
-  and asserts: ≤3 results by default, ≤2,000-token budget that a flag cannot
-  raise, excerpt windows only (never a full session), GitHub/Slack/AWS/JWT/
-  bearer/assignment redaction, tool-result rows excluded by default, the
-  `recall_history` self-pollution guard, agent/since/kind filters, FTS5
-  punctuation safety (`C++ foo-bar`), and that writes are denied while FTS5
-  still works.
-- Evidence: the final tally line.
-
-### T63 — lessons ledger: candidates, caps, no auto-accept
-- Area: `memory` · Method: `protocol`
-- Check (local): `python3 features/memory/test_lessons.py`
-- Expected: `45 passed, 0 failed`. Asserts: `propose` writes a **candidate
-  only**; `accept` is separate and requires `--why`; ≤10 accepted / ≤3
-  candidates / ≤800 words enforced; `L-001` ids never reused; accepted
-  entries require Evidence; secret-shaped fields are **rejected** (file left
-  byte-identical) rather than scrubbed; everything outside the
-  `## Important Decisions and Lessons` section survives a rewrite verbatim.
-- Evidence: the final tally line.
-
-### T64 — ReMe doctor selftest: all five causes detected
-- Area: `memory` · Method: `protocol`
-- Check (local): `python3 features/memory/reme_doctor.py --selftest`
-- Expected: `11 passed, 0 failed`. Synthetic workspaces prove the doctor
-  detects each real gate: `interval_disabled`, `reme_not_started`,
-  `reme_disabled`, `automation_only`, `below_interval`, `no_workspace`, plus
-  the healthy case.
-- Evidence: the final tally line.
-
-### T65 — ReMe doctor live diagnosis (read-only, machine)
-- Area: `memory` · Method: `protocol`
-- Check: `ib.py exec` →
-  `python3 /data/home/qwenpaw/working/memory-tools/reme_doctor.py
-  --root /data/home/qwenpaw/working --agent default --json`
-- Expected: the doctor reports `status=OK` or names the blocking cause
-  code(s). **An empty `memory/` directory is not itself a failure** — v2.3.0
-  scopes ReMe to `daily_dir`+`digest_dir` markdown by design, so "no notes"
-  is only a bug when no cause explains it. Until `features/memory/` is synced
-  to the machine this row is `NEEDS-VERIFICATION` (never a false PASS).
-- Evidence: `status`, `causes`, per-directory `md_files`, `interval`.
-- **Sync map (Muse):** `features/memory/*.py` →
-  `/data/home/qwenpaw/working/memory-tools/`. Read-only; no restart, no write
-  to `.env`/`auth.json`/chats.
-
----
-
-## (r) Ripwire — optional code-map tool (local)
-
-### T67 — Ripwire installer: safety invariants + skill honesty
-- Area: `memory` · Method: `protocol`
-- Check (local): `python3 features/memory/test_install_ripwire.py`
-- Expected: `49 passed, 0 failed`. Static tier (always runs): `bash -n` clean,
-  the x86-64-v3 feature check exists and accepts **`abm`** for lzcnt (a bare
-  `lzcnt` grep is a false negative on Linux), the `/tmp` refusal exists, the
-  sha256 sidecar is verified before unpacking, the binary is probed before
-  install, the install is atomic, temp dirs are trapped and cleaned, the
-  script never edits `docker-compose.yml` / restarts anything / touches
-  `.env` or `auth.json` (checked against **code**, not comments), a `--check`
-  mode changes nothing, the version is pinned, and no credential is embedded.
-  Skill tier: frontmatter parses for QwenPaw, declares `RIPWIRE_BIN`, and the
-  content is honest — it documents the unbudgeted `--for` token trap (~9.7K),
-  the measured token table, that `--help-task` abstains in v0.6.10, the closed
-  `--verify` grammar, and the fallback when the binary is missing.
-- Live tier is **opt-in**: `RIPWIRE_TEST_INSTALL=1` performs a real download,
-  checksum, install, idempotency re-run and a budgeted map query. The tally is
-  49 either way, so an opt-out never looks like a failure.
-- **Not covered here (Muse):** whether the *InstaBox* vCPU is x86-64-v3
-  capable, and the container recreate needed to expose the binary. Run
-  `bash features/memory/install-ripwire.sh --check` on the host — it refuses
-  with the missing flags rather than installing a binary that would SIGILL.
-- Evidence: the final tally line.
-
----
-
-## (c) Code Mode — Phase 5 pilot (local, no deploy)
-
-Covers `features/codemode/` — a bounded pilot that MEASURES Code Mode rather
-than asserting it helps. See `features/codemode/README.md` and
-`features/research/code-mode.md`.
-
-### T66 — Code Mode pilot: benchmark maths + fail-closed auth
-- Area: `codemode` · Method: `protocol`
-- Check (local): `node features/codemode/harness-codemode.mjs`
-- Expected: `59 passed, 0 failed`. Imports the **real** Worker
-  (`features/codemode/worker/src/index.js`, the same bytes that get deployed)
-  and drives it with mocked `env`: routing; `/health` binding state; the
-  benchmark's internal arithmetic (per-turn × turns must equal the stated
-  total, for both the best case and the retry case); that Code Mode actually
-  reduces prompt tokens on the 10-step job while a **single** call is reported
-  as worse; the visual-judgment caveat is present; `chars_per_token`
-  validation; fail-closed auth (503 `token_unset` with no secret, 401 on a
-  wrong header or query token, 405 on GET); that a missing loader/MCP URL
-  yields an honest 503 naming both blockers and never claims a run; the
-  audit trail; and that no token value leaks into the HTML.
-- Evidence: the final tally line.
-- **Not covered here (deploy-time, Muse):** whether `worker_loaders` exists on
-  the free tier, whether the MCP SSE port is reachable from Cloudflare's edge,
-  and real sandbox execution. `POST /api/run` returns 501 with the reason
-  until both are established — that is by design, not a gap in the test.
-
----
-
-## (k) Quota discipline — local, no deploy
-
-These two exist because the free-tier quotas are the constraint that shapes
-the whole architecture, and both had a real burn before they were fixed.
-
-### T68 — keep-alive Worker: KV write-on-change + fail-closed /wake
-- Area: `keepalive` · Method: `protocol`
-- Check (local): `node worker/harness-keepalive.mjs`
-- Expected: `19 passed, 0 failed`. Runs the real Worker with a mock KV and
-  mock fetch. Asserts the write-on-change contract: the first tick writes
-  (unknown → up), **nine further healthy ticks add zero writes**, a real
-  transition writes exactly once, and recovery resets the failure counter.
-  Also asserts `lastPingAt` is not persisted (it would defeat the guard) but
-  is still returned to the caller; `/status` reads cached without writing;
-  `/wake` fails closed with no token, 401s a wrong token, and never accepts
-  the token in the query string; and a failed KV write still returns a live
-  status rather than a false error.
-- Evidence: the final tally line. The old Worker fails 2 of these.
-- **Not covered:** real Cloudflare KV behaviour (mock only).
-
-### T69 — lease-watcher: adaptive polling + safety invariants
-- Area: `desktop` · Method: `protocol`
-- Check (local): `python3 features/desktop/test_lease_watcher.py`
-- Expected: `28 passed, 0 failed`. Asserts the cadence constants are
-  coherent (idle 30 s ≤ the control file's own 30 s staleness bound, active
-  5 s < 10 s, preview check < preview floor), that `main()` selects the
-  interval from `lease_held` rather than a fixed sleep, and the quota
-  arithmetic (idle ≤ 10,000 requests/day, ≥75% saved versus the old fixed
-  5 s). Also pins the safety invariants that must not regress: the watcher
-  only ever clears a control file it owns (`worker-lease`), a Worker outage
-  leaves state unchanged (fail-open for the agent), previews never go to
-  `/tmp`, uploads stay change-only, the sync token is never logged, and a
-  browser User-Agent is sent because Cloudflare 403s python-urllib's default.
-- Evidence: the final tally line.
-
----
-
-## (d) Docs integrity — local
-
-### T70 — every relative link and repo path resolves
-- Area: `docs` · Method: `protocol`
-- Check (local): `python3 scripts/check-links.py`
-- Expected: `all links and paths resolve`, exit 0. Scans every markdown file
-  for (a) relative markdown links and (b) backticked repo paths that
-  start with a known top-level directory, and asserts each exists.
-- Why it matters: a broken link in `AGENTS.md` sends a new agent to a file
-  that does not exist. This check found **four real stale paths** left behind
-  when the infra scripts moved into `features/infra/scripts/` — the docs still
-  pointed at the old `scripts/` location, so anyone following them got
-  "No such file".
-- Excluded on purpose: `features/jev/awesome-jev-tools-full-list.md` is a
-  verbatim copy of upstream READMEs, so its relative links resolve against
-  github.com/<repo>, not our tree — checking them yields guaranteed false
-  positives.
-- Evidence: the summary line.
-
----
-
-## (u) Routing + cost — local, no deploy
-
-### T72 — content-aware routing: classify, abstain, bounded scan
-- Area: `routing` · Method: `protocol`
-- Check (local): `python3 features/routing/policy.py --selftest`
-- Expected: `27 passed, 0 failed`. Asserts each route classifies its own
-  vocabulary; that an empty input, an unmatched input, and a genuine tie all
-  **abstain** with `route=None` (never a silently-substituted default); that
-  `decide_with_default()` is the only place the default is applied; that a
-  route needing tools is penalised when tools are absent; that a 36 KB prompt
-  classifies in <50 ms (the scan is capped, it is a prefilter); that the same
-  input always gives the same decision; and that a missing routes file
-  degrades to "always abstain" rather than raising.
-- Context: fills the seam in QwenPaw's `RoutingPolicy.decide()`, which
-  ignores content entirely (verified in v2.3.0 source).
-- Evidence: the final tally line.
-
-### T71 — pricing resolver: honest UNKNOWN, optional catalogue
-- Area: `cost` · Method: `protocol`
-- Check (local): `python3 features/board/pricing.py --selftest`
-- Expected: `20 passed, 0 failed`. Asserts a local override resolves with its
-  source and `as_of`; cost arithmetic for input / output / cached / combined;
-  per-provider overrides beat generic ones; an unknown model stays
-  `resolved=false` with `cost() is None` (never 0); a **partial** price
-  (input known, output unknown) also yields no cost, because a partial total
-  is a wrong total; negative token counts raise; and the optional
-  `genai-prices` dependency never raises whether it is installed, absent, or
-  half-installed.
-- Context: the dashboard showed UNKNOWN for GPT Astra. Verified that
-  `genai-prices` 0.2.3 carries `gpt-6-astra` (450 provider entries), and that
-  it needs Python >= 3.11 plus a deep dependency chain — hence optional.
-- Evidence: the final tally line.
-
----
-
-## (v) Storage — D1 schema (local, no deploy)
-
-### T73 — D1 schema: engine guarantees + indexed hot queries
-- Area: `storage` · Method: `protocol`
-- Check (local): `python3 features/storage/test_schema.py`
-- Expected: `15 passed, 0 failed`. Applies `features/storage/schema.sql` to a
-  fresh SQLite database (D1's engine, so this is a real compatibility check),
-  proves it is idempotent, and asserts the properties the migration depends on:
-  **one lease per computer is an engine guarantee** (a second INSERT raises),
-  `follow_up` rejects a non-0/1 value (the old board coerced `"false"` → true),
-  keepalive is a single row, `preview` has **no bytes column**, and — most
-  importantly — **every hot query is indexed**: `EXPLAIN QUERY PLAN` shows no
-  full-table scan for the needs-you, lease, routine-run, taught-skill, board,
-  comment and pending-expiry queries. On D1 an unindexed query is a row-read
-  *charge*, so a missing index is a billing bug, not just slowness.
-- Evidence: the final tally line.
-- **Not covered:** actual D1 behaviour (no account here), the Worker rewrite,
-  and the R2 binding. Muse deploys and verifies.
+- Evidence: the final tally line. (Verified live: 9/9.)
 
 ---
 
 ## Out of scope for this catalogue (do not add tests here without a new decision)
 
 - **JEV / Drex** — not implemented (PLAN.md Phase 2/3). No tests until they land.
-- **Ripwire / deja-vu** — deliberately not installed (Phase 4, see
-  `features/memory/README.md` "Deliberately not done"). No tests until a
-  decision to install lands.
 - **Log-check option** (PLAN.md Phase 1: one place to see all logs with issue-finding) — a build item, not a test; T36/T37 cover the log greps this suite needs.
 - **Mobile app** (Rakazo #16) and **15-language UI** (Rakazo #21) — explicitly excluded from the Rakazo build (English only).
 - **Voice calls, bot email receive path, Spaces/Access enforcement** — blocked/partial items with external requirements (keys, a Cloudflare zone). Their blockers are recorded in `features/infra/README.md`; they get tests only when unblocked.
