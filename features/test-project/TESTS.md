@@ -625,6 +625,34 @@ upstream does not provide. See `features/memory/README.md`.
 
 ---
 
+## (r) Ripwire — optional code-map tool (local)
+
+### T67 — Ripwire installer: safety invariants + skill honesty
+- Area: `memory` · Method: `protocol`
+- Check (local): `python3 features/memory/test_install_ripwire.py`
+- Expected: `49 passed, 0 failed`. Static tier (always runs): `bash -n` clean,
+  the x86-64-v3 feature check exists and accepts **`abm`** for lzcnt (a bare
+  `lzcnt` grep is a false negative on Linux), the `/tmp` refusal exists, the
+  sha256 sidecar is verified before unpacking, the binary is probed before
+  install, the install is atomic, temp dirs are trapped and cleaned, the
+  script never edits `docker-compose.yml` / restarts anything / touches
+  `.env` or `auth.json` (checked against **code**, not comments), a `--check`
+  mode changes nothing, the version is pinned, and no credential is embedded.
+  Skill tier: frontmatter parses for QwenPaw, declares `RIPWIRE_BIN`, and the
+  content is honest — it documents the unbudgeted `--for` token trap (~9.7K),
+  the measured token table, that `--help-task` abstains in v0.6.10, the closed
+  `--verify` grammar, and the fallback when the binary is missing.
+- Live tier is **opt-in**: `RIPWIRE_TEST_INSTALL=1` performs a real download,
+  checksum, install, idempotency re-run and a budgeted map query. The tally is
+  49 either way, so an opt-out never looks like a failure.
+- **Not covered here (Muse):** whether the *InstaBox* vCPU is x86-64-v3
+  capable, and the container recreate needed to expose the binary. Run
+  `bash features/memory/install-ripwire.sh --check` on the host — it refuses
+  with the missing flags rather than installing a binary that would SIGILL.
+- Evidence: the final tally line.
+
+---
+
 ## (c) Code Mode — Phase 5 pilot (local, no deploy)
 
 Covers `features/codemode/` — a bounded pilot that MEASURES Code Mode rather

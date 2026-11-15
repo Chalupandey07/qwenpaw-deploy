@@ -1151,6 +1151,16 @@ def t64():
             f"tally={m.group(0) if m else 'none'}")
 
 
+def t67():
+    """Ripwire installer + skill: 49 static checks (live tier is opt-in).
+
+    The live tier (real download + install) is gated behind
+    RIPWIRE_TEST_INSTALL=1 so a protocol round does not pull 11 MB by
+    surprise. The tally is the same either way.
+    """
+    return _py_harness("features/memory/test_install_ripwire.py", 49)
+
+
 def t66():
     return _harness("features/codemode/harness-codemode.mjs", 59)
 
@@ -1341,6 +1351,7 @@ TESTS = [
     ("T64", "ReMe doctor selftest: all five causes detected", "memory", "protocol", t64),
     ("T65", "ReMe doctor live diagnosis (read-only, machine)", "memory", "protocol", t65),
     ("T66", "Code Mode pilot: benchmark maths + fail-closed auth", "codemode", "protocol", t66),
+    ("T67", "Ripwire installer: safety invariants + skill honesty", "memory", "protocol", t67),
     ("T50", "__status per computer, full (cookie)", "desktop", "browser", None),
     ("T51", "side-panel renders beside chat", "desktop", "browser", None),
     ("T52", "/desktop chrome: take/release + terminal shell", "desktop", "browser", None),

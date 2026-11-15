@@ -165,16 +165,92 @@ No container restart, no restart of any service, no write to `auth.json`,
 container at `/app/working/workspaces/<agent>/history.db` because
 `/data/home/qwenpaw/working` is mounted at `/app/working`.
 
+## `install-ripwire.sh` — the optional code-map tool
+
+Ripwire (`redhat-et/ripwire` v0.6.10, Apache-2.0) is a single offline binary
+that streams a ranked symbol map of a codebase. **It is optional**: nothing
+else in this directory depends on it.
+
+```bash
+# on the InstaBox host, as the user that owns /data/home
+bash features/memory/install-ripwire.sh --check   # preflight only, no changes
+bash features/memory/install-ripwire.sh           # install / upgrade to the pin
+```
+
+Four failure modes are checked **before** anything is written, each of which
+has a real cost:
+
+| Check | Why it exists |
+|---|---|
+| **x86-64-v3 / AVX2** | The `linux-x64` build is compiled for x86-64-v3. On an older vCPU it SIGILLs on the first vector instruction, which looks like a corrupt download. The required set is `avx avx2 bmi1 bmi2 f16c fma lzcnt movbe`. |
+| **lzcnt is reported as `abm`** | Linux exposes the LZCNT feature as the `abm` flag. Grepping `/proc/cpuinfo` for the literal string `lzcnt` gives a **false negative** — this script accepts `abm\|lzcnt`. |
+| **disk** | Root is a 20 GiB volume and `/tmp` is a 512 MB tmpfs that has been 100% full before. Nothing large goes to `/tmp`; the script refuses a `/tmp` prefix outright and requires a 200 MB floor free. |
+| **integrity** | The release ships a `.sha256` sidecar; it is verified before unpacking, and the extracted binary is **probed** (`--version`) before it is installed, so a CPU mismatch fails cleanly instead of half-installing. |
+
+The install is idempotent: re-running at the same version is a no-op, and an
+upgrade writes beside the target then renames, so there is never a partially
+written binary. It copies the 17 upstream agent skills that ship in the
+tarball. It does **not** edit `docker-compose.yml`, restart the container, or
+touch `.env` / `auth.json` / chats — it prints the one volume line Muse needs
+to add, and stops.
+
+Measured on a real install (this VM): tarball 10,970,224 bytes, sha256
+verified, binary 57,896,960 bytes, `ripwire 0.6.10` runs, 17 skills copied,
+re-run a clean no-op.
+
+### The token trap this encodes
+
+The plan's research note quotes `--for="<change>"` at "~2.1K tokens". That
+number only holds **with `--token-budget`**. Measured on this repo:
+
+| command | measured |
+|---|---|
+| `--handoff` | ~350–530 tokens |
+| map `--max-tokens=2000` | ~840 tokens |
+| map (default, top-200) | ~5,500 tokens |
+| `--affected=path` | ~450 tokens |
+| `--impact=SYM` | ~1,200 tokens |
+| `--callers=SYM` | ~1,700 tokens |
+| `--for="..." --token-budget=2000` | ~2,100 tokens |
+| **`--for="..."` unbudgeted** | **~9,700 tokens** |
+| reading the source directly | ~261,000 tokens |
+
+So unbudgeted `--for` costs about **twice the plain map** — the opposite of
+what an agent would assume from the note. `skills/ripwire/SKILL.md` states
+this in the skill itself, where the agent will actually read it.
+
+Two more behaviours found by running the binary rather than trusting the note:
+
+- **`--help-task` abstained on every input tried** in v0.6.10, including exact
+  identifier shapes (`` `dir_is_ours` ``, `recall()`) on repos where those
+  symbols *are* indexed — `resolved_symbols="0"` every time. The skill
+  therefore does not route through it and says why.
+- **`--verify` takes a closed claim grammar**, not free text:
+  `calls(A,B)`, `uses(SYM)`, `unused(SYM)`, `contains(FILE,"LITERAL")`,
+  `defines(FILE,SYM)`, `reaches(SYM,"FILE"|LAYER)`. Free text exits 1 with the
+  list. Verified against this very code: `calls(recall, redact)` → confirmed,
+  `contains(features/memory/recall.py, "ABSOLUTE_BUDGET_TOKENS")` → confirmed.
+
+### Skill install
+
+`features/memory/skills/ripwire/SKILL.md` is the QwenPaw-format skill (same
+frontmatter shape as `camoufox-browser`). It declares `RIPWIRE_BIN` and the
+`ripwire` binary as requirements, and tells the agent to fall back to reading
+files when either is missing — never to silently skip the step.
+
+Install it where QwenPaw reads skills (the same place `camoufox-browser` and
+`build-page` live), and set `RIPWIRE_BIN=/data/home/ripwire/ripwire` in the
+container environment.
+
 ## Deliberately not done
 
-- **No Ripwire install.** It is a C++23 binary needing AVX2 and a host
-  install at `/data/home/ripwire` with a bind mount. That is a machine
-  change, it needs AVX2 verified on the VM first, and it buys nothing until
-  Tier 1 recall is proven insufficient. It stays a documented next step,
-  not a commit.
 - **No deja-vu pilot.** Its marginal value is the lifecycle around search
   (promote/remember/handoff), not search itself — and QwenPaw is not one of
-  its 46 harnesses, so it needs a custom parser. Revisit only if real
-  queries fail on paraphrase.
-- **No embeddings.** No embedding model is configured, so the lexical path
-  is the only honest one today.
+  its 46 harnesses, so it needs a custom parser. Revisit only if real queries
+  fail on paraphrase.
+- **No bind mount written by this repo's tooling.** `install-ripwire.sh`
+  prints the exact `volumes:` line but deliberately does not apply it: adding
+  a volume requires recreating the container, which drops in-flight agent
+  work, so that stays Muse's call.
+- **No embeddings.** No embedding model is configured, so the lexical path is
+  the only honest one today.
