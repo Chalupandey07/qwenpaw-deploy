@@ -17,6 +17,147 @@ const WAKE_WAIT_MS = 45_000;
 const KEEPALIVE_URL = "https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev";
 const MACHINE_ID = "m_" + new URL(ORIGIN).hostname.split(".")[0].split("-").slice(1).join("-");
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Rewrite response headers for the Pages origin.
+ *
+ * This function was written on 2026-11-15 to close audit finding
+ * `proxy-open-redirect-rewrite-gap` (A-6) and to carry the Referrer-Policy
+ * half of the `qwenpaw-query-token-leak` fix. The 8,399-line computer
+ * removal deleted it as collateral while leaving its call site in `proxy()`,
+ * which made this Worker throw a ReferenceError on *every* proxied request —
+ * the whole console, not just the computer. Restored here verbatim; the
+ * reasoning below is the original.
+ */
+function rewriteHeaders(res, pagesOrigin) {
+  const headers = new Headers(res.headers);
+  // Rewrite redirects that point at the origin so the browser stays on Pages.
+  // Hardened: the old code only rewrote absolute ORIGIN URLs. A
+  // protocol-relative Location (//evil.example/x) or a foreign absolute URL
+  // (https://evil.example/x) passed through unrewritten, so our Pages
+  // domain could redirect visitors elsewhere. QwenPaw emits no Location
+  // headers at all today (verified in source), so any Location is
+  // hypothetical — but a foreign redirect must never leave here intact.
+  const loc = headers.get("Location");
+  if (loc) {
+    if (loc.startsWith(ORIGIN)) {
+      headers.set("Location", pagesOrigin + loc.slice(ORIGIN.length));
+    } else if (loc.startsWith("//")) {
+      try {
+        const u = new URL("https:" + loc);
+        if (u.origin === ORIGIN) {
+          headers.set("Location", pagesOrigin + u.pathname + u.search + u.hash);
+        } else {
+          headers.delete("Location");
+        }
+      } catch {
+        headers.delete("Location");
+      }
+    } else if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(loc)) {
+      headers.delete("Location"); // absolute URL to a foreign host
+    }
+    // A relative Location ("/path") passes through — it stays on Pages.
+  }
+  // Framing guard on proxied HTML: the console must not be embeddable in
+  // another site's iframe (clickjacking). SAMEORIGIN is safe here — nothing
+  // in our setup embeds the console cross-origin.
+  //
+  // Referrer-Policy is part of the qwenpaw-query-token-leak fix: a user can
+  // land on a `?token=...` URL (old bookmark, pasted link) and any outbound
+  // link click would otherwise send it in the Referer header to a third
+  // party. `same-origin` keeps same-origin navigation working and sends
+  // nothing cross-origin.
+  headers.set("Referrer-Policy", "same-origin");
+  const contentType = headers.get("Content-Type") || "";
+  if (contentType.includes("text/html")) {
+    headers.set("X-Frame-Options", "SAMEORIGIN");
+    headers.set("Content-Security-Policy", "frame-ancestors 'self'");
+  }
+  // If the origin ever sets a Domain on a cookie, strip it so the cookie
+  // becomes host-only for the Pages domain instead of the InstaBox host.
+  const setCookies = typeof res.headers.getSetCookie === "function"
+    ? res.headers.getSetCookie()
+    : (headers.get("Set-Cookie") ? [headers.get("Set-Cookie")] : []);
+  if (setCookies.length) {
+    headers.delete("Set-Cookie");
+    for (const c of setCookies) {
+      headers.append("Set-Cookie", c.replace(/;\s*domain=[^;]+/gi, ""));
+    }
+  }
+  return headers;
+}
+
+/**
+ * The floating "Computer" launcher injected into the console SPA.
+ *
+ * History, because it explains the shape: the previous version of this script
+ * mounted a preview iframe and called `/desktop/__mode`, `/desktop/__status`
+ * and `/desktop/__screen` — endpoints that went away with the computer
+ * rebuild. It was deleted along with them, leaving `proxy()` calling a
+ * function that no longer existed. That is the second ReferenceError this
+ * file had, and neither was caught because nothing ever *loaded* the Worker.
+ *
+ * This version does one small thing: a button that opens the rebuilt
+ * `/computer` surface in a 316 px rail beside the chat, which is what the
+ * new UI is designed for (`?embed=1` hides its own stage and overlay).
+ * Nothing here reaches into the SPA beyond appending a sibling of #root, so
+ * React re-renders cannot remove it. Every failure is swallowed: an
+ * injection bug must never break the console.
+ */
+function computerPanelScript() {
+  return `<script>
+(function () {
+  try {
+    if (!document.getElementById("root")) return;
+    if (document.getElementById("qwenpawComputerBtn")) return;
+    var btn = document.createElement("button");
+    btn.id = "qwenpawComputerBtn";
+    btn.type = "button";
+    btn.textContent = "Computer";
+    btn.title = "QwenPaw's computer — watch and drive the live desktop";
+    btn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483647;padding:10px 16px;border-radius:999px;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
+
+    var panel = document.createElement("div");
+    panel.id = "qwenpawComputerPanel";
+    panel.style.cssText = "position:fixed;top:0;right:0;bottom:0;width:316px;max-width:100vw;z-index:2147483646;background:#0f1115;border-left:1px solid #262a33;display:none;flex-direction:column;box-shadow:-12px 0 32px rgba(0,0,0,.4);";
+
+    var bar = document.createElement("div");
+    bar.style.cssText = "display:flex;align-items:center;gap:8px;height:44px;padding:0 10px;background:#171a21;border-bottom:1px solid #262a33;color:#e8eaf0;font:600 13px system-ui,sans-serif;flex:none;";
+    bar.innerHTML = "<span style='flex:1'>Computer</span>" +
+      "<a href='/computer' target='_blank' rel='noopener' style='color:#86efac;text-decoration:none'>Open full</a>" +
+      "<button id='qwenpawComputerClose' type='button' aria-label='Close computer' style='background:none;border:none;color:#e8eaf0;font-size:18px;cursor:pointer;padding:4px 8px'>&times;</button>";
+
+    var frame = document.createElement("iframe");
+    frame.id = "qwenpawComputerFrame";
+    frame.title = "Computer";
+    frame.setAttribute("sandbox", "allow-scripts allow-pointer-lock allow-popups allow-same-origin");
+    frame.setAttribute("allow", "clipboard-read; clipboard-write");
+    frame.style.cssText = "flex:1;width:100%;border:0;background:#000;";
+    // Loaded lazily: an iframe created on every console page view would open a
+    // screen session nobody asked for, and every one of those is a request.
+    panel.appendChild(bar);
+    panel.appendChild(frame);
+    document.body.appendChild(panel);
+    document.body.appendChild(btn);
+
+    var open = false;
+    try { open = sessionStorage.getItem("qwenpawComputerOpen") === "1"; } catch (e) {}
+
+    function setOpen(v) {
+      open = !!v;
+      panel.style.display = open ? "flex" : "none";
+      if (open && !frame.getAttribute("src")) frame.setAttribute("src", "/computer?embed=1");
+      try { sessionStorage.setItem("qwenpawComputerOpen", open ? "1" : "0"); } catch (e) {}
+    }
+    btn.addEventListener("click", function () { setOpen(!open); });
+    document.getElementById("qwenpawComputerClose").addEventListener("click", function () { setOpen(false); });
+    setOpen(open);
+  } catch (e) { /* never break the console */ }
+})();
+</script>`;
+}
+
 function wakingPage(retryAfter) {
   return new Response(
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
@@ -173,7 +314,7 @@ async function proxy(request, url) {
     try {
       const html = await res.text();
       if (html.includes('<div id="root"') && html.includes("</body>")) {
-        const injected = html.replace("</body>", consolePanelScript() + "</body>");
+        const injected = html.replace("</body>", computerPanelScript() + "</body>");
         headers.set("Cache-Control", "no-store, no-transform");
         headers.delete("ETag");
         headers.delete("Last-Modified");

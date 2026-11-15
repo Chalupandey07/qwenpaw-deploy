@@ -1364,6 +1364,29 @@ def t86():
     return _harness("features/computer/harness-computer.mjs", 84)
 
 
+def t88():
+    """The Pages Worker LOADS and RUNS (28 checks).
+
+    Added because on 2026-11-15 the entire Worker was dead and every check in
+    this suite stayed green. Two fatal defects:
+
+      - `computer/router.js` imported `LEASE_CAP_GRACE_MS` from
+        `capability.js`, which does not export it -> SyntaxError at import,
+        so nothing under /computer existed.
+      - `_worker.js` called `sleep`, `rewriteHeaders` and
+        `consolePanelScript`, all deleted in the 8,399-line computer removal,
+        with the call sites left behind -> ReferenceError on EVERY proxied
+        request, i.e. the whole console.
+
+    Neither was catchable by the existing harnesses: they import
+    `capability.js` and READ `router.js`/`state.js` as text. Reading a file
+    proves it contains a string, not that it parses, links, or runs. So this
+    test imports the real module graph and drives its fetch handler with
+    stubbed origin and asset bindings — no network, no account, no machine.
+    """
+    return _harness("features/computer/harness-worker-load.mjs", 28)
+
+
 def t85():
     """Skill scanner: credential/RCE/injection patterns on third-party skills.
 
@@ -1528,6 +1551,7 @@ TESTS = [
     ("T85", "skill scanner: credential/RCE/injection patterns", "skills", "protocol", t85),
     ("T86", "rebuilt computer: seal, lease atomicity, enforcement order", "computer", "protocol", t86),
     ("T87", "preview uploader: change-only writes, floor, backoff", "computer", "protocol", t87),
+    ("T88", "Pages Worker loads and runs (proxy + /computer wired)", "computer", "protocol", t88),
 ]
 
 SKIP_NOTE = {

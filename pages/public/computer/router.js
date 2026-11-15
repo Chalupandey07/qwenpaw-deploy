@@ -26,11 +26,14 @@
 
 import {
   openCapability, sealCapability, injectShim, isNovncPage,
-  novncPageRequestHeaders, rewrittenNovnc, SCREEN_PROXY_TTL_MS, LEASE_CAP_GRACE_MS,
+  novncPageRequestHeaders, rewrittenNovnc, SCREEN_PROXY_TTL_MS,
 } from "./capability.js";
 import * as S from "./state.js";
-
-const UI_HTML = () => import("./ui.html?raw").then((m) => m.default).catch(() => null);
+// LEASE_CAP_GRACE_MS lives in state.js, beside the lease TTL it is derived
+// from. Importing it from capability.js was a hard module error — the Worker
+// failed to instantiate, so /computer returned nothing at all. Nothing caught
+// it because no harness ever imported this file.
+import { LEASE_CAP_GRACE_MS } from "./state.js";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -113,25 +116,48 @@ async function mint(env, computer, policy, leaseId) {
   return { ok: true, url, expiresAt: exp * 1000, policy };
 }
 
-async function serveUi(env) {
-  // One file, served from the Worker itself: no separate asset to drift.
-  const res = await env.ASSETS?.fetch(new URL("https://x/computer-ui.html"));
-  if (res && res.ok) return res;
-  return new Response(UI_HTML_TEXT, {
-    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
-  });
+/**
+ * Serve the UI.
+ *
+ * `ui.html` ships as a plain static asset beside this module, so the Worker
+ * asks the Pages asset binding for it. The previous version did two things
+ * that could not work: it fetched a made-up host (`https://x/computer-ui.html`,
+ * a file that never existed) and fell back to a `?raw` import that requiries
+ * a bundler this project does not use. On a direct upload (wrangler pages
+ * deploy, and scripts/deploy-pages-proxy.py) `env.ASSETS` is bound, so the
+ * first path is the real one; the second is only a loud, honest failure.
+ */
+async function serveUi(env, url) {
+  if (env.ASSETS) {
+    const res = await env.ASSETS.fetch(new Request(new URL("/computer/ui.html", url.origin)));
+    if (res && res.ok) {
+      return new Response(res.body, {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          // The UI is versioned with the Worker that serves it; a cached copy
+          // would disagree with the endpoints it calls.
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff",
+          "Referrer-Policy": "same-origin",
+          // The panel is framed by the console (same origin) and nothing else.
+          "Content-Security-Policy": "frame-ancestors 'self'",
+        },
+      });
+    }
+  }
+  return new Response(
+    "<!doctype html><meta charset=utf-8><title>Computer</title>" +
+    "<p>The computer UI asset (computer/ui.html) is not deployed.</p>",
+    { status: 500, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } },
+  );
 }
-
-// The UI is imported as text at build time; when the bundler cannot inline it
-// this fallback keeps /computer from being a 500.
-let UI_HTML_TEXT = "<!doctype html><meta charset=utf-8><title>Computer</title><p>Computer UI asset missing.</p>";
 
 export async function handleComputer(request, env, url) {
   const path = url.pathname;
   const q = url.searchParams;
 
   // ---- UI ----
-  if (path === "/computer" || path === "/computer/") return serveUi(env);
+  if (path === "/computer" || path === "/computer/") return serveUi(env, url);
 
   // ---- state ----
   if (path === "/computer/computers") return json({ computers: S.COMPUTERS });
@@ -191,7 +217,17 @@ export async function handleComputer(request, env, url) {
   // ---- session (mint) ----
   if (path === "/computer/session") {
     const computer = q.get("computer") || "default";
-    const lease = await S.getLease(env, computer).catch(() => null);
+    // The lease decides view vs control, so it must be read strictly. It used
+    // to be `.catch(() => null)`, which turns "the store is down" into "nobody
+    // holds control" — the agent's screen would keep working while the user's
+    // Take control silently degraded to a view link. That is the same
+    // broken-store-looks-like-empty-store ambiguity as B-15, one layer down.
+    let lease;
+    try {
+      lease = await S.getLease(env, computer);
+    } catch (e) {
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
     const held = Boolean(lease && lease.live && lease.holder === "user");
     const r = await mint(env, computer, held ? "control" : "view", held ? lease.leaseId : null);
     return r.ok ? json(r) : json({ error: r.error }, r.error === "no_lease" ? 403 : 503);
