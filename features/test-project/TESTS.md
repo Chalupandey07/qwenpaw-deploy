@@ -177,8 +177,8 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 
 ## Lease — KV write test
 
-### T49 — lease take/release via KV write (computer=qa) — NEEDS-VERIFICATION
-- Area: `lease` · Method: `protocol` — **the exact Cloudflare KV call below is UNVERIFIED; see the open question.**
+### T49 — lease take/release via KV write (computer=qa) — VERIFIED in Round 2
+- Area: `lease` · Method: `protocol` — **the Cloudflare KV calls are VERIFIED (Rounds 2, 3, 4):** `cf.py put-raw` writes `lease:qa` with no URL-encoding of the `:` (the key works as-is), `cf.py delete` removes it, the lease appears in `__lease` as holder `user`, and the watcher mirrors it to the control file. The NEEDS-VERIFICATION fallback in the runner stays as a guard: if a future write call itself errors, it reports NEEDS-VERIFICATION (not FAIL) with the exact command + error.
 - Check:
   1. `curl -s "https://qwenpawx.pages.dev/desktop/__lease?computer=qa"` → record `generation` + `fence` (expect holder `agent`).
   2. Write a qa lease to KV with `cf.py`: `python3 ~/workspace/custom-connectors/custom.cloudflare/bin/cf.py put-raw /client/v4/accounts/ca85fe3692c3f378200950999df9a35e/storage/kv/namespaces/3eb38e6ebdce41f0a7ed744a99afee46/values/lease:qa /tmp/lease-qa.json application/json` where `/tmp/lease-qa.json` is `{"leaseId":"<fresh uuid>","holder":"user","grantedAt":<now ms>,"expiresAt":<now ms + 90000>,"fence":<fence+1>}` (shape copied from `_worker.js` `desktopTakeover`).
@@ -187,7 +187,7 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
   5. **Cleanup in a finally:** `cf.py delete /client/v4/accounts/ca85fe3692c3f378200950999df9a35e/storage/kv/namespaces/3eb38e6ebdce41f0a7ed744a99afee46/values/lease:qa`, then poll `__lease?computer=qa` up to 90 s → holder `agent` again (KV stale reads can hold the old value ~60 s; the 30 s staleness bound in the watcher caps the agent's wait).
 - Expected: holder flips agent → user → agent; control file appears while held and clears after. Generation is recorded only (a raw KV write does NOT bump it — only the Worker's `__takeover`/`__release` handlers do).
 - Evidence: `__lease` JSON at each step, control-file content, delete result.
-- **NEEDS-VERIFICATION — exact open question:** has anyone ever run `cf.py put-raw` / `cf.py delete` against the KV values endpoint for namespace `3eb38e6ebdce41f0a7ed744a99afee46` (DESKTOP_KV), and does the key `lease:qa` need URL-encoding of the `:`? The `cf.py get` schedules call is verified (T22); the KV write/delete calls are not. If the write call itself errors, the runner reports NEEDS-VERIFICATION (not FAIL) with the exact command + error. If the write succeeds but the lease never appears, that is a FAIL.
+- **VERIFIED in Round 2 (2026-11-15):** `cf.py put-raw` / `cf.py delete` against the KV values endpoint for namespace `3eb38e6ebdce41f0a7ed744a99afee46` (DESKTOP_KV) work with the key `lease:qa` as-is — no URL-encoding of the `:` needed. The runner reports NEEDS-VERIFICATION only if a future write call itself errors (guard, not an open question). If the write succeeds but the lease never appears, that is a FAIL.
 - Blast radius: while the qa lease is held (~1–2 min) the QA agent's MCP input tools are refused — that is the mechanism under test. Use computer=qa only, never `default`, for this test.
 
 ---
