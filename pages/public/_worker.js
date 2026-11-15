@@ -542,12 +542,22 @@ async function fetchDesktopOrigin(request, url, env, originUrl, origin, token) {
   let cookies = [];
   let usedToken = false;
   for (let hop = 0; hop < 4; hop++) {
+    // One retry per hop on a thrown subrequest (transient proxy / Worker /
+    // network blip). Without this, a single blip made the desktop look
+    // "asleep" and the screen probe 502 — the parent saw exactly that.
+    // All callers are GETs / WS upgrades (no request body to re-send).
     let res;
-    try {
-      res = await fetch(buildReq(target, cookies));
-    } catch {
-      return { res: null, setCookies };
+    let threw = true;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        res = await fetch(buildReq(target, cookies));
+        threw = false;
+        break;
+      } catch {
+        await sleep(150);
+      }
     }
+    if (threw) return { res: null, setCookies };
     if (res.status === 401 && !usedToken) {
       // No usable proxy cookie: retry once with the server-side token.
       usedToken = true;
@@ -733,6 +743,24 @@ async function getGeneration(env, computer) {
   }
 }
 
+// Strict generation read: THROWS on a KV error instead of returning 0.
+// Returning 0 on error is wrong for the capability check — a gen-0 cap
+// (the private computer before its first takeover) would then verify
+// against a dead store, and a gen-9 cap would fail with a false 403.
+// Used only by the security-critical paths (mint + verify); the
+// informational endpoints keep the lenient getGeneration above.
+async function getGenerationStrict(env, computer) {
+  const v = await env.DESKTOP_KV.get(generationKey(computer));
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Strict lease read: THROWS on a KV error instead of returning null, so a
+// dead store is a retryable 502, never a false "no lease" 403.
+async function getLeaseStrict(env, computer) {
+  return env.DESKTOP_KV.get(leaseKey(computer), "json");
+}
+
 async function bumpGeneration(env, computer) {
   const gen = (await getGeneration(env, computer)) + 1;
   try {
@@ -881,6 +909,16 @@ async function openCapability(env, token) {
 // and by the WebSocket recheck loop. The payload also carries `computer`
 // ("default" = shared :1, "qa" = private :2); a capability minted for one
 // computer can never open the other.
+//
+// Generation check (the fix for the parent's "Screen link expired" on
+// Team→Private): KV is eventually consistent across edge POPs, so the
+// verify read can lag the mint read by one generation. Accept the cap if
+// its generation EQUALS the read one, or is exactly ONE NEWER (the read
+// is stale by one). A cap OLDER than the current generation is still
+// rejected — a release / takeover still kills old caps. On a mismatch,
+// re-read once after 250 ms (replication usually lands in that window).
+// A KV error THROWS (via the strict reads) so the caller can answer 502
+// "try again" instead of a false 403 "link expired".
 async function verifyCapability(env, mode, exp, token) {
   if (!exp || !/^\d+$/.test(exp) || Number(exp) * 1000 < Date.now()) return null;
   if (mode !== "view" && mode !== "control" && mode !== "terminal") return null;
@@ -888,10 +926,35 @@ async function verifyCapability(env, mode, exp, token) {
   if (!payload) return null;
   if (payload.mode !== mode || payload.exp !== Number(exp)) return null;
   const computer = computerOf(payload.computer);
-  if (payload.gen !== (await getGeneration(env, computer))) return null;
+  let genOk = false;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let gen;
+    try {
+      gen = await getGenerationStrict(env, computer);
+    } catch (err) {
+      // A KV error is retried once, then propagated (the caller answers
+      // 502 "try again", not 403 "link expired").
+      if (attempt === 0) { await sleep(200); continue; }
+      throw err;
+    }
+    if (payload.gen === gen || payload.gen === gen + 1) { genOk = true; break; }
+    if (attempt === 0) await sleep(250);
+  }
+  if (!genOk) return null;
   if (mode === "control" || mode === "terminal") {
-    const lease = await getLease(env, computer);
-    if (!leaseActive(lease) || lease.leaseId !== payload.leaseId) return null;
+    let leaseOk = false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let lease;
+      try {
+        lease = await getLeaseStrict(env, computer);
+      } catch (err) {
+        if (attempt === 0) { await sleep(200); continue; }
+        throw err;
+      }
+      if (leaseActive(lease) && lease.leaseId === payload.leaseId) { leaseOk = true; break; }
+      if (attempt === 0) await sleep(250);
+    }
+    if (!leaseOk) return null;
   }
   return payload;
 }
@@ -908,10 +971,38 @@ async function desktopScreen(request, env) {
   const body = await readJsonBody(request);
   const mode = body.mode === "control" ? "control" : body.mode === "terminal" ? "terminal" : "view";
   const computer = body.computer === "qa" ? "qa" : "default";
-  const gen = await getGeneration(env, computer);
+  // The generation is read strictly (a KV error is a 500, not a mint
+  // with a wrong gen). The chrome may also send the generation it just
+  // received from its __takeover / __release response (`gen`); if that is
+  // NEWER than the KV read, the KV read is stale and the fresh value wins
+  // (a mint right after a takeover must not be born dead). A stale lower
+  // client value can never win — Math.max picks the KV value then.
+  let gen;
+  try {
+    gen = await getGenerationStrict(env, computer);
+  } catch {
+    await sleep(200);
+    try {
+      gen = await getGenerationStrict(env, computer);
+    } catch {
+      return jsonResp({ ok: false, error: "kv_unavailable" }, 500);
+    }
+  }
+  const clientGen = Number(body.gen);
+  if (Number.isFinite(clientGen) && clientGen >= 0) gen = Math.max(gen, clientGen);
   const exp = Math.floor(Date.now() / 1000) + CAPABILITY_TTL_S;
   if (mode === "control" || mode === "terminal") {
-    const lease = await getLease(env, computer);
+    let lease;
+    try {
+      lease = await getLeaseStrict(env, computer);
+    } catch {
+      await sleep(200);
+      try {
+        lease = await getLeaseStrict(env, computer);
+      } catch {
+        return jsonResp({ ok: false, error: "kv_unavailable" }, 500);
+      }
+    }
     if (!leaseActive(lease) || body.leaseId !== lease.leaseId) {
       return jsonResp({ ok: false, error: "no_lease" }, 403);
     }
@@ -924,9 +1015,14 @@ async function desktopScreen(request, env) {
 
 // Re-check a live WebSocket's capability every second (Rakazo's
 // watchScreenAuthorization): a revoked/expired capability or a lost lease
-// closes the socket at once. Best-effort — the 60-min TTL bounds the
-// damage if the isolate is evicted. `serverSocket` is the upstream socket.
+// closes the socket. Best-effort — the 60-min TTL bounds the damage if
+// the isolate is evicted. `serverSocket` is the upstream socket.
+// Two CONSECUTIVE failures are required before closing: a single failed
+// recheck is usually a KV blip / replication lag, and the parent watched
+// live streams drop on exactly that. A genuine revocation still closes
+// within ~2 s.
 async function watchCapability(env, mode, exp, token, serverSocket) {
+  let failures = 0;
   for (;;) {
     await sleep(1000);
     try {
@@ -934,13 +1030,21 @@ async function watchCapability(env, mode, exp, token, serverSocket) {
     } catch {
       return;
     }
-    const ok = await verifyCapability(env, mode, exp, token);
+    let ok = false;
+    try {
+      ok = !!(await verifyCapability(env, mode, exp, token));
+    } catch {
+      ok = false; // KV error counts as a failure, not a crash
+    }
     if (!ok) {
+      failures++;
+      if (failures < 2) continue;
       try {
         serverSocket.close(1011, "screen capability revoked");
       } catch { /* already closed */ }
       return;
     }
+    failures = 0;
   }
 }
 
@@ -1078,7 +1182,16 @@ async function desktopSession(request, url, env, ctx) {
   if (parts.length < 4) return new Response("Screen link expired.", { status: 403 });
   const mode = parts[2];
   const [exp, token] = (parts[3] || "").split(".");
-  const payload = await verifyCapability(env, mode, exp, token);
+  let payload;
+  try {
+    payload = await verifyCapability(env, mode, exp, token);
+  } catch {
+    // The store itself failed (not a bad link): tell the chrome to retry
+    // instead of showing "Screen link expired".
+    return new Response("Desktop is temporarily unavailable (capability check). Try again in a moment.", {
+      status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+    });
+  }
   if (!payload) {
     return new Response("Screen link expired — open /desktop again for a fresh one.", {
       status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
@@ -1203,18 +1316,30 @@ async function desktopSession(request, url, env, ctx) {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
-// GET /desktop/__status — desktop + machine state for the chrome page.
-// Probes the view origin directly (200 = live desktop, 503 = waking,
-// fetch error = asleep/down) and reads the keep-alive Worker's cached
-// machine status for the machine side.
+// GET /desktop/__status?computer=default|qa — desktop + machine state
+// for the chrome page. Probes the view origin of the REQUESTED computer
+// directly (200 = live desktop, 503 = waking, fetch error = asleep/down)
+// and reads the keep-alive Worker's cached machine status for the
+// machine side. The old version probed only :1 and read only the default
+// lease, so the Private view (and the /chat side panel, which is the same
+// chrome in an iframe) reported :1's state while showing :2 — the parent
+// watched Private say "asleep" minutes after waking it.
+// `screen` is a best-effort WebSocket liveness probe: after the GET says
+// up, upgrade to /websockify and wait for the VNC server's "RFB" banner.
+// A 200 GET proves websockify answers; only the banner proves the VNC
+// backend behind it is alive. `screen` never changes `desktop` (a flaky
+// probe must not flip the page to "asleep"); it is a diagnostic hint.
 async function desktopStatus(request, url, env) {
   if (request.method !== "GET") return jsonResp({ ok: false, error: "method" }, 405);
+  const computer = computerOf(new URL(request.url).searchParams.get("computer"));
+  const viewOrigin = computer === "qa" ? DESKTOP_QA_VIEW_ORIGIN : DESKTOP_VIEW_ORIGIN;
+  const viewToken = computer === "qa" ? env.DESKTOP_QA_VIEW_TOKEN : env.DESKTOP_VIEW_TOKEN;
   let desktop = "unknown";
   try {
-    const probeUrl = new URL(DESKTOP_VIEW_ORIGIN + "/");
+    const probeUrl = new URL(viewOrigin + "/");
     const { res } = await fetchDesktopOrigin(
       new Request(probeUrl, { method: "GET", headers: { "Accept-Encoding": "identity" } }),
-      url, env, probeUrl, DESKTOP_VIEW_ORIGIN, env.DESKTOP_VIEW_TOKEN || "",
+      url, env, probeUrl, viewOrigin, viewToken || "",
     );
     if (res) {
       if (res.status === 200) desktop = "up";
@@ -1228,29 +1353,99 @@ async function desktopStatus(request, url, env) {
   } catch {
     desktop = "asleep";
   }
+  let screen = "unknown";
+  if (desktop === "up") {
+    screen = await probeScreenRfb(viewOrigin, viewToken || "", url, env);
+  }
   let machine = "unknown";
   try {
     const r = await fetch(KEEPALIVE_URL + "/status", { signal: AbortSignal.timeout(8000) });
     const j = await r.json().catch(() => null);
     if (j && typeof j.status === "string") machine = j.status;
   } catch { /* keep unknown */ }
-  const lease = await getLease(env, "default").catch(() => null);
-  const gen = await getGeneration(env, "default");
+  const lease = await getLease(env, computer).catch(() => null);
+  const gen = await getGeneration(env, computer);
   return jsonResp({
     desktop,
+    screen,
+    computer,
     machine,
     lease: leaseActive(lease) ? { holder: "user", leaseId: lease.leaseId, expiresAt: lease.expiresAt } : { holder: "agent", leaseId: null, expiresAt: null },
     generation: gen,
   });
 }
 
-// POST /desktop/__wake — wake a paused machine via the keep-alive
-// Worker's public /ping (probing the public console URL wakes a paused
-// box by InstaBox design). Throttled to one call per 60 s in KV.
+// Best-effort screen liveness: WebSocket-upgrade to the origin's
+// /websockify and wait for the VNC server's "RFB 003.008" banner.
+// Returns "live" only on the banner, "unreachable" otherwise. Never
+// throws. The socket is closed immediately after the banner (or timeout).
+async function probeScreenRfb(viewOrigin, viewToken, url, env) {
+  try {
+    const wsUrl = new URL(viewOrigin + "/websockify");
+    const key = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
+    const { res } = await fetchDesktopOrigin(
+      new Request(wsUrl, {
+        method: "GET",
+        headers: {
+          Upgrade: "websocket",
+          Connection: "Upgrade",
+          "Sec-WebSocket-Key": key,
+          "Sec-WebSocket-Version": "13",
+          "Accept-Encoding": "identity",
+        },
+      }),
+      url, env, wsUrl, viewOrigin, viewToken,
+    );
+    if (!res || res.status !== 101 || !res.webSocket) return "unreachable";
+    const ws = res.webSocket;
+    try {
+      ws.accept();
+    } catch {
+      return "unreachable";
+    }
+    const banner = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), 3000);
+      const done = (v) => { clearTimeout(timer); resolve(v); };
+      try {
+        ws.addEventListener("message", (ev) => done(ev.data), { once: true });
+        ws.addEventListener("close", () => done(null), { once: true });
+        ws.addEventListener("error", () => done(null), { once: true });
+      } catch {
+        done(null);
+      }
+    });
+    try { ws.close(); } catch { /* ignore */ }
+    if (typeof banner === "string") return banner.startsWith("RFB") ? "live" : "unreachable";
+    if (banner instanceof ArrayBuffer) {
+      return new TextDecoder().decode(banner).startsWith("RFB") ? "live" : "unreachable";
+    }
+    return "unreachable";
+  } catch {
+    return "unreachable";
+  }
+}
+
+// POST /desktop/__wake {computer?} — wake a paused machine via the
+// keep-alive Worker's public /ping (probing the public console URL wakes
+// a paused box by InstaBox design), then start the desktop itself.
+// Throttled to one call per 60 s in KV.
+// The old version only pinged the machine: if the desktop process/stack
+// was down, Wake could never bring it back — the parent watched "Booting…"
+// for ~6 minutes with no screen. Now, when INSTABOX_API_KEY is set, the
+// wake also calls the InstaBox desktop `start` API — but only if the :1
+// view origin does not already answer (starting an already-running
+// desktop is not something to do blindly). The response is honest about
+// what happened: desktopStart is "already-running", "started", "failed",
+// or "unavailable" (no API key — the Wake then only woke the machine).
+// The private (:2) display is systemd-managed on the machine, not by the
+// InstaBox desktop API, so for computer=qa the start step reports
+// "unavailable" with a note instead of pretending.
 async function desktopWake(request, env) {
   if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
   const missing = kvRequired(env);
   if (missing) return missing;
+  const body = await readJsonBody(request);
+  const computer = computerOf(body.computer);
   let lastWake = 0;
   try {
     lastWake = Number((await env.DESKTOP_KV.get(KV_LAST_WAKE_KEY)) || 0);
@@ -1262,13 +1457,52 @@ async function desktopWake(request, env) {
   try {
     await env.DESKTOP_KV.put(KV_LAST_WAKE_KEY, String(now));
   } catch { /* best effort */ }
+  let pingStatus = null;
   try {
     const r = await fetch(KEEPALIVE_URL + "/ping", { signal: AbortSignal.timeout(15000) });
+    pingStatus = r.status;
     await r.body?.cancel().catch(() => {});
-    return jsonResp({ ok: true, pingStatus: r.status });
   } catch {
     return jsonResp({ ok: false, error: "wake_failed" }, 502);
   }
+  let desktopStart = "unavailable";
+  let desktopNote = "";
+  if (computer === "qa") {
+    desktopNote = "The private display (:2) is managed by systemd on the machine, not by the InstaBox desktop API.";
+  } else if (!env.INSTABOX_API_KEY) {
+    desktopNote = "INSTABOX_API_KEY is not set as a Worker secret, so Wake only woke the machine — it cannot start the desktop itself.";
+  } else {
+    // Is the :1 desktop already up? Only start it when it is not.
+    let up = false;
+    try {
+      const probeUrl = new URL(DESKTOP_VIEW_ORIGIN + "/");
+      const { res } = await fetchDesktopOrigin(
+        new Request(probeUrl, { method: "GET", headers: { "Accept-Encoding": "identity" } }),
+        new URL(request.url), env, probeUrl, DESKTOP_VIEW_ORIGIN, env.DESKTOP_VIEW_TOKEN || "",
+      );
+      up = !!res && res.status === 200;
+      try { await res?.body?.cancel().catch(() => {}); } catch { /* ignore */ }
+    } catch { up = false; }
+    if (up) {
+      desktopStart = "already-running";
+    } else {
+      try {
+        const res = await fetch(`https://api.instabox.sh/v1/machines/${MACHINE_ID}/desktop`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-API-Key": env.INSTABOX_API_KEY },
+          body: JSON.stringify({ action: "start", width: 1920, height: 1080 }),
+          signal: AbortSignal.timeout(30000),
+        });
+        await res.text().catch(() => "");
+        desktopStart = res.status >= 200 && res.status < 300 ? "started" : "failed";
+        if (desktopStart === "failed") desktopNote = `The InstaBox desktop start API answered HTTP ${res.status}.`;
+      } catch {
+        desktopStart = "failed";
+        desktopNote = "The InstaBox desktop start API could not be reached.";
+      }
+    }
+  }
+  return jsonResp({ ok: true, pingStatus, desktopStart, desktopNote: desktopNote || undefined, computer });
 }
 
 // POST /desktop/__action {action} — maintenance actions from the "…"
