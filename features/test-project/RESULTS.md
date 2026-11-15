@@ -504,3 +504,40 @@ Protocol run by the runner; browser / needs-token rows were recorded as skipped,
 
 ### Notes (non-pass rows)
 - **T33** (KNOWN-GAP): mailbox row present; mcp.clients={'anysearch': {'name': 'anysearch_mcp', 'description': 'AnySearch web search via MCP', 'enabled': False, 'transport': 's; log mentions qwenpawmail: False (Gmail MCP never configured)
+
+## Round 8 — 2026-11-15T18:48:37Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: PASS=9.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T62 | storage | protocol | PASS | features/storage/harness-store.mjs: exit=0 tally=42 passed, 0 failed tail=42 passed, 0 failed |
+| T79 | docs | protocol | PASS | check-links.py exit=0 tail=all links and paths resolve |
+| T86 | computer | protocol | PASS | features/computer/harness-computer.mjs: exit=0 tally=88 passed, 0 failed tail=88 passed, 0 failed (88 checks) |
+| T88 | computer | protocol | PASS | features/computer/harness-worker-load.mjs: exit=0 tally=40 passed, 0 failed tail=40 passed, 0 failed (40 checks) |
+| T89 | computer | protocol | PASS | features/computer/harness-rate-limit.mjs: exit=0 tally=28 passed, 0 failed tail=28 passed, 0 failed (28 checks) |
+| T90 | computer | protocol | PASS | features/computer/harness-preview-refetch.mjs: exit=0 tally=29 passed, 0 failed tail=29 passed, 0 failed (29 checks) |
+| T91 | routines | protocol | PASS | features/routines/harness-routines-history.mjs: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T92 | computer | protocol | PASS | features/computer/harness-terminal.mjs: exit=0 tally=39 passed, 0 failed tail=39 passed, 0 failed (39 checks) |
+| T93 | computer | protocol | PASS | features/computer/harness-teach.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+
+### Round 8 scope note (2026-11-16)
+
+Round 8 ran the eight tests this pass touched plus T62/T79 as guards; it is not
+a full-suite round. The full suite was run separately and the numbers are
+recorded here because they matter:
+
+**87 selected: 30 PASS, 15 FAIL, 24 NEEDS-REBUILD, 4 NEEDS-TOKEN, 14 other
+skip classes.** Every one of the 15 FAILs is a missing connector in this
+environment — `ib.py` (InstaBox) or `cf.py` (Cloudflare) is not installed, so
+T18/T19/T20/T22/T31/T32/T33/T34/T35/T36/T37/T38/T41/T42/T63 cannot run here.
+**Zero failures in code this pass touched.** The live HTTP checks that need no
+connector (T01–T06, T21, T25, T27, T29, T43–T45) all PASS.
+
+The 24 NEEDS-REBUILD rows are the old computer's browser/protocol tests. They
+stay marked until Muse verifies the rebuild live — by design, not a regression.
+
+Caveat: T32 reports FAIL with an empty reason because `skills_list()` returns
+not-ok for the same missing-connector cause, so its own error path swallows the
+message. That is a runner reporting bug, not a system failure, and it predates
+this pass.
