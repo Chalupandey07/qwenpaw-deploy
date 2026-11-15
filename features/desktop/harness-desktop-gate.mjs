@@ -22,10 +22,12 @@ const TEST_TERMINAL_SECRET = "test-terminal-secret";
 const TEST_QA_VIEW_SECRET = "test-qa-view-secret";
 const TEST_QA_SECRET = "test-qa-secret";
 
-// Mock KV (DESKTOP_KV binding).
+// Mock KV (DESKTOP_KV binding). failGetKeys makes get() throw for those
+// keys (test 34: a KV error must be a retryable 502, not a false 403).
 class MockKV {
-  constructor() { this.map = new Map(); }
+  constructor() { this.map = new Map(); this.failGetKeys = new Set(); }
   async get(k, type) {
+    if (this.failGetKeys.has(k)) throw new Error("mock KV failure for " + k);
     const v = this.map.get(k);
     if (v === undefined) return null;
     if (type === "json") { try { return JSON.parse(v); } catch { return null; } }
@@ -50,10 +52,36 @@ class MockKV {
 //  - a request WITH that auth cookie (no token) gets 200;
 //  - anything else gets 401.
 // `seen` records every desktop-origin request for the tests to assert on.
+// mockFailOrigins: every fetch to that origin throws (a dead origin).
+// mockFailOnceOrigins: the first fetch to that origin throws, then it
+// recovers (a transient blip — the Worker's retry must absorb it).
+// apiCalls records calls to the InstaBox API (test 35: __wake start).
 const seen = [];
+const apiCalls = [];
+const mockFailOrigins = new Set();
+const mockFailOnceOrigins = new Set();
+
+// Fake upstream WebSocket for the screen (RFB banner) probe: fires the
+// VNC server's "RFB 003.008" banner once accept() is called.
+function fakeRfbSocket() {
+  const listeners = {};
+  return {
+    readyState: 1,
+    accept() { setTimeout(() => { (listeners.message || []).forEach((fn) => fn({ data: "RFB 003.008\n" })); }, 0); },
+    addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
+    close() {},
+  };
+}
+
 globalThis.fetch = async (input, init) => {
   const req = input instanceof Request ? input : new Request(input, init);
   const url = req.url;
+  if (url.startsWith("https://api.instabox.sh/v1/machines/")) {
+    let bodyText = "";
+    try { bodyText = await req.text(); } catch { /* ignore */ }
+    apiCalls.push({ url, method: req.method, body: bodyText });
+    return new Response(JSON.stringify({ state: "running", controller: "agent", width: 1920, height: 1080 }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
   if (url.startsWith(ORIGIN + "/api/healthz")) {
     const auth = req.headers.get("Authorization") || "";
     return new Response(JSON.stringify({ status: "ok" }), {
@@ -64,7 +92,9 @@ globalThis.fetch = async (input, init) => {
   if (url.startsWith(DESKTOP_ORIGIN) || url.startsWith(DESKTOP_VIEW_ORIGIN) || url.startsWith(DESKTOP_TERMINAL_ORIGIN) || url.startsWith(DESKTOP_QA_VIEW_ORIGIN) || url.startsWith(DESKTOP_QA_ORIGIN)) {
     const u = new URL(url);
     const cookie = req.headers.get("Cookie") || "";
-    seen.push({ origin: u.origin, path: u.pathname, hadToken: u.searchParams.has("_token"), hadAuth: cookie.includes("__Host-instabox_port_auth=test-auth") });
+    seen.push({ origin: u.origin, path: u.pathname, hadToken: u.searchParams.has("_token"), hadAuth: cookie.includes("__Host-instabox_port_auth=test-auth"), upgrade: req.headers.get("Upgrade") || "" });
+    if (mockFailOnceOrigins.has(u.origin)) { mockFailOnceOrigins.delete(u.origin); throw new Error("mock transient failure for " + u.origin); }
+    if (mockFailOrigins.has(u.origin)) { throw new Error("mock failure for " + u.origin); }
     if (u.pathname === "/foreign-redirect") {
       return new Response("", { status: 302, headers: { Location: "https://evil.example/x" } });
     }
@@ -72,6 +102,14 @@ globalThis.fetch = async (input, init) => {
       u.searchParams.delete("_token");
       const loc = u.pathname + (u.search ? u.search : "");
       return new Response("", { status: 303, headers: { Location: loc, "Set-Cookie": "__Host-instabox_port_auth=test-auth; Path=/; Secure; HttpOnly" } });
+    }
+    // WebSocket upgrade to /websockify with a valid proxy cookie: the VNC
+    // backend answers 101 and sends the RFB banner (fakeRfbSocket).
+    // NOTE: a 101 cannot be built with `new Response(null, {status: 101})`
+    // (Node rejects statuses outside 200-599), so this returns a plain
+    // object with the fields the Worker reads: status, headers, webSocket.
+    if (req.headers.get("Upgrade") === "websocket" && u.pathname === "/websockify" && cookie.includes("__Host-instabox_port_auth=test-auth")) {
+      return { status: 101, headers: new Headers(), webSocket: fakeRfbSocket() };
     }
     if (cookie.includes("__Host-instabox_port_auth=test-auth")) {
       const isJs = u.pathname.endsWith(".js");
@@ -493,6 +531,101 @@ r = await call("/desktop/vendor/xterm.js", { headers: cookieHdr });
 check("31a /desktop/vendor/xterm.js -> 200 JS", r.status === 200 && (r.headers.get("Content-Type") || "").includes("javascript"), `status=${r.status} ct=${r.headers.get("Content-Type")}`);
 r = await call("/desktop/vendor/xterm.css", { headers: cookieHdr });
 check("31b /desktop/vendor/xterm.css -> 200 CSS", r.status === 200 && (r.headers.get("Content-Type") || "").includes("css"), `status=${r.status} ct=${r.headers.get("Content-Type")}`);
+
+// --- Fix round (2026-11-15): the 4 browser defects ----------------------
+// 32. Per-computer __status: qa probes the QA view origin (6084), not
+//     :1 (6082); a dead qa origin reports down while :1 stays up; a
+//     single transient failure is retried and still reports up; the
+//     screen field reports the WS/RFB liveness probe.
+seen.length = 0;
+r = await call("/desktop/__status?computer=qa", { headers: cookieHdr });
+j = await r.json();
+check("32a __status?computer=qa probes the QA view origin (6084), not :1",
+  r.status === 200 && j.computer === "qa" && j.desktop === "up" && seen.some((s) => s.origin === DESKTOP_QA_VIEW_ORIGIN) && !seen.some((s) => s.origin === DESKTOP_VIEW_ORIGIN),
+  `status=${r.status} body=${JSON.stringify(j)} seen=${JSON.stringify(seen)}`);
+mockFailOrigins.add(DESKTOP_QA_VIEW_ORIGIN);
+r = await call("/desktop/__status?computer=qa", { headers: cookieHdr });
+j = await r.json();
+check("32b __status?computer=qa with the qa origin down -> desktop not up",
+  r.status === 200 && j.computer === "qa" && j.desktop !== "up",
+  `body=${JSON.stringify(j)}`);
+r = await call("/desktop/__status", { headers: cookieHdr });
+j = await r.json();
+check("32c __status (default) still up while qa is down",
+  r.status === 200 && j.desktop === "up",
+  `body=${JSON.stringify(j)}`);
+mockFailOrigins.delete(DESKTOP_QA_VIEW_ORIGIN);
+mockFailOnceOrigins.add(DESKTOP_VIEW_ORIGIN);
+r = await call("/desktop/__status", { headers: cookieHdr });
+j = await r.json();
+check("32d __status survives a single transient origin failure (retry)",
+  r.status === 200 && j.desktop === "up",
+  `body=${JSON.stringify(j)}`);
+seen.length = 0;
+r = await call("/desktop/__status", { headers: cookieHdr });
+j = await r.json();
+check("32e __status reports screen live (WS/RFB probe) via a websocket upgrade",
+  r.status === 200 && j.screen === "live" && seen.some((s) => s.path === "/websockify" && s.upgrade === "websocket"),
+  `body=${JSON.stringify(j)} seen=${JSON.stringify(seen)}`);
+
+// 33. Generation lag: a cap minted at gen N still verifies when the
+//     verify read is stale by one (N-1), but a cap older than the
+//     current generation (after a release) is still rejected.
+r = await call("/desktop/__takeover", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ computer: "default" }) });
+const lagLease = (await r.json()).leaseId;
+const genAfterTakeover = Number(await kv.get("generation:default"));
+r = await call("/desktop/__screen", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ mode: "view", computer: "default" }) });
+const lagCap = (await r.json()).url;
+check("33a mint a view cap after a takeover", r.status === 200 && typeof lagCap === "string" && lagCap.startsWith("/desktop/session/view/"), `status=${r.status}`);
+await kv.put("generation:default", String(genAfterTakeover - 1));
+r = await call(lagCap + "/vnc.html", { headers: cookieHdr });
+check("33b cap verifies when the generation read is stale by one",
+  r.status === 200, `status=${r.status}`);
+await kv.put("generation:default", String(genAfterTakeover));
+await call("/desktop/__release", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: lagLease, computer: "default" }) });
+r = await call(lagCap + "/vnc.html", { headers: cookieHdr });
+check("33c old cap -> 403 after a release (one-sided tolerance: older caps stay dead)",
+  r.status === 403, `status=${r.status}`);
+
+// 34. A KV error during the capability check is a retryable 502, never
+//     a false 403 "link expired".
+r = await call("/desktop/__screen", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ mode: "view", computer: "default" }) });
+const kvCap = (await r.json()).url;
+kv.failGetKeys.add("generation:default");
+r = await call(kvCap + "/vnc.html", { headers: cookieHdr });
+check("34 KV error on the generation read -> 502, not 403",
+  r.status === 502, `status=${r.status}`);
+kv.failGetKeys.delete("generation:default");
+
+// 35. __wake starts the desktop via the InstaBox API when the key is set
+//     and :1 is down; without the key it says so honestly (no API call).
+mockFailOrigins.add(DESKTOP_VIEW_ORIGIN);
+env.INSTABOX_API_KEY = "test-instabox-key";
+apiCalls.length = 0;
+await kv.delete("lastWake");
+r = await call("/desktop/__wake", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ computer: "default" }) });
+j = await r.json();
+check("35a __wake with the key + :1 down -> calls the desktop start API, desktopStart started",
+  r.status === 200 && j.desktopStart === "started" && apiCalls.some((c) => c.url.includes("/desktop") && c.body.includes('"start"')),
+  `status=${r.status} body=${JSON.stringify(j)} apiCalls=${JSON.stringify(apiCalls)}`);
+delete env.INSTABOX_API_KEY;
+await kv.delete("lastWake");
+r = await call("/desktop/__wake", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ computer: "default" }) });
+j = await r.json();
+check("35b __wake without the key -> desktopStart unavailable, no API call",
+  r.status === 200 && j.desktopStart === "unavailable" && apiCalls.length === 1,
+  `status=${r.status} body=${JSON.stringify(j)} apiCalls=${JSON.stringify(apiCalls)}`);
+mockFailOrigins.delete(DESKTOP_VIEW_ORIGIN);
+
+// 36. A lease for one computer can never mint a screen for the other
+//     (the mode-switch-while-in-control bug: the chrome kept the :1
+//     leaseId and asked for a :2 control screen).
+r = await call("/desktop/__takeover", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ computer: "default" }) });
+const defLease36 = (await r.json()).leaseId;
+r = await call("/desktop/__screen", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ mode: "control", computer: "qa", leaseId: defLease36 }) });
+check("36 __screen control computer=qa with the default leaseId -> 403 no_lease",
+  r.status === 403 && (await r.json()).error === "no_lease", `status=${r.status}`);
+await call("/desktop/__release", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: defLease36, computer: "default" }) });
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
