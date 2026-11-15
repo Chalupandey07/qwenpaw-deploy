@@ -256,6 +256,15 @@ async function proxy(request, url) {
 // collapsed by default; its open/closed state lives in sessionStorage.
 // Everything is DOM-level (document.body), outside React's #root.
 function consolePanelScript() {
+  // Rakazo-style side-panel preview (port of ComputerPreview in
+  // apps/web/src/pages/shell/computer-panel.tsx): a 16:10 preview iframe
+  // (view-only, pointerEvents none) with an "Open in full window" pill on
+  // hover — NOT the whole /desktop chrome squeezed into 316 px (the old
+  // panel mounted a second full screen session alongside the overlay).
+  // Idle computers show "Asleep" + Wake (a click on the preview never
+  // boots — a boot costs run time, so only the button wakes). Errors show
+  // text + Retry; the preview iframe is only re-minted on Retry/Wake, so
+  // it never flickers.
   return `<script>
 (function () {
   try {
@@ -273,21 +282,118 @@ function consolePanelScript() {
     var bar = document.createElement("div");
     bar.style.cssText = "display:flex;align-items:center;gap:8px;height:44px;padding:0 10px;background:#171a21;border-bottom:1px solid #262a33;color:#e8eaf0;font:600 13px system-ui,sans-serif;flex:none;";
     bar.innerHTML = "<span style='flex:1'>Computer</span><a href='/desktop' target='_blank' style='color:#86efac;text-decoration:none'>Open full</a><button id='qwenpawComputerClose' type='button' style='background:none;border:none;color:#e8eaf0;font-size:18px;cursor:pointer;padding:4px 8px'>&times;</button>";
-    var frame = document.createElement("iframe");
-    frame.src = "/desktop";
-    frame.title = "QwenPaw computer";
-    frame.style.cssText = "flex:1;width:100%;border:0;background:#000;";
+    var body = document.createElement("div");
+    body.style.cssText = "padding:12px;overflow:auto;flex:1;color:#e8eaf0;font:13px system-ui,sans-serif;";
+    // 16:10 preview area (Rakazo's ComputerPreview): the frame fills it;
+    // the status text only shows while there is no frame to show.
+    var preview = document.createElement("div");
+    preview.id = "qwenpawComputerPreview";
+    preview.style.cssText = "position:relative;aspect-ratio:16/10;border-radius:14px;overflow:hidden;background:#000;border:1px solid #262a33;";
+    var status = document.createElement("div");
+    status.id = "qwenpawComputerPreviewStatus";
+    status.style.cssText = "position:absolute;inset:0;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center;text-align:center;padding:12px;color:#9aa3b2;background:#000;";
+    var openPill = document.createElement("button");
+    openPill.id = "qwenpawComputerOpenPill";
+    openPill.type = "button";
+    openPill.textContent = "Open in full window";
+    openPill.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(15,17,21,.4);opacity:0;transition:opacity .15s;border:0;cursor:pointer;";
+    openPill.innerHTML = "<span style='display:inline-flex;gap:8px;align-items:center;border-radius:999px;background:#171a21;color:#e8eaf0;padding:8px 14px;font:600 13px system-ui,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.5)'>Open in full window</span>";
+    preview.appendChild(status);
+    preview.appendChild(openPill);
+    var note = document.createElement("div");
+    note.style.cssText = "margin-top:10px;color:#9aa3b2;";
+    note.textContent = "Bot screen preview — watch only. Take control from the full computer view.";
+    body.appendChild(preview);
+    body.appendChild(note);
     panel.appendChild(bar);
-    panel.appendChild(frame);
+    panel.appendChild(body);
     document.body.appendChild(panel);
     document.body.appendChild(btn);
     var open = sessionStorage.getItem("qwenpawComputerOpen") === "1";
     function setOpen(v) {
       panel.style.display = v ? "flex" : "none";
       try { sessionStorage.setItem("qwenpawComputerOpen", v ? "1" : "0"); } catch (e) {}
+      if (v) loadPreview();
     }
     btn.addEventListener("click", function () { setOpen(true); });
     document.getElementById("qwenpawComputerClose").addEventListener("click", function () { setOpen(false); });
+    openPill.addEventListener("click", function () { window.open("/desktop", "_blank"); });
+    preview.addEventListener("mouseenter", function () { openPill.style.opacity = "1"; });
+    preview.addEventListener("mouseleave", function () { openPill.style.opacity = "0"; });
+    openPill.addEventListener("focus", function () { openPill.style.opacity = "1"; });
+    openPill.addEventListener("blur", function () { openPill.style.opacity = "0"; });
+    var frame = null, computer = "default", loading = false;
+    function setStatus(html) {
+      status.innerHTML = html;
+      status.style.display = "flex";
+      openPill.style.display = "none";
+    }
+    function showFrame() {
+      status.style.display = "none";
+      openPill.style.display = "flex";
+    }
+    function vncUrl(capPath) {
+      var path = capPath.replace(/^\\//, "") + "/websockify";
+      return capPath + "/vnc.html?autoconnect=true&resize=scale&view_only=true&path=" + encodeURIComponent(path);
+    }
+    async function api(path, method, body) {
+      var r = await fetch(path, { method: method || "GET", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      var j = null;
+      try { j = await r.json(); } catch (e) {}
+      return { status: r.status, json: j || {} };
+    }
+    async function loadPreview() {
+      if (loading) return;
+      loading = true;
+      try {
+        var m = await api("/desktop/__mode?agent=default", "GET");
+        if (m.status === 200 && m.json.mode) computer = m.json.mode === "private" ? "qa" : "default";
+        var s = await api("/desktop/__status?computer=" + computer, "GET");
+        if (s.status !== 200) { setStatus("Could not reach the desktop.<br><br><button data-act='retry' style='padding:7px 12px;border-radius:8px;border:1px solid #343945;background:#23272f;color:#e8eaf0;cursor:pointer'>Retry</button>"); return; }
+        if (s.json.desktop === "waking") { setStatus("Booting live desktop…"); setTimeout(loadPreview, 5000); return; }
+        if (s.json.desktop !== "up") {
+          setStatus("Computer is asleep.<br><br><button data-act='wake' style='padding:7px 12px;border-radius:8px;border:1px solid #22c55e;background:#22c55e;color:#06210f;font-weight:650;cursor:pointer'>Wake</button>");
+          return;
+        }
+        var mint = await api("/desktop/__screen", "POST", { mode: "view", computer: computer });
+        if (mint.status !== 200 || !mint.json.url) {
+          if (mint.status === 401 || mint.status === 403) { setStatus("Open the computer once to watch it — <a href='/desktop' target='_blank' style='color:#86efac'>/desktop</a>."); return; }
+          setStatus("Screen not connected.<br><br><button data-act='retry' style='padding:7px 12px;border-radius:8px;border:1px solid #343945;background:#23272f;color:#e8eaf0;cursor:pointer'>Retry screen</button>");
+          return;
+        }
+        if (frame) { try { frame.remove(); } catch (e) {} frame = null; }
+        frame = document.createElement("iframe");
+        frame.title = "Bot screen preview";
+        frame.src = vncUrl(mint.json.url);
+        frame.setAttribute("sandbox", "allow-scripts allow-pointer-lock");
+        frame.setAttribute("allow", "clipboard-read; clipboard-write");
+        frame.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0;background:#000;pointer-events:none;";
+        preview.insertBefore(frame, status);
+        // "Connecting…" stays visible until the frame reports connected —
+        // the pill only appears once there is a live screen to open.
+        setStatus("Connecting…");
+      } finally {
+        loading = false;
+      }
+    }
+    status.addEventListener("click", async function (ev) {
+      var act = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-act");
+      if (act === "retry") loadPreview();
+      if (act === "wake") {
+        setStatus("Booting live desktop…");
+        await api("/desktop/__wake", "POST", { computer: computer });
+        setTimeout(loadPreview, 5000);
+      }
+    });
+    window.addEventListener("message", function (ev) {
+      if (!frame || ev.source !== frame.contentWindow) return;
+      var d = ev.data || {};
+      if (d.type === "qwenpawScreen" && d.state === "connected") {
+        showFrame();
+      } else if (d.type === "qwenpawScreen" && (d.state === "failed" || d.state === "disconnected")) {
+        setStatus("Screen not connected.<br><br><button data-act='retry' style='padding:7px 12px;border-radius:8px;border:1px solid #343945;background:#23272f;color:#e8eaf0;cursor:pointer'>Retry screen</button>");
+      }
+    });
     setOpen(open);
   } catch (e) { /* never break the console */ }
 })();
@@ -743,6 +849,25 @@ function kvRequired(env) {
   return null;
 }
 
+// A KV WRITE that fails must never become a bare Worker 500. Cloudflare's
+// free tier allows only 1,000 KV writes/day per account (error 10048:
+// "your account has reached the free usage limit for this operation for
+// today"), and the lease-watcher's old 15 s preview uploads burned that
+// budget by mid-morning — which is why __takeover, __mode and the
+// needs-you raise all answered 500 at once on 2026-11-15 while every
+// READ (status, lease, frames) kept working. Every user-facing write
+// goes through kvTry and answers 503 store_unavailable on failure, so
+// the chrome can say so honestly instead of showing a bare "(500)".
+// The durable fix for the burn itself is in the lease-watcher: preview
+// uploads are change-only with a 180 s floor.
+const STORE_UNAVAILABLE_NOTE = "The desktop store refused the write — the free tier's daily write budget is likely spent (it resets daily). Try again later.";
+async function kvTry(fn) {
+  try { await fn(); return true; } catch { return false; }
+}
+function storeUnavailable() {
+  return jsonResp({ ok: false, error: "store_unavailable", note: STORE_UNAVAILABLE_NOTE }, 503);
+}
+
 async function getLease(env, computer) {
   try {
     return await env.DESKTOP_KV.get(leaseKey(computer), "json");
@@ -835,7 +960,9 @@ async function desktopTakeover(request, env) {
     expiresAt: now + LEASE_TTL_MS,
     fence: (typeof lease?.fence === "number" ? lease.fence : 0) + 1,
   };
-  await env.DESKTOP_KV.put(leaseKey(computer), JSON.stringify(next));
+  if (!(await kvTry(() => env.DESKTOP_KV.put(leaseKey(computer), JSON.stringify(next))))) {
+    return storeUnavailable();
+  }
   const gen = await bumpGeneration(env, computer);
   return jsonResp({ ok: true, leaseId: next.leaseId, expiresAt: next.expiresAt, fence: next.fence, generation: gen });
 }
@@ -854,7 +981,12 @@ async function desktopHeartbeat(request, env) {
     return jsonResp({ ok: false, error: "no_lease" }, 410);
   }
   lease.expiresAt = Date.now() + LEASE_TTL_MS;
-  await env.DESKTOP_KV.put(leaseKey(computer), JSON.stringify(lease));
+  // A failed heartbeat write is NOT a lost lease: the lease still exists
+  // with its old expiry, so answer 503 (the chrome keeps control and
+  // retries next cycle) instead of 410, which would drop control.
+  if (!(await kvTry(() => env.DESKTOP_KV.put(leaseKey(computer), JSON.stringify(lease))))) {
+    return storeUnavailable();
+  }
   return jsonResp({ ok: true, expiresAt: lease.expiresAt });
 }
 
@@ -870,7 +1002,11 @@ async function desktopRelease(request, env) {
   if (!lease || body.leaseId !== lease.leaseId) {
     return jsonResp({ ok: false, error: "stale" });
   }
-  await env.DESKTOP_KV.delete(leaseKey(computer));
+  // A failed delete is self-healing (the lease expires within 90 s), but
+  // the release did not happen — say so honestly instead of claiming ok.
+  if (!(await kvTry(() => env.DESKTOP_KV.delete(leaseKey(computer))))) {
+    return jsonResp({ ok: false, error: "store_unavailable", note: STORE_UNAVAILABLE_NOTE + " The lease expires on its own within ~90 s." }, 503);
+  }
   const gen = await bumpGeneration(env, computer);
   return jsonResp({ ok: true, released: true, generation: gen });
 }
@@ -1086,51 +1222,106 @@ function novncShimScript(mode) {
   return `<script>
 window.__QWENPAW_DESKTOP_MODE = ${JSON.stringify(mode)};
 (function () {
-  try {
-    var probe = window.localStorage.getItem("__qwenpaw_probe__");
-  } catch (e) {
-    var mem = {};
-    var memStore = {
-      getItem: function (k) { return k in mem ? mem[k] : null; },
-      setItem: function (k, v) { mem[k] = String(v); },
-      removeItem: function (k) { delete mem[k]; },
-      clear: function () { mem = {}; },
-      key: function (i) { return Object.keys(mem)[i] || null; },
-      get length() { return Object.keys(mem).length; },
+  // In-memory storage (port of Rakazo's injectNovncStorageShim in
+  // apps/web/src/novnc-html.ts): the proxy sandboxes the screen document
+  // without same-origin, so noVNC's settings reads from localStorage throw.
+  // Replaced unconditionally, like Rakazo's (with the old probe as a
+  // fallback if the define itself throws).
+  function memoryStorage() {
+    var items = new Map();
+    return {
+      getItem: function (k) { return items.has(String(k)) ? items.get(String(k)) : null; },
+      setItem: function (k, v) { items.set(String(k), String(v)); },
+      removeItem: function (k) { items.delete(String(k)); },
+      clear: function () { items.clear(); },
     };
-    try { Object.defineProperty(window, "localStorage", { value: memStore }); } catch (e2) {}
-    try { Object.defineProperty(window, "sessionStorage", { value: memStore }); } catch (e2) {}
+  }
+  var storagesReplaced = false;
+  try {
+    Object.defineProperty(window, "localStorage", { configurable: true, value: memoryStorage() });
+    Object.defineProperty(window, "sessionStorage", { configurable: true, value: memoryStorage() });
+    storagesReplaced = true;
+  } catch (e) { /* fall through to the probe below */ }
+  if (!storagesReplaced) {
+    try {
+      window.localStorage.getItem("__qwenpaw_probe__");
+    } catch (e) {
+      var mem = {};
+      var memStore = {
+        getItem: function (k) { return k in mem ? mem[k] : null; },
+        setItem: function (k, v) { mem[k] = String(v); },
+        removeItem: function (k) { delete mem[k]; },
+        clear: function () { mem = {}; },
+        key: function (i) { return Object.keys(mem)[i] || null; },
+        get length() { return Object.keys(mem).length; },
+      };
+      try { Object.defineProperty(window, "localStorage", { value: memStore }); } catch (e2) {}
+      try { Object.defineProperty(window, "sessionStorage", { value: memStore }); } catch (e2) {}
+    }
   }
   try { delete window.VideoDecoder; } catch (e) {}
+  // Browser-extension script errors must not replace the screen: Rakazo
+  // stops them at the source (stopImmediatePropagation) so noVNC's global
+  // error handler never sees them. The old code only preventDefaulted,
+  // which is weaker.
   window.addEventListener("error", function (ev) {
-    if (ev && ev.filename && ev.filename.indexOf("chrome-extension://") === 0) ev.preventDefault();
+    if (ev && ev.filename && /^[a-z-]+-extension:/.test(String(ev.filename))) ev.stopImmediatePropagation();
   }, true);
   var style = document.createElement("style");
   style.textContent = "#noVNC_status{display:none!important}";
   (document.head || document.documentElement).appendChild(style);
+  // The app cannot look into this sandboxed frame, so tell it how the
+  // screen is doing. State comes from noVNC's own CSS classes on <html>
+  // (port of Rakazo's sync() in injectNovncStorageShim), NOT from the
+  // status bar's text: the text can be empty or stale while the classes
+  // always track the connection. A MutationObserver follows them; the old
+  // code polled the text every 500 ms and misread it.
   var lastState = "";
-  function stateFromText(t) {
-    t = (t || "").toLowerCase();
-    if (t.indexOf("connected") !== -1) return "connected";
-    if (t.indexOf("connecting") !== -1) return "connecting";
-    if (t.indexOf("failed") !== -1 || t.indexOf("error") !== -1) return "failed";
-    if (t.indexOf("disconnected") !== -1) return "disconnected";
-    return "loading";
+  var classed = false;
+  function report(state, detail) {
+    if (!state || state === lastState) return;
+    lastState = state;
+    try { window.parent.postMessage(detail ? { type: "qwenpawScreen", state: state, detail: detail } : { type: "qwenpawScreen", state: state }, window.location.origin); } catch (e) {}
   }
-  function report() {
-    var el = document.getElementById("noVNC_status");
-    var text = el ? (el.textContent || "") : "";
-    var state = stateFromText(text);
-    if (state !== lastState) {
-      lastState = state;
-      try { window.parent.postMessage({ type: "qwenpawScreen", state: state, detail: text.slice(0, 200) }, window.location.origin); } catch (e) {}
-    }
+  function sync() {
+    var root = document.documentElement;
+    var status = document.getElementById("noVNC_status");
+    // data-rakazo-screen-error is set by Rakazo's own embed page, never by
+    // stock noVNC — kept for faithfulness; the status-error classes below
+    // are the live path for us.
+    var failure = root.getAttribute("data-rakazo-screen-error");
+    var statusError = status && status.classList.contains("noVNC_open") && status.classList.contains("noVNC_status_error");
+    var connecting = root.classList.contains("noVNC_connecting") || root.classList.contains("noVNC_reconnecting");
+    var connected = root.classList.contains("noVNC_connected");
+    if (connecting || connected) classed = true;
+    var state = connected ? "connected"
+      : failure !== null || statusError ? "failed"
+      : connecting ? "connecting"
+      : classed ? (lastState === "connected" || lastState === "connecting" ? "disconnected" : "")
+      : document.querySelector("#screen canvas") ? "connecting" : "";
+    report(state, state === "failed" ? (failure || String(status ? (status.textContent || "") : "")) : undefined);
   }
+  function observe() {
+    sync();
+    new MutationObserver(sync).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "data-rakazo-screen-error"],
+      childList: true,
+      subtree: true,
+    });
+  }
+  report("loading");
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", observe);
+  else observe();
   window.addEventListener("message", function (ev) {
     if (ev.origin !== window.location.origin) return;
-    if (ev.data && ev.data.qwenpawScreenFocus) {
+    var d = ev.data || {};
+    // A reconnected screen takes the keyboard back when the app asks;
+    // nothing else is accepted (Rakazo: exactly one key, from the parent).
+    if (d && Object.keys(d).length === 1 && d.qwenpawScreenFocus === true) {
       var c = document.getElementById("noVNC_canvas");
       if (c) { try { c.focus(); } catch (e) {} }
+      return;
     }
     // Teach-by-showing (Rakazo's recordTeachingInputEvent): the parent
     // (chrome) turns recording on while the user holds control and is
@@ -1140,12 +1331,12 @@ window.__QWENPAW_DESKTOP_MODE = ${JSON.stringify(mode)};
     // "sensitive" flag is on, key/clipboard VALUES are never sent (only
     // {kind, sensitive:true}); the parent and the Worker strip them too
     // (see sanitizeTeachRecordingEvent in the Worker).
-    if (ev.data && typeof ev.data.qwenpawTeach === "boolean") {
-      teachOn = ev.data.qwenpawTeach;
-      teachSensitive = !!ev.data.sensitive;
+    if (d && typeof d.qwenpawTeach === "boolean") {
+      teachOn = d.qwenpawTeach;
+      teachSensitive = !!d.sensitive;
     }
-    if (ev.data && typeof ev.data.qwenpawTeachSensitive === "boolean") {
-      teachSensitive = ev.data.qwenpawTeachSensitive;
+    if (d && typeof d.qwenpawTeachSensitive === "boolean") {
+      teachSensitive = d.qwenpawTeachSensitive;
     }
   });
   var teachOn = false, teachSensitive = false, lastMoveAt = 0;
@@ -1186,8 +1377,6 @@ window.__QWENPAW_DESKTOP_MODE = ${JSON.stringify(mode)};
     try { t = (e.clipboardData || window.clipboardData).getData("text") || ""; } catch (e2) {}
     teachSend({ kind: "clipboard", text: t.slice(0, 500), at: new Date().toISOString() });
   }, true);
-  setInterval(report, 500);
-  report();
 })();
 </script>`;
 }
@@ -1239,6 +1428,22 @@ async function desktopSession(request, url, env, ctx) {
   if (!originToken) {
     return new Response("Desktop is not configured yet.", {
       status: 503, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+    });
+  }
+  // Status-only probe (port of Rakazo's SCREEN_PROBE_PARAM in
+  // packages/core/src/screen-reconnect.ts): the chrome asks whether the
+  // screen page is reachable before framing it. Answered right here, after
+  // the capability check — 204 when the capability is valid — and never
+  // passed to the computer, so the answer can't be a redirect or anything
+  // the computer wrote. The old pre-probe fetched the full vnc.html
+  // through the proxy (303 dance + full page, then the frame fetched it
+  // AGAIN), which is a large part of why first load sat on a black screen
+  // for 60-90 s while the desktop stack itself answers in <1 s (measured
+  // live: WS+RFB banner 125-731 ms on localhost). This probe is cheap.
+  if (url.searchParams.get("qwenpaw_probe") === "1") {
+    return new Response(null, {
+      status: 204,
+      headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
     });
   }
   const rest = parts.slice(4).join("/");
@@ -1418,6 +1623,14 @@ async function desktopStatus(request, url, env) {
 // /websockify and wait for the VNC server's "RFB 003.008" banner.
 // Returns "live" only on the banner, "unreachable" otherwise. Never
 // throws. The socket is closed immediately after the banner (or timeout).
+// The banner wait is 10 s, not 3 s: the handshake rides the same
+// InstaBox private-port proxy as the session (401 -> _token -> 303 ->
+// cookie -> 101, several sequential round trips), and the live session
+// proves that path can take seconds — a 3 s budget made the probe report
+// "unreachable" while the real stream rendered fine (T50, 2026-11-15).
+// The request also carries Sec-WebSocket-Protocol: binary, exactly like
+// noVNC's own handshake, so the probe exercises the same path the frame
+// uses.
 async function probeScreenRfb(viewOrigin, viewToken, url, env) {
   try {
     const wsUrl = new URL(viewOrigin + "/websockify");
@@ -1430,6 +1643,7 @@ async function probeScreenRfb(viewOrigin, viewToken, url, env) {
           Connection: "Upgrade",
           "Sec-WebSocket-Key": key,
           "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Protocol": "binary",
           "Accept-Encoding": "identity",
         },
       }),
@@ -1443,7 +1657,7 @@ async function probeScreenRfb(viewOrigin, viewToken, url, env) {
       return "unreachable";
     }
     const banner = await new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(null), 3000);
+      const timer = setTimeout(() => resolve(null), 10000);
       const done = (v) => { clearTimeout(timer); resolve(v); };
       try {
         ws.addEventListener("message", (ev) => done(ev.data), { once: true });
@@ -1604,7 +1818,11 @@ async function desktopAction(request, env) {
 // /data/home/camoufox/.env and /data/home/mcp-proxy/.env (never in git).
 const KV_NEEDSYOU_KEY = "needsyou";
 const KV_PREVIEW_KEY = "preview";
-const KV_PREVIEW_TTL_S = 60;
+// Previews are uploaded change-only (at most once per 120 s per
+// computer) by the lease-watcher, so the TTL must outlast the upload
+// floor — 600 s. The old 60 s TTL paired with unconditional 15 s
+// uploads burned the free KV write budget (see the watcher docstring).
+const KV_PREVIEW_TTL_S = 600;
 
 function previewKey(computer) {
   return KV_PREVIEW_KEY + ":" + (computer === "qa" ? "qa" : "default");
@@ -1648,7 +1866,9 @@ async function desktopNeedsYou(request, env) {
   const text = typeof body.text === "string" ? body.text.slice(0, 1000) : "";
   if (!text.trim()) return jsonResp({ ok: false, error: "empty_text" }, 400);
   const record = { text: text.trim(), at: new Date().toISOString(), runId: typeof body.runId === "string" ? body.runId.slice(0, 100) : null };
-  await env.DESKTOP_KV.put(KV_NEEDSYOU_KEY, JSON.stringify(record));
+  if (!(await kvTry(() => env.DESKTOP_KV.put(KV_NEEDSYOU_KEY, JSON.stringify(record))))) {
+    return storeUnavailable();
+  }
   return jsonResp({ ok: true, record });
 }
 
@@ -1670,7 +1890,7 @@ async function desktopNeedsYouResolve(request, env) {
 }
 
 // GET /desktop/__preview (cookie-gated) — the latest desktop screenshot
-// PNG (from the lease-watcher's scrot, max 60 s old) or 404.
+// PNG (from the lease-watcher's scrot, max 600 s old) or 404.
 async function desktopPreview(request, env) {
   if (request.method !== "GET") return jsonResp({ ok: false, error: "method" }, 405);
   const missing = kvRequired(env);
@@ -1691,7 +1911,7 @@ async function desktopPreview(request, env) {
 }
 
 // POST /desktop/__preview-upload (sync-token gated) — the lease-watcher
-// posts the scrot PNG as raw bytes. Stored base64 with a 60 s TTL.
+// posts the scrot PNG as raw bytes. Stored base64 with a 600 s TTL.
 async function desktopPreviewUpload(request, env) {
   if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
   if (!syncTokenValid(request, env)) return jsonResp({ ok: false, error: "unauthorized" }, 401);
@@ -1707,7 +1927,9 @@ async function desktopPreviewUpload(request, env) {
   let s = "";
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
   const computer = computerOf(new URL(request.url).searchParams.get("computer"));
-  await env.DESKTOP_KV.put(previewKey(computer), btoa(s), { expirationTtl: KV_PREVIEW_TTL_S });
+  if (!(await kvTry(() => env.DESKTOP_KV.put(previewKey(computer), btoa(s), { expirationTtl: KV_PREVIEW_TTL_S })))) {
+    return jsonResp({ ok: false, error: "store_unavailable", note: STORE_UNAVAILABLE_NOTE }, 503);
+  }
   return jsonResp({ ok: true, bytes: buf.byteLength });
 }
 
@@ -1766,7 +1988,9 @@ async function desktopTeach(request, env) {
     events: sanitizeTeachEvents(body.events),
     at: new Date().toISOString(),
   };
-  await env.DESKTOP_KV.put(KV_TEACH_PREFIX + id, JSON.stringify(skill));
+  if (!(await kvTry(() => env.DESKTOP_KV.put(KV_TEACH_PREFIX + id, JSON.stringify(skill))))) {
+    return storeUnavailable();
+  }
   return jsonResp({ ok: true, id, name });
 }
 
@@ -1820,6 +2044,8 @@ async function desktopMode(request, env) {
   }
   if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
   const mode = body.mode === "private" ? "private" : "team";
-  await env.DESKTOP_KV.put(KV_MODE_PREFIX + agentSafe, mode);
+  if (!(await kvTry(() => env.DESKTOP_KV.put(KV_MODE_PREFIX + agentSafe, mode)))) {
+    return storeUnavailable();
+  }
   return jsonResp({ ok: true, agent: agentSafe, mode });
 }
