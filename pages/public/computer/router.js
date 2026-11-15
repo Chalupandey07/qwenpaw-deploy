@@ -74,31 +74,142 @@ function limitClass(path, method) {
   return null;
 }
 
-/** Upstream targets. Each is a published InstaBox port; the token is a secret. */
+/**
+ * Upstream targets. Each is a published InstaBox port; the token is a secret.
+ *
+ * TOKEN NAMES (fix 2026-11-16): the tokens are the OLD DESKTOP_*_TOKEN Worker
+ * secrets, NOT the COMPUTER_*_TOKEN values. InstaBox's private-port edge only
+ * accepts the token that was configured for the machine's ports (it is checked
+ * as a `_token` query param, see fetchDesktopOrigin below); a fresh random
+ * COMPUTER_*_TOKEN is answered 403 even when sent correctly, and a Bearer
+ * header is answered 401 outright. The DESKTOP_*_TOKEN secrets are the ones
+ * the working /desktop proxy used, and they are still set on both Pages
+ * projects. Do not "rotate" them to fresh random values — that breaks the
+ * desktop again. The COMPUTER_CAPABILITY_SECRET / COMPUTER_SYNC_TOKEN secrets
+ * are separate (Worker-side sealing and machine-side auth) and are unaffected.
+ */
 function origins(env) {
   return {
     "default": {
-      control: { url: env.COMPUTER_CONTROL_ORIGIN, token: env.COMPUTER_CONTROL_TOKEN },
-      view: { url: env.COMPUTER_VIEW_ORIGIN, token: env.COMPUTER_VIEW_TOKEN },
+      control: { url: env.COMPUTER_CONTROL_ORIGIN, token: env.DESKTOP_ORIGIN_TOKEN },
+      view: { url: env.COMPUTER_VIEW_ORIGIN, token: env.DESKTOP_VIEW_TOKEN },
     },
     "qa": {
-      control: { url: env.COMPUTER_QA_CONTROL_ORIGIN, token: env.COMPUTER_QA_CONTROL_TOKEN },
-      view: { url: env.COMPUTER_QA_VIEW_ORIGIN, token: env.COMPUTER_QA_VIEW_TOKEN },
+      control: { url: env.COMPUTER_QA_CONTROL_ORIGIN, token: env.DESKTOP_QA_ORIGIN_TOKEN },
+      view: { url: env.COMPUTER_QA_VIEW_ORIGIN, token: env.DESKTOP_QA_VIEW_TOKEN },
     },
   };
+}
+
+function collectSetCookiePairs(res) {
+  const list = typeof res.headers.getSetCookie === "function"
+    ? res.headers.getSetCookie()
+    : (res.headers.get("Set-Cookie") ? [res.headers.get("Set-Cookie")] : []);
+  return list.map((c) => c.split(";")[0]).filter(Boolean);
+}
+
+/**
+ * Fetch one URL from an InstaBox private-port origin, the way the edge
+ * expects it. Ported from the working /desktop proxy (pre-rebuild _worker.js
+ * `fetchDesktopOrigin`), which is the only mechanism that has ever worked
+ * against this edge — the Bearer-header approach the rebuild introduced is
+ * answered 401 on every request, which made /computer report "stopped"
+ * forever, hid Take control, and starved the preview uploader.
+ *
+ * How the edge authenticates:
+ *   - No token at all -> 401.
+ *   - A wrong `_token` -> 403.
+ *   - The right `_token` (the DESKTOP_*_TOKEN secret) -> a 303 with a
+ *     Set-Cookie (`__Host-instabox_port_auth`); follow the redirect with
+ *     that cookie and the origin answers 200.
+ * So: fetch plain; on 401 retry once with `?_token=<token>`; follow 3xx
+ * redirects manually, collecting the proxy-auth cookies and deleting
+ * `_token` from the followed URL. The browser's cookies are dropped
+ * outright — a stale `__Host-instabox_port_auth` for another port would be
+ * honored first by the proxy and 401 the fetch.
+ * Returns `{ res }` (res may be null on a thrown subrequest).
+ */
+async function fetchDesktopOrigin(request, url, originUrl, origin, token) {
+  const buildReq = (target, extraCookies) => {
+    const req = new Request(target, request);
+    req.headers.delete("host");
+    req.headers.delete("cf-connecting-ip");
+    req.headers.delete("cf-ipcountry");
+    req.headers.delete("cf-ray");
+    req.headers.delete("cf-visitor");
+    req.headers.delete("Cookie");
+    req.headers.set("X-Forwarded-Host", url.host);
+    req.headers.set("X-Forwarded-Proto", "https");
+    if (extraCookies && extraCookies.length) {
+      req.headers.set("Cookie", extraCookies.join("; "));
+    }
+    return req;
+  };
+
+  let target = new URL(originUrl);
+  let cookies = [];
+  let usedToken = false;
+  for (let hop = 0; hop < 4; hop++) {
+    let res;
+    let threw = true;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        res = await fetch(buildReq(target, cookies), { redirect: "manual" });
+        threw = false;
+        break;
+      } catch {
+        // Immediate retry (no sleep: B-13 forbids latency padding on a
+        // request path). A thrown fetch is a transient blip; the next
+        // attempt is the last.
+      }
+    }
+    if (threw) return { res: null };
+    if (res.status === 401 && !usedToken && token) {
+      usedToken = true;
+      target = new URL(originUrl);
+      target.searchParams.set("_token", token);
+      continue;
+    }
+    const loc = res.headers.get("Location");
+    if (res.status >= 300 && res.status < 400 && loc) {
+      cookies = [...cookies, ...collectSetCookiePairs(res)];
+      let next;
+      try {
+        next = new URL(loc, target);
+      } catch {
+        return { res };
+      }
+      if (next.origin !== origin) return { res };
+      next.searchParams.delete("_token");
+      target = next;
+      continue;
+    }
+    return { res };
+  }
+  return { res: null };
 }
 
 async function status(env, computer) {
   // The desktop is "up" when the view-only origin answers. A short timeout:
   // this runs on a 10 s poll and a slow answer must not stack up.
+  // The probe goes through fetchDesktopOrigin (the `_token` + cookie dance):
+  // a Bearer header is answered 401 by the InstaBox edge, which used to make
+  // this always return "stopped" even with the desktop up — and "stopped"
+  // hides Take control and starves the preview uploader (the chicken-and-egg
+  // that made /computer show "Asleep" forever).
   const o = origins(env)[computer];
   if (!o?.view?.url) return "unconfigured";
+  if (!o.view.token) return "unconfigured";
   try {
-    const res = await fetch(o.view.url + "/vnc.html", {
-      method: "HEAD",
-      signal: AbortSignal.timeout(4000),
-      headers: o.view.token ? { Authorization: "Bearer " + o.view.token } : {},
-    });
+    const probeUrl = new URL(o.view.url + "/vnc.html");
+    const { res } = await fetchDesktopOrigin(
+      new Request(probeUrl, { method: "HEAD", signal: AbortSignal.timeout(4000) }),
+      new URL("https://qwenpawx.pages.dev/"),
+      probeUrl.toString(),
+      new URL(o.view.url).origin,
+      o.view.token,
+    );
+    if (!res) return "stopped";
     return res.ok || res.status === 405 || res.status === 404 ? "running" : "stopped";
   } catch {
     return "stopped";
@@ -516,23 +627,25 @@ async function proxyScreen(request, env, url) {
 
   // 4. proxy. The provider token rides in the sealed target and never reaches
   // the browser; the browser's own Cookie header is dropped so a stale
-  // per-port cookie cannot 401 this one.
+  // per-port cookie cannot 401 this one. The upstream fetch goes through
+  // fetchDesktopOrigin (the `_token` + cookie dance): a Bearer header is
+  // answered 401 by the InstaBox edge, which used to make every screen
+  // request fail and the desktop show an endless "Opening the computer…"
+  // spinner. The token is the DESKTOP_*_TOKEN secret (see origins()).
   const upstream = new URL(cap.rest || "/", cap.target.url);
   const headers = novncPageRequestHeaders(request.headers);
   headers.delete("cookie");
   headers.delete("host");
-  if (cap.target.token) headers.set("Authorization", "Bearer " + cap.target.token);
-
-  let res;
-  try {
-    res = await fetch(upstream.toString(), {
-      method: request.method,
-      headers,
-      body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
-      redirect: "manual",   // the origin's own 303 must not be followed blind
-      signal: AbortSignal.timeout(30000),
-    });
-  } catch {
+  headers.delete("Authorization");
+  const upstreamReq = new Request(upstream.toString(), {
+    method: request.method,
+    headers,
+    body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
+  });
+  const { res } = await fetchDesktopOrigin(
+    upstreamReq, url, upstream.toString(), cap.target.url, cap.target.token || "",
+  );
+  if (!res) {
     return new Response("Screen unavailable (upstream_timeout)", { status: 502 });
   }
 
