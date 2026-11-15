@@ -24,8 +24,11 @@ const TEST_QA_SECRET = "test-qa-secret";
 
 // Mock KV (DESKTOP_KV binding). failGetKeys makes get() throw for those
 // keys (test 34: a KV error must be a retryable 502, not a false 403).
+// failPutKeys / failDeleteKeys make put()/delete() throw (tests 40: a KV
+// WRITE failure — e.g. the free tier's 1,000 writes/day spent, error
+// 10048 — must be an honest 503 store_unavailable, never a bare 500).
 class MockKV {
-  constructor() { this.map = new Map(); this.failGetKeys = new Set(); }
+  constructor() { this.map = new Map(); this.failGetKeys = new Set(); this.failPutKeys = new Set(); this.failDeleteKeys = new Set(); this.failAllPuts = false; }
   async get(k, type) {
     if (this.failGetKeys.has(k)) throw new Error("mock KV failure for " + k);
     const v = this.map.get(k);
@@ -33,8 +36,14 @@ class MockKV {
     if (type === "json") { try { return JSON.parse(v); } catch { return null; } }
     return v;
   }
-  async put(k, v) { this.map.set(k, typeof v === "string" ? v : JSON.stringify(v)); }
-  async delete(k) { this.map.delete(k); }
+  async put(k, v) {
+    if (this.failAllPuts || this.failPutKeys.has(k)) throw new Error("mock KV write failure for " + k);
+    this.map.set(k, typeof v === "string" ? v : JSON.stringify(v));
+  }
+  async delete(k) {
+    if (this.failDeleteKeys.has(k)) throw new Error("mock KV delete failure for " + k);
+    this.map.delete(k);
+  }
   async list({ prefix } = {}) {
     const keys = [];
     for (const k of this.map.keys()) {
@@ -62,12 +71,15 @@ const mockFailOrigins = new Set();
 const mockFailOnceOrigins = new Set();
 
 // Fake upstream WebSocket for the screen (RFB banner) probe: fires the
-// VNC server's "RFB 003.008" banner once accept() is called.
+// VNC server's "RFB 003.008" banner once accept() is called. mockSlowRfbMs
+// delays the banner (test 40j: the probe must wait 10 s, not 3 s — a
+// banner at 4 s is live under the new budget, unreachable under the old).
+let mockSlowRfbMs = 0;
 function fakeRfbSocket() {
   const listeners = {};
   return {
     readyState: 1,
-    accept() { setTimeout(() => { (listeners.message || []).forEach((fn) => fn({ data: "RFB 003.008\n" })); }, 0); },
+    accept() { setTimeout(() => { (listeners.message || []).forEach((fn) => fn({ data: "RFB 003.008\n" })); }, mockSlowRfbMs); },
     addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
     close() {},
   };
@@ -108,7 +120,7 @@ globalThis.fetch = async (input, init) => {
   if (url.startsWith(DESKTOP_ORIGIN) || url.startsWith(DESKTOP_VIEW_ORIGIN) || url.startsWith(DESKTOP_TERMINAL_ORIGIN) || url.startsWith(DESKTOP_QA_VIEW_ORIGIN) || url.startsWith(DESKTOP_QA_ORIGIN)) {
     const u = new URL(url);
     const cookie = req.headers.get("Cookie") || "";
-    seen.push({ origin: u.origin, path: u.pathname, hadToken: u.searchParams.has("_token"), hadAuth: cookie.includes("__Host-instabox_port_auth=test-auth"), upgrade: req.headers.get("Upgrade") || "" });
+    seen.push({ origin: u.origin, path: u.pathname, hadToken: u.searchParams.has("_token"), hadAuth: cookie.includes("__Host-instabox_port_auth=test-auth"), upgrade: req.headers.get("Upgrade") || "", protocol: req.headers.get("Sec-WebSocket-Protocol") || "" });
     if (mockFailOnceOrigins.has(u.origin)) { mockFailOnceOrigins.delete(u.origin); throw new Error("mock transient failure for " + u.origin); }
     if (mockFailOrigins.has(u.origin)) { throw new Error("mock failure for " + u.origin); }
     if (u.pathname === "/foreign-redirect") {
@@ -689,6 +701,130 @@ const outCookies39 = typeof r.headers.getSetCookie === "function" ? r.headers.ge
 check("39b session response sets NO __Host-instabox_port_auth cookie",
   !outCookies39.some((c) => c.split(";")[0].trim().toLowerCase().startsWith("__host-instabox_port_auth=")),
   `set-cookie=${JSON.stringify(outCookies39)}`);
+
+// --- T50–T57 fixes (2026-11-15): the KV write-budget incident -------
+// Live proof: Cloudflare error 10048 ("your account has reached the free
+// usage limit for this operation for today") on a direct KV write, while
+// reads worked. The lease-watcher's unconditional 15 s preview uploads
+// (2 writes/15 s) had spent the 1,000 writes/day budget, so __takeover
+// (T52) and __mode (T53) answered 500 and the needs-you raise (T56)
+// failed with worker_500 — all from unguarded KV puts. Every
+// user-facing write now answers 503 store_unavailable instead.
+// 40a. __takeover with the KV write failing -> 503 store_unavailable,
+//      NOT a bare 500 (the old code threw out of the handler).
+kv.failAllPuts = true;
+try {
+  r = await call("/desktop/__takeover", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ computer: "default" }) });
+  j = await r.json();
+  check("40a __takeover with KV write failing -> 503 store_unavailable (not 500)",
+    r.status === 503 && j.error === "store_unavailable",
+    `status=${r.status} body=${JSON.stringify(j)}`);
+} catch (e) {
+  check("40a __takeover with KV write failing -> 503 store_unavailable (not 500)", false, `threw: ${e.message}`);
+}
+// 40b. __mode POST with the KV write failing -> 503 store_unavailable.
+try {
+  r = await call("/desktop/__mode", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ agent: "default", mode: "private" }) });
+  j = await r.json();
+  check("40b __mode POST with KV write failing -> 503 store_unavailable",
+    r.status === 503 && j.error === "store_unavailable",
+    `status=${r.status} body=${JSON.stringify(j)}`);
+} catch (e) {
+  check("40b __mode POST with KV write failing -> 503 store_unavailable", false, `threw: ${e.message}`);
+}
+// 40c. __needs-you POST (sync token) with the KV write failing -> 503.
+try {
+  r = await call("/desktop/__needs-you", { method: "POST", headers: { "Content-Type": "application/json", ...syncHdr }, body: JSON.stringify({ text: "Sign-in needed" }) });
+  j = await r.json();
+  check("40c __needs-you POST with KV write failing -> 503 store_unavailable",
+    r.status === 503 && j.error === "store_unavailable",
+    `status=${r.status} body=${JSON.stringify(j)}`);
+} catch (e) {
+  check("40c __needs-you POST with KV write failing -> 503 store_unavailable", false, `threw: ${e.message}`);
+}
+// 40d. __preview-upload with the KV write failing -> 503.
+try {
+  r = await call("/desktop/__preview-upload", { method: "POST", headers: { "Content-Type": "image/png", ...syncHdr }, body: pngBytes });
+  j = await r.json();
+  check("40d __preview-upload with KV write failing -> 503 store_unavailable",
+    r.status === 503 && j.error === "store_unavailable",
+    `status=${r.status} body=${JSON.stringify(j)}`);
+} catch (e) {
+  check("40d __preview-upload with KV write failing -> 503 store_unavailable", false, `threw: ${e.message}`);
+}
+// 40e. __teach with the KV write failing -> 503.
+try {
+  r = await call("/desktop/__teach", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ name: "x", goal: "y", playbook: { steps: ["do it"] } }) });
+  j = await r.json();
+  check("40e __teach with KV write failing -> 503 store_unavailable",
+    r.status === 503 && j.error === "store_unavailable",
+    `status=${r.status} body=${JSON.stringify(j)}`);
+} catch (e) {
+  check("40e __teach with KV write failing -> 503 store_unavailable", false, `threw: ${e.message}`);
+}
+kv.failAllPuts = false;
+// 40f. __heartbeat with the KV write failing -> 503 (NOT 410: the lease
+// still exists, so the chrome must keep control and retry).
+r = await call("/desktop/__takeover", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ computer: "default" }) });
+const hbLease = (await r.json()).leaseId;
+kv.failAllPuts = true;
+try {
+  r = await call("/desktop/__heartbeat", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: hbLease, computer: "default" }) });
+  j = await r.json();
+  check("40f __heartbeat with KV write failing -> 503 store_unavailable, not 410",
+    r.status === 503 && j.error === "store_unavailable",
+    `status=${r.status} body=${JSON.stringify(j)}`);
+} catch (e) {
+  check("40f __heartbeat with KV write failing -> 503 store_unavailable, not 410", false, `threw: ${e.message}`);
+}
+kv.failAllPuts = false;
+// 40g. __release with the KV delete failing -> 503 (the lease was not
+// ended; it expires on its own within 90 s).
+kv.failDeleteKeys.add("lease:default");
+try {
+  r = await call("/desktop/__release", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: hbLease, computer: "default" }) });
+  j = await r.json();
+  check("40g __release with KV delete failing -> 503 store_unavailable",
+    r.status === 503 && j.error === "store_unavailable",
+    `status=${r.status} body=${JSON.stringify(j)}`);
+} catch (e) {
+  check("40g __release with KV delete failing -> 503 store_unavailable", false, `threw: ${e.message}`);
+}
+kv.failDeleteKeys.delete("lease:default");
+await call("/desktop/__release", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: hbLease, computer: "default" }) });
+// 40h. The screen probe's WS handshake carries Sec-WebSocket-Protocol:
+// binary, exactly like noVNC's own handshake (T50: the probe must
+// exercise the same path the frame uses).
+seen.length = 0;
+r = await call("/desktop/__status", { headers: cookieHdr });
+j = await r.json();
+check("40h screen probe WS upgrade carries Sec-WebSocket-Protocol: binary",
+  r.status === 200 && j.screen === "live" && seen.some((s) => s.path === "/websockify" && s.upgrade === "websocket" && s.protocol === "binary"),
+  `body=${JSON.stringify(j)} seen=${JSON.stringify(seen)}`);
+// 40i. Cheap pre-probe: GET <cap>?qwenpaw_probe=1 -> 204 WITHOUT
+// touching the origin (the old probe fetched the full vnc.html through
+// the session proxy, then the frame fetched it again — the 60-90 s
+// first load). A tampered cap + probe -> 403.
+r = await call("/desktop/__screen", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ mode: "view", computer: "default" }) });
+const probeCap = (await r.json()).url;
+seen.length = 0;
+r = await call(probeCap + "?qwenpaw_probe=1", { headers: cookieHdr });
+check("40i session ?qwenpaw_probe=1 -> 204, no origin fetch",
+  r.status === 204 && seen.length === 0,
+  `status=${r.status} seen=${JSON.stringify(seen)}`);
+const tamperedProbe = probeCap.slice(0, -2) + (probeCap.slice(-2, -1) === "A" ? "B" : "A") + probeCap.slice(-1);
+r = await call(tamperedProbe + "?qwenpaw_probe=1", { headers: cookieHdr });
+check("40i2 tampered cap + probe -> 403", r.status === 403, `status=${r.status}`);
+// 40j. The probe waits 10 s for the RFB banner, not 3 s (T50: the
+// banner arrives late through the proxied handshake while the real
+// stream works). A banner at 4 s is "live" under the new budget.
+mockSlowRfbMs = 4000;
+r = await call("/desktop/__status", { headers: cookieHdr });
+j = await r.json();
+check("40j __status with a 4 s-late RFB banner -> screen live (10 s budget)",
+  r.status === 200 && j.screen === "live",
+  `body=${JSON.stringify(j)}`);
+mockSlowRfbMs = 0;
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
