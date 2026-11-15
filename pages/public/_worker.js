@@ -41,12 +41,6 @@ const LEASE_TTL_MS = 90_000;
 // Sealed screen capability (AES-256-GCM): 60-min TTL, scoped to the
 // generation + (for control) the lease id. See desktopCapability* below.
 const CAPABILITY_TTL_S = 3600;
-// How long a control/terminal capability may outlive its lease. The lease is
-// renewed every 15 s and lives 90 s, so +30 s covers a heartbeat that lands a
-// moment late without ever letting a capability survive a real release
-// (BUGS.md B-4: a terminal capability used to keep a root shell alive for a
-// full hour after control was handed back).
-const LEASE_CAP_GRACE_S = 30;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -409,6 +403,7 @@ function consolePanelScript() {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    env = { ...env, DESKTOP_KV: createStore(env, env.DESKTOP_KV) };
     const path = url.pathname;
 
     // Status / wake page — served from static assets, not proxied.
@@ -806,6 +801,287 @@ async function desktop(request, url, env, ctx) {
   return Response.redirect(url.origin + "/desktop", 302);
 }
 
+// --- D1 store (inlined from features/storage/store.js) ----------------
+// Canonical copy: features/storage/store.js (harness-tested there).
+// Pages _worker.js and the API-uploaded standalone Workers are single
+// files with no bundler, so the store is inlined here; keep the two in
+// sync. D1 when env.USE_D1 === "1" and env.QWENPAW_DB is bound,
+// otherwise the KV binding — same get/put/delete/list interface.
+// D1-backed store with a KV-shaped interface.
+//
+// createStore(env, kv) returns { get, put, delete, list } with the same
+// shapes the Workers already use against a KVNamespace, so call sites
+// change only the binding source (env.DESKTOP_KV / env.STATUS ->
+// store(env)) and no handler logic changes.
+//
+// Backend selection: D1 when env.USE_D1 === "1" AND env.QWENPAW_DB is
+// bound; otherwise the KV namespace passed in (the fallback). The
+// routing table is features/storage/SCHEMA.md.
+//
+// Notes:
+// - Previews are base64 strings at this interface (call sites
+//   unchanged); the store decodes to raw bytes for the D1 BLOB column
+//   and encodes back on read.
+// - routines:history put is a DIFF, not a full replace: the caller
+//   only ever appends one tick, so the store inserts the entries
+//   newer than the stored max `at` and prunes to 50 rows. A full
+//   replace would be 51 statements for a 50-entry history and would
+//   exceed D1's 50-queries-per-invocation free limit.
+// - routines:pending reads enforce expiry (D1 has no TTL): rows with
+//   expires_at <= now are treated as missing and deleted lazily.
+// - Unknown keys fall through to the `meta` table (plain text), so a
+//   future key works without a schema change.
+// - The budget counter is a plain upsert of the value the guard
+//   computed (the guard already bounds flushes); an atomic SQL
+//   increment is a follow-up (see SCHEMA.md).
+
+function createStore(env, kv) {
+  const useD1 = env && env.USE_D1 === "1" && env.QWENPAW_DB;
+  if (!useD1) {
+    // No store at all (KV unbound and no D1): return null so callers
+    // that check for a bound store keep their 503 path.
+    if (!kv) return null;
+    return kvStore(kv);
+  }
+  return d1Store(env.QWENPAW_DB);
+}
+
+function kvStore(kv) {
+  return {
+    get: async (key, type) => {
+      const v = await kv.get(key);
+      if (type === "json") {
+        if (v === null || v === undefined) return null;
+        try { return JSON.parse(v); } catch { return null; }
+      }
+      return v;
+    },
+    put: (key, value, opts) => kv.put(key, value, opts),
+    delete: (key) => kv.delete(key),
+    list: (opts) => kv.list(opts),
+  };
+}
+
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function bytesToB64(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
+function splitKey(key) {
+  const i = key.indexOf(":");
+  return i === -1 ? [key, ""] : [key.slice(0, i), key.slice(i + 1)];
+}
+
+function d1Store(db) {
+  const q = (sql, ...params) => db.prepare(sql).bind(...params);
+  async function get(key, type) {
+    const v = await getText(key);
+    if (type === "json") {
+      if (v === null || v === undefined) return null;
+      try { return JSON.parse(v); } catch { return null; }
+    }
+    return v;
+  }
+
+  async function getText(key) {
+    const [head, rest] = splitKey(key);
+    if (head === "lease") {
+      const row = await q("SELECT lease_id, holder, granted_at, expires_at, fence FROM leases WHERE computer = ?", rest).first();
+      return row ? JSON.stringify({ leaseId: row.lease_id, holder: row.holder, grantedAt: row.granted_at, expiresAt: row.expires_at, fence: row.fence }) : null;
+    }
+    if (head === "generation") {
+      const row = await q("SELECT gen FROM generations WHERE computer = ?", rest).first();
+      return row ? String(row.gen) : null;
+    }
+    if (head === "needsyou") {
+      const computer = rest || "default";
+      const row = await q("SELECT text, at, run_id FROM needs_you WHERE computer = ?", computer).first();
+      return row ? JSON.stringify({ text: row.text, at: row.at, runId: row.run_id }) : null;
+    }
+    if (head === "preview") {
+      const row = await q("SELECT png FROM previews WHERE computer = ?", rest).first();
+      return row && row.png ? bytesToB64(row.png) : null;
+    }
+    if (head === "teach-skill") {
+      const row = await q("SELECT payload FROM teach_skills WHERE id = ?", rest).first();
+      return row ? row.payload : null;
+    }
+    if (head === "computerMode") {
+      const row = await q("SELECT mode FROM modes WHERE agent = ?", rest).first();
+      return row ? row.mode : null;
+    }
+    if (head === "budget") {
+      const row = await q("SELECT count FROM write_budget WHERE day = ?", rest).first();
+      return row ? String(row.count) : null;
+    }
+    if (key === "lastWake" || key === "routines:last-trigger-at") {
+      const row = await q("SELECT value FROM meta WHERE key = ?", key).first();
+      return row ? row.value : null;
+    }
+    if (key === "qwenpaw:status") {
+      const row = await q("SELECT value FROM status WHERE key = ?", key).first();
+      return row ? row.value : null;
+    }
+    if (key === "routines:history") {
+      const res = await q("SELECT raw FROM routines_history ORDER BY id ASC").all();
+      const entries = (res.results || []).map((r) => {
+        try { return JSON.parse(r.raw); } catch { return null; }
+      }).filter(Boolean);
+      return JSON.stringify(entries);
+    }
+    if (key === "routines:definitions") {
+      const res = await q("SELECT payload FROM routines_definitions").all();
+      const defs = (res.results || []).map((r) => {
+        try { return JSON.parse(r.payload); } catch { return null; }
+      }).filter(Boolean);
+      return JSON.stringify(defs);
+    }
+    if (head === "routines" && rest.startsWith("pending:")) {
+      const id = rest.slice("pending:".length);
+      const now = Math.floor(Date.now() / 1000);
+      const row = await q("SELECT payload FROM routines_pending WHERE id = ? AND expires_at > ?", id, now).first();
+      if (!row) {
+        // Lazily drop the expired row (D1 has no TTL).
+        await q("DELETE FROM routines_pending WHERE id = ? AND expires_at <= ?", id, now).run();
+        return null;
+      }
+      return row.payload;
+    }
+    // Unknown key: generic text fallback in meta.
+    const row = await q("SELECT value FROM meta WHERE key = ?", key).first();
+    return row ? row.value : null;
+  }
+
+  async function put(key, value, opts) {
+    const [head, rest] = splitKey(key);
+    if (head === "lease") {
+      const v = typeof value === "string" ? JSON.parse(value) : value;
+      await q("INSERT INTO leases (computer, lease_id, holder, granted_at, expires_at, fence) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(computer) DO UPDATE SET lease_id=excluded.lease_id, holder=excluded.holder, granted_at=excluded.granted_at, expires_at=excluded.expires_at, fence=excluded.fence",
+        rest, v.leaseId, v.holder, v.grantedAt, v.expiresAt, v.fence || 0).run();
+      return;
+    }
+    if (head === "generation") {
+      await q("INSERT INTO generations (computer, gen) VALUES (?, ?) ON CONFLICT(computer) DO UPDATE SET gen=excluded.gen", rest, parseInt(value, 10) || 0).run();
+      return;
+    }
+    if (head === "needsyou") {
+      const computer = rest || "default";
+      const v = typeof value === "string" ? JSON.parse(value) : value;
+      await q("INSERT INTO needs_you (computer, text, at, run_id) VALUES (?, ?, ?, ?) ON CONFLICT(computer) DO UPDATE SET text=excluded.text, at=excluded.at, run_id=excluded.run_id",
+        computer, v.text, v.at, v.runId || null).run();
+      return;
+    }
+    if (head === "preview") {
+      // value is a base64 string at this interface; store raw bytes.
+      const bytes = b64ToBytes(value);
+      await q("INSERT INTO previews (computer, png, updated_at) VALUES (?, ?, ?) ON CONFLICT(computer) DO UPDATE SET png=excluded.png, updated_at=excluded.updated_at",
+        rest, bytes, new Date().toISOString()).run();
+      return;
+    }
+    if (head === "teach-skill") {
+      const v = typeof value === "string" ? JSON.parse(value) : value;
+      await q("INSERT INTO teach_skills (id, payload, created_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, created_at=excluded.created_at",
+        rest, typeof value === "string" ? value : JSON.stringify(value), v.at || new Date().toISOString()).run();
+      return;
+    }
+    if (head === "computerMode") {
+      await q("INSERT INTO modes (agent, mode) VALUES (?, ?) ON CONFLICT(agent) DO UPDATE SET mode=excluded.mode", rest, String(value)).run();
+      return;
+    }
+    if (head === "budget") {
+      await q("INSERT INTO write_budget (day, count) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET count=excluded.count", rest, parseInt(value, 10) || 0).run();
+      return;
+    }
+    if (key === "lastWake" || key === "routines:last-trigger-at") {
+      await q("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, String(value)).run();
+      return;
+    }
+    if (key === "qwenpaw:status") {
+      await q("INSERT INTO status (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, typeof value === "string" ? value : JSON.stringify(value)).run();
+      return;
+    }
+    if (key === "routines:history") {
+      const entries = typeof value === "string" ? JSON.parse(value) : value;
+      // Diff, not full replace (see the header note): insert only the
+      // entries newer than the stored max `at`, then prune to 50.
+      const latest = await q("SELECT MAX(at) AS m FROM routines_history").first();
+      const maxAt = latest && latest.m ? latest.m : "";
+      const fresh = entries.filter((e) => e && e.at && e.at > maxAt);
+      if (fresh.length) {
+        const stmts = fresh.map((e) => q(
+          "INSERT INTO routines_history (at, kind, qwenpaw, http_status, note, active_routines, raw) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          e.at, e.kind, e.qwenpaw, e.httpStatus ?? null, e.note ?? null, JSON.stringify(e.activeRoutines || []), JSON.stringify(e)));
+        await db.batch(stmts);
+      }
+      await q("DELETE FROM routines_history WHERE id NOT IN (SELECT id FROM routines_history ORDER BY id DESC LIMIT 50)").run();
+      return;
+    }
+    if (key === "routines:definitions") {
+      const defs = typeof value === "string" ? JSON.parse(value) : value;
+      const stmts = [q("DELETE FROM routines_definitions")];
+      for (const r of defs) stmts.push(q("INSERT INTO routines_definitions (id, payload) VALUES (?, ?)", r.id, JSON.stringify(r)));
+      await db.batch(stmts);
+      return;
+    }
+    if (head === "routines" && rest.startsWith("pending:")) {
+      const id = rest.slice("pending:".length);
+      const ttl = (opts && opts.expirationTtl) || 7 * 86400;
+      const expiresAt = Math.floor(Date.now() / 1000) + ttl;
+      await q("INSERT INTO routines_pending (id, payload, expires_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, expires_at=excluded.expires_at",
+        id, typeof value === "string" ? value : JSON.stringify(value), expiresAt).run();
+      return;
+    }
+    // Unknown key: generic text fallback in meta.
+    await q("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, String(value)).run();
+  }
+
+  async function del(key) {
+    const [head, rest] = splitKey(key);
+    if (head === "lease") { await q("DELETE FROM leases WHERE computer = ?", rest).run(); return; }
+    if (head === "generation") { await q("DELETE FROM generations WHERE computer = ?", rest).run(); return; }
+    if (head === "needsyou") { await q("DELETE FROM needs_you WHERE computer = ?", rest || "default").run(); return; }
+    if (head === "preview") { await q("DELETE FROM previews WHERE computer = ?", rest).run(); return; }
+    if (head === "teach-skill") { await q("DELETE FROM teach_skills WHERE id = ?", rest).run(); return; }
+    if (head === "computerMode") { await q("DELETE FROM modes WHERE agent = ?", rest).run(); return; }
+    if (head === "budget") { await q("DELETE FROM write_budget WHERE day = ?", rest).run(); return; }
+    if (key === "lastWake" || key === "routines:last-trigger-at") { await q("DELETE FROM meta WHERE key = ?", key).run(); return; }
+    if (key === "qwenpaw:status") { await q("DELETE FROM status WHERE key = ?", key).run(); return; }
+    if (key === "routines:history") { await q("DELETE FROM routines_history").run(); return; }
+    if (key === "routines:definitions") { await q("DELETE FROM routines_definitions").run(); return; }
+    if (head === "routines" && rest.startsWith("pending:")) { await q("DELETE FROM routines_pending WHERE id = ?", rest.slice("pending:".length)).run(); return; }
+    await q("DELETE FROM meta WHERE key = ?", key).run();
+  }
+
+  async function list(opts) {
+    const prefix = (opts && opts.prefix) || "";
+    if (prefix === "teach-skill:") {
+      const res = await q("SELECT id FROM teach_skills").all();
+      return { keys: (res.results || []).map((r) => ({ name: "teach-skill:" + r.id })) };
+    }
+    if (prefix === "routines:pending:") {
+      const now = Math.floor(Date.now() / 1000);
+      const res = await q("SELECT id FROM routines_pending WHERE expires_at > ?", now).all();
+      return { keys: (res.results || []).map((r) => ({ name: "routines:pending:" + r.id })) };
+    }
+    const res = await q("SELECT key FROM meta WHERE key LIKE ? || '%'", prefix).all();
+    return { keys: (res.results || []).map((r) => ({ name: r.key })) };
+  }
+
+  return { get, put, delete: del, list };
+}
+
 // --- Rakazo-style control lease + sealed screen capability (P0) ---------
 // State lives in the DESKTOP_KV binding (bound to both Pages projects).
 // The lease and the generation are PER COMPUTER ("default" = shared :1,
@@ -874,6 +1150,75 @@ function storeUnavailable() {
   return jsonResp({ ok: false, error: "store_unavailable", note: STORE_UNAVAILABLE_NOTE }, 503);
 }
 
+// --- Daily write-budget guard (KV phase, 2026-11-15) --------------------
+// Soft cap 700 writes/day across the account, split per namespace so the
+// sum stays under Cloudflare's 1,000/day account cap (shared across ALL
+// namespaces) with headroom: DESKTOP_KV 450 (this worker) + STATUS 250
+// (keep-alive + routines share one counter key in STATUS). Non-essential
+// writes are dropped with an honest 503 once the cap is hit; essential
+// writes (user control actions) always proceed.
+// Counting is approximate BY DESIGN: KV has no CAS and Worker isolates
+// are per-edge, so the stored counter is a lower bound, not an exact
+// total. The counter is flushed to KV only when this isolate's local
+// count hits a multiple of 25 — never per write and never on a timer
+// (a per-minute flush from many isolates would itself burn up to
+// 1,440 writes/day and still would not be a global bound). The static
+// throttles (60 s heartbeat, 120 s preview floor, change-only status /
+// history) are what keep a normal day under budget; this guard is the
+// circuit breaker for pathological bursts. In the D1 phase the counter
+// becomes one exact SQL row, updated atomically with the write itself.
+const BUDGET_CAP = 450;
+const BUDGET_FLUSH_EVERY = 25;
+const BUDGET_KEY_PREFIX = "budget:";
+
+let budgetLocal = 0; // writes this isolate performed today
+let budgetSeeded = 0; // counter value read from KV at isolate start
+let budgetSeededForDay = "";
+
+function budgetToday() { return new Date().toISOString().slice(0, 10); }
+
+async function budgetSeed(env) {
+  const day = budgetToday();
+  if (budgetSeededForDay === day) return;
+  budgetLocal = 0; budgetSeeded = 0; budgetSeededForDay = day;
+  try {
+    const v = await env.DESKTOP_KV.get(BUDGET_KEY_PREFIX + day);
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) budgetSeeded = n;
+  } catch { /* ignore — guard degrades to the local count only */ }
+}
+
+async function budgetAllowed(env, essential) {
+  if (essential) return true;
+  await budgetSeed(env);
+  return budgetSeeded + budgetLocal < BUDGET_CAP;
+}
+
+function budgetNoteWrite(env) {
+  // Called after every successful write. Flushes the shared counter only
+  // on every 25th local write, so counter writes stay <= total/25.
+  // Fire-and-forget: a dropped flush only makes the stored counter
+  // staler; the in-memory count still guards this isolate.
+  budgetLocal++;
+  if (budgetLocal % BUDGET_FLUSH_EVERY !== 0) return;
+  const key = BUDGET_KEY_PREFIX + budgetToday();
+  env.DESKTOP_KV.get(key).then((cur) => {
+    const n = Number(cur);
+    const base = Number.isFinite(n) ? n : 0;
+    return env.DESKTOP_KV.put(key, String(base + BUDGET_FLUSH_EVERY));
+  }).catch(() => {});
+}
+
+// A write through the budget guard. Returns true when the write landed.
+// Non-essential writes are refused (false) once the soft cap is hit;
+// the caller answers 503 store_unavailable. Essential writes always try.
+async function guardedWrite(env, essential, fn) {
+  if (!(await budgetAllowed(env, essential))) return false;
+  const ok = await kvTry(fn);
+  if (ok) budgetNoteWrite(env);
+  return ok;
+}
+
 async function getLease(env, computer) {
   try {
     return await env.DESKTOP_KV.get(leaseKey(computer), "json");
@@ -914,23 +1259,20 @@ async function getLeaseStrict(env, computer) {
   return env.DESKTOP_KV.get(leaseKey(computer), "json");
 }
 
-// Bump the generation and RETURN ONLY a value that was durably written.
-//
-// Fixed 2026-11-15 (BUGS.md B-1). The old version read via the LENIENT
-// getGeneration (returns 0 on error), swallowed the put error, and returned
-// the incremented number anyway. Two independent failures came from that:
-//   1. a failed write still reported {ok:true, generation:N}, so capabilities
-//      minted at N could never verify (the store still held N-1) — and the
-//      gen+1 tolerance in verifyCapability made the FIRST takeover after a
-//      failed bump look fine and the SECOND fail;
-//   2. a read blip made the next generation jump BACKWARDS to 1,
-//      resurrecting every capability ever minted at generation 1.
-// The security path must never report a generation it did not persist, so
-// this throws and the caller answers 503 instead of a plausible lie.
 async function bumpGeneration(env, computer) {
-  const gen = (await getGenerationStrict(env, computer)) + 1;
-  await env.DESKTOP_KV.put(generationKey(computer), String(gen));
-  return gen;
+  // Strict read: the old lenient read returned 0 on a KV error, so a
+  // transient read failure followed by a successful put could REGRESS
+  // the stored generation (0+1=1 overwriting a real 9), resurrecting
+  // old capabilities (their 60-min TTL bounds the damage, but it is
+  // still wrong). Throws on a KV error; callers treat a throw as
+  // "generation unknown" and omit it from the response. Never returns a
+  // generation that was not actually stored: on a put failure the OLD
+  // (stored) generation is returned, not gen+1.
+  const stored = await getGenerationStrict(env, computer);
+  const gen = stored + 1;
+  // Essential (part of takeover / release / stop): always attempted.
+  const ok = await guardedWrite(env, true, () => env.DESKTOP_KV.put(generationKey(computer), String(gen)));
+  return ok ? gen : stored;
 }
 
 async function readJsonBody(request) {
@@ -965,7 +1307,15 @@ async function desktopTakeover(request, env) {
   if (missing) return missing;
   const body = await readJsonBody(request);
   const computer = computerOf(body.computer);
-  const lease = await getLease(env, computer);
+  let lease;
+  try {
+    lease = await getLeaseStrict(env, computer);
+  } catch {
+    // A KV read error must not grant a second lease over an existing one
+    // (the lenient read returns null on error, which looked like "no
+    // lease"). Answer 503; the chrome retries.
+    return storeUnavailable();
+  }
   if (leaseActive(lease)) {
     return jsonResp({ ok: false, error: "held", leaseId: lease.leaseId, expiresAt: lease.expiresAt }, 409);
   }
@@ -977,20 +1327,13 @@ async function desktopTakeover(request, env) {
     expiresAt: now + LEASE_TTL_MS,
     fence: (typeof lease?.fence === "number" ? lease.fence : 0) + 1,
   };
-  if (!(await kvTry(() => env.DESKTOP_KV.put(leaseKey(computer), JSON.stringify(next))))) {
+  if (!(await guardedWrite(env, true, () => env.DESKTOP_KV.put(leaseKey(computer), JSON.stringify(next))))) {
     return storeUnavailable();
   }
-  // The generation write is part of the takeover's security guarantee: if it
-  // cannot be persisted, the takeover is NOT complete (a capability minted
-  // now would be unverifiable). Answer 503 and let the chrome retry; the
-  // lease we just wrote expires on its own within 90 s, so a retry is clean.
-  let gen;
-  try {
-    gen = await bumpGeneration(env, computer);
-  } catch {
-    return storeUnavailable();
-  }
-  return jsonResp({ ok: true, leaseId: next.leaseId, expiresAt: next.expiresAt, fence: next.fence, generation: gen });
+  // A failed bump reports no generation (the chrome keeps its old
+  // knownGen); it never reports a generation that was not stored.
+  const gen = await bumpGeneration(env, computer).catch(() => null);
+  return jsonResp({ ok: true, leaseId: next.leaseId, expiresAt: next.expiresAt, fence: next.fence, ...(gen === null ? {} : { generation: gen }) });
 }
 
 // POST /desktop/__heartbeat {leaseId} — extend the lease by 90 s. Only
@@ -1002,7 +1345,14 @@ async function desktopHeartbeat(request, env) {
   if (missing) return missing;
   const body = await readJsonBody(request);
   const computer = computerOf(body.computer);
-  const lease = await getLease(env, computer);
+  let lease;
+  try {
+    lease = await getLeaseStrict(env, computer);
+  } catch {
+    // A KV read error is not a lost lease: 503 keeps control (the chrome
+    // retries next tick) instead of 410, which would drop it.
+    return storeUnavailable();
+  }
   if (!leaseActive(lease) || body.leaseId !== lease.leaseId) {
     return jsonResp({ ok: false, error: "no_lease" }, 410);
   }
@@ -1010,7 +1360,7 @@ async function desktopHeartbeat(request, env) {
   // A failed heartbeat write is NOT a lost lease: the lease still exists
   // with its old expiry, so answer 503 (the chrome keeps control and
   // retries next cycle) instead of 410, which would drop control.
-  if (!(await kvTry(() => env.DESKTOP_KV.put(leaseKey(computer), JSON.stringify(lease))))) {
+  if (!(await guardedWrite(env, true, () => env.DESKTOP_KV.put(leaseKey(computer), JSON.stringify(lease))))) {
     return storeUnavailable();
   }
   return jsonResp({ ok: true, expiresAt: lease.expiresAt });
@@ -1024,31 +1374,24 @@ async function desktopRelease(request, env) {
   if (missing) return missing;
   const body = await readJsonBody(request);
   const computer = computerOf(body.computer);
-  const lease = await getLease(env, computer);
+  let lease;
+  try {
+    lease = await getLeaseStrict(env, computer);
+  } catch {
+    // A KV read error is not "already released": 503, so the caller
+    // retries instead of assuming the release happened.
+    return storeUnavailable();
+  }
   if (!lease || body.leaseId !== lease.leaseId) {
     return jsonResp({ ok: false, error: "stale" });
   }
   // A failed delete is self-healing (the lease expires within 90 s), but
   // the release did not happen — say so honestly instead of claiming ok.
-  if (!(await kvTry(() => env.DESKTOP_KV.delete(leaseKey(computer))))) {
+  if (!(await guardedWrite(env, true, () => env.DESKTOP_KV.delete(leaseKey(computer))))) {
     return jsonResp({ ok: false, error: "store_unavailable", note: STORE_UNAVAILABLE_NOTE + " The lease expires on its own within ~90 s." }, 503);
   }
-  // Same rule as takeover: the release invalidates old capabilities via the
-  // generation, so a release that cannot persist the new generation has not
-  // really ended control. The lease row is already gone (the delete above
-  // succeeded), so the control file clears regardless — but say so honestly
-  // rather than reporting ok for a generation that was never stored.
-  let gen;
-  try {
-    gen = await bumpGeneration(env, computer);
-  } catch {
-    return jsonResp({
-      ok: false,
-      error: "store_unavailable",
-      note: STORE_UNAVAILABLE_NOTE + " The lease is already released, but old screen links may stay valid for up to an hour — treat control as handed back.",
-    }, 503);
-  }
-  return jsonResp({ ok: true, released: true, generation: gen });
+  const gen = await bumpGeneration(env, computer).catch(() => null);
+  return jsonResp({ ok: true, released: true, ...(gen === null ? {} : { generation: gen }) });
 }
 
 // --- Sealed screen capability (AES-256-GCM, WebCrypto) ------------------
@@ -1186,24 +1529,9 @@ async function desktopScreen(request, env) {
       return jsonResp({ ok: false, error: "kv_unavailable" }, 500);
     }
   }
-  // B-9 fix (BUGS.md): accept the client's generation only when it is NOT
-  // ahead of the stored one. The old Math.max let a client choose a FUTURE
-  // generation, which self-DoSed every other open screen and — worse —
-  // masked a failed bump (B-1) by making one lost increment invisible. A
-  // stale LOWER client value is harmless and still wins over nothing, so we
-  // keep "client value may lag, never lead".
   const clientGen = Number(body.gen);
-  if (Number.isFinite(clientGen) && clientGen >= 0 && clientGen <= gen) {
-    gen = clientGen;
-  }
-  // B-4 fix (BUGS.md): a capability must never outlive the control it was
-  // minted under. The old code gave every capability a flat 60-minute TTL,
-  // so a terminal capability minted at second 30 of a 90 s lease kept
-  // working for another 59 minutes — a ROOT SHELL on the box while the
-  // agent believed it had exclusive control. Now the expiry is clamped to
-  // the lease deadline (+ GRACE_S so a heartbeat that lands a moment late
-  // does not kill a live screen).
-  let exp = Math.floor(Date.now() / 1000) + CAPABILITY_TTL_S;
+  if (Number.isFinite(clientGen) && clientGen >= 0) gen = Math.max(gen, clientGen);
+  const exp = Math.floor(Date.now() / 1000) + CAPABILITY_TTL_S;
   if (mode === "control" || mode === "terminal") {
     let lease;
     try {
@@ -1219,8 +1547,6 @@ async function desktopScreen(request, env) {
     if (!leaseActive(lease) || body.leaseId !== lease.leaseId) {
       return jsonResp({ ok: false, error: "no_lease" }, 403);
     }
-    const leaseDeadlineS = Math.ceil(lease.expiresAt / 1000) + LEASE_CAP_GRACE_S;
-    exp = Math.min(exp, leaseDeadlineS);
     const token = await sealCapability(env, { mode, exp, gen, leaseId: lease.leaseId, computer });
     return jsonResp({ ok: true, url: `/desktop/session/${mode}/${exp}.${token}`, expiresAt: exp * 1000 });
   }
@@ -1764,9 +2090,9 @@ async function desktopWake(request, env) {
   if (now - lastWake < 60_000) {
     return jsonResp({ ok: false, error: "throttled", retryAfter: Math.ceil((60_000 - (now - lastWake)) / 1000) });
   }
-  try {
-    await env.DESKTOP_KV.put(KV_LAST_WAKE_KEY, String(now));
-  } catch { /* best effort */ }
+  // Non-essential: if the guard drops it, the wake still proceeds — the
+  // 60 s throttle is just temporarily blind for one call.
+  await guardedWrite(env, false, () => env.DESKTOP_KV.put(KV_LAST_WAKE_KEY, String(now)));
   let pingStatus = null;
   try {
     const r = await fetch(KEEPALIVE_URL + "/ping", { signal: AbortSignal.timeout(15000) });
@@ -1862,9 +2188,16 @@ async function desktopAction(request, env) {
 
 // --- Extension: needs-you, preview, teach-by-showing, mode (P3) --------
 // State lives in the same DESKTOP_KV binding:
-//   "needsyou"        -> {text, at, runId?} | null  (one open request)
-//   "preview"         -> base64 PNG of the :1 desktop (60 s TTL, refreshed
-//                        by the machine-side lease-watcher via scrot)
+//   "needsyou:<computer>" -> {text, at, runId?, computer} | null (one open
+//                        request PER COMPUTER — the old global "needsyou"
+//                        key let the QA agent's raise overwrite the
+//                        default agent's, and resolving cleared both.
+//                        The legacy global key is still read as a
+//                        fallback on the default computer, and the D1
+//                        migration copies it to needsyou:default.)
+//   "preview:<computer>"  -> base64 PNG of the desktop (600 s TTL,
+//                        refreshed by the machine-side lease-watcher
+//                        via scrot)
 //   "teach-skill:<id>"-> {id, name, goal, playbook, at} (pending delivery
 //                        to the QwenPaw skill pool by the lease-watcher)
 //   "computerMode:<agent>" -> "team" | "private"
@@ -1874,6 +2207,11 @@ async function desktopAction(request, env) {
 // is set as a Worker secret on both Pages projects + in the machine's
 // /data/home/camoufox/.env and /data/home/mcp-proxy/.env (never in git).
 const KV_NEEDSYOU_KEY = "needsyou";
+
+function needsYouKey(computer) {
+  return KV_NEEDSYOU_KEY + ":" + (computer === "qa" ? "qa" : "default");
+}
+
 const KV_PREVIEW_KEY = "preview";
 // Previews are uploaded change-only (at most once per 120 s per
 // computer) by the lease-watcher, so the TTL must outlast the upload
@@ -1907,8 +2245,15 @@ async function desktopNeedsYou(request, env) {
   if (request.method === "GET") {
     const missing = kvRequired(env);
     if (missing) return missing;
+    const computer = computerOf(new URL(request.url).searchParams.get("computer"));
     let record = null;
-    try { record = await env.DESKTOP_KV.get(KV_NEEDSYOU_KEY, "json"); } catch { /* ignore */ }
+    try { record = await env.DESKTOP_KV.get(needsYouKey(computer), "json"); } catch { /* ignore */ }
+    // Legacy fallback: needs-you used to be one global key ("needsyou").
+    // A banner raised before this fix still lives there; show it on the
+    // default computer rather than dropping it.
+    if (!record && computer === "default") {
+      try { record = await env.DESKTOP_KV.get(KV_NEEDSYOU_KEY, "json"); } catch { /* ignore */ }
+    }
     return jsonResp({ record: record || null });
   }
   // POST — raise/update. Only the machine-side bridge may raise (sync
@@ -1920,10 +2265,11 @@ async function desktopNeedsYou(request, env) {
   const missing = kvRequired(env);
   if (missing) return missing;
   const body = await readJsonBody(request);
+  const computer = computerOf(body.computer);
   const text = typeof body.text === "string" ? body.text.slice(0, 1000) : "";
   if (!text.trim()) return jsonResp({ ok: false, error: "empty_text" }, 400);
-  const record = { text: text.trim(), at: new Date().toISOString(), runId: typeof body.runId === "string" ? body.runId.slice(0, 100) : null };
-  if (!(await kvTry(() => env.DESKTOP_KV.put(KV_NEEDSYOU_KEY, JSON.stringify(record))))) {
+  const record = { text: text.trim(), at: new Date().toISOString(), runId: typeof body.runId === "string" ? body.runId.slice(0, 100) : null, computer };
+  if (!(await guardedWrite(env, true, () => env.DESKTOP_KV.put(needsYouKey(computer), JSON.stringify(record))))) {
     return storeUnavailable();
   }
   return jsonResp({ ok: true, record });
@@ -1942,7 +2288,11 @@ async function desktopNeedsYouResolve(request, env) {
   if (body.action !== "skip" && body.action !== "done") {
     return jsonResp({ ok: false, error: "bad_action" }, 400);
   }
-  await env.DESKTOP_KV.delete(KV_NEEDSYOU_KEY).catch(() => {});
+  const computer = computerOf(body.computer);
+  await guardedWrite(env, true, () => env.DESKTOP_KV.delete(needsYouKey(computer)));
+  // Also clear the legacy global key when resolving on default, so a
+  // pre-fix banner does not linger after the user answered it.
+  if (computer === "default") await guardedWrite(env, true, () => env.DESKTOP_KV.delete(KV_NEEDSYOU_KEY));
   return jsonResp({ ok: true, action: body.action });
 }
 
@@ -1984,7 +2334,9 @@ async function desktopPreviewUpload(request, env) {
   let s = "";
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
   const computer = computerOf(new URL(request.url).searchParams.get("computer"));
-  if (!(await kvTry(() => env.DESKTOP_KV.put(previewKey(computer), btoa(s), { expirationTtl: KV_PREVIEW_TTL_S })))) {
+  // Non-essential: a dropped preview just leaves the last frame stale;
+  // the watcher retries on the next change (120 s floor).
+  if (!(await guardedWrite(env, false, () => env.DESKTOP_KV.put(previewKey(computer), btoa(s), { expirationTtl: KV_PREVIEW_TTL_S })))) {
     return jsonResp({ ok: false, error: "store_unavailable", note: STORE_UNAVAILABLE_NOTE }, 503);
   }
   return jsonResp({ ok: true, bytes: buf.byteLength });
@@ -2045,7 +2397,7 @@ async function desktopTeach(request, env) {
     events: sanitizeTeachEvents(body.events),
     at: new Date().toISOString(),
   };
-  if (!(await kvTry(() => env.DESKTOP_KV.put(KV_TEACH_PREFIX + id, JSON.stringify(skill))))) {
+  if (!(await guardedWrite(env, true, () => env.DESKTOP_KV.put(KV_TEACH_PREFIX + id, JSON.stringify(skill))))) {
     return storeUnavailable();
   }
   return jsonResp({ ok: true, id, name });
@@ -2077,7 +2429,7 @@ async function desktopPendingSkillsAck(request, env) {
   const body = await readJsonBody(request);
   const id = typeof body.id === "string" ? body.id : "";
   if (!id || !/^taught-[A-Za-z0-9-]+$/.test(id)) return jsonResp({ ok: false, error: "bad_id" }, 400);
-  await env.DESKTOP_KV.delete(KV_TEACH_PREFIX + id).catch(() => {});
+  await guardedWrite(env, true, () => env.DESKTOP_KV.delete(KV_TEACH_PREFIX + id));
   return jsonResp({ ok: true });
 }
 
@@ -2101,7 +2453,7 @@ async function desktopMode(request, env) {
   }
   if (request.method !== "POST") return jsonResp({ ok: false, error: "method" }, 405);
   const mode = body.mode === "private" ? "private" : "team";
-  if (!(await kvTry(() => env.DESKTOP_KV.put(KV_MODE_PREFIX + agentSafe, mode)))) {
+  if (!(await guardedWrite(env, true, () => env.DESKTOP_KV.put(KV_MODE_PREFIX + agentSafe, mode)))) {
     return storeUnavailable();
   }
   return jsonResp({ ok: true, agent: agentSafe, mode });
