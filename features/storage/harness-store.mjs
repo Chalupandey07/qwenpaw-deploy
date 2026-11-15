@@ -175,5 +175,5 @@ const noDb = createStore({ USE_D1: "1" }, kv); // flag on, no binding
 await noDb.put("generation:qa", "7");
 check("USE_D1 without binding falls back to KV", (await kv.get("generation:qa")) === "7");
 
-console.log(`\n${pass} pass, ${fail} fail`);
+console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
