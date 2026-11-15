@@ -129,6 +129,30 @@ async function loadStatus(env) {
   }
 }
 
+// Save the status, but WRITE ONLY WHEN SOMETHING MEANINGFUL CHANGED.
+//
+// Fixed 2026-11-15 (BUGS.md B-7). This used to write on every cron tick,
+// /ping and /status?live=1 — 288 writes/day of the free tier's 1,000/day
+// budget (~29%) to record that an "up" machine was still up. A change guard
+// on the old code could never have fired, because lastPingAt was part of the
+// stored value, so the JSON always differed.
+//
+// Now lastPingAt is NOT stored (it is returned to the caller instead). This
+// was not enough on its own: lastUpAt was ALSO re-stamped on every healthy
+// probe, which kept the JSON different every tick (the harness caught it —
+// 3 writes over 9 healthy ticks). lastUpAt now means "when it last became
+// up". A healthy box costs ~1 write/day; a flapping one costs one write per
+// transition, which is exactly what you want to record.
+const MEANINGFUL_FIELDS = [
+  "status",
+  "consecutiveFailures",
+  "lastUpAt",
+  "lastWakeAt",
+  "lastWakeResult",
+  "httpStatus",
+  "source",
+];
+
 async function saveStatus(env, patch) {
   if (!env.STATUS) return null;
   const prev = (await loadStatus(env)) || {};
@@ -138,14 +162,34 @@ async function saveStatus(env, patch) {
     ...patch,
     checkedAt: now,
     lastPingAt: now,
-    lastUpAt: patch.status === "up" ? now : prev.lastUpAt || null,
-    consecutiveFailures: patch.status === "up" ? 0 : (prev.consecutiveFailures || 0) + 1,
+    // lastUpAt must mean "when it last BECAME up", not "when it was last
+    // SEEN up". The old line re-stamped it on every healthy probe, so the
+    // change guard below could never fire — the value differed every tick
+    // and the Worker still wrote once a minute despite the fix. Only stamp
+    // it on a transition INTO "up" (prev was something else).
+    lastUpAt:
+      patch.status === "up"
+        ? (prev.status === "up" ? prev.lastUpAt || now : now)
+        : prev.lastUpAt || null,
+    consecutiveFailures:
+      patch.status === "up" ? 0 : (prev.consecutiveFailures || 0) + 1,
   };
-  try {
-    await env.STATUS.put("qwenpaw:status", JSON.stringify(next));
-  } catch (e) {
-    console.log("KV put failed (status still returned live):", e?.message);
+
+  // Compare only the fields worth a write. `checkedAt` and `lastPingAt` are
+  // deliberately excluded — they change on every call and carry no state.
+  const changed = MEANINGFUL_FIELDS.some(
+    (k) => JSON.stringify(prev[k]) !== JSON.stringify(next[k]),
+  );
+  if (changed) {
+    try {
+      // Store a copy without the volatile ping timestamp.
+      const { lastPingAt, ...persisted } = next;
+      await env.STATUS.put("qwenpaw:status", JSON.stringify(persisted));
+    } catch (e) {
+      console.log("KV put failed (status still returned live):", e?.message);
+    }
   }
+  // Always return the fresh value (including lastPingAt) to the caller.
   return next;
 }
 

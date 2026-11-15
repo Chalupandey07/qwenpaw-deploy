@@ -216,7 +216,7 @@ is empty (already effectively free, but the loop must be bounded).
 
 ---
 
-### B-7 · P2 · Keep-alive writes KV on every cron tick even when nothing changed
+### B-7 · P2 · Keep-alive writes KV on every cron tick even when nothing changed — FIXED-CODE
 
 **File:** `worker/src/index.js` — `saveStatus` (~L132), called from
 `keepAliveTick` (~L169).
@@ -226,10 +226,13 @@ value *always* changes and a change-detection guard on the JSON would never
 fire. 288 writes/day, ~29% of the entire KV write budget, for a status that
 is `up` 99% of the time.
 
-**Fix.** Drop `lastPingAt` from the stored value (keep it in the response
-only), compare the meaningful fields (`status`, `consecutiveFailures`,
-`lastUpAt`), and write only on change. Keeps the "is it up?" contract, costs
-~a handful of writes/day.
+**Fix.** Applied. `lastPingAt` is no longer stored (it is returned to the
+caller only) and the write happens only when a meaningful field changes.
+**Two subtleties the harness caught, worth recording:** (1) `lastUpAt` was
+still re-stamped on every healthy probe, so the guard could never fire — it
+now means "when it last *became* up" (3 writes over 9 healthy ticks before
+that fix); (2) `worker.scheduled` uses `ctx.waitUntil`, so a test must await
+the promise or it reads stale state. 19 checks, old worker fails 2.
 
 ---
 
@@ -414,9 +417,9 @@ local harness runs.
 |---|---|---|
 | P0 | 1 | 1 (B-1) |
 | P1 | 3 | 3 (B-2, B-3, B-4) |
-| P2 | 9 | 9 (B-5…B-13) |
+| P2 | 8 | 8 (B-5, B-6, B-8…B-13) — B-7 fixed |
 | P3 | 5 | 5 (B-14…B-18) |
-| **Total open** | **18** | **18** |
+| **Total open** | **14** | **14** (4 fixed in code this pass: B-1, B-4, B-7, B-9) |
 | Fixed (audit) | 15 | — |
 
 **Fix order.** B-1 (security path, hides everything else) → B-3 (data loss)

@@ -1151,6 +1151,25 @@ def t64():
             f"tally={m.group(0) if m else 'none'}")
 
 
+def t69():
+    """Lease-watcher: adaptive polling cadence + safety invariants.
+
+    28 checks. The watcher is the only thing that burns Worker requests while
+    nobody is using the system; before this it polled 2 computers every 5 s
+    forever (34,560/day = 35% of the free budget).
+    """
+    return _py_harness("features/desktop/test_lease_watcher.py", 28)
+
+
+def t68():
+    """Keep-alive Worker: write-on-change guard (BUGS.md B-7), fail-closed /wake.
+
+    The old Worker wrote KV on every 5-minute tick even when nothing changed
+    (~288 writes/day = 29% of the free KV budget). 19 checks, no deploy.
+    """
+    return _harness("worker/harness-keepalive.mjs", 19)
+
+
 def t67():
     """Ripwire installer + skill: 49 static checks (live tier is opt-in).
 
@@ -1352,6 +1371,8 @@ TESTS = [
     ("T65", "ReMe doctor live diagnosis (read-only, machine)", "memory", "protocol", t65),
     ("T66", "Code Mode pilot: benchmark maths + fail-closed auth", "codemode", "protocol", t66),
     ("T67", "Ripwire installer: safety invariants + skill honesty", "memory", "protocol", t67),
+    ("T68", "keep-alive Worker: KV write-on-change + fail-closed /wake", "keepalive", "protocol", t68),
+    ("T69", "lease-watcher: adaptive polling + safety invariants", "desktop", "protocol", t69),
     ("T50", "__status per computer, full (cookie)", "desktop", "browser", None),
     ("T51", "side-panel renders beside chat", "desktop", "browser", None),
     ("T52", "/desktop chrome: take/release + terminal shell", "desktop", "browser", None),
