@@ -144,8 +144,10 @@ hidden tab loses control in ~90 s, as designed.
 | keep-alive status upserts | ~10 | Change-only. |
 | routines history inserts | ~5 | Change-only, bounded to 50 rows (oldest pruned). |
 | triggers / teaches / modes / needs-you | ~350 | Capped trigger volume + rare user actions. |
+| board ticket ops (create/update/comment/mark-sent/delete) | <= 1,000 / IP / day | Hard cap from the DO rate limiter (30/min/IP + 1,000/day/IP on mutations). One D1 row per op; a single user can never exceed 1,000 rows/day no matter how hard they click. |
+| board rate-limit checks | 0 D1 rows | Counted by the Durable Object (BoardRateLimiter), not D1 — each check is one DO subrequest against the 100k/day Workers/DO allowance, not a D1 row. |
 | budget counter (atomic SQL increment) | ~0 | Counter becomes one exact row, updated with the write itself (no separate flush). |
-| **TOTAL writes** | **~4,700** | **4.7% of the 100,000/day D1 limit.** |
+| **TOTAL writes** | **~5,700** | **5.7% of the 100,000/day D1 limit** (4,700 + up to 1,000 board ops). |
 | watcher polls (2 rows per poll) | 34,560 rows read | 17,280 polls x 2 rows. |
 | chrome polls | ~10,000 rows read | Needs-you + status. |
 | **TOTAL reads** | **~45,000** | **0.9% of the 5,000,000/day D1 limit.** |
@@ -168,7 +170,11 @@ check; kept as-is and guard-gated instead).
 
 The migration is done (see SCHEMA.md + migrate-kv-to-d1.py). All three
 Workers now write to the `qwenpaw-state` D1 database (USE_D1=1); KV is
-the fallback only. Verified live 2026-11-15 ~08:12 UTC:
+the fallback only. **Board migrated the same day** (features/board/):
+tickets moved from one KV value to the `tickets` table (one row per
+ticket, 0 rows imported — the board was empty), rate limiting added
+via the `BoardRateLimiter` Durable Object; live proof 30×401 + 5×429
+from the machine, test T63. Verified live 2026-11-15 ~08:12 UTC:
 
 - Pages worker (qwenpawx `50600362`, frontend `572c5932`): `/` 200,
   `/desktop` gate 200, `__lease` default gen 19 / qa gen 2 (read from
