@@ -337,6 +337,26 @@ export async function handleComputer(request, env, url) {
 
   // ---- UI ----
   if (path === "/computer" || path === "/computer/") return serveUi(env, url);
+  // Static UI modules. ui.html dynamically imports teach.js (the recorder)
+  // and the terminal code; the _worker.js routes ALL /computer/* here, so
+  // these must be served from the Pages asset binding or the imports 404
+  // and the Teach/Terminal tabs are dead. (Fix 2026-11-16: both returned
+  // 404, which is why the browser's Teach/Terminal never loaded.)
+  if (path === "/computer/teach.js" || path === "/computer/terminal.js") {
+    if (env.ASSETS) {
+      const res = await env.ASSETS.fetch(new Request(new URL(path, url.origin)));
+      if (res && res.ok) {
+        return new Response(res.body, {
+          headers: {
+            "Content-Type": "application/javascript; charset=utf-8",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+          },
+        });
+      }
+    }
+    return new Response("not found", { status: 404 });
+  }
 
   // ---- state ----
   if (path === "/computer/computers") return json({ computers: S.COMPUTERS });
@@ -468,14 +488,12 @@ export async function handleComputer(request, env, url) {
     if (request.headers.get("If-None-Match") === etag) {
       return new Response(null, { status: 304, headers: { ETag: etag } });
     }
-    // D1 hands a BLOB back as an ArrayBuffer; wrap it so the Response body
-    // is a byte view, not an empty body. (Fix 2026-11-16: the endpoint
-    // answered 200 image/png with a 0-byte body until this conversion.)
-    const png = row.png instanceof ArrayBuffer ? new Uint8Array(row.png) : row.png;
-    return new Response(png, {
+    // getPreview returns a real Uint8Array (decoded from hex); send it with
+    // an explicit length so the edge cannot truncate it to an empty body.
+    return new Response(row.png, {
       headers: {
         "Content-Type": "image/png", ETag: etag,
-        "Content-Length": String(png.byteLength ?? png.length ?? 0),
+        "Content-Length": String(row.png.byteLength),
         "Cache-Control": "private, max-age=120",
       },
     });
