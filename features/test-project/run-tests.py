@@ -1361,11 +1361,11 @@ def t86():
     when the generation cannot be bumped, needs-you per computer, and previews
     that only write when the hash changes.
     """
-    return _harness("features/computer/harness-computer.mjs", 84)
+    return _harness("features/computer/harness-computer.mjs", 88)
 
 
 def t88():
-    """The Pages Worker LOADS and RUNS (28 checks).
+    """The Pages Worker LOADS and RUNS (40 checks).
 
     Added because on 2026-11-15 the entire Worker was dead and every check in
     this suite stayed green. Two fatal defects:
@@ -1384,7 +1384,7 @@ def t88():
     test imports the real module graph and drives its fetch handler with
     stubbed origin and asset bindings — no network, no account, no machine.
     """
-    return _harness("features/computer/harness-worker-load.mjs", 28)
+    return _harness("features/computer/harness-worker-load.mjs", 40)
 
 
 def t85():
@@ -1436,6 +1436,65 @@ def t83():
 def t82():
     """Group-chat CORS allowlist (BUGS.md B-12). 13 checks."""
     return _harness("features/groupchat/harness-groupchat-cors.mjs", 13)
+
+
+def t89():
+    """Rate limiting on every /computer endpoint (BUGS.md B-10). 28 checks.
+
+    B-10 was "no rate limit on any desktop endpoint", and the recorded failure
+    it enables is a stuck client loop burning the daily Worker budget. The
+    assertions that matter are the cost ones: a healthy client performs ZERO
+    store operations (an in-memory bucket), and only a trip writes — once per
+    window, so the limiter cannot become the quota burn it prevents.
+    """
+    return _harness("features/computer/harness-rate-limit.mjs", 28)
+
+
+def t90():
+    """Preview is not re-fetched or re-hashed every poll (BUGS.md B-5).
+
+    29 checks against real SQLite: the UI half (src keyed by hash) and the
+    SERVER half, which was still broken — `stateFor` loaded and hashed the full
+    243-707 KB PNG twice per 10 s poll. Measured, not claimed: the harness
+    counts blob bytes read.
+    """
+    return _harness("features/computer/harness-preview-refetch.mjs", 29)
+
+
+def t91():
+    """Routines history is append-only, not read-modify-write (B-8). 25 checks.
+
+    20 concurrent appends must all land. The old shape read a 50-entry array,
+    unshifted, and wrote it back, so two ticks close together dropped one —
+    and this array is the routines audit trail.
+    """
+    return _harness("features/routines/harness-routines-history.mjs", 25)
+
+
+def t92():
+    """Terminal: lease rules for a root shell (the brief's gate). 39 checks.
+
+    A root shell must not ship without lease tests. Drives the real Worker
+    against real SQLite: no lease -> no shell; another holder's lease -> 409;
+    expiry clamped to the lease (B-4's 59-minute hole); the SAME link refused
+    after release; a takeover invalidating it; a broken store as 503 and never
+    "released". Plus the PTY server's own 26 checks against a real PTY — the
+    clamp from B-17 and the deadline kill.
+    """
+    return _harness("features/computer/harness-terminal.mjs", 39)
+
+
+def t93():
+    """Teach recording: the recorder and draft editor that did not exist. 68 checks.
+
+    The UI had start/stop and a false "draft saved" toast. This asserts the
+    recorder exists, coalesces a typed run into one step, makes a drag one
+    step, bounds its buffer from the front, refuses to save a draft with no
+    steps, and — most importantly — redacts secret-shaped text even when the
+    user's Sensitive toggle is off, because a password in a skill file is
+    permanent.
+    """
+    return _harness("features/computer/harness-teach.mjs", 68)
 
 
 # Tests that exercise the REMOVED computer. They are kept because they are the
@@ -1552,6 +1611,11 @@ TESTS = [
     ("T86", "rebuilt computer: seal, lease atomicity, enforcement order", "computer", "protocol", t86),
     ("T87", "preview uploader: change-only writes, floor, backoff", "computer", "protocol", t87),
     ("T88", "Pages Worker loads and runs (proxy + /computer wired)", "computer", "protocol", t88),
+    ("T89", "rate limiting: per-endpoint 429, zero-cost healthy path", "computer", "protocol", t89),
+    ("T90", "preview: change-only writes, no blob read per poll", "computer", "protocol", t90),
+    ("T91", "routines history: append-only, no lost ticks", "routines", "protocol", t91),
+    ("T92", "terminal: lease-bound shell + PTY frame validation", "computer", "protocol", t92),
+    ("T93", "teach: real recorder, redaction, draft validation", "computer", "protocol", t93),
 ]
 
 SKIP_NOTE = {

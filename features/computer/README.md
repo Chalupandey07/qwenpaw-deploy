@@ -144,16 +144,86 @@ default.
 4. **Verify in a real browser.** Not with a protocol check. The previous rounds
    that skipped this shipped a broken screen every time.
 
+### Added 2026-11-16 (Terminal + Teach)
+
+5. **`preview_meta` table.** `state.js::ensureSchema` creates it (idempotent,
+   `CREATE TABLE IF NOT EXISTS`) on the first request after deploy. It stores
+   the preview hash so a 10 s poll reads ~40 bytes instead of re-reading and
+   re-hashing the 243-707 KB blob twice. Nothing to run by hand.
+6. **Terminal secret and service.** `TERMINAL_SECRET` — 32+ random bytes, the
+   SAME value in two places: as a Worker secret (`COMPUTER_CAPABILITY_SECRET`
+   is what actually signs; the machine needs its own copy at
+   `/data/home/qwenpaw/terminal.secret`, mode 0600) and on the machine.
+   `COMPUTER_TERMINAL_ORIGIN` is the published terminal port's URL.
+   Sync `features/computer/terminal-server.py` to
+   `/data/home/qwenpaw/terminal-server.py` and run it under systemd with a
+   `RuntimeDirectory=qwenpaw-terminal`. **Without `terminal.secret` the server
+   refuses to start** — it will not serve a shell it cannot lease-bound.
+7. **Teach needs no new secret.** `POST /computer/teach` is the authenticated
+   UI saving the user's own demonstration; `GET /computer/teach/pending` and
+   `/ack` use `COMPUTER_SYNC_TOKEN`, so the agent-side reader needs nothing
+   new. The lease-watcher should poll `/computer/teach/pending`, write each
+   skill into QwenPaw's skill pool, then `POST /computer/teach/ack {id}`.
+8. **Still verify in a real browser.** The terminal especially: a protocol
+   check cannot tell you whether xterm renders or whether the prompt is usable.
+
 ## Not done
 
-- **Terminal tab**: the UI has the tab and the workspace, but the PTY service
-  was removed with the old computer and has not been rebuilt. It needs the
-  `pty-server.py` equivalent back on the machine — deferred deliberately
-  because a root shell is the highest-risk surface and it should land with its
-  own lease tests, not folded into this.
-- **Teach recording**: the UI records start/stop and says a draft was saved;
-  there is no input recorder or draft editor yet. Same reasoning.
 - **Per-bot computers**: the schema has a `computer` row per name and the
   router takes `?computer=`, so the model supports it, but only `default` and
   `qa` are wired.
 - **Live verification of any of it.** That is Muse's, and it has not happened.
+
+## Built 2026-11-16: Terminal and Teach
+
+Both pieces the previous round listed as "deliberately not done" are now
+written, with the lease tests the brief required for the shell.
+
+### Terminal (`pages/public/computer/terminal.js` + `features/computer/terminal-server.py`)
+
+A root shell, so the rules are stricter than the screen's and none of them
+have a fallback:
+
+| Rule | Why |
+|---|---|
+| Minting requires the caller's own live `leaseId` | a stale tab must not open a shell against newer control |
+| Expiry is `min(60 s, lease.expiresAt + 15 s)` | B-4: the old terminal lived **3,600 s**, so a release left a shell for 59 more minutes |
+| Every request re-checks the live lease and the generation | a link is useless the instant control moves |
+| The PTY server gets a **signed absolute deadline** | it kills the shell itself, because the Worker is not in the loop for an established WebSocket. A crashed browser cannot hold a shell. |
+| The token is a path segment of a sealed capability | B-16: never a query string, never a cookie, never in `Referer` |
+| `cols`/`rows` clamped to `1..1000` on both sides; a frame declaring more than 1 MiB closes the connection | B-17 |
+| `hmac.compare_digest` on the machine side, hashed constant-time compare in the Worker | B-16: a plain `==` on a token that authorises a shell leaks it by timing |
+
+The terminal tab is inert until control is held, and releasing control closes
+the shell locally **and** lets the signed deadline enforce it. T92 (39 checks)
+drives the real Worker against real SQLite and the PTY server against a real
+PTY; one of its assertions is that an idle but open session ends on its own.
+
+### Teach recording (`pages/public/computer/teach.js`)
+
+The old UI had Start/Stop and a toast saying a draft was saved, with no
+recorder behind it. That is worse than a missing feature, because it teaches
+the user to trust a false claim. What replaced it:
+
+- `Recorder` holds normalised events (pointer / key / clipboard / scroll /
+  nav), bounded at 500 and dropping from the **front** so the end of a
+  demonstration — the part that matters — survives.
+- `buildPlaybook()` coalesces: a typed run becomes one `Type "..."` step, a
+  down/move/up with ≥8 px displacement becomes one `Drag`, a 2 px wobble
+  becomes a `Click`. A raw event dump is not a draft.
+- Redaction happens at **record** time, not build time, so a raw buffer
+  containing a password never exists. Three layers: the Sensitive toggle, the
+  `redact()` shape check (passwords, `sk-…` prefixes, card numbers, long
+  alphanumeric runs), and URL credential stripping including the `#fragment`.
+- The editor shows the 8 fields from the recorded T55 criterion, and `Save`
+  validates first — a draft with no steps is refused by the editor **and** by
+  `POST /computer/teach`, rather than toasted as saved.
+
+The event source is the shim injected into the noVNC page (`capability.js`):
+the parent cannot see into a sandboxed cross-origin frame, so the frame
+forwards the events. It sends nothing while recording is off, and no key
+values while Sensitive is on.
+
+T93 covers all of it (68 checks), including the two redaction failures its own
+first version had — `Enter your API key` and `sk-live-…` both classified as
+ordinary text.
