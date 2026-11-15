@@ -1,0 +1,135 @@
+{
+  "_meta": {
+    "note": "Normalized issue keys seen by log-check. An issue is NEW when its key is absent here. Do not edit by hand except to clear a key you have fixed and want to be re-flagged as NEW if it returns.",
+    "total_keys": 21,
+    "updated_at_utc": "2026-11-15T01:36:43.137369+00:00"
+  },
+  "issues": {
+    "Emitted 'error' event on Socket instance at:": {
+      "count": 3,
+      "first_seen": "2026-11-14T22:32:48+00:00",
+      "last_seen": "2026-11-14T23:42:00+00:00",
+      "source": "bridge"
+    },
+    "Error: write EPIPE": {
+      "count": 3,
+      "first_seen": "2026-11-14T21:12:59+00:00",
+      "last_seen": "2026-11-14T23:42:00+00:00",
+      "source": "bridge"
+    },
+    "Exception occurred during processing of request from (' IP ', #)": {
+      "count": 1,
+      "first_seen": "2026-11-14T21:12:59+00:00",
+      "last_seen": "2026-11-14T21:12:59+00:00",
+      "source": "bridge"
+    },
+    "Failed to refresh Driver 'computer-use' after card change": {
+      "count": 2,
+      "first_seen": "2026-11-14T23:32:08+00:00",
+      "last_seen": "2026-11-14T23:42:37+00:00",
+      "source": "qwenpaw-log"
+    },
+    "Field required [type=missing, input_value={'method': 'notifications...sonrpc': '#.#', 'id': #}, input_type=dict]": {
+      "count": 11,
+      "first_seen": "2026-11-14T22:30:08+00:00",
+      "last_seen": "2026-11-14T22:30:08+00:00",
+      "source": "mcp"
+    },
+    "For further information visit https://errors.pydantic.dev/#.#/v/missing": {
+      "count": 11,
+      "first_seen": "2026-11-14T22:30:08+00:00",
+      "last_seen": "2026-11-14T22:30:08+00:00",
+      "source": "mcp"
+    },
+    "Ignoring proxy headers from untrusted source IP (add to security.trusted_proxies if legitimate)": {
+      "count": 1,
+      "first_seen": "2026-11-14T22:49:53+00:00",
+      "last_seen": "2026-11-14T22:49:53+00:00",
+      "source": "qwenpaw-log"
+    },
+    "ResourceGovernor: sandbox not available \u2014 Cannot read /sys/kernel/security/lsm. SANDBOX_FALLBACK will escalate to ASK.": {
+      "count": 5,
+      "first_seen": "2026-11-14T22:40:50+00:00",
+      "last_seen": "2026-11-14T22:54:04+00:00",
+      "source": "qwenpaw-log"
+    },
+    "Skipping skill 'build-page' in workspace /app/working/workspaces/default: Environment variable not set: CLOUDFLARE_API_TOKEN": {
+      "count": 10,
+      "first_seen": "2026-11-14T22:40:49+00:00",
+      "last_seen": "2026-11-14T22:54:04+00:00",
+      "source": "qwenpaw-log"
+    },
+    "Skipping skill 'github' in workspace /app/working/workspaces/default: Environment variable not set: GITHUB_TOKEN": {
+      "count": 10,
+      "first_seen": "2026-11-14T22:40:49+00:00",
+      "last_seen": "2026-11-14T22:54:04+00:00",
+      "source": "qwenpaw-log"
+    },
+    "Skipping skill 'mailbox' in workspace /app/working/workspaces/default: MCP server not configured: qwenpawmail": {
+      "count": 10,
+      "first_seen": "2026-11-14T22:40:49+00:00",
+      "last_seen": "2026-11-14T22:54:04+00:00",
+      "source": "qwenpaw-log"
+    },
+    "[:#] Chromium window # (1920x1004) is IsUnMapped \u2014 re-mapping": {
+      "count": 1,
+      "first_seen": "2026-11-15T00:28:58+00:00",
+      "last_seen": "2026-11-15T00:28:58+00:00",
+      "source": "window-watch"
+    },
+    "[W root] Failed to validate request: # validation errors for ClientRequest": {
+      "count": 1,
+      "first_seen": "2026-11-14T22:30:08+00:00",
+      "last_seen": "2026-11-14T22:30:08+00:00",
+      "source": "mcp"
+    },
+    "action {\"time\": \" \", \"tool\": \"click\", \"args\": {}, \"refused\": true}": {
+      "count": 2,
+      "first_seen": "2026-11-14T23:38:17+00:00",
+      "last_seen": "2026-11-14T23:38:17+00:00",
+      "source": "mcp-qa"
+    },
+    "browser.sdk.internal_error reason=QwenPaw Browser SDK internal failure detail=WireProtocolError: Page.goto: net::ERR_HTTP_RESPONSE_CODE_FAILURE at https://x.com/search?q=0xsatwik&src=typed_query": {
+      "count": 1,
+      "first_seen": "2026-11-14T22:54:12+00:00",
+      "last_seen": "2026-11-14T22:54:12+00:00",
+      "source": "qwenpaw-log"
+    },
+    "instabox-computer-use: refused click: a human controls the desktop": {
+      "count": 4,
+      "first_seen": "2026-11-14T23:07:24+00:00",
+      "last_seen": "2026-11-14T23:48:57+00:00",
+      "source": "mcp-qa"
+    },
+    "lease-watcher: lease fetch failed: HTTP Error #: Forbidden": {
+      "count": 74,
+      "first_seen": "2026-11-14T22:59:19+00:00",
+      "last_seen": "2026-11-14T23:05:28+00:00",
+      "source": "lease-watcher"
+    },
+    "qwenpaw.drivers.errors.DriverCardError: Failed to parse DriverCard YAML /app/working/workspaces/QwenPaw_QA_Agent_0.#/drivers/mcp/computer-use.yaml: mapping values are not allowed here": {
+      "count": 1,
+      "first_seen": "2026-11-14T23:42:37+00:00",
+      "last_seen": "2026-11-14T23:42:37+00:00",
+      "source": "qwenpaw-log"
+    },
+    "qwenpaw.drivers.errors.DriverCardError: Failed to parse DriverCard YAML /app/working/workspaces/default/drivers/mcp/computer-use.yaml: mapping values are not allowed here": {
+      "count": 1,
+      "first_seen": "2026-11-14T23:32:08+00:00",
+      "last_seen": "2026-11-14T23:32:08+00:00",
+      "source": "qwenpaw-log"
+    },
+    "throw er; // Unhandled 'error' event": {
+      "count": 2,
+      "first_seen": "2026-11-14T23:23:04+00:00",
+      "last_seen": "2026-11-14T23:42:00+00:00",
+      "source": "bridge"
+    },
+    "yaml.scanner.ScannerError: mapping values are not allowed here": {
+      "count": 2,
+      "first_seen": "2026-11-14T23:32:08+00:00",
+      "last_seen": "2026-11-14T23:42:37+00:00",
+      "source": "qwenpaw-log"
+    }
+  }
+}
