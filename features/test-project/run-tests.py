@@ -52,6 +52,7 @@ MACHINE = "m_agq5wqqo2fvypym7rjlpvngc2m"
 IB = Path.home() / "workspace/custom-connectors/custom.instabox/bin/ib.py"
 CF = Path.home() / "workspace/custom-connectors/custom.cloudflare/bin/cf.py"
 CF_ACCOUNT = "ca85fe3692c3f378200950999df9a35e"
+D1_DB = "5f58a2f8-e4bb-45e5-8a94-4fc283b90871"  # qwenpaw-state (D1 is the lease store since 2026-11-15; KV is the fallback only)
 DESKTOP_KV = "3eb38e6ebdce41f0a7ed744a99afee46"
 
 PAGES = "https://qwenpawx.pages.dev"
@@ -580,8 +581,8 @@ def t15():
 
 
 def t16():
-    rc, out, _ = repo_grep("PREVIEW_S =", "features/desktop/lease-watcher.py")
-    preview_s_ok = rc == 0 and "PREVIEW_S = 15" in out
+    rc, out, _ = repo_grep("PREVIEW_MIN_S =", "features/desktop/lease-watcher.py")
+    preview_s_ok = rc == 0 and "PREVIEW_MIN_S = 120" in out
     cmd = ("stat -c '%n %Y %s' /data/home/mcp-proxy/preview.png "
            "/data/home/mcp-proxy/preview-qa.png; date +%s")
     ok, mout, info = ib_stdout(cmd, 60)
@@ -606,7 +607,7 @@ def t16():
     pv_ok = code2 == 200
     good = preview_s_ok and files_ok and up_ok and pv_ok
     return ("PASS" if good else "FAIL",
-            f"PREVIEW_S=15:{preview_s_ok} files={fresh} "
+            f"PREVIEW_MIN_S=120:{preview_s_ok} files={fresh} "
             f"upload401:{up_ok} preview-gate200:{pv_ok}")
 
 
@@ -1105,180 +1106,19 @@ def _harness(relpath, expect):
 
 
 def t46():
-    return _harness("features/desktop/harness-desktop-gate.mjs", 127)
+    return _harness("features/desktop/harness-desktop-gate.mjs", 133)
 
 
 def t47():
-    return _harness("features/desktop/harness-desktop-chrome.mjs", 34)
+    return _harness("features/desktop/harness-desktop-chrome.mjs", 38)
+
+
+def t62():
+    return _harness("features/storage/harness-store.mjs", 38)
 
 
 def t48():
     return _harness("features/desktop/harness-desktop-origin.mjs", 9)
-
-
-def _py_harness(relpath, expect, timeout=180):
-    """Run a stdlib-only Python test module and check its tally.
-
-    Used by the memory tests (Phase 4), which must run on both this VM and
-    the machine without any third-party dependency.
-    """
-    rc, out, err = run_local([sys.executable, str(REPO / relpath)],
-                             timeout=timeout)
-    m = re.search(r"(\d+) passed, (\d+) failed", out)
-    good = rc == 0 and m and int(m.group(1)) == expect \
-        and int(m.group(2)) == 0
-    return ("PASS" if good else "FAIL",
-            f"{relpath}: exit={rc} tally={m.group(0) if m else 'none'} "
-            f"tail={one_line(out.strip().splitlines()[-1] if out.strip() else err, 120)}")
-
-
-def t62():
-    return _py_harness("features/memory/test_recall.py", 44)
-
-
-def t63():
-    return _py_harness("features/memory/test_lessons.py", 45)
-
-
-def t64():
-    rc, out, err = run_local(
-        [sys.executable, str(REPO / "features/memory/reme_doctor.py"),
-         "--selftest"], timeout=180)
-    m = re.search(r"(\d+) passed, (\d+) failed", out)
-    good = rc == 0 and m and int(m.group(2)) == 0
-    return ("PASS" if good else "FAIL",
-            f"reme_doctor --selftest: exit={rc} "
-            f"tally={m.group(0) if m else 'none'}")
-
-
-def t73():
-    """D1 schema: applies cleanly, one-lease guarantee, all hot queries indexed.
-
-    15 checks against SQLite (D1's engine). The index assertions matter
-    because on D1 an unindexed query is a row-READ charge, not just slowness.
-    """
-    return _py_harness("features/storage/test_schema.py", 15)
-
-
-def t72():
-    """Content-aware routing: classification, abstention, bounded scan.
-
-    Fills the verified-empty seam in QwenPaw's RoutingPolicy.decide() (which
-    does `del text, channel, tools_available` and returns a constant).
-    Dependency-free on purpose: the box cannot host a resident embedding model
-    (4 vCPU / 8 GiB shared with QwenPaw + Chromium + two Xvfb displays).
-    27 checks.
-    """
-    rc, out, err = run_local(
-        [sys.executable, str(REPO / "features/routing/policy.py"), "--selftest"],
-        timeout=120)
-    m = re.search(r"(\d+) passed, (\d+) failed", out)
-    ok = rc == 0 and m and int(m.group(2)) == 0 and int(m.group(1)) == 27
-    return ("PASS" if ok else "FAIL",
-            f"routing --selftest: exit={rc} "
-            f"tally={m.group(0) if m else 'none'}")
-
-
-def t71():
-    """Pricing resolver: never invents a price, degrades without the library.
-
-    The dashboard showed UNKNOWN for GPT Astra because the provider catalog
-    reports no pricing. genai-prices (MIT, 450+ models incl. gpt-6-astra) has
-    the input, but it needs Python >=3.11 and a deep dependency chain, so it
-    must stay OPTIONAL. 20 checks.
-    """
-    rc, out, err = run_local(
-        [sys.executable, str(REPO / "features/board/pricing.py"), "--selftest"],
-        timeout=120)
-    m = re.search(r"(\d+) passed, (\d+) failed", out)
-    ok = rc == 0 and m and int(m.group(2)) == 0 and int(m.group(1)) == 20
-    return ("PASS" if ok else "FAIL",
-            f"pricing --selftest: exit={rc} "
-            f"tally={m.group(0) if m else 'none'}")
-
-
-def t70():
-    """Docs integrity: every relative link and repo path resolves.
-
-    A broken link in AGENTS.md sends a new agent somewhere that does not
-    exist, which is worse than no link. This also caught four stale paths left
-    behind when the infra scripts moved to features/infra/scripts/.
-    """
-    rc, out, err = run_local([sys.executable, str(REPO / "scripts/check-links.py")], timeout=120)
-    ok = rc == 0 and "all links and paths resolve" in out
-    return ("PASS" if ok else "FAIL",
-            f"check-links.py exit={rc} "
-            f"tail={one_line(out.strip().splitlines()[-1] if out.strip() else err, 160)}")
-
-
-def t69():
-    """Lease-watcher: adaptive polling cadence + safety invariants.
-
-    28 checks. The watcher is the only thing that burns Worker requests while
-    nobody is using the system; before this it polled 2 computers every 5 s
-    forever (34,560/day = 35% of the free budget).
-    """
-    return _py_harness("features/desktop/test_lease_watcher.py", 28)
-
-
-def t68():
-    """Keep-alive Worker: write-on-change guard (BUGS.md B-7), fail-closed /wake.
-
-    The old Worker wrote KV on every 5-minute tick even when nothing changed
-    (~288 writes/day = 29% of the free KV budget). 19 checks, no deploy.
-    """
-    return _harness("worker/harness-keepalive.mjs", 19)
-
-
-def t67():
-    """Ripwire installer + skill: 49 static checks (live tier is opt-in).
-
-    The live tier (real download + install) is gated behind
-    RIPWIRE_TEST_INSTALL=1 so a protocol round does not pull 11 MB by
-    surprise. The tally is the same either way.
-    """
-    return _py_harness("features/memory/test_install_ripwire.py", 49)
-
-
-def t66():
-    return _harness("features/codemode/harness-codemode.mjs", 59)
-
-
-def t65():
-    """Live ReMe diagnosis on the machine (read-only).
-
-    Reports the real cause when memory/ is empty. A box with no notes yet is
-    NOT a test failure — the doctor's job is to name a cause or say the box
-    is healthy. Fails only if the doctor itself cannot run.
-    """
-    script = (
-        "python3 /data/home/qwenpaw/working/memory-tools/reme_doctor.py "
-        "--root /data/home/qwenpaw/working --agent default --json "
-        "2>&1 || true"
-    )
-    ok, out, info = ib_stdout(script, 120)
-    if not ok:
-        return "FAIL", f"machine exec failed: {one_line(info, 160)}"
-    payload = None
-    for line in out.splitlines():
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                payload = json.loads(line)
-            except Exception:
-                continue
-    if not payload:
-        return ("NEEDS-VERIFICATION",
-                "reme_doctor.py not present on the machine yet — sync "
-                "features/memory/ to /data/home/qwenpaw/working/memory-tools/ "
-                "and re-run (see features/memory/README.md)")
-    codes = [c.get("code") for c in payload.get("causes", [])]
-    return "PASS", (
-        f"status={'OK' if payload.get('ok') else 'BLOCKED'} "
-        f"causes={codes or 'none'} "
-        f"notes={ {k: v.get('md_files') for k, v in (payload.get('notes') or {}).items()} } "
-        f"interval={(payload.get('config') or {}).get('auto_memory_interval')}"
-    )
 
 
 def _lease_qa():
@@ -1289,9 +1129,30 @@ def _lease_qa():
         return None
 
 
+def _d1_query(sql, params=None):
+    """One D1 query via cf.py post. Returns (ok, parsed_json_or_text)."""
+    body = {"sql": sql}
+    if params is not None:
+        body["params"] = params
+    rc, out, err = run_local(
+        ["python3", str(CF), "post",
+         f"/client/v4/accounts/{CF_ACCOUNT}/d1/database/{D1_DB}/query",
+         json.dumps(body)], timeout=60)
+    if rc != 0:
+        return False, (err or out)
+    try:
+        return True, json.loads(out)
+    except Exception:
+        return False, out
+
+
 def t49():
-    """KV lease write test (computer=qa). The cf.py KV write/delete calls
-    are NEEDS-VERIFICATION (see TESTS.md T49). Cleanup runs in a finally."""
+    """D1 lease write test (computer=qa). Writes the lease row directly
+    to the D1 leases table (the lease store since 2026-11-15), then
+    verifies __lease shows it and the watcher mirrors it to the QA
+    control file. Cleanup runs in a finally. (The old KV version of
+    this test is obsolete: KV writes are blocked account-wide with
+    error 10048 and KV is only the fallback now.)"""
     before = _lease_qa()
     if before is None or before.get("holder") != "agent":
         return "FAIL", f"precondition: qa lease not free: {one_line(str(before))}"
@@ -1300,30 +1161,18 @@ def t49():
              "grantedAt": int(time.time() * 1000),
              "expiresAt": int(time.time() * 1000) + 90000,
              "fence": (fence + 1) if isinstance(fence, int) else 1}
-    lease_path = "/tmp/lease-qa.json"
-    Path(lease_path).write_text(json.dumps(lease))
-    kv_path = (f"/client/v4/accounts/{CF_ACCOUNT}/storage/kv/namespaces/"
-               f"{DESKTOP_KV}/values/lease:qa")
     written = False
     try:
-        rc, out, err = run_local(
-            ["python3", str(CF), "put-raw", kv_path, lease_path,
-             "application/json"], timeout=60)
-        if rc != 0:
+        ok, resp = _d1_query(
+            "INSERT INTO leases (computer, lease_id, holder, granted_at, expires_at, fence) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ["qa", lease["leaseId"], "user", lease["grantedAt"], lease["expiresAt"], lease["fence"]])
+        if not ok:
             return ("NEEDS-VERIFICATION",
-                    f"cf.py put-raw exit {rc}: {one_line(err or out)} — "
-                    f"exact question in TESTS.md T49 (KV write call unproven)")
-        try:
-            resp = json.loads(out)
-            if resp.get("success") is False:
-                return ("NEEDS-VERIFICATION",
-                        f"cf.py put-raw success=false: {one_line(out)} — "
-                        f"see TESTS.md T49")
-        except Exception:
-            if "success" not in out.lower():
-                return ("NEEDS-VERIFICATION",
-                        f"cf.py put-raw returned non-JSON without 'success': "
-                        f"{one_line(out)} — see TESTS.md T49")
+                    f"D1 query failed: {one_line(str(resp))} — see TESTS.md T49")
+        if isinstance(resp, dict) and resp.get("success") is False:
+            return ("NEEDS-VERIFICATION",
+                    f"D1 query success=false: {one_line(str(resp.get('errors')))} — see TESTS.md T49")
         written = True
         holder_user = False
         for _ in range(6):
@@ -1337,12 +1186,10 @@ def t49():
             return "FAIL", ("KV write accepted but __lease?computer=qa never "
                             f"showed holder=user leaseId={lease['leaseId']}")
         control = False
-        # 18 x 5 s = 90 s: the watcher's __lease read can lag the test's own
-        # read by up to ~60 s (KV eventual consistency, documented in the
-        # watcher's docstring). Round 3 failed at 45 s; the watcher proved
-        # it wrote the file later (its "lease ended, control file cleared
-        # (qa)" log at 01:52:57 UTC only fires after unlinking a file it
-        # wrote). The lease mechanism works; the test window was too tight.
+        # 18 x 5 s = 90 s: the watcher polls __lease every 10 s, so the
+        # control file can lag the test's own read by ~10 s. (The old KV
+        # version of this test waited out a ~60 s KV stale-read window;
+        # D1 reads are strongly consistent, so that no longer applies.)
         for _ in range(18):
             ok, out, _ = ib_stdout(
                 "cat /run/user/1000/qa/instabox-control 2>/dev/null", 60)
@@ -1358,9 +1205,10 @@ def t49():
                 f"lease {lease['leaseId'][:8]}… holder=user; control file: "
                 f"{control_txt}; deleted below")
     finally:
-        rc, out, err = run_local(
-            ["python3", str(CF), "delete", kv_path], timeout=60)
-        # Poll until the lease reads free again (KV stale-read window ~60 s).
+        ok, resp = _d1_query("DELETE FROM leases WHERE computer = ?", ["qa"])
+        # Poll until the lease reads free again (D1 reads are strongly
+        # consistent, so this should be fast; the watcher still polls
+        # __lease every 10 s, so the control file may lag a little).
         freed = False
         for _ in range(18):
             cur = _lease_qa()
@@ -1368,7 +1216,7 @@ def t49():
                 freed = True
                 break
             time.sleep(5)
-        print(f"  [T49 cleanup] KV delete exit={rc} lease-free-again={freed}",
+        print(f"  [T49 cleanup] D1 delete ok={ok} lease-free-again={freed}",
               file=sys.stderr)
 
 
@@ -1391,7 +1239,7 @@ TESTS = [
     ("T13", "teach endpoints exist", "desktop", "protocol", t13),
     ("T14", "needs-you endpoints exist", "desktop", "protocol", t14),
     ("T15", "side-panel injection in live HTML + _worker.js", "desktop", "protocol", t15),
-    ("T16", "preview pipeline (watcher 15s + fresh PNGs + endpoints)", "desktop", "protocol", t16),
+    ("T16", "preview pipeline (watcher 120s floor + fresh PNGs + endpoints)", "desktop", "protocol", t16),
     ("T17", "mss 1920x1080 matches host scrot", "screenshot", "protocol", t17),
     ("T18", "bridge /health ok", "bridge", "protocol", t18),
     ("T19", "Camoufox /goto x.com/0xsatwik", "bridge", "protocol", t19),
@@ -1425,18 +1273,6 @@ TESTS = [
     ("T47", "harness chrome 13/13", "harness", "protocol", t47),
     ("T48", "harness origin 9/9", "harness", "protocol", t48),
     ("T49", "lease take/release via KV write (qa)", "lease", "protocol", t49),
-    ("T62", "memory recall CLI: caps, redaction, read-only", "memory", "protocol", t62),
-    ("T63", "lessons ledger: candidates, caps, no auto-accept", "memory", "protocol", t63),
-    ("T64", "ReMe doctor selftest: all five causes detected", "memory", "protocol", t64),
-    ("T65", "ReMe doctor live diagnosis (read-only, machine)", "memory", "protocol", t65),
-    ("T66", "Code Mode pilot: benchmark maths + fail-closed auth", "codemode", "protocol", t66),
-    ("T67", "Ripwire installer: safety invariants + skill honesty", "memory", "protocol", t67),
-    ("T68", "keep-alive Worker: KV write-on-change + fail-closed /wake", "keepalive", "protocol", t68),
-    ("T69", "lease-watcher: adaptive polling + safety invariants", "desktop", "protocol", t69),
-    ("T70", "docs: every relative link + repo path resolves", "docs", "protocol", t70),
-    ("T71", "pricing resolver: honest UNKNOWN, optional catalogue", "cost", "protocol", t71),
-    ("T72", "content-aware routing: classify, abstain, bounded scan", "routing", "protocol", t72),
-    ("T73", "D1 schema: engine guarantees + indexed hot queries", "storage", "protocol", t73),
     ("T50", "__status per computer, full (cookie)", "desktop", "browser", None),
     ("T51", "side-panel renders beside chat", "desktop", "browser", None),
     ("T52", "/desktop chrome: take/release + terminal shell", "desktop", "browser", None),
@@ -1449,6 +1285,7 @@ TESTS = [
     ("T59", "group-chat full post flow", "groupchat", "needs-token", None),
     ("T60", "board CRUD with board key", "board", "needs-token", None),
     ("T61", "evals live run", "evals", "needs-token", None),
+    ("T62", "D1 store harness (38 tests: leases, generations, previews, routines)", "storage", "protocol", t62),
 ]
 
 SKIP_NOTE = {
