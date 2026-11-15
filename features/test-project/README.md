@@ -73,8 +73,8 @@ screenshot compare).
 Result vocabulary is defined at the top of `RESULTS.md`. Two results
 deserve emphasis: `KNOWN-GAP` (currently only T33 — the mailbox Gmail
 MCP was never configured; recording the gap is the pass) and
-`NEEDS-VERIFICATION` (currently only T49 — the Cloudflare KV write
-call is unproven; see below).
+`NEEDS-VERIFICATION` (a guard T49 reports only if a future KV write call
+itself errors — the call is verified since Round 2, see below).
 
 ## How rounds work
 
@@ -127,11 +127,10 @@ they affect.
 3. **Bridge /health showed Camoufox on `about:blank`.** T19
    (re-)navigates to x.com/0xsatwik as its own setup; the test
    asserts the end state.
-4. **T49's Cloudflare KV write is UNVERIFIED.** `cf.py get` for the
-   routines schedules is proven (T22), but nobody has run `cf.py
-   put-raw` / `delete` against the KV values endpoint for namespace
-   `3eb38e6ebdce41f0a7ed744a99afee46` (DESKTOP_KV), and it is unknown
-   whether the key `lease:qa` needs URL-encoding of the `:`. If the
+4. **T49's Cloudflare KV write is VERIFIED (Round 2, 2026-11-15).**
+   `cf.py put-raw` / `delete` against the KV values endpoint for namespace
+   `3eb38e6ebdce41f0a7ed744a99afee46` (DESKTOP_KV) work with the key
+   `lease:qa` as-is — no URL-encoding of the `:` needed. If a future
    write call itself errors, T49 reports NEEDS-VERIFICATION with the
    exact command — it does not fail the system for an unproven
    command.
