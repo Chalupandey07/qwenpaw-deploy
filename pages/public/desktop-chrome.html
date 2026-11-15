@@ -248,7 +248,16 @@
   // Timing overrides (read fresh on every use so the harness can shrink
   // them mid-run): QWENPAW_HELD_TIMEOUT_MS (15000), QWENPAW_RECONNECT_DELAY_MS
   // (1000), QWENPAW_RECONNECT_WAIT_MS (15000), QWENPAW_RECONNECT_STABLE_MS
-  // (5000), QWENPAW_FRAME_SILENCE_MS (15000), QWENPAW_HEARTBEAT_MS (15000),
+  // (5000), QWENPAW_FRAME_SILENCE_MS (15000), QWENPAW_HEARTBEAT_MS (60000),
+  // QWENPAW_MENU_ARM_MS (5000). Defaults are in the optMs() calls below.
+  // Heartbeat is 60 s (was 15 s): the lease TTL is 90 s, so 60 s leaves
+  // ~30 s of margin, and a 24 h control hold costs 1,440 KV writes/day
+  // instead of 5,760 (the free tier allows 1,000/day across the whole
+  // account — the 15 s cadence alone could spend it). A single failed
+  // beat is retried once after 5 s (see takeControl), so one blip does
+  // not lose control; a hidden tab never heartbeats at all (the tick
+  // returns early unless visibilityState is "visible"), so it loses
+  // control in ~90 s as designed.
   // QWENPAW_MENU_ARM_MS (5000).
   function optMs(name, def) {
     var v = (typeof window !== "undefined" && window[name]);
@@ -259,7 +268,8 @@
   function reconnectWaitMs() { return optMs("QWENPAW_RECONNECT_WAIT_MS", 15000); }
   function reconnectStableMs() { return optMs("QWENPAW_RECONNECT_STABLE_MS", 5000); }
   function frameSilenceMs() { return optMs("QWENPAW_FRAME_SILENCE_MS", 15000); }
-  function heartbeatIntervalMs() { return optMs("QWENPAW_HEARTBEAT_MS", 15000); }
+  function heartbeatIntervalMs() { return optMs("QWENPAW_HEARTBEAT_MS", 60000); }
+  function heartbeatRetryMs() { return optMs("QWENPAW_HEARTBEAT_RETRY_MS", 5000); }
   function menuArmMs() { return optMs("QWENPAW_MENU_ARM_MS", 5000); }
 
   // Rakazo's computerLabel: "Team Computer" for the shared display,
@@ -777,7 +787,7 @@
   // --- Needs-you (Rakazo's ComputerCard) --------------------------------
   async function pollNeedsYou() {
     try {
-      var r = await api("/desktop/__needs-you", "GET");
+      var r = await api("/desktop/__needs-you?computer=" + computer, "GET");
       if (r.status === 200 && r.json.record) {
         nyBody.textContent = r.json.record.text || "";
         nyPreview.src = "/desktop/__preview?computer=" + computer + "&t=" + Date.now();
@@ -788,7 +798,7 @@
     } catch (e) { /* keep the banner as-is */ }
   }
   async function resolveNeedsYou(action) {
-    var r = await api("/desktop/__needs-you/resolve", "POST", { action: action });
+    var r = await api("/desktop/__needs-you/resolve", "POST", { action: action, computer: computer });
     needsYouEl.classList.remove("show");
     if (r.status === 200 && r.json.ok) {
       toast(action === "skip"
@@ -953,6 +963,15 @@
     heartbeatTimer = setInterval(async function () {
       if (document.visibilityState !== "visible" || !leaseId) return;
       var h = await api("/desktop/__heartbeat", "POST", { leaseId: leaseId, computer: computer });
+      // One immediate retry: at a 60 s cadence a single failed beat would
+      // otherwise let the 90 s lease expire before the next tick and drop
+      // control. The retry is one extra request, not a write loop — the
+      // server still writes at most once per accepted beat.
+      if (!(h.status === 200 && h.json.ok) && h.status !== 410 && !(h.json && h.json.error === "no_lease") && leaseId) {
+        await new Promise(function (res) { setTimeout(res, heartbeatRetryMs()); });
+        if (!leaseId || document.visibilityState !== "visible") return;
+        h = await api("/desktop/__heartbeat", "POST", { leaseId: leaseId, computer: computer });
+      }
       if (h.status === 200 && h.json.ok) {
         leaseExpiresAt = h.json.expiresAt;
       } else if (h.status === 410 || (h.json && h.json.error === "no_lease")) {
