@@ -504,13 +504,30 @@ async function desktopVerify(request, env) {
 // browser, so the browser left /desktop/* for /vnc.html on the Pages root
 // — which the worker proxies to the CONSOLE, whose SPA then shows the chat
 // view. Instead this helper:
-//   (1) first tries WITHOUT _token, forwarding the browser's cookies (a
-//       returning visitor already holds __Host-instabox_port_auth);
-//   (2) on 401, retries WITH _token and follows the proxy's 303
-//       server-side, re-fetching the clean URL with the 303's Set-Cookie
-//       and no _token (max 3 hops);
-//   (3) returns the collected proxy-auth cookies so the caller can pass
-//       them through to the browser (Set-Cookie) for later visits.
+//   (1) NEVER forwards the browser's Cookie header (fixed 2026-11-15,
+//       fix round 2 — the stream 502s). The origin needs no browser
+//       cookies, and the browser holds exactly ONE __Host-instabox_port_auth
+//       value — the one minted for whichever origin was fetched first
+//       (view 6082, control 6081, terminal 6083, qa 6084/6085). The proxy
+//       honors the FIRST such cookie it sees, so a stale per-port cookie
+//       forwarded first made every later fetch to a DIFFERENT origin 401:
+//       the stream 502'd right after the first successful control session
+//       and Private (:2) never rendered. The proxy-auth cookie is managed
+//       by the Worker, per origin, and never leaves the Worker (see (3)).
+//   (2) fetches with `redirect: "manual"` (fixed 2026-11-15, fix round
+//       2). Workers fetch() follows redirects by default, so the proxy's
+//       303 was auto-followed and this code NEVER saw it — the
+//       auto-followed follow-up carried no cookie (Workers fetch has no
+//       cookie jar), so it 401'd and the caller reported "origin_auth"
+//       while the desktop was in fact up. With manual redirect handling
+//       the code sees the 303, takes its Set-Cookie, and re-fetches the
+//       clean URL with that cookie (max 3 hops). On 401 (no usable
+//       cookie) it retries once WITH _token.
+//   (3) the collected proxy-auth cookies are kept server-side only —
+//       they are NOT passed through to the browser. The browser never
+//       talks to the origin directly (every origin request goes through
+//       this Worker), so a browser-held __Host-instabox_port_auth value
+//       could only poison later fetches (see (1)).
 // A surviving redirect is never handed to the browser as a root-relative
 // Location — see the rewrite in desktop() below.
 function collectSetCookiePairs(res) {
@@ -521,7 +538,6 @@ function collectSetCookiePairs(res) {
 }
 
 async function fetchDesktopOrigin(request, url, env, originUrl, origin, token) {
-  const setCookies = [];
   const buildReq = (target, extraCookies) => {
     const req = new Request(target, request);
     req.headers.delete("host");
@@ -529,11 +545,16 @@ async function fetchDesktopOrigin(request, url, env, originUrl, origin, token) {
     req.headers.delete("cf-ipcountry");
     req.headers.delete("cf-ray");
     req.headers.delete("cf-visitor");
+    // Drop the browser's cookies outright (see (1) above): the origin
+    // needs none of them, and a stale __Host-instabox_port_auth for
+    // another port would be honored first by the proxy and 401 the fetch.
+    req.headers.delete("Cookie");
     req.headers.set("X-Forwarded-Host", url.host);
     req.headers.set("X-Forwarded-Proto", "https");
     if (extraCookies && extraCookies.length) {
-      const prev = req.headers.get("Cookie");
-      req.headers.set("Cookie", [...(prev ? [prev] : []), ...extraCookies].join("; "));
+      // Only the Worker's own collected proxy-auth cookies, for THIS
+      // origin — never the browser's jar.
+      req.headers.set("Cookie", extraCookies.join("; "));
     }
     return req;
   };
@@ -550,14 +571,16 @@ async function fetchDesktopOrigin(request, url, env, originUrl, origin, token) {
     let threw = true;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        res = await fetch(buildReq(target, cookies));
+        // redirect: "manual" (see (2) above): the proxy's 303 must reach
+        // this code, not be auto-followed without its Set-Cookie.
+        res = await fetch(buildReq(target, cookies), { redirect: "manual" });
         threw = false;
         break;
       } catch {
         await sleep(150);
       }
     }
-    if (threw) return { res: null, setCookies };
+    if (threw) return { res: null };
     if (res.status === 401 && !usedToken) {
       // No usable proxy cookie: retry once with the server-side token.
       usedToken = true;
@@ -568,21 +591,20 @@ async function fetchDesktopOrigin(request, url, env, originUrl, origin, token) {
     const loc = res.headers.get("Location");
     if (res.status >= 300 && res.status < 400 && loc) {
       cookies = [...cookies, ...collectSetCookiePairs(res)];
-      setCookies.push(...collectSetCookiePairs(res));
       let next;
       try {
         next = new URL(loc, target);
       } catch {
-        return { res, setCookies };
+        return { res };
       }
-      if (next.origin !== origin) return { res, setCookies };
+      if (next.origin !== origin) return { res };
       next.searchParams.delete("_token");
       target = next;
       continue;
     }
-    return { res, setCookies };
+    return { res };
   }
-  return { res: null, setCookies };
+  return { res: null };
 }
 
 async function desktop(request, url, env, ctx) {
@@ -1228,7 +1250,7 @@ async function desktopSession(request, url, env, ctx) {
     fetchReq = new Request(request);
     fetchReq.headers.set("Accept-Encoding", "identity");
   }
-  const { res, setCookies } = await fetchDesktopOrigin(fetchReq, url, env, originUrl, origin, originToken);
+  const { res } = await fetchDesktopOrigin(fetchReq, url, env, originUrl, origin, originToken);
   if (!res) {
     return new Response("Desktop origin unreachable. Try again in a moment.", {
       status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
@@ -1258,20 +1280,20 @@ async function desktopSession(request, url, env, ctx) {
       headers.delete("Location");
     }
   }
+  // Only the FINAL origin response's own Set-Cookie values are passed
+  // through — never the proxy-auth cookies collected during the 303
+  // dance (those stay server-side; see fetchDesktopOrigin). The
+  // __Host-instabox_port_auth name is stripped outright: a browser-held
+  // value for one port would poison later fetches to other ports.
   const resSetCookies = typeof res.headers.getSetCookie === "function"
     ? res.headers.getSetCookie()
     : (headers.get("Set-Cookie") ? [headers.get("Set-Cookie")] : []);
-  const allCookies = [...resSetCookies, ...setCookies];
-  if (allCookies.length) {
-    headers.delete("Set-Cookie");
-    const seen = new Set();
-    for (const c of allCookies) {
-      const clean = c.replace(/;\s*domain=[^;]+/gi, "");
-      const name = clean.split("=")[0];
-      if (seen.has(name)) continue;
-      seen.add(name);
-      headers.append("Set-Cookie", clean);
-    }
+  const safeCookies = resSetCookies.filter(
+    (c) => !c.split(";")[0].trim().toLowerCase().startsWith("__host-instabox_port_auth="),
+  );
+  headers.delete("Set-Cookie");
+  for (const c of safeCookies) {
+    headers.append("Set-Cookie", c.replace(/;\s*domain=[^;]+/gi, ""));
   }
   const contentType = headers.get("Content-Type") || "";
   if (contentType.includes("text/html")) {
@@ -1318,12 +1340,17 @@ async function desktopSession(request, url, env, ctx) {
 
 // GET /desktop/__status?computer=default|qa — desktop + machine state
 // for the chrome page. Probes the view origin of the REQUESTED computer
-// directly (200 = live desktop, 503 = waking, fetch error = asleep/down)
-// and reads the keep-alive Worker's cached machine status for the
-// machine side. The old version probed only :1 and read only the default
-// lease, so the Private view (and the /chat side panel, which is the same
-// chrome in an iframe) reported :1's state while showing :2 — the parent
-// watched Private say "asleep" minutes after waking it.
+// directly (200 = live desktop, 503 = waking, 401 = origin_auth, anything
+// else / fetch error = down). A failed probe is "down", NOT "asleep": the
+// machine may be perfectly up while the desktop/proxy path is broken, and
+// calling that "asleep" told the user to Wake a machine that was already
+// awake (the parent watched exactly that). "asleep" is only reported when
+// the keep-alive says the machine itself is not up (waking/cooldown/
+// conflict) — see the post-processing below. The old version probed only
+// :1 and read only the default lease, so the Private view (and the /chat
+// side panel, which is the same chrome in an iframe) reported :1's state
+// while showing :2 — the parent watched Private say "asleep" minutes
+// after waking it.
 // `screen` is a best-effort WebSocket liveness probe: after the GET says
 // up, upgrade to /websockify and wait for the VNC server's "RFB" banner.
 // A 200 GET proves websockify answers; only the banner proves the VNC
@@ -1348,10 +1375,13 @@ async function desktopStatus(request, url, env) {
       else desktop = "down";
       try { await res.body?.cancel().catch(() => {}); } catch { /* ignore */ }
     } else {
-      desktop = "asleep";
+      // The probe threw (origin unreachable, proxy down, Worker blip):
+      // the desktop path is broken, not the machine — "down", never
+      // "asleep" (see the header comment).
+      desktop = "down";
     }
   } catch {
-    desktop = "asleep";
+    desktop = "down";
   }
   let screen = "unknown";
   if (desktop === "up") {
@@ -1363,6 +1393,15 @@ async function desktopStatus(request, url, env) {
     const j = await r.json().catch(() => null);
     if (j && typeof j.status === "string") machine = j.status;
   } catch { /* keep unknown */ }
+  // Only when the keep-alive says the machine itself is not up does a
+  // failed probe become the machine's problem: "waking" while it boots,
+  // "asleep" while it is in cooldown/conflict (Wake is the path, and the
+  // wake flow reports a refusal honestly). Otherwise the machine is up
+  // and the desktop/proxy path is what is down.
+  if (desktop === "down") {
+    if (machine === "waking") desktop = "waking";
+    else if (machine === "cooldown" || machine === "conflict") desktop = "asleep";
+  }
   const lease = await getLease(env, computer).catch(() => null);
   const gen = await getGeneration(env, computer);
   return jsonResp({
