@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-11-14T19:44:59.059923+00:00",
+  "generated_at_utc": "2026-11-14T21:16:23.827180+00:00",
   "machine": "m_agq5wqqo2fvypym7rjlpvngc2m",
   "jobs": {
     "default": {
@@ -37,7 +37,7 @@
   },
   "chats": {
     "default": {
-      "chat_count": 4,
+      "chat_count": 5,
       "group_count": 3
     },
     "QwenPaw_QA_Agent_0.2": {
@@ -47,15 +47,15 @@
   },
   "history": {
     "default": {
-      "rows": 13,
+      "rows": 31,
       "kinds": {
-        "context_msg": 4,
-        "model_turn": 4,
-        "tool_result": 5
+        "context_msg": 9,
+        "model_turn": 8,
+        "tool_result": 14
       },
       "roles": {
-        "assistant": 9,
-        "user": 4
+        "assistant": 22,
+        "user": 9
       },
       "sessions": [
         {
@@ -68,12 +68,16 @@
         },
         {
           "session_id": "1794684768554-t49gp3v",
+          "rows": 18
+        },
+        {
+          "session_id": "1794687797730-p6yk77w",
           "rows": 4
         }
       ],
       "range": [
         "2026-11-14T18:40:02.679855",
-        "2026-11-15T01:03:56.173935"
+        "2026-11-15T02:21:02.840639"
       ]
     },
     "QwenPaw_QA_Agent_0.2": {
@@ -90,24 +94,89 @@
   "artifacts": {
     "default": [
       {
-        "mtime": "2026-11-14T19:40",
-        "size_bytes": 20469,
+        "mtime": "2026-11-14T21:15",
+        "size_bytes": 308107,
+        "path": "media/20261114-211552-bridge-x-profile.png"
+      },
+      {
+        "mtime": "2026-11-14T21:15",
+        "size_bytes": 19683,
         "path": "skill.json"
       },
       {
-        "mtime": "2026-11-14T19:33",
+        "mtime": "2026-11-14T21:15",
+        "size_bytes": 105151,
+        "path": "media/20261114-211549-bridge-x-home.png"
+      },
+      {
+        "mtime": "2026-11-14T21:14",
+        "size_bytes": 5126,
+        "path": "skills/camoufox-browser/SKILL.md"
+      },
+      {
+        "mtime": "2026-11-14T21:13",
+        "size_bytes": 84950,
+        "path": "media/20261114-211357-bridge-example2.png"
+      },
+      {
+        "mtime": "2026-11-14T20:52",
         "size_bytes": 91,
         "path": "state/last_dispatch.json"
       },
       {
-        "mtime": "2026-11-14T19:33",
-        "size_bytes": 6500,
+        "mtime": "2026-11-14T20:52",
+        "size_bytes": 49392,
         "path": "sessions/console/default_1794684768554-t49gp3v.json"
       },
       {
-        "mtime": "2026-11-14T19:33",
-        "size_bytes": 3085,
+        "mtime": "2026-11-14T20:52",
+        "size_bytes": 3881,
         "path": "chats.json"
+      },
+      {
+        "mtime": "2026-11-14T20:32",
+        "size_bytes": 51,
+        "path": "checkpoints/gitattributes"
+      },
+      {
+        "mtime": "2026-11-14T20:32",
+        "size_bytes": 0,
+        "path": "checkpoints/gitconfig"
+      },
+      {
+        "mtime": "2026-11-14T20:30",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_store/file_chunks_default_v1.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T20:30",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_graph/default.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T20:30",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_catalog/dream.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T20:30",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_catalog/digest.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T20:30",
+        "size_bytes": 9,
+        "path": "mem_metadata/file_catalog/default.jsonl.zst"
+      },
+      {
+        "mtime": "2026-11-14T20:28",
+        "size_bytes": 5585,
+        "path": "sessions/console/default_1794687797730-p6yk77w.json"
+      },
+      {
+        "mtime": "2026-11-14T19:49",
+        "size_bytes": 4744,
+        "path": "skills/build-page/SKILL.md"
       },
       {
         "mtime": "2026-11-14T19:32",
@@ -116,53 +185,13 @@
       },
       {
         "mtime": "2026-11-14T19:31",
-        "size_bytes": 4249,
-        "path": "skills/build-page/SKILL.md"
-      },
-      {
-        "mtime": "2026-11-14T19:31",
         "size_bytes": 3920,
         "path": "skills/github/SKILL.md"
       },
       {
         "mtime": "2026-11-14T19:21",
-        "size_bytes": 51,
-        "path": "checkpoints/gitattributes"
-      },
-      {
-        "mtime": "2026-11-14T19:21",
         "size_bytes": 3843,
         "path": "sessions/console/default_1794684113313-6yjl8dv.json"
-      },
-      {
-        "mtime": "2026-11-14T19:21",
-        "size_bytes": 0,
-        "path": "checkpoints/gitconfig"
-      },
-      {
-        "mtime": "2026-11-14T19:15",
-        "size_bytes": 9,
-        "path": "mem_metadata/file_store/file_chunks_default_v1.jsonl.zst"
-      },
-      {
-        "mtime": "2026-11-14T19:15",
-        "size_bytes": 9,
-        "path": "mem_metadata/file_graph/default.jsonl.zst"
-      },
-      {
-        "mtime": "2026-11-14T19:15",
-        "size_bytes": 9,
-        "path": "mem_metadata/file_catalog/dream.jsonl.zst"
-      },
-      {
-        "mtime": "2026-11-14T19:15",
-        "size_bytes": 9,
-        "path": "mem_metadata/file_catalog/digest.jsonl.zst"
-      },
-      {
-        "mtime": "2026-11-14T19:15",
-        "size_bytes": 9,
-        "path": "mem_metadata/file_catalog/default.jsonl.zst"
       },
       {
         "mtime": "2026-11-14T19:13",
@@ -263,56 +292,31 @@
         "mtime": "2026-11-14T18:12",
         "size_bytes": 32,
         "path": "jobs.json"
-      },
-      {
-        "mtime": "2026-11-14T18:12",
-        "size_bytes": 152,
-        "path": "drivers/.legacy_mcp_migration_report.yaml"
-      },
-      {
-        "mtime": "2026-11-11T11:11",
-        "size_bytes": 9653,
-        "path": "skills/pptx/SKILL.md"
-      },
-      {
-        "mtime": "2026-11-11T11:11",
-        "size_bytes": 9650,
-        "path": "skills/make-skill/SKILL.md"
-      },
-      {
-        "mtime": "2026-11-11T11:11",
-        "size_bytes": 8617,
-        "path": "skills/pdf/SKILL.md"
-      },
-      {
-        "mtime": "2026-11-11T11:11",
-        "size_bytes": 7094,
-        "path": "skills/pptx/editing.md"
       }
     ],
     "QwenPaw_QA_Agent_0.2": [
       {
-        "mtime": "2026-11-14T19:15",
+        "mtime": "2026-11-14T20:30",
         "size_bytes": 9,
         "path": "mem_metadata/file_store/file_chunks_default_v1.jsonl.zst"
       },
       {
-        "mtime": "2026-11-14T19:15",
+        "mtime": "2026-11-14T20:30",
         "size_bytes": 9,
         "path": "mem_metadata/file_graph/default.jsonl.zst"
       },
       {
-        "mtime": "2026-11-14T19:15",
+        "mtime": "2026-11-14T20:30",
         "size_bytes": 9,
         "path": "mem_metadata/file_catalog/dream.jsonl.zst"
       },
       {
-        "mtime": "2026-11-14T19:15",
+        "mtime": "2026-11-14T20:30",
         "size_bytes": 9,
         "path": "mem_metadata/file_catalog/digest.jsonl.zst"
       },
       {
-        "mtime": "2026-11-14T19:15",
+        "mtime": "2026-11-14T20:30",
         "size_bytes": 9,
         "path": "mem_metadata/file_catalog/default.jsonl.zst"
       },
