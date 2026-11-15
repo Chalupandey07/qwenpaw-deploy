@@ -47,7 +47,7 @@ match. This tool raises the floor; it does not replace reading the thing.
 
 USAGE
 -----
-    python3 features/skills/scan.py features/camoufox/skills
+    python3 features/skills/scan.py features/computer
     python3 features/skills/scan.py path/to/skill_pool --json
     python3 features/skills/scan.py . --fail-on high     # CI gate
     python3 features/skills/scan.py --selftest

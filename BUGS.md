@@ -461,15 +461,81 @@ adding or removing a case, not by tuning the number to match a run.
 
 ---
 
+## Part 2c — Computer rebuild (2026-11-15)
+
+The computer was removed and rebuilt from Rakazo's design. While verifying the
+recorded failures against the new code, five were found still unhandled — three
+of them defects *in the rebuild itself*.
+
+### B-22 · P1 · The T56 rule was deleted with the DriverCards — FIXED-CODE
+
+The DriverCards carried the rule that made T56 pass ("raise needs-you first,
+never work around a sign-in wall"). They were deleted with `features/desktop/`,
+which silently reintroduced the exact failure: an agent improvising 31 steps
+around a Gmail login.
+
+**Fix:** `features/computer/needs-you-policy.md` (the card text and the failure
+it prevents) and `pages/public/computer/policy.js` (the rule as code:
+`classifyBlocked` → `nextAction` → `{action:"raise", then:"stop"}`, plus a named
+list of forbidden workarounds so a log line is an assertion).
+
+**Writing the classifier found two false negatives in its own first version.**
+"Enter your password" and "6-digit verification code" both classified as *not
+blocked* — i.e. the agent would have been cleared to type a password, which is
+the recorded failure. The first fix then over-corrected and flagged
+"change your password" settings pages. Both directions are now in the harness.
+
+### B-23 · P1 · The rebuild used a PARALLEL D1 schema — FIXED-CODE
+
+`state.js` defined `computer_lease` / `computer_preview` and ran `CREATE TABLE`
+on first use, while the live `qwenpaw-state` database already holds `leases`,
+`generations`, `needs_you`, `previews`, `modes`. That creates a second, empty
+copy beside the real one: takeover would look like it worked and every existing
+lease and preview would be invisible.
+
+**Fix:** rewritten against the live table names. The harness asserts no
+`CREATE TABLE` and no parallel names — with comments stripped first, because a
+naive search matched the comment explaining the defect.
+
+**This is the most dangerous class of bug in the register:** it passes every
+test written against itself and loses real data.
+
+### B-24 · P2 · Mode switch left the UI disagreeing with the server — FIXED-CODE
+
+T53's recorded failure. On error the checkbox stayed visually flipped while the
+state reverted, so a reload "reverted" the switch. Now the control is reset to
+the truth and `render()` runs.
+
+### B-25 · P2 · Store failures surfaced as 500 — FIXED-CODE
+
+T52's recorded symptom ("Take control 500 on five attempts"). The new router
+called `state.js` directly, so a missing D1 binding or DDL error became an
+unhandled 500 with a stack. All seven store paths now answer
+`503 {error:"store"}`.
+
+### B-26 · P2 · `heldUrl` was tracked but never rendered — FIXED-CODE
+
+The held-frame mechanism was dead state: `heldUrl` was set and cleared but no
+element used it, so the screen still went black during take/release. There is
+now a real second iframe that stays painted until the new capability reports
+connected, is dropped on connect, and cannot take pointer events.
+
+### B-27 · P3 · The skill scanner's usage example pointed at a deleted path — FIXED
+
+`features/camoufox/skills` no longer exists; the docstring example now points at
+`features/computer`.
+
+---
+
 ## Part 3 — Summary
 
 | Severity | Open | Fixed in code | Ids |
 |---|---|---|---|
 | P0 | **0** | 1 | B-1 fixed and re-applied |
-| P1 | **0** | 3 | fixed: B-2, B-3, B-4 |
-| P2 | **5** | 7 | open: B-5, B-8, B-10, B-13, B-21(n/a) · fixed: B-6, B-7, B-9, B-11, B-12, B-19, B-20 |
-| P3 | **5** | 0 | B-14…B-18 |
-| **Total** | **10 open** | **11 fixed** | of 21 findings |
+| P1 | **0** | 5 | fixed: B-2, B-3, B-4, B-22, B-23 |
+| P2 | **4** | 12 | open: B-5, B-8, B-10, B-13 · fixed: B-6, B-7, B-9, B-11, B-12, B-19, B-20, B-24, B-25, B-26 |
+| P3 | **4** | 1 | open: B-14…B-17 · fixed: B-27 |
+| **Total** | **8 open** | **19 fixed** | of 27 findings |
 | Audit findings (earlier) | — | 15 of 19 | see Part 1 |
 
 **No data-loss bugs remain.** What is left, in priority order: **B-10** (no per-endpoint 429; a stuck client loop can still
