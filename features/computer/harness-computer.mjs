@@ -130,21 +130,32 @@ await (async () => {
   check("the lease lives 90 s", stateSrc.includes("LEASE_TTL_MS = 90_000"));
   check("the heartbeat is 15 s", stateSrc.includes("LEASE_HEARTBEAT_MS = 15_000"));
   check("the grant is ONE conditional statement",
-    stateSrc.includes("ON CONFLICT(computer) DO UPDATE") && stateSrc.includes("WHERE computer_lease.expires_at <= ?4"),
+    stateSrc.includes("ON CONFLICT(computer) DO UPDATE") && stateSrc.includes("WHERE leases.expires_at <= ?4"),
     "read-then-write is what let two tabs both win");
   check("a failed generation bump fails the grant",
     stateSrc.includes('reason: "store"'),
     "reporting success without a bump was BUGS.md B-1");
   check("release names the lease",
-    stateSrc.includes("DELETE FROM computer_lease WHERE computer = ? AND lease_id = ?"),
+    stateSrc.includes("DELETE FROM leases WHERE computer = ? AND lease_id = ?"),
     "a late release must not end newer control");
   check("needs-you is keyed per computer",
-    stateSrc.includes("WHERE computer = ? AND resolved_at IS NULL"));
+    /FROM needs_you WHERE computer = \?/.test(stateSrc));
   check("previews are upserted in place, not appended",
-    stateSrc.includes("ON CONFLICT(computer) DO UPDATE"));
+    stateSrc.includes("ON CONFLICT(computer) DO UPDATE SET png"));
   check("previews only write when the hash changes",
-    stateSrc.includes("WHERE computer_preview.sha256 IS NOT excluded.sha256"),
+    stateSrc.includes("if (prevSha === sha256) return { ok: true, unchanged: true"),
     "unconditional uploads burned the KV quota");
+  // The whole point of matching live tables: a second schema beside the real
+  // one would look like it worked and lose every existing lease and preview.
+  // Strip comments first: the file explains the defect it is avoiding, and a
+  // naive substring check would flag its own explanation.
+  const stateCode = stateSrc
+    .split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+  check("state.js uses the LIVE table names, not its own parallel schema",
+    ["FROM leases", "FROM generations", "FROM needs_you", "FROM previews", "FROM modes"]
+      .every((t) => stateCode.includes(t))
+    && !stateCode.includes("computer_lease") && !stateCode.includes("CREATE TABLE"),
+    "a parallel schema is a silent data fork");
 
   console.log("router: enforcement order");
   const routerSrc = readFileSync(resolve(REPO, "pages/public/computer/router.js"), "utf8");
@@ -186,8 +197,14 @@ await (async () => {
     ui.includes('document.visibilityState !== "visible"'));
   check("a release on pagehide uses keepalive",
     ui.includes("keepalive: true"));
-  check("a held predecessor frame survives the swap",
-    ui.includes("state.heldUrl") || ui.includes("heldUrl"));
+  check("a held predecessor frame is a REAL element, not just tracked state",
+    ui.includes('id="ovHeld"') && ui.includes("el.ovHeld.src = state.heldUrl"),
+    "tracking heldUrl without rendering it leaves the screen black during a swap");
+  check("the held frame is dropped once the new screen connects",
+    ui.includes("el.ovHeld.hidden = true") && ui.includes('el.ovHeld.removeAttribute("src")'),
+    "a held frame that is never dropped is a leak");
+  check("the held frame cannot receive pointer events",
+    ui.includes('class="screen held"'), "it is a picture of the previous screen");
   check("reconnect has a budget, not an infinite loop",
     ui.includes("RECONNECT_BUDGET"));
   check("a silent frame is treated as failed after a timeout",
@@ -198,6 +215,50 @@ await (async () => {
   check("the terminal tab exists", ui.includes('data-tab="teach"') || ui.includes("Terminal"));
   check("no injected SPA coupling: the page is self-contained",
     !ui.includes("qwenpaw-root") && ui.includes("<!doctype html>"));
+
+  console.log("needs-you policy (the T56 fix)");
+  const pol = await import("data:text/javascript;base64," +
+    Buffer.from(readFileSync(resolve(REPO, "pages/public/computer/policy.js"), "utf8")).toString("base64"));
+  const blockerCases = [
+    ["Sign in to continue", true, "login"],
+    ["Gmail - Enter your password", true, "login"],
+    ["I'm not a robot", true, "captcha"],
+    ["Enter the 6-digit verification code", true, "twoFactor"],
+    ["Touch your security key", true, "passkey"],
+    ["Enter your card number and CVV to continue", true, "payment"],
+    ["Account settings - change your password", false, null],
+    ["Inbox - 12 unread messages", false, null],
+    ["", false, null],
+  ];
+  for (const [text, wantBlocked, wantKind] of blockerCases) {
+    const r = pol.classifyBlocked(text);
+    check(`classify ${JSON.stringify(text).slice(0, 36)} -> ${wantBlocked ? wantKind : "proceed"}`,
+      r.blocked === wantBlocked && (wantBlocked ? r.kind === wantKind : true),
+      `got blocked=${r.blocked} kind=${r.kind || "-"}`);
+  }
+  // The two recorded failures this catches: an entry field with no "required"
+  // wording, and a settings page that must NOT be treated as a wall.
+  check("an entry field is decisive even without the word 'required'",
+    pol.classifyBlocked("Enter your password").blocked === true,
+    "the first implementation returned false here — the T56 path");
+  check("a settings page is not a wall",
+    pol.classifyBlocked("Manage your password and security settings").blocked === false);
+
+  const raise = pol.nextAction("Sign in to continue", { computer: "qa" });
+  check("the action is raise", raise.action === "raise", raise.action);
+  check("it targets the right computer", raise.request?.body?.computer === "qa",
+    JSON.stringify(raise.request?.body));
+  check("it says STOP", raise.then === "stop", raise.then);
+  check("the text names the blocker", /login/.test(raise.text || ""), raise.text);
+
+  check("working around the wall is a named violation",
+    pol.violation("alternate_browser", true) === true);
+  check("a normal action while not blocked is not a violation",
+    pol.violation("alternate_browser", false) === false);
+  check("the forbidden list covers the recorded T56 behaviour",
+    ["alternate_browser", "retry_same_step", "continue_after_handback"]
+      .every((x) => pol.FORBIDDEN_WHILE_BLOCKED.includes(x)),
+    JSON.stringify(pol.FORBIDDEN_WHILE_BLOCKED));
 
   console.log();
   const total = passed + failed.length;

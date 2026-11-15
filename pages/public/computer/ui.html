@@ -198,6 +198,9 @@
   <div class="banner" id="ovBanner" hidden></div>
   <div class="err" id="ovErr" hidden></div>
   <div class="screen-wrap">
+    <iframe id="ovHeld" class="screen held" aria-hidden="true" tabindex="-1"
+            title="Previous screen" hidden
+            sandbox="allow-scripts allow-pointer-lock"></iframe>
     <iframe id="ovFrame" class="screen" title="Computer screen"
             sandbox="allow-scripts allow-pointer-lock"
             allow="clipboard-read; clipboard-write; fullscreen"></iframe>
@@ -247,7 +250,8 @@
     teachState: $("teachState"), teachStart: $("teachStart"), teachStop: $("teachStop"),
     overlay: $("overlay"), ovTitle: $("ovTitle"), ovLive: $("ovLive"), ovYou: $("ovYou"),
     ovStop: $("ovStop"), ovTake: $("ovTake"), ovRelease: $("ovRelease"), ovTeach: $("ovTeach"),
-    ovClose: $("ovClose"), ovFrame: $("ovFrame"), ovVeil: $("ovVeil"), ovVeilText: $("ovVeilText"),
+    ovClose: $("ovClose"), ovFrame: $("ovFrame"), ovHeld: $("ovHeld"),
+    ovVeil: $("ovVeil"), ovVeilText: $("ovVeilText"),
     ovBanner: $("ovBanner"), ovErr: $("ovErr"),
     stageVeil: $("stageVeil"), stageVeilText: $("stageVeilText"),
     toast: $("toast"),
@@ -364,8 +368,14 @@
       return;
     }
 
-    // Keep the old frame visible until the new one reports connected.
-    if (state.screenUrl && state.screenUrl !== s.data.url) state.heldUrl = state.screenUrl;
+    // Keep the old screen painted until the new one reports connected. Without
+    // this the overlay is black for the ~1-2 s a fresh capability needs, which
+    // is exactly what made take/release feel broken.
+    if (state.screenUrl && state.screenUrl !== s.data.url) {
+      state.heldUrl = state.screenUrl;
+      el.ovHeld.src = state.heldUrl;
+      el.ovHeld.hidden = false;
+    }
     state.screenUrl = s.data.url;
     mountFrames();
   }
@@ -391,7 +401,12 @@
     const phase = d.screen;
     if (phase === "connected") {
       clearTimeout(loadTimer);
-      state.heldUrl = null;
+      // The new screen is painting: drop the held predecessor.
+      if (state.heldUrl) {
+        state.heldUrl = null;
+        el.ovHeld.hidden = true;
+        el.ovHeld.removeAttribute("src");
+      }
       state.reconnectAttempts = 0;
       state.errors = [];
       setPhase("connected");
@@ -481,13 +496,25 @@
 
   async function setMode(isPrivate) {
     const mode = isPrivate ? "private" : "team";
+    const previous = state.mode;
     const r = await api("/computer/mode", { computer: state.computer, mode });
-    if (!r.ok) { toast("Could not switch mode."); return; }
+    if (!r.ok) {
+      // T53's recorded failure: on error the checkbox stayed visually flipped
+      // while the state reverted, so the UI disagreed with the server and a
+      // reload "reverted" the switch. Put the control back where the truth is.
+      state.mode = previous;
+      el.advPrivate.checked = previous === "private";
+      render();
+      toast(r.data?.error === "bad_mode" ? "That mode is not supported."
+        : "Could not switch computer mode.");
+      return;
+    }
     state.mode = mode;
     render();
     // A mode switch replaces the screen: the capability's scope no longer
     // matches, so re-mint instead of reusing a dead link.
     state.screenUrl = null;
+    state.heldUrl = null;
     await loadScreen();
   }
 

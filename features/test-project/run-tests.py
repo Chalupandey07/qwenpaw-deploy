@@ -1346,7 +1346,7 @@ def t86():
     when the generation cannot be bumped, needs-you per computer, and previews
     that only write when the hash changes.
     """
-    return _harness("features/computer/harness-computer.mjs", 63)
+    return _harness("features/computer/harness-computer.mjs", 84)
 
 
 def t85():

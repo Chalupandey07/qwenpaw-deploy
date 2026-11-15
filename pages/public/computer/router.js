@@ -86,7 +86,8 @@ async function stateFor(env, computer) {
       ? { leaseId: lease.leaseId, holder: lease.holder, expiresAt: lease.expiresAt, fence: lease.fence }
       : null,
     needsYou: needs,
-    preview: prev ? { sha256: prev.sha256, bytes: prev.bytes, capturedAt: prev.captured_at } : null,
+    preview: prev ? { sha256: prev.sha256, bytes: prev.png?.byteLength ?? null,
+                      capturedAt: prev.capturedAt } : null,
   };
 }
 
@@ -147,7 +148,14 @@ export async function handleComputer(request, env, url) {
   // ---- lease ----
   if (path === "/computer/takeover" && request.method === "POST") {
     const { computer = "default" } = await request.json().catch(() => ({}));
-    const r = await S.takeControl(env, computer, "user");
+    let r;
+    try {
+      r = await S.takeControl(env, computer, "user");
+    } catch (e) {
+      // A binding/DDL failure must read as "store unavailable", not as a 500
+      // with a stack. T52 recorded exactly this symptom.
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
     if (!r.ok) {
       return json({ error: r.reason, holder: r.holder, expiresAt: r.expiresAt },
         r.reason === "held" ? 409 : 503);
@@ -157,13 +165,23 @@ export async function handleComputer(request, env, url) {
   }
   if (path === "/computer/heartbeat" && request.method === "POST") {
     const { computer = "default", leaseId } = await request.json().catch(() => ({}));
-    const r = await S.heartbeat(env, computer, leaseId);
+    let r;
+    try {
+      r = await S.heartbeat(env, computer, leaseId);
+    } catch (e) {
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
     return r.ok ? json({ leaseId: r.leaseId, expiresAt: r.expiresAt })
                 : json({ error: r.reason }, 409);
   }
   if (path === "/computer/release" && request.method === "POST") {
     const { computer = "default", leaseId } = await request.json().catch(() => ({}));
-    const r = await S.release(env, computer, leaseId);
+    let r;
+    try {
+      r = await S.release(env, computer, leaseId);
+    } catch (e) {
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
     if (!r.ok) {
       return json({ error: r.reason }, r.reason === "not_holder" ? 409 : 503);
     }
@@ -182,7 +200,12 @@ export async function handleComputer(request, env, url) {
   // ---- mode ----
   if (path === "/computer/mode" && request.method === "POST") {
     const { computer = "default", mode } = await request.json().catch(() => ({}));
-    const r = await S.setMode(env, computer, mode);
+    let r;
+    try {
+      r = await S.setMode(env, computer, mode);
+    } catch (e) {
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
     return r.ok ? json(r) : json({ error: r.reason }, 400);
   }
 
@@ -193,12 +216,22 @@ export async function handleComputer(request, env, url) {
     if (env.COMPUTER_SYNC_TOKEN && request.headers.get("X-Computer-Token") !== env.COMPUTER_SYNC_TOKEN) {
       return json({ error: "unauthorized" }, 401);
     }
-    const r = await S.raiseNeedsYou(env, b.computer || "default", b.text, b.runId);
+    let r;
+    try {
+      r = await S.raiseNeedsYou(env, b.computer || "default", b.text, b.runId);
+    } catch (e) {
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
     return json(r);
   }
   if (path === "/computer/needs-you/resolve" && request.method === "POST") {
     const b = await request.json().catch(() => ({}));
-    const r = await S.resolveNeedsYou(env, b.computer || "default", b.action);
+    let r;
+    try {
+      r = await S.resolveNeedsYou(env, b.computer || "default", b.action);
+    } catch (e) {
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
     return r.ok ? json(r) : json({ error: r.reason }, 409);
   }
 

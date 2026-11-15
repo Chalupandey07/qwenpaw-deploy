@@ -71,6 +71,34 @@ commit rather than after the deploy:
 
 Neither is visible by reading the code — both need the round trip.
 
+## The quota math for this design (measured, not claimed)
+
+The previous implementation's worst case was **17,280 writes/day against a
+1,000/day KV budget — 17× over**, and the docs meanwhile claimed it was
+"bounded well under 1,000". That false claim is the single most expensive
+documentation error in this repo: the migration was sized on it.
+
+The new computer writes to D1 (100,000 rows/day), and the numbers are:
+
+| Component | Rows/day (worst case) |
+|---|---|
+| Lease heartbeat while control is held 24 h (15 s) | 5,760 |
+| Takeover + release (~20/day × 2) | 40 |
+| Needs-you raise + resolve (~20/day × 2) | 40 |
+| Preview uploads, 2 computers, 120 s floor, screen always changing | 1,440 |
+| Preview write when the hash is unchanged | **0** |
+| Mode switches (~10/day) | 10 |
+| **Total** | **7,290 (7.3% of D1)** |
+
+A static screen with control held all day costs **5,850 writes**, because the
+preview upsert is conditional on `sha256 IS NOT excluded.sha256` — an unchanged
+screen writes nothing. That is the actual fix for the burn: not a longer
+interval, but making the write conditional on a change.
+
+**The heartbeat is the dominant cost and cannot be reduced** without weakening
+takeover, which is why D1 (100k) rather than KV (1k) is the right store. On KV
+this design would still be 5.9× over quota while idle.
+
 ## Deployment (Muse)
 
 1. **D1 binding.** The router expects `COMPUTER_DB` bound to the
