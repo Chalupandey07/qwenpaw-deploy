@@ -111,6 +111,54 @@ token is a bug upstream, not something to quietly edit away.
 Everything outside the section (header, Profile, other headings, prose) is
 preserved verbatim across a rewrite; `test_lessons.py` asserts this.
 
+## `consolidate.py` — the missing consolidation step
+
+QwenPaw already ships ReMe (daily/distill markdown) and FTS5 history recall,
+and the tools above add bounded recall and a lessons ledger. The one thing
+nothing did was **carry experience forward**: daily notes accumulated and
+nothing turned them into durable lessons.
+
+```bash
+# dry run (default) — shows what WOULD be proposed, changes nothing
+python3 consolidate.py --memory MEMORY.md --daily memory/ --digest digest/
+
+# actually write candidates into the ledger
+python3 consolidate.py --memory MEMORY.md --daily memory/ --write
+```
+
+It proposes into `lessons.py`'s existing candidate→accept ledger and **never
+accepts anything**. That separation is the design: an agent that can silently
+write its own long-term memory accumulates confident nonsense.
+
+**Why rule-based, not an LLM.** Consolidation is a *selection* problem, not a
+generation problem. Doing it with a model costs a call per run and produces
+plausible lessons no failure justifies. The rules match the shapes that
+actually precede a durable lesson in this repo's history:
+
+| Shape | Example | Why it is a lesson |
+|---|---|---|
+| correction | "turns out", "actually" | a claim was wrong; the correction is the value |
+| retrospective | "should have", "next time", "never again" | an explicit lesson already stated |
+| hard limit | "cannot", "only works if", "free tier", "quota" | constraints are the most valuable entries |
+| root cause | "the reason was", "caused by", "root cause" | a mechanism rather than a symptom |
+| measurement | "verified", "confirmed", "measured" | a measured fact beats a remembered one |
+
+**Zero candidates is the healthy result for a quiet day** and the script says
+so — it does not manufacture an entry to look productive.
+
+**Secrets are dropped, not scrubbed.** Every field passes the same redactor as
+`recall.py`; a line that trips it is discarded with a warning and the original
+text is left untouched, so the bug stays visible instead of being quietly
+edited away. (Silently rewriting it would hide that a token reached a log.)
+
+**Idempotent.** A candidate whose guidance already exists — exact, contained,
+or ≥60% token overlap — is skipped, so hourly cron runs do not stack
+duplicates. Capped at 3 per run to match the ledger's pending limit; extras
+defer to the next run.
+
+Cron-friendly: the routines Worker already wakes the box, so this can run
+after a routine without any new scheduling.
+
 ## `reme_doctor.py` — why did memory produce zero notes?
 
 `memory/` and `digest/` being empty is **not** automatically a bug. Five

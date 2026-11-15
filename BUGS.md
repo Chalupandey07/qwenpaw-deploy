@@ -123,7 +123,7 @@ the record for the computer it is displaying. On D1: the `needs_you` table in
 
 ---
 
-### B-3 · P1 · Board keeps every ticket in one KV value (lost updates, unbounded) — **STILL OPEN** (migration not landed)
+### B-3 · P1 · Board keeps every ticket in one KV value (lost updates, unbounded) — **FIXED (live-tested)**
 
 **File:** `features/board/worker/src/index.js` — `loadTickets`/`saveTickets`
 (~L84–96), five call sites.
@@ -141,10 +141,12 @@ whole array back. Three consequences:
 The group-chat Worker already solved the identical problem by moving to a
 Durable Object; the board never got the same treatment.
 
-**Fix (recommended):** D1. One row per ticket, one per comment,
-`UPDATE tickets SET ... WHERE id = ?`. Concurrency becomes the database's
-problem. Interim mitigation if D1 slips: a DO per board (same pattern as
-group chat) with `blockConcurrencyWhile` on mutations.
+**Fix (done 2026-11-15 by the board migration, live-tested 50 PASS / 0 FAIL):**
+D1 with one row per ticket and one per comment, plus a Durable Object
+rate limiter. The KV path survives only as an explicit rollback lever
+(`USE_D1=0`), and the KV data was never deleted. Board harness: 67/67,
+including a mutation cap (30 then 429) on the fallback path.
+**This was the last data-loss bug in the register.**
 
 ---
 
@@ -462,15 +464,13 @@ adding or removing a case, not by tuning the number to match a run.
 | Severity | Open | Fixed in code | Ids |
 |---|---|---|---|
 | P0 | **0** | 1 | B-1 fixed and re-applied |
-| P1 | **1** | 2 | open: **B-3 (board)** · fixed: B-2, B-4 |
+| P1 | **0** | 3 | fixed: B-2, B-3, B-4 |
 | P2 | **5** | 7 | open: B-5, B-8, B-10, B-13, B-21(n/a) · fixed: B-6, B-7, B-9, B-11, B-12, B-19, B-20 |
 | P3 | **5** | 0 | B-14…B-18 |
-| **Total** | **11 open** | **10 fixed** | of 21 findings |
+| **Total** | **10 open** | **11 fixed** | of 21 findings |
 | Audit findings (earlier) | — | 15 of 19 | see Part 1 |
 
-**What is left, in priority order:** **B-3** (board still one KV value — the
-only remaining data-loss bug, and the board migration is in progress
-elsewhere) → **B-10** (no per-endpoint 429; a stuck client loop can still
+**No data-loss bugs remain.** What is left, in priority order: **B-10** (no per-endpoint 429; a stuck client loop can still
 burn the request budget, though the write budget is now guarded) → **B-5**
 (preview image refetch: 360 req/hour + ~198 MB/hour egress) → **B-8**
 (routines history read-modify-write) → the P3 hygiene set.

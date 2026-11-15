@@ -22,7 +22,7 @@ restart; no secrets in git.
   429 with `Retry-After`. Fixes audit bug `board-no-rate-limit-auth`.
 - **Source:** `worker/src/index.js` (no build step),
   `worker/wrangler.toml` (reference; deploys were done via the
-  Cloudflare API, see below), `worker/harness-board.mjs` (67 checks:
+  Cloudflare API, see below), `features/board/worker/harness-board.mjs` (67 checks:
   CRUD round trip, all audit fixes, DO rate-limit buckets, D1-down →
   503, KV fallback).
 - **Auth:** shared board key in the Worker secret `BOARD_TOKEN`. Every
@@ -99,7 +99,7 @@ agent to do work.)
   by `USE_D1`. All audit fixes preserved (constant-time compare,
   `%FF` id → 400, strict-boolean `follow_up`, idempotent mark-sent,
   empty PATCH → 400). `/health` reports `"store":"d1"`.
-- **Harness:** `worker/harness-board.mjs` — **67 passed, 0 failed**
+- **Harness:** `features/board/worker/harness-board.mjs` — **67 passed, 0 failed**
   (mock D1 over real SQLite + mock KV + the real `BoardRateLimiter`
   class with a mock ctx).
 - **Live:** `/` → 200 (HTML says "stored in Cloudflare D1"), `/health`
@@ -293,7 +293,7 @@ see `features/storage/QUOTA-BUDGET.md`.
   /api/tickets` → 401; D1 `SELECT COUNT(*) FROM tickets` → 0 (=
   exported KV count 0). Rate limit, from the machine: 35 unauth
   POSTs → 30×401 + 5×429, follow-up `retry-after: 44`. Harness
-  `worker/harness-board.mjs` → **67 passed, 0 failed**. Keyed CRUD
+  `features/board/worker/harness-board.mjs` → **67 passed, 0 failed**. Keyed CRUD
   (T60) still awaits the user-held board key.
 - **Refresh scripts:** both re-run clean; outputs re-generated with
   fresh timestamps; HTML parses; `open-work-data.json` shows per-agent
@@ -373,7 +373,7 @@ silently, because each needs something this task cannot assume.
 |---|---|
 | `worker/src/index.js` | Ticket board Worker (deployed) |
 | `worker/wrangler.toml` | Worker config reference |
-| `worker/harness-board.mjs` | 67-check harness (CRUD, audit fixes, DO rate limit, KV fallback) |
+| `features/board/worker/harness-board.mjs` | 67-check harness (CRUD, audit fixes, DO rate limit, KV fallback) |
 | `open-work.html` / `open-work-data.json` | Open-work snapshot page + data |
 | `refresh-open-work.py` | Regenerates the open-work snapshot (read-only) |
 | `cost.html` / `cost-data.json` | Cost/usage snapshot page + data |
