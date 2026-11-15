@@ -183,15 +183,16 @@ export async function openNeedsYou(env, name) {
     `SELECT computer, text, at, run_id FROM needs_you WHERE computer = ?`,
   ).bind(name).first();
   if (!row) return null;
-  const prev = await d.prepare(`SELECT png FROM previews WHERE computer = ?`).bind(name).first();
-  // The preview hash is derived, not stored: the live `previews` table holds
-  // only the bytes. Hashing here keeps the record self-describing and costs
-  // nothing on a row that is already loaded.
-  let sha = null;
-  if (prev?.png) sha = await sha256Hex(prev.png);
+  // The hash comes from the metadata read, NOT from the blob. The previous
+  // version loaded the whole 243-707 KB PNG here and hashed it, and
+  // `stateFor()` then loaded and hashed it AGAIN for its own `preview` field —
+  // ~1.4 MB of D1 row read and two SHA-256 passes on every 10 s poll, per
+  // open tab. That is the server-side form of B-5 (the image "refetched every
+  // 10 s"): the bytes never left the Worker but the cost was the same.
+  const meta = await previewMeta(env, name);
   return {
     computer: row.computer, text: row.text, runId: row.run_id,
-    createdAt: row.at, previewSha: sha,
+    createdAt: row.at, previewSha: meta?.sha256 ?? null,
   };
 }
 
@@ -209,6 +210,65 @@ export async function resolveNeedsYou(env, name, action) {
 
 // ---------------------------------------------------------------- previews
 // Live shape: `previews(computer PRIMARY KEY, png BLOB, updated_at)`.
+//
+// The hash is ALSO stored, in `preview_meta` (see ensureSchema below), for a
+// specific reason: deriving it means reading and hashing the blob, and the
+// state poll runs every 10 s per open tab. Storing it turns a 700 KB read plus
+// a SHA-256 into a ~40-byte read. The blob is read only when a client actually
+// fetches the image, and only re-sent when its hash changed (ETag/304).
+
+/**
+ * Create the one additive table this module needs, idempotently.
+ *
+ * `previews` itself is LIVE and must not be redefined (B-23: a parallel schema
+ * passes every test written against itself and silently orphans real data).
+ * This is an additional table keyed by the same computer name, so the live
+ * blob table keeps working untouched if this one is ever dropped.
+ */
+export async function ensureSchema(env) {
+  const d = requireDb(env);
+  await d.prepare(
+    `CREATE TABLE IF NOT EXISTS preview_meta (
+       computer   TEXT PRIMARY KEY,
+       sha256     TEXT NOT NULL,
+       bytes      INTEGER NOT NULL,
+       updated_at TEXT NOT NULL
+     )`,
+  ).run();
+  return true;
+}
+
+/** Hash + size for a computer's current preview, without reading the blob. */
+let schemaReady = false;
+
+/**
+ * Run `ensureSchema` once per isolate.
+ *
+ * Blue-path cost: a boolean check. The DDL runs once per cold isolate — a few
+ * times a day on this traffic — and `IF NOT EXISTS` makes it a no-op after the
+ * first. It must still be called: an `ensureSchema` that nothing invokes is
+ * dead code, and shipping one is how the `preview_meta` table would silently
+ * never exist and previews would fall back to hashing the blob forever.
+ */
+async function ready(env) {
+  if (schemaReady) return;
+  await ensureSchema(env);
+  schemaReady = true;
+}
+
+export async function previewMeta(env, name) {
+  const d = requireDb(env);
+  await ready(env);
+  try {
+    const row = await d.prepare(
+      `SELECT sha256, bytes, updated_at FROM preview_meta WHERE computer = ?`,
+    ).bind(name).first();
+    return row ? { sha256: row.sha256, bytes: row.bytes, capturedAt: row.updated_at } : null;
+  } catch {
+    // The table may not exist yet on a database that has never had an upload.
+    return null;
+  }
+}
 
 async function sha256Hex(bytes) {
   const buf = bytes instanceof ArrayBuffer ? bytes : bytes.buffer ?? bytes;
@@ -226,15 +286,27 @@ async function sha256Hex(bytes) {
  */
 export async function putPreview(env, name, bytes, sha256) {
   const d = requireDb(env);
-  const prev = await d.prepare(`SELECT png FROM previews WHERE computer = ?`).bind(name).first();
-  if (prev?.png) {
-    const prevSha = await sha256Hex(prev.png);
-    if (prevSha === sha256) return { ok: true, unchanged: true, sha256 };
-  }
-  await d.prepare(
-    `INSERT INTO previews (computer, png, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(computer) DO UPDATE SET png = excluded.png, updated_at = excluded.updated_at`,
-  ).bind(name, bytes, new Date().toISOString()).run();
+  await ready(env);
+  // Compare hashes, never bytes: the metadata row is ~40 bytes, the blob is
+  // up to 1.5 MB. The old code loaded the whole previous PNG to decide whether
+  // anything had changed, which made the change-only rule cost as much as the
+  // unconditional write it replaced.
+  const meta = await previewMeta(env, name);
+  if (meta && meta.sha256 === sha256) return { ok: true, unchanged: true, sha256 };
+  const now = new Date().toISOString();
+  // One batch: the blob and its metadata must never disagree, or the ETag
+  // would describe an image the browser does not have.
+  await d.batch([
+    d.prepare(
+      `INSERT INTO previews (computer, png, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(computer) DO UPDATE SET png = excluded.png, updated_at = excluded.updated_at`,
+    ).bind(name, bytes, now),
+    d.prepare(
+      `INSERT INTO preview_meta (computer, sha256, bytes, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(computer) DO UPDATE SET sha256 = excluded.sha256,
+         bytes = excluded.bytes, updated_at = excluded.updated_at`,
+    ).bind(name, sha256, bytes.byteLength, now),
+  ]);
   return { ok: true, unchanged: false, sha256, bytes: bytes.byteLength };
 }
 
@@ -244,6 +316,76 @@ export async function getPreview(env, name) {
     `SELECT png, updated_at FROM previews WHERE computer = ?`,
   ).bind(name).first();
   if (!row?.png) return null;
-  const sha = await sha256Hex(row.png);
+  // The hash is read from metadata. Hashing 700 KB on every image request is
+  // wasted CPU on the hottest byte path in the system; the fallback exists
+  // only for rows written before preview_meta was introduced.
+  const meta = await previewMeta(env, name);
+  const sha = meta?.sha256 ?? await sha256Hex(row.png);
   return { png: row.png, sha256: sha, capturedAt: row.updated_at };
+}
+
+// ------------------------------------------------------------------- teach
+// Taught skills. Live shape: `teach_skills(id PRIMARY KEY, payload TEXT,
+// created_at TEXT)` — the payload is the whole skill as JSON, opaque to the
+// store. Pending delivery is "the agent has not acked it yet", which the
+// lease-watcher's `/computer/teach/pending` read decides.
+//
+// Deliberately per-computer in the payload rather than in a column: the live
+// table has no computer column, and adding one means redefining a table that
+// already holds data (the B-23 class of mistake). The payload carries it.
+
+/** Save one taught skill. Returns the id. */
+export async function putTaughtSkill(env, computer, skill) {
+  const d = requireDb(env);
+  const id = skill.id || `taught-${crypto.randomUUID().slice(0, 8)}`;
+  const payload = JSON.stringify({
+    id,
+    computer,
+    name: String(skill.name || "Taught skill").slice(0, 120),
+    goal: String(skill.goal || "").slice(0, 500),
+    playbook: skill.playbook || {},
+    events: Array.isArray(skill.events) ? skill.events.slice(0, 500) : [],
+    at: new Date().toISOString(),
+    // The delivery rule (B-6): an undelivered skill must expire rather than
+    // accumulate forever. A week is long enough for a watcher restart.
+    expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(),
+  });
+  await d.prepare(
+    `INSERT INTO teach_skills (id, payload, created_at) VALUES (?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, created_at = excluded.created_at`,
+  ).bind(id, payload, new Date().toISOString()).run();
+  return { ok: true, id };
+}
+
+/**
+ * Undelivered skills for a computer, newest first.
+ *
+ * Bounded on purpose (B-6): the old `__pending-skills` was an N+1 KV read loop
+ * with no TTL that grew without bound. This is one indexed SELECT with a LIMIT
+ * and an expiry filter, so a dead watcher cannot pile up work it will never
+ * drain.
+ */
+export async function listTaughtSkills(env, computer, limit = 20) {
+  const d = requireDb(env);
+  const res = await d.prepare(
+    `SELECT id, payload, created_at FROM teach_skills ORDER BY created_at DESC LIMIT ?`,
+  ).bind(Math.max(1, Math.min(100, limit))).all();
+  const now = Date.now();
+  const out = [];
+  for (const row of res.results || []) {
+    let parsed = null;
+    try { parsed = JSON.parse(row.payload); } catch { continue; }
+    if (!parsed) continue;
+    if (parsed.computer && parsed.computer !== computer) continue;
+    if (parsed.expiresAt && Date.parse(parsed.expiresAt) < now) continue;
+    out.push(parsed);
+  }
+  return out;
+}
+
+/** Delete a taught skill (used by the ack path and by cleanup). */
+export async function deleteTaughtSkill(env, id) {
+  const d = requireDb(env);
+  await d.prepare(`DELETE FROM teach_skills WHERE id = ?`).bind(id).run();
+  return { ok: true };
 }

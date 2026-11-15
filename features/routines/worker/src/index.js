@@ -184,10 +184,22 @@ function historySame(a, b) {
 }
 
 async function pushHistory(env, entry) {
+  // BUGS.md B-8: this used to GET the 50-entry array, unshift, and PUT the
+  // whole thing back. Two ticks close together could drop an entry (the later
+  // write clobbers the earlier one) — and this array is the audit trail for
+  // routines, so a dropped entry is a runtime that never happened.
+  //
+  // The fix is append-only: one INSERT per tick, no read of the array. On D1
+  // the store exposes `appendHistory` for exactly this. The change-only rule
+  // survives, because it only ever needed the NEWEST entry, not the array —
+  // one indexed read of one row.
+  const store = env.STATUS;
+  if (store && typeof store.appendHistory === "function") {
+    return store.appendHistory(entry, MAX_HISTORY);
+  }
+  // KV fallback: no atomic append exists, so read-modify-write is all that is
+  // possible. Documented as best-effort rather than silently trusted.
   const hist = await readJson(env, HISTORY_KEY, []);
-  // Change-only: an identical tick (same kind/status/note/routines) is
-  // not worth a KV write. A steady "up" day writes ~1 history entry,
-  // not 49. `at` is excluded from the comparison on purpose.
   if (historySame(hist[0], entry)) return false;
   hist.unshift(entry);
   return budgetGuardedPut(env, HISTORY_KEY, JSON.stringify(hist.slice(0, MAX_HISTORY)));
@@ -567,7 +579,40 @@ function d1Store(db) {
     return { keys: (res.results || []).map((r) => ({ name: r.key })) };
   }
 
-  return { get, put, delete: del, list };
+  // Append-only history (BUGS.md B-8). Canonical copy with the same method in
+  // features/storage/store.js — this file is a single-file Worker with no
+  // bundler, so the store is inlined; keep the two in sync.
+  //
+  // One INSERT per tick instead of "read 50 rows, unshift, write 50 rows".
+  // The old shape lost an entry whenever two ticks landed close together,
+  // which for a routines AUDIT TRAIL means a run that never happened.
+  async function appendHistory(entry, keep = MAX_HISTORY) {
+    if (!entry || typeof entry.at !== "string") return 0;
+    // Change-only, preserved exactly: compare the newest row only, which is
+    // all `historySame(hist[0], entry)` ever looked at. One row read rather
+    // than fifty.
+    const newest = await q("SELECT raw FROM routines_history ORDER BY id DESC LIMIT 1").first();
+    if (newest && newest.raw) {
+      let prev = null;
+      try { prev = JSON.parse(newest.raw); } catch { prev = null; }
+      if (prev && historySame(prev, entry)) return 0;
+    }
+    await q(
+      "INSERT INTO routines_history (at, kind, qwenpaw, http_status, note, active_routines, raw) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      entry.at, entry.kind ?? "wake-tick", entry.qwenpaw ?? "unknown",
+      entry.httpStatus ?? null, entry.note ?? null,
+      JSON.stringify(entry.activeRoutines || []), JSON.stringify(entry),
+    ).run();
+    await q(
+      `DELETE FROM routines_history WHERE id <= (
+         SELECT id FROM routines_history ORDER BY id DESC LIMIT 1 OFFSET ?
+       )`,
+      keep,
+    ).run();
+    return 1;
+  }
+
+  return { get, put, delete: del, list, appendHistory };
 }
 
 export default {

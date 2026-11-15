@@ -59,6 +59,24 @@ function kvStore(kv) {
       await kv.put(key, String(next));
       return String(next);
     },
+    // No atomic append on KV either. Read-modify-write is documented as
+    // best-effort (BUGS.md B-8): a tick can be lost if two land together.
+    // The D1 path is exact. Returning 0/1 keeps the caller's contract.
+    appendHistory: async (entry, keep = 50) => {
+      if (!entry || typeof entry.at !== "string") return 0;
+      const raw = await kv.get("routines:history");
+      let hist = [];
+      try { hist = raw ? JSON.parse(raw) : []; } catch { hist = []; }
+      // Preserve change-only behaviour, as the D1 path does.
+      const keys = ["kind", "cron", "qwenpaw", "httpStatus", "note", "deliveredBy"];
+      const same = hist[0]
+        && JSON.stringify(hist[0].activeRoutines || []) === JSON.stringify(entry.activeRoutines || [])
+        && keys.every((k) => hist[0][k] === entry[k]);
+      if (same) return 0;
+      hist.unshift(entry);
+      await kv.put("routines:history", JSON.stringify(hist.slice(0, keep)));
+      return 1;
+    },
   };
 }
 
@@ -287,11 +305,69 @@ function d1Store(db) {
     if (!key.startsWith("budget:")) throw new Error("incr only supports budget:<day>");
     const day = key.slice("budget:".length);
     await q("INSERT INTO write_budget (day, count) VALUES (?, ?) " +
-            "ON CONFLICT(day) DO UPDATE SET count = count + ?",
-            day, by, by).run();
+           "ON CONFLICT(day) DO UPDATE SET count = count + ?",
+           day, by, by).run();
     const row = await q("SELECT count FROM write_budget WHERE day = ?", day).first();
     return row ? String(row.count) : null;
   }
 
-  return { get, put, delete: del, list, incr };
+  /**
+   * Append one routines-history entry (BUGS.md B-8).
+   *
+   * Why a dedicated method rather than `put("routines:history", ...)`: the put
+   * path had to read the whole array, mutate it, and write it back, because
+   * the caller's only vocabulary was "here is the new array". Two ticks in the
+   * same second both read N entries and both write N+1, so one is lost. An
+   * INSERT per tick cannot lose anything, and it costs one statement instead
+   * of a 50-row read plus a 51-statement batch.
+   *
+   * `keep` bounds the table (the KV version kept 50). The DELETE is by `id`,
+   * the primary key, so it is a cheap indexed range rather than a scan.
+   * Returns the number of rows written: 0 means the tick was a duplicate and
+   * nothing new was recorded — which is the change-only rule, preserved.
+   */
+  async function appendHistory(entry, keep = 50) {
+    if (!entry || typeof entry.at !== "string") return 0;
+    // Change-only: compare against the NEWEST row only. That is all the old
+    // guard ever looked at (`hist[0]`), so behaviour is unchanged while the
+    // read drops from 50 rows to 1.
+    const newest = await q(
+      "SELECT raw FROM routines_history ORDER BY id DESC LIMIT 1",
+    ).first();
+    if (newest && newest.raw) {
+      let prev = null;
+      try { prev = JSON.parse(newest.raw); } catch { prev = null; }
+      if (prev && sameTick(prev, entry)) return 0;
+    }
+    await q(
+      "INSERT INTO routines_history (at, kind, qwenpaw, http_status, note, active_routines, raw) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      entry.at, entry.kind ?? "wake-tick", entry.qwenpaw ?? "unknown",
+      entry.httpStatus ?? null, entry.note ?? null,
+      JSON.stringify(entry.activeRoutines || []), JSON.stringify(entry),
+    ).run();
+    // Prune by primary key: keep the newest `keep` rows.
+    await q(
+      `DELETE FROM routines_history WHERE id <= (
+         SELECT id FROM routines_history ORDER BY id DESC LIMIT 1 OFFSET ?
+       )`,
+      keep,
+    ).run();
+    return 1;
+  }
+
+  return { get, put, delete: del, list, incr, appendHistory };
+}
+
+/**
+ * Is this the same tick as the previous one?
+ *
+ * `at` is deliberately excluded: every tick has a new timestamp, and the
+ * question is whether anything MEANINGFUL changed. This mirrors the worker's
+ * own `historySame()` (kept there for the KV fallback); it lives here too so
+ * the D1 path does not depend on the caller pre-filtering.
+ */
+function sameTick(a, b) {
+  const keys = ["kind", "cron", "qwenpaw", "httpStatus", "note", "deliveredBy"];
+  if (JSON.stringify(a.activeRoutines || []) !== JSON.stringify(b.activeRoutines || [])) return false;
+  return keys.every((k) => a[k] === b[k]);
 }

@@ -205,6 +205,70 @@ console.log("worker: a broken store is a 503, never a 500 or a lie");
   check("takeover with no store -> 503 (not 500)", post.status === 503, String(post.status));
 }
 
+console.log("worker: broken-store reporting is never ambiguous (B-14 / B-15)");
+{
+  // B-15: `generation: 0` is a legitimate value (never taken over), so a read
+  // error must not produce it. B-14: a discarded result hides store health.
+  // Both are the same defect — an error that looks like data — so both are
+  // asserted where a browser would see them.
+  const prevRes = await mod.default.fetch(
+    new Request("https://qwenpawx.pages.dev/computer/preview?computer=default"), {}, {});
+  check("a broken store on /preview is 503, not 404",
+    prevRes.status === 503,
+    `${prevRes.status} — 404 must keep meaning "never captured"`);
+  check("and it names the store",
+    (await prevRes.json().catch(() => ({}))).error === "store");
+
+  // With a WORKING store, `store: "ok"` must be present and explicit: health
+  // is reported, never inferred from which fields happen to be null.
+  const { default: makeDb } = { default: null };
+  const okDb = {
+    prepare(sql) {
+      // Real D1 supports BOTH `prepare(sql).bind(...)` and bare
+      // `prepare(sql).run()`; ensureSchema uses the bare form for its DDL.
+      const stmt = {
+        async run() { return { success: true, meta: { changes: 1 } }; },
+        async first() {
+          if (/FROM generations/.test(sql)) return { gen: 7 };
+          if (/FROM modes/.test(sql)) return { mode: "private" };
+          if (/FROM leases/.test(sql)) return null;
+          if (/FROM needs_you/.test(sql)) return null;
+          // preview_meta: an existing table with no row = "no preview yet",
+          // which is a healthy empty value, not a degraded store.
+          return null;
+        },
+        async all() { return { results: [] }; },
+      };
+      return { ...stmt, bind: () => stmt };
+    },
+  };
+  const good = await mod.default.fetch(
+    new Request("https://qwenpawx.pages.dev/computer/state?computer=default"),
+    { COMPUTER_DB: okDb }, {});
+  check("a healthy store answers 200", good.status === 200, String(good.status));
+  const goodBody = await good.json().catch(() => ({}));
+  check("it reports store: \"ok\" explicitly", goodBody.store === "ok", JSON.stringify(goodBody.store));
+  check("and the real generation (7), not a default 0",
+    goodBody.generation === 7, String(goodBody.generation));
+  check("and the real mode", goodBody.mode === "private", String(goodBody.mode));
+}
+
+console.log("worker: no latency padding on the screen path (B-13)");
+{
+  // B-13 recorded two `sleep(200)` / `sleep(250)` retries inside the capability
+  // path — pure added latency on the most latency-sensitive request in the
+  // system, papering over KV replication lag that D1 does not have.
+  for (const f of ["capability.js", "state.js", "router.js"]) {
+    const src = readFileSync(resolve(PUBLIC, "computer", f), "utf8");
+    const code = src.split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+    check(`${f} contains no sleep()`, !/\bsleep\s*\(/.test(code),
+      "a fixed sleep is not a retry strategy");
+    check(`${f} contains no sleep-like timeout on a request path`,
+      !/await new Promise\([^)]*setTimeout/.test(code),
+      "latency padding belongs nowhere near a per-request path");
+  }
+}
+
 console.log("worker: unknown /computer paths are 404, not a crash");
 {
   const res = await mod.default.fetch(new Request("https://qwenpawx.pages.dev/computer/nope"), {}, {});

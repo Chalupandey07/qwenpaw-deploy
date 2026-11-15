@@ -36,7 +36,16 @@ ROOT_FILES_HINT = re.compile(r"^[A-Z][A-Z0-9_-]*\.md$")
 # Files that are a verbatim copy of third-party READMEs. Their relative links
 # resolve against the ORIGINAL repo on github.com, never against our tree, so
 # checking them here produces guaranteed false positives.
-SKIP_FILES = ("features/jev/awesome-jev-tools-full-list.md",)
+#
+# AUTOCLAW-ARCHIVE-2026-11-15.md is a HISTORICAL CAPTURE: it records the repo
+# as it stood at 15:15 IST that day, including paths that were later removed or
+# moved (features/desktop/, features/camoufox/). Editing it to satisfy a link
+# check would falsify the record, which is the one thing an archive must not
+# do — so the check skips it instead of the archive changing.
+SKIP_FILES = (
+    "features/jev/awesome-jev-tools-full-list.md",
+    "AUTOCLAW-ARCHIVE-2026-11-15.md",
+)
 
 # [text](target) — not images, not absolute URLs, not anchors.
 MD_LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")

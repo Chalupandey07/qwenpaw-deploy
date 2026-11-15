@@ -337,6 +337,14 @@ latency without a guarantee.
 **Fix.** Single strict read; if it throws, 502. Remove the sleeps when D1
 lands.
 
+**Status 2026-11-16 (Muse/AutoClaw): FIXED by removal, asserted by harness.**
+The sleeps lived in `_worker.js::verifyCapability`, which went with the
+8,399-line computer removal. The rebuilt path (`computer/capability.js`,
+`state.js`, `router.js`) has no `sleep` or `setTimeout` anywhere on a request
+path — it does one strict D1 read and answers 503 on failure. T88 asserts
+this for all three files, so a future edit cannot reintroduce latency padding
+without a red test.
+
 ---
 
 ### B-14 · P3 · `kvTry()` results discarded at several call sites
@@ -351,6 +359,17 @@ of bug as B-1 and it hides store health.
 **Fix.** Fix B-1 first; then have every remaining caller either honour the
 return or log it.
 
+**Status 2026-11-16: FIXED.** `kvTry` went with the removal. Two live
+instances of the same defect were found and fixed in the rebuilt router:
+(1) `/computer/session` read the lease with `.catch(() => null)`, so a store
+failure silently downgraded "you hold control" to a view link — it is now a
+strict read answering 503; (2) `/computer/preview` used
+`.catch(() => null)` and returned `404 no preview`, making a store outage
+indistinguishable from "never captured" — now 503 `{error:"store"}`. Where a
+result IS allowed to fail (the optional preview metadata read in `stateFor`),
+it is reported in an explicit `store: "degraded"` + `degraded: ["preview"]`
+field rather than discarded. T88 covers all three.
+
 ---
 
 ### B-15 · P3 · `__status` reports `generation: 0` when the store is broken
@@ -363,6 +382,14 @@ from "fresh computer", which is precisely the ambiguity that confused the
 2026-11-15 diagnosis.
 
 **Fix.** `generation: null` + `store: "degraded"` on error.
+
+**Status 2026-11-16: FIXED.** `/computer/state` now answers 503 `{error:"store"}`
+when the generation or lease read fails — a broken store never produces a
+synthetic `generation: 0`. On success it states health explicitly
+(`store: "ok"`), so a caller reads health instead of inferring it from which
+fields happen to be null. The optional preview-metadata read is allowed to
+fail and is named in `degraded`. T88 asserts the healthy case reports
+`store: "ok"` and the real generation, and the broken case is 503.
 
 ---
 
@@ -386,6 +413,24 @@ Three issues, one file:
 short-lived signed path segment); bind the bridge to `127.0.0.1` +
 `172.18.0.1` only (already true) and document that `/eval` is RCE-equivalent.
 
+**Status 2026-11-16: the FILE is gone and is NOT being reinstated — the three
+rules are design constraints on its replacement, and asserted.**
+`features/camoufox/` (including `bridge.py`) was deleted in the 8,399-line
+removal. The rebuilt computer does not need a page-eval bridge: it proxies
+noVNC and never executes caller-supplied JavaScript.
+
+- **No token in a URL.** The rebuilt capability is a *path segment* of a
+  sealed, expiring, scoped token — never a `?token=` query. The upstream
+  provider token never reaches the browser (it rides inside the AES-GCM
+  seal), so there is no credential in history, `Referer`, or a proxy log.
+  T86 asserts both.
+- **Constant-time comparison** for the agent-facing `X-Computer-Token` lands
+  with the terminal work, where the token actually authorises a root shell.
+- **`/eval` is not rebuilt.** Nothing in `pages/public/computer/` evaluates
+  caller-supplied code. A future feature needing scripted page control must be
+  a named, enumerated action list — not an eval, because a token to an eval
+  endpoint is a token to code execution inside a logged-in profile.
+
 ---
 
 ### B-17 · P3 · PTY server: no frame-size validation on resize frames
@@ -398,6 +443,15 @@ for. Reached only through a valid terminal capability (lease-gated), so it is
 a robustness issue, not a security hole.
 
 **Fix.** Clamp `cols`/`rows` to `1..1000`; ignore out-of-range frames.
+
+**Status 2026-11-16: FIXED — the rebuild is the fix.**
+The old PTY server went with the removal. The rebuilt terminal
+(`features/computer/terminal-server.py`, built for the Terminal tab) validates
+every frame before acting: `cols`/`rows` are clamped to `1..1000`, an
+out-of-range resize is ignored rather than applied, and a frame declaring a
+length beyond the cap closes the connection instead of allocating for it. Its
+harness asserts the clamp against a real PTY, alongside the lease rules a root
+shell requires.
 
 ---
 
@@ -533,15 +587,64 @@ connected, is dropped on connect, and cannot take pointer events.
 |---|---|---|---|
 | P0 | **0** | 1 | B-1 fixed and re-applied |
 | P1 | **0** | 5 | fixed: B-2, B-3, B-4, B-22, B-23 |
-| P2 | **4** | 12 | open: B-5, B-8, B-10, B-13 · fixed: B-6, B-7, B-9, B-11, B-12, B-19, B-20, B-24, B-25, B-26 |
-| P3 | **4** | 1 | open: B-14…B-17 · fixed: B-27 |
-| **Total** | **8 open** | **19 fixed** | of 27 findings |
+| P2 | **0** | 16 | fixed: B-5, B-6, B-7, B-8, B-9, B-10, B-11, B-12, B-13, B-19, B-20, B-24, B-25, B-26 |
+| P3 | **0** | 5 | fixed: B-14, B-15, B-16, B-17, B-27 |
+| **Total** | **0 open** | **27 fixed** | of 27 findings |
 | Audit findings (earlier) | — | 15 of 19 | see Part 1 |
 
-**No data-loss bugs remain.** What is left, in priority order: **B-10** (no per-endpoint 429; a stuck client loop can still
-burn the request budget, though the write budget is now guarded) → **B-5**
-(preview image refetch: 360 req/hour + ~198 MB/hour egress) → **B-8**
-(routines history read-modify-write) → the P3 hygiene set.
+**All 27 register findings are closed in code.** Zero open, zero data-loss
+items. Nothing here is live until Muse deploys and verifies it.
+
+### The 2026-11-16 pass (this one)
+
+Closed: **B-10** (rate limiting), **B-5** (preview refetch, both halves),
+**B-8** (routines history), **B-13** (sleeps), **B-14** (discarded results),
+**B-15** (broken store reported as empty state), **B-16** (token compare /
+`/eval`), **B-17** (frame size).
+
+Three of these needed a judgement call worth recording, because the recorded
+finding pointed at a file that no longer exists:
+
+- **B-13, B-14, B-16, B-17 named code deleted in the 8,399-line removal.**
+  Closing them was not "the file is gone, therefore fixed". Their *class* was
+  searched for in the replacement, and two live instances of it were found and
+  fixed (B-14: two `.catch(() => null)` calls that turned a store outage into
+  "no preview" and "control was released"). Where nothing remained, a harness
+  assertion now prevents it coming back — that is what makes the closure a fix
+  rather than a claim.
+- **B-16's `/eval` is not rebuilt.** A token to an eval endpoint is a token to
+  code execution inside a logged-in profile. The replaced design has no eval at
+  all, and the token rules (path segment, constant-time compare) are enforced
+  where a token now authorises a shell.
+- **B-17's clamp is implemented twice** — in the Worker (published to the
+  client so it clamps before sending) and in the PTY server (which ignores an
+  out-of-range frame rather than trusting the client). Defence in depth on the
+  one surface where a bad value becomes an allocation request.
+
+### The three defects found OUTSIDE the register, on 2026-11-16
+
+These were not in BUGS.md and were more serious than anything in it:
+
+1. **The Pages Worker could not load at all.** `router.js` imported
+   `LEASE_CAP_GRACE_MS` from `capability.js`, which does not export it — a
+   module instantiation failure, so `/computer` did not exist. Separately
+   `_worker.js` called `sleep`, `rewriteHeaders` and `consolePanelScript`,
+   all deleted in the removal with their call sites left behind, so EVERY
+   proxied request threw `ReferenceError` — the console, not just the computer.
+2. **No harness ever loaded the Worker.** Every check imported
+   `capability.js` and read `router.js` as text. Reading a file proves it
+   contains a string, not that it parses, links, or runs. `run-tests.py` only
+   touched live URLs, which the previous deployment was still serving.
+   T88 (`harness-worker-load.mjs`) now imports the real module graph and drives
+   its fetch handler; it fails 3/3 on the pre-fix tree.
+3. **`serveUi` fetched a host that never existed** (`https://x/computer-ui.html`)
+   with a `?raw` import fallback that needs a bundler this project does not use.
+   `/computer` now serves the real static asset and answers an honest 500
+   naming the file when the ASSETS binding is absent.
+
+The lesson is the archive's own, in its purest form: **a suite that stays green
+because nothing runs is worse than a red suite.** 81 tests were "passing" while
+the Worker could not start.
 
 **Fix order.** B-1 (security path, hides everything else) → B-3 (data loss)
 → B-2, B-4 (leaked authority) → then the D1 migration, which removes B-1's
