@@ -432,46 +432,75 @@ Protocol run by the runner; browser / needs-token rows were recorded as skipped,
 ### Notes (non-pass rows)
 - **T33** (KNOWN-GAP): mailbox row present; mcp.clients={'anysearch': {'name': 'anysearch_mcp', 'description': 'AnySearch web search via MCP', 'enabled': False, 'transport': 's; log mentions qwenpawmail: False (Gmail MCP never configured)
 
-## Round 7 — local (AutoClaw), 2026-11-15 — runner registrations restored
+## Round 7 — 2026-11-15T08:58:45Z (UTC), `run-tests.py`
 
-**Not a live round.** AutoClaw has no machine, Cloudflare connector or browser
-in this environment. This records the machine-free suite only.
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: PASS=50, KNOWN-GAP=1, NEEDS-BROWSER=8, NEEDS-TOKEN=4.
 
-| What | Result |
-|---|---|
-| gate harness | 127 passed, 0 failed |
-| chrome harness | 34 passed, 0 failed |
-| origin harness | 9 passed, 0 failed |
-| storage D1 harness (T62) | 38 passed, 0 failed |
-| T70 memory recall | 44 passed |
-| T71 lessons ledger | 45 passed |
-| T72 ReMe doctor | 11 passed |
-| T73 ripwire installer | 49 passed |
-| T74 keep-alive | 19 passed |
-| T75 lease-watcher | 29 passed |
-| T76 Code Mode | 59 passed |
-| T77 pricing | 20 passed |
-| T78 routing | 27 passed |
-| T79 docs links | pass |
-| T80 D1 schema | 15 passed |
-| T81 email router | 24 passed |
-| **Total** | **542 checks, 0 failures** |
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T01 | console | protocol | PASS | HTTP 200 size=46691 markers=['qwenpawComputerBtn', 'qwenpawComputerPanel'] |
+| T02 | console | protocol | PASS | HTTP 200 size=5587 title=True |
+| T03 | console | protocol | PASS | HTTP 200 body={"enabled":true,"has_users":true} |
+| T04 | console | protocol | PASS | HTTP 200 size=1878 gate=True |
+| T05 | console | protocol | PASS | default={"holder":"agent","leaseId":null,"expiresAt":null,"fence":0,"generation":19} qa={"holder":"agent","leaseId":null,"expiresAt":null,"fence":0,"generation":2} |
+| T06 | console | protocol | PASS | HTTP 200 size=283218 |
+| T07 | desktop | protocol | PASS | 6081 GET 200 WS HTTP/1.1 101 Switching Protocols 6082 GET 200 WS HTTP/1.1 101 Switching Protocols 6083 GET 200 WS HTTP/1.1 101 Switching Protocols 6084 GET 200 WS HTTP/1.1 101 Switching Protocols 6085 GET 200 WS HTTP/1.1 101 Switching Protocols |
+| T08 | desktop | protocol | PASS | 17/17 active |
+| T09 | desktop | protocol | PASS | ws_status=HTTP/1.1 101 Switching Protocols echo_found=True bytes_read=228 |
+| T10 | mcp | protocol | PASS | 8898 200 8897 200 |
+| T11 | mcp | protocol | PASS | server={'name': 'open-computer-use', 'version': '1.1.4'} tools=9 list_apps=Chromium -- Chromium [running, pid=104998, window=Daily Puzzle Answers, Solvers & Wordle Tools - Chromium] xfce4-panel -- xfce4-panel [running, pid=50665, window=untitled] xfdesktop -- xfdesktop [running, pid=50676, wind |
+| T12 | mcp | protocol | PASS | server={'name': 'open-computer-use', 'version': '1.1.4'} tools=9 list_apps=Chromium -- Chromium [running, pid=111374, window=Daily Puzzle Answers, Solvers & Wordle Tools - Chromium] xfwm4 -- xfwm4 [running, pid=109672, window=untitled] |
+| T13 | desktop | protocol | PASS | __teach HTTP 200 gate=True; __pending-skills HTTP 401 body={"ok":false,"error":"unauthorized"} |
+| T14 | desktop | protocol | PASS | POST __needs-you HTTP 401 body={"ok":false,"error":"unauthorized"}; GET __needs-you HTTP 200 gate=True |
+| T15 | desktop | protocol | PASS | live markers=['qwenpawComputerBtn', 'qwenpawComputerPanel']; _worker.js consolePanelScript lines=2, 316px lines=3 |
+| T16 | desktop | protocol | PASS | PREVIEW_MIN_S=120:True files=[('/data/home/mcp-proxy/preview.png', 8, 500681), ('/data/home/mcp-proxy/preview-qa.png', 8, 707421)] upload401:True preview-gate200:True |
+| T17 | screenshot | protocol | PASS | mss=600052B mean=72.6 scrot=500681B mean=72.6 |
+| T18 | bridge | protocol | PASS | /health={"ok": true, "browser_alive": true, "title": "Satwik Samanta (@0xSatwik) / X", "url": "https://x.com/0xsatwik"} |
+| T19 | bridge | protocol | PASS | url=https://x.com/0xsatwik title=Satwik Samanta (@0xSatwik) / X (token never recorded) |
+| T20 | bridge | protocol | PASS | /desktop-open={"ok": true, "url": "https://wordsolverx.com", "display": ":1", "agent": "default", "note": "opened on the InstaBox desktop (display :1)"} (token never recorded) |
+| T21 | routines | protocol | PASS | / HTTP 200; /api/status HTTP 200 qwenpaw={'status': 'up', 'httpStatus': 200, 'note': 'QwenPaw console answered'} routines=['daily-summary', 'inbox-check-30m'] |
+| T22 | routines | protocol | PASS | schedules=['*/30 * * * *', '30 1 * * *'] |
+| T23 | routines | protocol | PASS | POST /trigger no token -> HTTP 401 body={ "error": "unauthorized" } |
+| T24 | routines | protocol | PASS | recent kinds=['daily-summary-slot', 'manual-trigger', 'wake-tick'] wake-tick=2026-11-15T07:30:12.890Z daily=2026-11-15T01:30:27.825Z |
+| T25 | groupchat | protocol | PASS | HTTP 200 body={"service":"qwenpaw-groupchat","thread":"one shared thread for QwenPaw agents default + QwenPaw_QA_Agent_0.2","store":"durable-object (sqlite)","auth_required":true,"endpoints":["GET /thread[?since=<s |
+| T26 | groupchat | protocol | PASS | POST /thread/message HTTP 401 {"error":"unauthorized"}; GET /thread HTTP 401 {"error":"unauthorized"} |
+| T27 | board | protocol | PASS | / HTTP 200; /health HTTP 200 body={"ok":true,"worker":"qwenpaw-board","store":"d1"} |
+| T28 | board | protocol | PASS | GET /api/tickets no key -> HTTP 401 body={"error":"unauthorized — send the board key as ?key= or X-Board-Key header"} |
+| T29 | botpages | protocol | PASS | HTTP 200 size=1293 |
+| T30 | botpages | protocol | PASS | HTTP 200 size=9831 |
+| T31 | skills | protocol | PASS | Showing: 19 of 19 skills, 19 enabled, 0 disabled rows=19 |
+| T32 | skills | protocol | PASS | present+enabled: {'delegate': True, 'github': True, 'build-page': True} |
+| T33 | mailbox | protocol | KNOWN-GAP | mailbox row present; mcp.clients={'anysearch': {'name': 'anysearch_mcp', 'description': 'AnySearch web search via MCP', 'enabled': False, 'transport': 's; log mentions qwenpawmail: False (Gmail MCP never configured) |
+| T34 | heartbeat | protocol | PASS | heartbeat defaults: {'enabled': False, 'every': '6h', 'target': 'main', 'timeoutSeconds': 300, 'activeHours': None} (record only; do NOT enable) |
+| T35 | approvals | protocol | PASS | default approval_level=AUTO (SMART patch is NOT applied) |
+| T36 | approvals | protocol | PASS | effect allow occurrences=2 parse=True last_error_line=2577 last_refresh_line=2817. |
+| T37 | approvals | protocol | PASS | approval-pending count before=7 after list_apps=7 |
+| T38 | fleet | protocol | PASS | fleet list exit ok; agents listed: True; head=active agent : default agent order : ['default'] active model : {"provider_id": "mosicn", "model": "nex-n2.6"} heartbeat : {"enabled": false, "every": "6h", "target": "main", "timeoutSeconds": 300, "activeHours": null} I |
+| T39 | evals | protocol | PASS | cases v1 ['identity-en', 'english-only', 'no-china-endpoint', 'timezone-awareness', 'destructive-refusal']; prompts/v1=['AGENTS.md', 'HEARTBEAT.md', 'PROFILE.md', 'README.md', 'SOUL.md'] |
+| T40 | evals | protocol | PASS | exit=0 dry-run=True tail=POST {BASE}/api/console/chat/task, then poll GET {BASE}/api/console/chat/task/{task_id}. |
+| T41 | import-export | protocol | PASS | exported 12 files (agent=QwenPaw_QA_Agent_0.2) -> /tmp/tp-qa-export.tgz excluded by design: history.db*, sessions/, checkpoints/, state/, memory/, mem_*, media/, resource/, drivers/, digest/ EXPORT_EXIT=0 verify OK: 12 files, agent=QwenPaw_QA_Agent_0.2 VERIFY_EXIT=0 |
+| T42 | import-export | protocol | PASS | import=True agent.json hashes match=True files=True raw=imported agent=QwenPaw_QA_Agent_0.2 -> /tmp/tp-qa-restore NOTE: a new workspace is only picked up by QwenPaw at startup; registering it in config.json agents.profiles is a separate, approved step (see 11-fleet-manager.md |
+| T43 | keepalive | protocol | PASS | HTTP 200 status=up httpStatus=200 failures=0 source=cron:*/5 * * * * |
+| T44 | keepalive | protocol | PASS | HTTP 200 status=up source=manual-ping |
+| T45 | keepalive | protocol | PASS | backup root=200 status=200 auth=200 body={"enabled":true,"has_users":true} |
+| T46 | harness | protocol | PASS | features/desktop/harness-desktop-gate.mjs: exit=0 tally=133 passed, 0 failed tail=133 passed, 0 failed |
+| T47 | harness | protocol | PASS | features/desktop/harness-desktop-chrome.mjs: exit=0 tally=38 passed, 0 failed tail=38 passed, 0 failed |
+| T48 | harness | protocol | PASS | features/desktop/harness-desktop-origin.mjs: exit=0 tally=9 passed, 0 failed tail=9 passed, 0 failed |
+| T49 | lease | protocol | PASS | lease 51979769… holder=user; control file: human worker-lease 1794733114; deleted below |
+| T50 | desktop | browser | NEEDS-BROWSER | needs a real logged-in browser (parent agent) — see TESTS.md |
+| T51 | desktop | browser | NEEDS-BROWSER | needs a real logged-in browser (parent agent) — see TESTS.md |
+| T52 | desktop | browser | NEEDS-BROWSER | needs a real logged-in browser (parent agent) — see TESTS.md |
+| T53 | desktop | browser | NEEDS-BROWSER | needs a real logged-in browser (parent agent) — see TESTS.md |
+| T54 | desktop | browser | NEEDS-BROWSER | needs a real logged-in browser (parent agent) — see TESTS.md |
+| T55 | desktop | browser | NEEDS-BROWSER | needs a real logged-in browser (parent agent) — see TESTS.md |
+| T56 | desktop | browser | NEEDS-BROWSER | needs a real logged-in browser (parent agent) — see TESTS.md |
+| T57 | screenshot | browser | NEEDS-BROWSER | needs a real logged-in browser (parent agent) — see TESTS.md |
+| T58 | console | needs-token | NEEDS-TOKEN | needs a user-held secret — never invented; see TESTS.md |
+| T59 | groupchat | needs-token | NEEDS-TOKEN | needs a user-held secret — never invented; see TESTS.md |
+| T60 | board | needs-token | NEEDS-TOKEN | needs a user-held secret — never invented; see TESTS.md |
+| T61 | evals | needs-token | NEEDS-TOKEN | needs a user-held secret — never invented; see TESTS.md |
+| T62 | storage | protocol | PASS | features/storage/harness-store.mjs: exit=0 tally=38 passed, 0 failed tail=38 passed, 0 failed |
+| T63 | board | protocol | PASS | attempt 1: 401=30 429=5 follow-up retry-after=14 (machine burst, stable IP) |
 
-### Notes
-
-- **12 test registrations had been lost in the runner rewrite.** The test
-  files survived but `run-tests.py` stopped at T62, so nothing referenced
-  them — a suite that stays green because nothing executes. Restored as
-  T70-T81.
-- **Two stale expectations corrected.** The runner asserted gate 133 and
-  chrome 38; the real counts are 127 and 34. 127 is correct: the gate file has
-  134 `check(` calls but 7 are try/catch fallbacks, so one of each pair runs.
-- **Security regressions re-applied.** The D1 rebuild had reverted B-4
-  (capability TTL clamped to the lease) and B-9 (no client generation
-  inflation), and had softened B-1 (takeover/release now answer 503 when the
-  generation cannot be persisted, rather than answering 200 with the field
-  omitted). 7 harness failures pointed at all three.
-- **Email router hardened** (open audit item): fail-closed allowlist with
-  label-boundary domain matching, untrusted-content envelope, fence escaping,
-  sanitised `user_id`. Pre-fix code fails 14 of its 24 checks.
-- Machine/browser/token rows unchanged — still Muse's to run.
+### Notes (non-pass rows)
+- **T33** (KNOWN-GAP): mailbox row present; mcp.clients={'anysearch': {'name': 'anysearch_mcp', 'description': 'AnySearch web search via MCP', 'enabled': False, 'transport': 's; log mentions qwenpawmail: False (Gmail MCP never configured)
