@@ -185,7 +185,15 @@ await (async () => {
     routerSrc.includes('redirect: "manual"'),
     "auto-follow without a cookie jar reports a healthy desktop as down");
   check("the provider token is attached server-side only",
-    routerSrc.includes('headers.set("Authorization", "Bearer " + cap.target.token)'));
+    // Fix 2026-11-16: the token is attached server-side via the `_token`
+    // query param inside fetchDesktopOrigin, NOT as a Bearer header. A
+    // Bearer header is answered 401 by the InstaBox private-port edge, which
+    // made the desktop report "stopped" forever. The token still never
+    // reaches the browser: it is only in the server-side upstream fetch.
+    routerSrc.includes('target.searchParams.set("_token", token)')
+    && routerSrc.includes('fetchDesktopOrigin(')
+    && !routerSrc.includes('headers.set("Authorization", "Bearer " + cap.target.token)'),
+    "the token must ride the server-side upstream fetch only, never a browser URL or a Bearer header the edge rejects");
   check("set-cookie is stripped from proxied responses", routerSrc.includes('out.delete("set-cookie")'));
   check("the preview refuses > 1.5 MB (D1 row cap is 2 MB)",
     routerSrc.includes("1_500_000"));
