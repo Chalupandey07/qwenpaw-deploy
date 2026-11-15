@@ -120,6 +120,7 @@
 </style>
 </head>
 <body>
+<div id="jsErrorBar" hidden style="background:#7f1d1d;color:#fecaca;padding:8px 12px;font:12px/1.5 monospace;white-space:pre-wrap;word-break:break-word"></div>
 <div id="rail">
   <header>
     <span class="title" id="railTitle">Computer</span>
@@ -266,6 +267,24 @@
 </div>
 
 <script>
+  // Visible error trap (2026-11-16): the page's JavaScript was failing silently
+  // in the browser — blank status, dead tabs, screen 403 — with no console
+  // access to see why. Any uncaught error or failed import now writes itself
+  // into a banner on the page, so the next browser pass can read it.
+  window.__computerErrors = [];
+  window.addEventListener("error", (e) => {
+    const msg = (e && e.message) || "unknown error";
+    const src = (e && e.filename) ? (" @ " + e.filename + ":" + (e.lineno || "?")) : "";
+    window.__computerErrors.push(msg + src);
+    const bar = document.getElementById("jsErrorBar");
+    if (bar) { bar.hidden = false; bar.textContent = "Page error: " + window.__computerErrors.join(" | "); }
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const msg = (e && e.reason && (e.reason.message || e.reason)) || "unhandled rejection";
+    window.__computerErrors.push(String(msg));
+    const bar = document.getElementById("jsErrorBar");
+    if (bar) { bar.hidden = false; bar.textContent = "Page error: " + window.__computerErrors.join(" | "); }
+  });
 (() => {
   "use strict";
 
