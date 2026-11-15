@@ -12,6 +12,9 @@ crons = ["*/5 * * * *"]
 QWENPAW_URL = "https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech/"
 # Machine id for the optional API-wake fallback. "m_..." form.
 INSTABOX_MACHINE_ID = "m_agq5wqqo2fvypym7rjlpvngc2m"
+# D1 store flag: "1" = use the qwenpaw-state D1 database when its binding
+# is present; anything else = the KV namespace below (fallback).
+USE_D1 = "1"
 
 # KV namespace for last-known status. Create first:
 #   wrangler kv namespace create STATUS
@@ -19,3 +22,12 @@ INSTABOX_MACHINE_ID = "m_agq5wqqo2fvypym7rjlpvngc2m"
 [[kv_namespaces]]
 binding = "STATUS"
 id = "6a91d8099ed8419c88c94b0946186a27"
+
+# D1 database (created 2026-11-15, uuid below). The store in src/index.js
+# uses D1 when USE_D1 = "1" and this binding is present, and falls back
+# to the KV namespace above otherwise. KV is the fallback, not the
+# primary: its 1,000 writes/day account cap was burned twice in 2026-11-15.
+[[d1_databases]]
+binding = "QWENPAW_DB"
+database_name = "qwenpaw-state"
+database_id = "5f58a2f8-e4bb-45e5-8a94-4fc283b90871"
