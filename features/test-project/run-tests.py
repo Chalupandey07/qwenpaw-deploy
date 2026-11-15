@@ -1142,7 +1142,7 @@ def _py_script_harness(argv, expect, timeout=180):
 
 
 def t62():
-    return _harness("features/storage/harness-store.mjs", 38)
+    return _harness("features/storage/harness-store.mjs", 42)
 
 
 def t48():
@@ -1306,6 +1306,11 @@ def t80():
     return _py_harness("features/storage/test_schema.py", 15)
 
 
+def t82():
+    """Group-chat CORS allowlist (BUGS.md B-12). 13 checks."""
+    return _harness("features/groupchat/harness-groupchat-cors.mjs", 13)
+
+
 def t81():
     return _harness("features/infra/workers/email-router/harness-email-router.mjs", 24)
 
@@ -1385,6 +1390,7 @@ TESTS = [
     ("T79", "docs: every relative link + repo path resolves", "docs", "protocol", t79),
     ("T80", "D1 schema: engine guarantees + indexed queries", "storage", "protocol", t80),
     ("T81", "email router: fail-closed allowlist + injection envelope", "infra", "protocol", t81),
+    ("T82", "group-chat CORS: allowlist, never a wildcard", "groupchat", "protocol", t82),
 ]
 
 SKIP_NOTE = {

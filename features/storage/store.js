@@ -22,9 +22,9 @@
 //   expires_at <= now are treated as missing and deleted lazily.
 // - Unknown keys fall through to the `meta` table (plain text), so a
 //   future key works without a schema change.
-// - The budget counter is a plain upsert of the value the guard
-//   computed (the guard already bounds flushes); an atomic SQL
-//   increment is a follow-up (see SCHEMA.md).
+// - The budget counter uses an ATOMIC SQL increment (`count = count + ?`).
+//   It used to be an upsert of a caller-computed value, which is a
+//   read-modify-write that two isolates can interleave.
 
 export function createStore(env, kv) {
   const useD1 = env && env.USE_D1 === "1" && env.QWENPAW_DB;
@@ -50,6 +50,15 @@ function kvStore(kv) {
     put: (key, value, opts) => kv.put(key, value, opts),
     delete: (key) => kv.delete(key),
     list: (opts) => kv.list(opts),
+    // KV has no atomic increment. Read-modify-write is all that is possible,
+    // and it can lose increments under concurrency — callers must treat the
+    // KV counter as advisory only. D1 is the exact path.
+    incr: async (key, by) => {
+      const cur = Number(await kv.get(key));
+      const next = (Number.isFinite(cur) ? cur : 0) + by;
+      await kv.put(key, String(next));
+      return String(next);
+    },
   };
 }
 
@@ -270,5 +279,19 @@ function d1Store(db) {
     return { keys: (res.results || []).map((r) => ({ name: r.key })) };
   }
 
-  return { get, put, delete: del, list };
+  // Atomic increment for the daily write counter. The caller used to read the
+  // value, add its batch, and write it back — a read-modify-write that two
+  // isolates can interleave, silently losing increments and letting the guard
+  // under-count. `count = count + ?` inside one statement is atomic in D1.
+  async function incr(key, by) {
+    if (!key.startsWith("budget:")) throw new Error("incr only supports budget:<day>");
+    const day = key.slice("budget:".length);
+    await q("INSERT INTO write_budget (day, count) VALUES (?, ?) " +
+            "ON CONFLICT(day) DO UPDATE SET count = count + ?",
+            day, by, by).run();
+    const row = await q("SELECT count FROM write_budget WHERE day = ?", day).first();
+    return row ? String(row.count) : null;
+  }
+
+  return { get, put, delete: del, list, incr };
 }

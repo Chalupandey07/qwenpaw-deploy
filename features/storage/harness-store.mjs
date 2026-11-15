@@ -117,6 +117,25 @@ await store.put("computerMode:default", "private");
 check("mode put/get", (await store.get("computerMode:default")) === "private");
 await store.put("budget:2026-11-15", "449");
 check("budget put/get", (await store.get("budget:2026-11-15")) === "449");
+
+// Atomic increment (the fix for the read-modify-write lost-update). Two
+// concurrent flushes used to both read N and both write N+25, losing 25
+// increments and letting the guard under-count.
+check("incr adds to an existing counter",
+  (await store.incr("budget:2026-11-15", 25)) === "474",
+  await store.get("budget:2026-11-15"));
+const before = Number(await store.get("budget:2026-11-15"));
+// Fire many increments WITHOUT awaiting between them: an atomic SQL
+// `count = count + ?` must not lose any.
+await Promise.all(Array.from({ length: 20 }, () => store.incr("budget:2026-11-15", 1)));
+const after = Number(await store.get("budget:2026-11-15"));
+check("20 concurrent increments all land (no lost updates)",
+  after === before + 20, `${before} -> ${after}`);
+check("incr creates the row when absent",
+  (await store.incr("budget:1999-01-01", 7)) === "7");
+check("incr rejects a non-budget key", await (async () => {
+  try { await store.incr("teach-skill:x", 1); return false; } catch { return true; }
+})());
 await store.put("lastWake", "1794703931242");
 check("lastWake put/get", (await store.get("lastWake")) === "1794703931242");
 await store.put("qwenpaw:status", JSON.stringify({ status: "up", httpStatus: 200 }));

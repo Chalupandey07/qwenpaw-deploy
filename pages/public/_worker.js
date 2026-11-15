@@ -1238,11 +1238,22 @@ function budgetNoteWrite(env) {
   budgetLocal++;
   if (budgetLocal % BUDGET_FLUSH_EVERY !== 0) return;
   const key = BUDGET_KEY_PREFIX + budgetToday();
-  env.DESKTOP_KV.get(key).then((cur) => {
-    const n = Number(cur);
-    const base = Number.isFinite(n) ? n : 0;
-    return env.DESKTOP_KV.put(key, String(base + BUDGET_FLUSH_EVERY));
-  }).catch(() => {});
+  // Use the store's ATOMIC increment when available. The old code read the
+  // counter, added the batch, and wrote it back — two isolates flushing at
+  // once both read N, both wrote N+25, and 25 increments vanished, so the
+  // guard under-counted and could let a burst through. On the KV fallback
+  // there is no atomic op, so it stays advisory there.
+  // Feature-detect: the binding is either the D1 store (has incr) or a raw
+  // KV namespace (does not). Never assume the richer interface.
+  if (typeof env.DESKTOP_KV.incr === "function") {
+    env.DESKTOP_KV.incr(key, BUDGET_FLUSH_EVERY).catch(() => {});
+  } else {
+    env.DESKTOP_KV.get(key).then((cur) => {
+      const n = Number(cur);
+      const base = Number.isFinite(n) ? n : 0;
+      return env.DESKTOP_KV.put(key, String(base + BUDGET_FLUSH_EVERY));
+    }).catch(() => {});
+  }
 }
 
 // A write through the budget guard. Returns true when the write landed.

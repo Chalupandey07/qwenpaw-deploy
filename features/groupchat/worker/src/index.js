@@ -80,16 +80,38 @@ const WRITE_RATE_LIMIT = 30;
 const WRITE_RATE_WINDOW_MS = 60_000;
 const WRITE_RATE_KEY = "write-rate";
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Groupchat-Token",
-};
+// CORS is an ALLOWLIST, not "*" (audit finding groupchat-open-thread follow-up;
+// BUGS.md B-12).
+//
+// Why "*" was wrong: this API authenticates with a custom header
+// (X-Groupchat-Token). With `Allow-Origin: *` any web page that learns the
+// token can read every response cross-origin — and combined with the relay
+// pasting thread text into the agent, a leaked token plus one malicious page
+// is a thread-injection path. The relay itself is server-side and needs no
+// CORS at all, so the default is "no CORS headers unless the origin is known".
+//
+// ALLOWED_ORIGINS is a comma-separated Worker var (e.g.
+// "https://qwenpawx.pages.dev,https://qwenpaw-frontend.pages.dev"). Unset
+// means no browser origin is allowed — server-side callers are unaffected.
+function corsHeaders(request, env) {
+  const origin = request.headers.get("Origin") || "";
+  const allow = String(env.ALLOWED_ORIGINS || "")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  if (!origin || !allow.includes(origin)) return {};
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, X-Groupchat-Token",
+    "Access-Control-Max-Age": "600",
+    Vary: "Origin",
+  };
+}
 
-function json(data, status = 200, extraHeaders = {}) {
+function json(data, status = 200, extraHeaders = {}, request = null, env = null) {
+  const cors = request ? corsHeaders(request, env || {}) : {};
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json", ...CORS, ...extraHeaders },
+    headers: { "Content-Type": "application/json", ...cors, ...extraHeaders },
   });
 }
 
@@ -198,11 +220,13 @@ export class GroupChatThread {
     return { limited: false, retryAfter: 0 };
   }
 
-  rateLimitedResponse(retryAfter) {
+  rateLimitedResponse(retryAfter, request) {
     return json(
       { error: "rate_limited", note: "too many writes from this IP; slow down", retry_after_seconds: retryAfter },
       429,
       { "Retry-After": String(retryAfter) },
+      request,
+      this.env,
     );
   }
 
@@ -221,7 +245,7 @@ export class GroupChatThread {
   async fetch(request) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/$/, "") || "/";
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request, this.env) });
 
     if (path === "/") {
       return json({
@@ -247,17 +271,17 @@ export class GroupChatThread {
     }
 
     if (path === "/thread" && request.method === "GET") {
-      if (!this.checkToken(request)) return json({ error: "unauthorized" }, 401);
+      if (!this.checkToken(request)) return json({ error: "unauthorized" }, 401, {}, request, this.env);
       const thread = await this.loadThread();
       const sinceRaw = url.searchParams.get("since");
       const since = sinceRaw === null ? null : Number(sinceRaw);
-      return json(publicThread(thread, Number.isFinite(since) ? since : null));
+      return json(publicThread(thread, Number.isFinite(since) ? since : null), 200, {}, request, this.env);
     }
 
     if (path === "/thread/start" && request.method === "POST") {
-      if (!this.checkToken(request)) return json({ error: "unauthorized" }, 401);
+      if (!this.checkToken(request)) return json({ error: "unauthorized" }, 401, {}, request, this.env);
       const rate = await this.checkWriteRate(request);
-      if (rate.limited) return this.rateLimitedResponse(rate.retryAfter);
+      if (rate.limited) return this.rateLimitedResponse(rate.retryAfter, request);
       let body = {};
       try { body = await request.json(); } catch { /* empty body is fine */ }
       const thread = newThread(cleanText(body.topic));
@@ -268,35 +292,35 @@ export class GroupChatThread {
         thread.next_agent = body.first_agent;
       }
       await this.saveThread(thread);
-      return json(publicThread(thread, null));
+      return json(publicThread(thread, null), 200, {}, request, this.env);
     }
 
     if (path === "/thread/message" && request.method === "POST") {
-      if (!this.checkToken(request)) return json({ error: "unauthorized" }, 401);
+      if (!this.checkToken(request)) return json({ error: "unauthorized" }, 401, {}, request, this.env);
       const rate = await this.checkWriteRate(request);
-      if (rate.limited) return this.rateLimitedResponse(rate.retryAfter);
+      if (rate.limited) return this.rateLimitedResponse(rate.retryAfter, request);
       let body = {};
       try {
         body = await request.json();
       } catch {
-        return json({ error: "bad_request", note: "body must be JSON" }, 400);
+        return json({ error: "bad_request", note: "body must be JSON" }, 400, {}, request, this.env);
       }
       const text = cleanText(body.text);
       const author = cleanText(body.author).slice(0, 120) || "unknown";
       const role = body.role === "agent" ? "agent" : body.role === "user" ? "user" : "";
       if (!text || !role) {
-        return json({ error: "bad_request", note: "need {author, role: user|agent, text}" }, 400);
+        return json({ error: "bad_request", note: "need {author, role: user|agent, text}" }, 400, {}, request, this.env);
       }
       const thread = await this.loadThread();
       if (thread.status !== "open") {
-        return json({ error: "thread_closed", note: `thread is ${thread.status}; POST /thread/start to open a new one`, thread: publicThread(thread, null) }, 409);
+        return json({ error: "thread_closed", note: `thread is ${thread.status}; POST /thread/start to open a new one`, thread: publicThread(thread, null) }, 409, {}, request, this.env);
       }
       if (role === "agent") {
         if (!PARTICIPANTS.includes(author)) {
-          return json({ error: "unknown_agent", note: `agent must be one of ${PARTICIPANTS.join(", ")}`, next_agent: thread.next_agent }, 400);
+          return json({ error: "unknown_agent", note: `agent must be one of ${PARTICIPANTS.join(", ")}`, next_agent: thread.next_agent }, 400, {}, request, this.env);
         }
         if (author !== thread.next_agent) {
-          return json({ error: "not_your_turn", note: `it is ${thread.next_agent}'s turn, not ${author}'s`, next_agent: thread.next_agent, round: thread.round }, 409);
+          return json({ error: "not_your_turn", note: `it is ${thread.next_agent}'s turn, not ${author}'s`, next_agent: thread.next_agent, round: thread.round }, 409, {}, request, this.env);
         }
       }
       thread.seq += 1;
@@ -330,24 +354,24 @@ export class GroupChatThread {
       await this.saveThread(thread);
       const out = publicThread(thread, null);
       if (evicted > 0) out.evicted_oldest = evicted;
-      return json(out);
+      return json(out, 200, {}, request, this.env);
     }
 
     if (path === "/thread/reset" && request.method === "POST") {
-      if (!this.checkToken(request)) return json({ error: "unauthorized" }, 401);
+      if (!this.checkToken(request)) return json({ error: "unauthorized" }, 401, {}, request, this.env);
       const rate = await this.checkWriteRate(request);
-      if (rate.limited) return this.rateLimitedResponse(rate.retryAfter);
+      if (rate.limited) return this.rateLimitedResponse(rate.retryAfter, request);
       let body = {};
       try { body = await request.json(); } catch { /* empty body is fine */ }
       if (body.confirm !== true) {
-        return json({ error: "bad_request", note: "send {confirm: true} to clear the thread" }, 400);
+        return json({ error: "bad_request", note: "send {confirm: true} to clear the thread" }, 400, {}, request, this.env);
       }
       const thread = newThread("");
       await this.saveThread(thread);
-      return json({ reset: true, thread: publicThread(thread, null) });
+      return json({ reset: true, thread: publicThread(thread, null) }, 200, {}, request, this.env);
     }
 
-    return json({ error: "not_found", endpoints: ["/", "/thread", "/thread/start", "/thread/message", "/thread/reset"] }, 404);
+    return json({ error: "not_found", endpoints: ["/", "/thread", "/thread/start", "/thread/message", "/thread/reset"] }, 404, {}, request, this.env);
   }
 }
 
