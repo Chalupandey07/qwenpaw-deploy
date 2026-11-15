@@ -183,8 +183,18 @@ the fallback only. Verified live 2026-11-15 ~08:12 UTC:
   D1 write fires on the next state change (machine pause/wake); it
   shares the exact store code the Pages worker just proved live.
 - Routines: `/api/status` 200, qwenpaw "up", 2 routines (definitions
-  read from D1). History write (29 -> 30 rows) is expected on the
-  next */30 cron tick (08:30 UTC) — check after.
+  read from D1); `/api/history` returns the 29 rows from D1 (newest
+  first, first entry 07:30 wake-tick). History write (29 -> 30 rows)
+  did NOT happen on the 08:30 UTC tick — correctly: pushHistory is
+  change-only and the 08:30 wake-tick is identical to the 07:30 one
+  (only `at` differs, and `at` is excluded), so the write is skipped
+  by design. The routines D1 write fires on the next DIFFERING tick
+  (the 01:30 UTC daily-summary slot is the next guaranteed one — a
+  different kind, so it writes). Same for keep-alive: its D1 write
+  fires on the next state change (machine pause/wake). The shared
+  store code is proven by the harness (38/38) and by the Pages
+  worker's live D1 writes (previews); the keep-alive/routines
+  write paths differ only in their (correct) change-only gates.
 - KV budget status: SPENT for 2026-11-15 UTC (error 10048 verified on
   both namespaces at ~07:57 UTC). Nothing writes to KV now; the D1
   cutover is what restored write functionality today instead of
