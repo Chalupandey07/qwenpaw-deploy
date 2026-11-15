@@ -431,3 +431,47 @@ Protocol run by the runner; browser / needs-token rows were recorded as skipped,
 
 ### Notes (non-pass rows)
 - **T33** (KNOWN-GAP): mailbox row present; mcp.clients={'anysearch': {'name': 'anysearch_mcp', 'description': 'AnySearch web search via MCP', 'enabled': False, 'transport': 's; log mentions qwenpawmail: False (Gmail MCP never configured)
+
+## Round 7 — local (AutoClaw), 2026-11-15 — runner registrations restored
+
+**Not a live round.** AutoClaw has no machine, Cloudflare connector or browser
+in this environment. This records the machine-free suite only.
+
+| What | Result |
+|---|---|
+| gate harness | 127 passed, 0 failed |
+| chrome harness | 34 passed, 0 failed |
+| origin harness | 9 passed, 0 failed |
+| storage D1 harness (T62) | 38 passed, 0 failed |
+| T70 memory recall | 44 passed |
+| T71 lessons ledger | 45 passed |
+| T72 ReMe doctor | 11 passed |
+| T73 ripwire installer | 49 passed |
+| T74 keep-alive | 19 passed |
+| T75 lease-watcher | 29 passed |
+| T76 Code Mode | 59 passed |
+| T77 pricing | 20 passed |
+| T78 routing | 27 passed |
+| T79 docs links | pass |
+| T80 D1 schema | 15 passed |
+| T81 email router | 24 passed |
+| **Total** | **542 checks, 0 failures** |
+
+### Notes
+
+- **12 test registrations had been lost in the runner rewrite.** The test
+  files survived but `run-tests.py` stopped at T62, so nothing referenced
+  them — a suite that stays green because nothing executes. Restored as
+  T70-T81.
+- **Two stale expectations corrected.** The runner asserted gate 133 and
+  chrome 38; the real counts are 127 and 34. 127 is correct: the gate file has
+  134 `check(` calls but 7 are try/catch fallbacks, so one of each pair runs.
+- **Security regressions re-applied.** The D1 rebuild had reverted B-4
+  (capability TTL clamped to the lease) and B-9 (no client generation
+  inflation), and had softened B-1 (takeover/release now answer 503 when the
+  generation cannot be persisted, rather than answering 200 with the field
+  omitted). 7 harness failures pointed at all three.
+- **Email router hardened** (open audit item): fail-closed allowlist with
+  label-boundary domain matching, untrusted-content envelope, fence escaping,
+  sanitised `user_id`. Pre-fix code fails 14 of its 24 checks.
+- Machine/browser/token rows unchanged — still Muse's to run.
