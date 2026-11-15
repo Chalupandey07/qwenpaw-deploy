@@ -601,6 +601,34 @@ upstream does not provide. See `features/memory/README.md`.
 
 ---
 
+## (c) Code Mode — Phase 5 pilot (local, no deploy)
+
+Covers `features/codemode/` — a bounded pilot that MEASURES Code Mode rather
+than asserting it helps. See `features/codemode/README.md` and
+`features/research/code-mode.md`.
+
+### T66 — Code Mode pilot: benchmark maths + fail-closed auth
+- Area: `codemode` · Method: `protocol`
+- Check (local): `node features/codemode/harness-codemode.mjs`
+- Expected: `59 passed, 0 failed`. Imports the **real** Worker
+  (`features/codemode/worker/src/index.js`, the same bytes that get deployed)
+  and drives it with mocked `env`: routing; `/health` binding state; the
+  benchmark's internal arithmetic (per-turn × turns must equal the stated
+  total, for both the best case and the retry case); that Code Mode actually
+  reduces prompt tokens on the 10-step job while a **single** call is reported
+  as worse; the visual-judgment caveat is present; `chars_per_token`
+  validation; fail-closed auth (503 `token_unset` with no secret, 401 on a
+  wrong header or query token, 405 on GET); that a missing loader/MCP URL
+  yields an honest 503 naming both blockers and never claims a run; the
+  audit trail; and that no token value leaks into the HTML.
+- Evidence: the final tally line.
+- **Not covered here (deploy-time, Muse):** whether `worker_loaders` exists on
+  the free tier, whether the MCP SSE port is reachable from Cloudflare's edge,
+  and real sandbox execution. `POST /api/run` returns 501 with the reason
+  until both are established — that is by design, not a gap in the test.
+
+---
+
 ## Out of scope for this catalogue (do not add tests here without a new decision)
 
 - **JEV / Drex** — not implemented (PLAN.md Phase 2/3). No tests until they land.

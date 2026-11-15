@@ -1151,6 +1151,10 @@ def t64():
             f"tally={m.group(0) if m else 'none'}")
 
 
+def t66():
+    return _harness("features/codemode/harness-codemode.mjs", 59)
+
+
 def t65():
     """Live ReMe diagnosis on the machine (read-only).
 
@@ -1336,6 +1340,7 @@ TESTS = [
     ("T63", "lessons ledger: candidates, caps, no auto-accept", "memory", "protocol", t63),
     ("T64", "ReMe doctor selftest: all five causes detected", "memory", "protocol", t64),
     ("T65", "ReMe doctor live diagnosis (read-only, machine)", "memory", "protocol", t65),
+    ("T66", "Code Mode pilot: benchmark maths + fail-closed auth", "codemode", "protocol", t66),
     ("T50", "__status per computer, full (cookie)", "desktop", "browser", None),
     ("T51", "side-panel renders beside chat", "desktop", "browser", None),
     ("T52", "/desktop chrome: take/release + terminal shell", "desktop", "browser", None),

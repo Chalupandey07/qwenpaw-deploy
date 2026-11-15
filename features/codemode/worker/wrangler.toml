@@ -1,0 +1,29 @@
+name = "qwenpaw-codemode"
+main = "src/index.js"
+compatibility_date = "2026-11-14"
+
+# Phase 5 Code Mode PILOT. Read features/codemode/README.md first.
+#
+# There is deliberately NO KV namespace and NO Durable Object here yet:
+#   - KV writes are the scarce resource on this account (the 1,000/day quota
+#     incident burned takeover/mode/needs-you for a whole day), and the pilot
+#     does not need durable state to measure anything.
+#   - A Durable Object + CodemodeRuntime facet is only worth deploying once
+#     the benchmark justifies it. The runtime path needs a `ctx.exports`
+#     facet class, which requires the real @cloudflare/codemode build step.
+#
+# Free-tier note: `worker_loaders` availability is NOT documented. It is
+# commented out on purpose. Uncomment, deploy, and check /health for
+# loader="bound" before believing the sandbox path can work at all.
+
+# [[worker_loaders]]
+# binding = "LOADER"
+
+[vars]
+# Set with: wrangler secret put CODEMODE_TOKEN      (required for /api/run)
+#           wrangler secret put MCP_SSE_URL         (token-auth SSE of the MCP proxy)
+#           wrangler secret put MCP_SSE_TOKEN
+# Never put a token in this file.
+
+[observability]
+enabled = true
