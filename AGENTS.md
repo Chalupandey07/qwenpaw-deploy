@@ -53,13 +53,13 @@ run. If Muse is unavailable, the task stays "code complete, unverified".
 
 ```
 instabox/            machine-side deploy: docker-compose, .env.example, systemd, setup.sh
-worker/              keep-alive Worker (cron 5m, KV status) — README.md §2
+worker/              keep-alive Worker (cron 5m, status write-on-change)
 pages/public/        Pages proxy: _worker.js (console + /desktop), desktop-chrome.html
   _worker.js         the single most important file: proxy, auth gate, lease, capabilities
 features/desktop/    live desktop: services, lease-watcher.py, pty-server.py, harnesses
 features/routines/   routines Worker (cron wake + pending prompts)
 features/groupchat/  group-chat Worker (Durable Object) + machine-side relay
-features/board/      ticket board Worker (KV today, D1 planned)
+features/board/      ticket board Worker (D1 + DO rate limiter)
 features/botpages/   self-contained page builder + Pages deploy
 features/memory/     bounded recall, lessons ledger, ReMe doctor, ripwire installer
 features/codemode/   Code Mode pilot (measures; does not claim)
@@ -87,9 +87,14 @@ Machine paths (on the InstaBox box): `/data/home/qwenpaw/` (`.env`,
    a test is a rumour.
 4. **Run the suite before committing:**
    ```bash
-   python3 features/test-project/run-tests.py --only T46,T47,T48,T62,T63,T64,T66,T67
+   python3 features/test-project/run-tests.py \
+     --only T46,T47,T48,T62,T70,T71,T72,T73,T74,T75,T76,T77,T78,T79,T80,T81,T82,T83,T84
    ```
-   These are the machine-free tests. Everything else needs Muse's box.
+   These are the machine-free tests (~20 groups, ~600 checks). Everything else
+   needs Muse's box. **Registrations get lost when `run-tests.py` is rewritten
+   — it has happened three times.** After any change to that file, count the
+   `("T##"` registrations; a suite that stays green because nothing runs is
+   the worst failure mode this repo has.
 5. **Secret-scan before pushing:** `grep -rniE 'ghp_|github_pat_|sk-[A-Za-z0-9]{20}|AKIA[0-9A-Z]{16}' --include='*.{js,py,md,toml,json}' .`
 6. **Commit** with a message that says what changed, what it cost (quota
    numbers), what you verified, and what you did **not**.
@@ -104,12 +109,14 @@ adding any periodic behaviour, price it:
 | Service | Free limit | Our budget rule |
 |---|---|---|
 | Workers requests | 100,000/day | keep fixed pollers under 10,000/day |
-| Workers KV writes | **1,000/day** | treat as **zero** — a spent quota broke every desktop write once |
-| Workers KV reads | 100,000/day | fine, but no N+1 loops |
-| D1 rows written | 100,000/day | fine if writes are per-action, not per-tick |
+| D1 rows written | 100,000/day | fine if writes are per-action, not per-tick (heartbeat alone is 5,760) |
 | D1 rows read | 5,000,000/day | **index every WHERE** — an unindexed scan is a row-read charge |
-| D1 row size | 2 MB | never store image bytes here |
+| D1 row size | **2 MB** (whole row) | previews are capped at 1.5 MB to leave headroom; never add a larger BLOB |
+| D1 queries/invocation | **50** | batch writes — `batch()` counts as one |
+| D1 storage | 5 GB total | previews are ~1.1 MB total because one row is overwritten per computer |
+| Workers KV writes | **1,000/day** | legacy/rollback path only — treat as **zero**; a spent quota once broke every desktop write |
 | Durable Objects | 100,000 req/day | fine at human pace; do not put heartbeats in a DO |
+| R2 (if adopted) | 10 GB-months, 1M Class A/mo | the ceiling-free home for preview bytes |
 
 Rule of thumb: **cost must be proportional to user action, never to wall
 clock.** The KV incident happened because a preview upload ran every 15s

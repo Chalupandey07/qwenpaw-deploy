@@ -44,7 +44,7 @@ Last updated: 2026-11-15 (after the correctness pass).
 |---|---|---|
 | Routines Worker (wake tick + pending) | `features/routines/` | **Yes** |
 | Group chat (Durable Object, turn-taking) | `features/groupchat/` | **Yes** — token-gated |
-| Ticket board (KV) | `features/board/` | **Yes** — works, loses updates under concurrency (B-3) |
+| Ticket board (D1 + DO rate limiter) | `features/board/` | **Yes** — 67/67 harness; B-3 closed |
 | Bot pages builder | `features/botpages/` | **Yes** |
 | Activity feed | `features/infra/workers/activity-feed/` | **Yes** |
 | Cost + open-work dashboards | `features/board/*.html` | **Yes** |
@@ -92,9 +92,9 @@ Last updated: 2026-11-15 (after the correctness pass).
 
 | Want | Design lives in | Effort |
 |---|---|---|
-| **D1 migration** — schema DONE, Worker rewrite TODO | `features/storage/` | Schema 15 checks (T73); rewrite is the larger half |
+| ~~D1 migration~~ | `features/storage/` | **DONE + live** (`USE_D1=1`); schema 15 checks (T80) |
 | **R2 for preview images** | `PLAN.md` Phase 2 | Small, follows D1 |
-| Per-computer needs-you records (B-2) | `BUGS.md` | Small |
+| ~~Per-computer needs-you records~~ (B-2) | `BUGS.md` | **Done** |
 | Rate limits on desktop endpoints (B-10) | `BUGS.md` | Small |
 | Keep-alive write-on-change (B-7) | `BUGS.md` | Small |
 | `__pending-skills` TTL + single query (B-6) | `BUGS.md` | Small |

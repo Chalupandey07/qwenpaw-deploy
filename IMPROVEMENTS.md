@@ -28,12 +28,13 @@ agent burns turns on visual decisions and every failure costs a wake cycle.
 
 ## 2. Memory & self-learning
 
-Current: bounded recall CLI, lessons ledger, ReMe doctor. Upstream FTS5 does
-the search.
+Current: bounded recall CLI, lessons ledger, ReMe doctor, and **consolidation**
+(T83) which turns daily logs into lesson candidates. Upstream FTS5 does the
+search. Ripwire is installed and documented (T73).
 
 | # | Improvement | Why | How |
 |---|---|---|---|
-| 2.1 ⚑ | **Apply the lessons ledger to the live MEMORY.md** | The tooling exists; the agent does not use it yet | Add a step to the system prompt (`features/infra/prompts/v1/AGENTS.md`): at a checkpoint, `lessons.py propose` at most 1–3 candidates, and never `accept` without the user. |
+| 2.1 ⚑ | **Apply the lessons ledger to the live MEMORY.md** | The tooling exists (including `consolidate.py` for the cron path); the agent does not use it yet | Add a step to the system prompt (`features/infra/prompts/v1/AGENTS.md`): at a checkpoint, `lessons.py propose` at most 1–3 candidates, and never `accept` without the user. |
 | 2.2 ⚑ | **Fix ReMe's actual cause** | `memory/` is empty; the doctor names five causes but nobody has run it live | One command on the box (`reme_doctor.py`) → it prints the cause. If it is `automation_only`, the fix is "have a real console conversation"; if `no_active_model`, set one. Then confirm notes appear. |
 | 2.3 | **Memory write-back from the agent's own work** | The agent learns nothing across sessions except via MEMORY.md | After a task that changed the system, propose one lesson automatically (2.1). Cap at 3 candidates so it cannot flood. |
 | 2.4 | **Recall in the loop, not just outside it** | `recall.py` runs out-of-loop; the agent inside a conversation uses upstream `recall_history` | Document when to use which: upstream for in-conversation recall, `recall.py` for cron/log-check/summaries. Already in `features/memory/README.md`; add it to the DriverCard instructions. |
@@ -68,15 +69,17 @@ Current: Durable Object, token-gated, 30/min/IP, turn-taking enforced.
 
 ## 5. Ticket board
 
-Current: one KV value. The weakest component.
+Current: **D1**, one row per ticket, plus a Durable Object rate limiter
+(B-3 closed 2026-11-15, 67/67 harness). The remaining work is pagination and
+concurrency control, both now trivial.
 
 | # | Improvement | Why | How |
 |---|---|---|---|
-| 5.1 ⚑ | **Move to D1** | B-3: lost updates, O(n) writes, unbounded | One row per ticket + one per comment. This is the single highest-value migration item after the desktop lease. |
-| 5.2 | **Server-side pagination + filter** | D1 makes this trivial; KV makes it impossible | `?status=&assignee=&limit=&cursor=`. |
+| 5.1 | ~~Move to D1~~ | **DONE** — lost updates, O(n) writes and unbounded growth are gone | One row per ticket + one per comment + DO rate limiter |
+| 5.2 ⚑ | **Server-side pagination + filter** | D1 makes this trivial; the board still returns everything | `?status=&assignee=&limit=&cursor=`; the indexes already exist |
 | 5.3 | **Optimistic concurrency** | Two agents editing one ticket | `updated_at` as an ETag; reject a stale PATCH with 409 and the current row. |
 | 5.4 | **Board → routine bridge** | A "blocked" ticket should page someone | On status→blocked, raise a needs-you record (B-2 per-computer keys). |
-| 5.5 | **Rate limit the board key** | A-16 still open | Same token-bucket as B-10. |
+| 5.5 | ~~Rate limit the board key~~ | **DONE** — Durable Object limiter, 30/min then 429 | `BoardRateLimiter` |
 
 ## 6. Bot pages
 
@@ -89,6 +92,20 @@ Pages project.
 | 6.2 | **Size guard** | A page with inline base64 images can be huge | Refuse >2 MB with a clear message; suggest linking instead of inlining. |
 | 6.3 | **CSP by default** | Pages served from `qwenpaw-pages.pages.dev` run inline JS | Add a default `Content-Security-Policy` header in the Pages config; document that inline `<script>` needs a nonce or `'unsafe-inline'`. |
 | 6.4 | **Preview before publish** | The user cannot see the page until it is public | Deploy to a preview branch first (Pages supports preview deployments), show the URL, then promote. |
+
+## 6b. Decision models (Jev / Drex)
+
+Code exists (`features/decisions/`, T84) and is blocked only on a key. The
+design decisions already made, so nobody re-litigates them:
+
+| # | Decision | Why |
+|---|---|---|
+| 6b.1 | One client for both providers | they share `/v1/systemone`; two clients would let fallback and calibration diverge |
+| 6b.2 | No key = no call, ever | a decision model that answers without being asked is worse than none |
+| 6b.3 | Approval sees the tool name + args, never the conversation | sending a chat log to a third party to judge a shell command leaks more than it protects |
+| 6b.4 ⚑ | **Low-confidence `allow` is coerced to `ask`** | a safety gate that fails open on uncertainty is not a gate |
+| 6b.5 ⚑ | **Calibrate before trusting a threshold** | "calibrated" is the vendor's claim; Brier > 0.25 means worse than guessing |
+| 6b.6 | Routing uses it only after the free lexical router abstains | why pay for a call the lexical router already answered? |
 
 ## 7. Approvals & guardrails
 
@@ -103,7 +120,7 @@ Pages project.
 
 | # | Improvement | Why | How |
 |---|---|---|---|
-| 8.1 ⚑ | **Quota dashboard** | The KV burn was invisible until it broke writes | One endpoint that reports today's writes/reads per service against the free limits, plus a `preflight` check. Data from each Worker's own counters (D1 `budget` table). |
+| 8.1 ⚑ | **Quota dashboard** | The KV burn was invisible until it broke writes | The pieces exist — `write_budget` (atomic, D1) and `budgetAllowed` — but nothing *renders* them. Add a `/desktop/__budget` read + a row on the status page. |
 | 8.2 ⚑ | **Token accounting per feature** | `token_usage.json` exists; nobody reads it | `features/board/refresh-cost.py` already produces `cost-data.json`. Surface it in the activity feed with a 7-day trend and a per-feature split. |
 | 8.3 | **Alert at 50%/80% of any daily quota** | A quota cliff should be a slope | Worker cron checks the counters and writes to the activity feed; the status page shows a banner. |
 | 8.4 | **Latency SLO per endpoint** | "Take control feels slow" is not measurable today | Record p50/p95 for `__status`, `__screen`, `__takeover` in D1; show on the status page. |

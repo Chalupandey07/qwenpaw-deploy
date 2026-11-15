@@ -154,6 +154,31 @@ Step 4 is the one most agents skip, and it is the one that makes step 6
 possible. "How will I know this worked?" asked *before* acting is the whole
 difference between an agent that reports progress and one that reports truth.
 
+## 7b. Two mechanisms added since this was written
+
+**Consolidation, not generation** (`features/memory/consolidate.py`). The gap
+was never "produce lessons" — it was "carry experience forward". A model asked
+to extract lessons will produce plausible ones that no failure justifies.
+Rules that match the *shapes* preceding a real lesson (corrections, hard
+limits, root causes, measurements) plus a human accept step produce fewer and
+better entries. Zero candidates on a quiet day is the correct answer, and the
+tool says so.
+
+**Decision models as narrow gates, not oracles** (`features/decisions/`).
+Cheap, fast, and only for questions with a small answer space: approve/deny,
+triage, route, wake. Three properties make them safe to use:
+
+  1. no key = no call — never a fabricated answer;
+  2. a low-confidence `allow` becomes `ask` — a gate that fails open on
+     uncertainty is not a gate;
+  3. calibrate before trusting a threshold — "calibrated" is the vendor's
+     claim, and a Brier score above 0.25 means the model is worse than
+     guessing.
+
+The third is the one people skip. A decision model's output *looks* like
+probability, which makes an uncalibrated threshold feel principled when it is
+arbitrary.
+
 ## 8. What I would not build
 
 - **A bigger autonomous loop.** The bottleneck is belief quality, not
