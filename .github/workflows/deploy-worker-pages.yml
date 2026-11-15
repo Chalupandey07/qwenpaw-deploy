@@ -1,9 +1,24 @@
+# Deploys the keep-alive Worker and BOTH Pages projects on every push that
+# touches them. This mirrors the connector deploy (scripts/deploy-pages-proxy.py):
+# the Pages projects keep their dashboard bindings (D1, KV, vars) — this
+# workflow only ships the code (_worker.js + static files).
+#
+# Secrets (repo Settings > Secrets and variables > Actions):
+#   CLOUDFLARE_API_TOKEN  — dedicated token "github-actions-qwenpaw-deploy",
+#                           Workers Scripts + Pages + D1 + Workers KV (read+write),
+#                           account-scoped. Revoke/rotate in the Cloudflare dashboard.
+#   CLOUDFLARE_ACCOUNT_ID — ca85fe3692c3f378200950999df9a35e
+# The live deploy is verified by Muse after every run; a green run here is
+# necessary, not sufficient.
 name: Deploy Worker + Pages
 on:
   push:
     branches: [main]
     paths: ["worker/**", "pages/**"]
   workflow_dispatch: {}
+concurrency:
+  group: deploy-worker-pages
+  cancel-in-progress: false
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -12,13 +27,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Deploy Worker
+      - name: Deploy keep-alive Worker
         run: npx wrangler deploy --config worker/wrangler.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Deploy Pages
-        run: npx wrangler pages deploy pages/public --project-name qwenpaw-frontend
+      - name: Deploy Pages (qwenpawx)
+        run: npx wrangler pages deploy pages/public --project-name qwenpawx --branch main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Deploy Pages (qwenpaw-frontend)
+        run: npx wrangler pages deploy pages/public --project-name qwenpaw-frontend --branch main
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
