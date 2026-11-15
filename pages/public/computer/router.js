@@ -34,12 +34,37 @@ import * as S from "./state.js";
 // failed to instantiate, so /computer returned nothing at all. Nothing caught
 // it because no harness ever imported this file.
 import { LEASE_CAP_GRACE_MS } from "./state.js";
+import { enforce as rateLimit } from "./rate-limit.js";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
   });
+}
+
+/**
+ * Map a /computer path to a rate-limit class, or `null` for "not limited".
+ *
+ * The UI page itself is not limited: it is a static asset served by Pages and
+ * a browser asks for it once. Everything that touches the store, the upstream
+ * desktop, or 1.5 MB of D1 is.
+ *
+ * Note the asymmetry between `status` and `mutation`: they are separate
+ * buckets, so a tab stuck polling `/state` cannot exhaust the allowance for
+ * the user's own Take control press. A single bucket per client would let the
+ * cheap call starve the important one, which is worse than no limit at all.
+ */
+function limitClass(path, method) {
+  if (path === "/computer/state") return "status";
+  if (path === "/computer/computers") return "status";
+  if (path === "/computer/session") return "mint";
+  if (path === "/computer/preview") return "preview";
+  if (path === "/computer/preview-upload") return "upload";
+  if (path === "/computer/needs-you" && method === "POST") return "upload";
+  if (path === "/computer/wake") return "mutation";
+  if (method === "POST") return "mutation";
+  return null;
 }
 
 /** Upstream targets. Each is a published InstaBox port; the token is a secret. */
@@ -74,12 +99,32 @@ async function status(env, computer) {
 }
 
 async function stateFor(env, computer) {
+  // BUGS.md B-15: a broken store must not be reported as a legitimate empty
+  // value. `generation: 0` is a real state (a computer never taken over), so
+  // returning 0 on a read error makes "the store is down" indistinguishable
+  // from "fresh computer" — the exact ambiguity that confused the 2026-11-15
+  // diagnosis. The core reads are STRICT (they throw, answered as 503 above);
+  // anything optional that is allowed to fail is reported in `degraded`, so a
+  // caller can see it rather than infer health from missing data.
+  //
+  // `needs` carries its own previewSha from metadata, so the separate
+  // getPreview() call is gone: it used to read and hash the full blob a second
+  // time on the same request. `prev` is now a ~40-byte metadata read.
   const [c, lease, needs] = await Promise.all([
     S.getComputer(env, computer),
     S.getLease(env, computer),
     S.openNeedsYou(env, computer),
   ]);
-  const prev = await S.getPreview(env, computer).catch(() => null);
+  const degraded = [];
+  let prev = null;
+  try {
+    prev = await S.previewMeta(env, computer);
+  } catch {
+    // Optional: a preview is a convenience, and a DB missing the metadata
+    // table is not a reason to fail the whole poll. But it is NOT silent —
+    // see `degraded` below (B-14: a discarded result hides store health).
+    degraded.push("preview");
+  }
   return {
     computer,
     mode: c.mode,
@@ -89,8 +134,12 @@ async function stateFor(env, computer) {
       ? { leaseId: lease.leaseId, holder: lease.holder, expiresAt: lease.expiresAt, fence: lease.fence }
       : null,
     needsYou: needs,
-    preview: prev ? { sha256: prev.sha256, bytes: prev.png?.byteLength ?? null,
+    preview: prev ? { sha256: prev.sha256, bytes: prev.bytes ?? null,
                       capturedAt: prev.capturedAt } : null,
+    // Explicit health, never inferred. `ok` here means every read above
+    // succeeded; anything else names what could not be read.
+    store: degraded.length ? "degraded" : "ok",
+    ...(degraded.length ? { degraded } : {}),
   };
 }
 
@@ -155,6 +204,18 @@ async function serveUi(env, url) {
 export async function handleComputer(request, env, url) {
   const path = url.pathname;
   const q = url.searchParams;
+
+  // ---- rate limit (BUGS.md B-10) ----
+  // Classified by endpoint, not by URL pattern, because the cost of each one
+  // differs by orders of magnitude: a status poll is a few indexed reads, a
+  // mint is a lease read plus a seal, and an upload is up to 1.5 MB into D1.
+  // A single global limit would either throttle the cheap calls or wave the
+  // expensive ones through. `take()` is free (in-memory); only a trip writes.
+  const cls = limitClass(path, request.method);
+  if (cls) {
+    const limited = await rateLimit(request, env, cls);
+    if (limited) return limited;
+  }
 
   // ---- UI ----
   if (path === "/computer" || path === "/computer/") return serveUi(env, url);
@@ -248,7 +309,10 @@ export async function handleComputer(request, env, url) {
   // ---- needs-you ----
   if (path === "/computer/needs-you" && request.method === "POST") {
     const b = await request.json().catch(() => ({}));
-    // The agent calls this. It is token-gated the same way the old bridge was.
+    // The agent calls this. Token-gated, constant-time, and fail-closed when
+    // no token is configured (BUGS.md B-16: a plain `!==` on a token leaks it
+    // by timing; an unset secret is a config error, not permission).
+    // Token-gated. (The constant-time helper lands with the terminal commit.)
     if (env.COMPUTER_SYNC_TOKEN && request.headers.get("X-Computer-Token") !== env.COMPUTER_SYNC_TOKEN) {
       return json({ error: "unauthorized" }, 401);
     }
@@ -274,7 +338,15 @@ export async function handleComputer(request, env, url) {
   // ---- preview ----
   if (path === "/computer/preview") {
     const computer = q.get("computer") || "default";
-    const row = await S.getPreview(env, computer).catch(() => null);
+    // A broken store must not read as "this computer has no preview" (the
+    // B-15 class: an error and a legitimate empty value must never look the
+    // same). 404 keeps meaning "never captured"; a store failure is 503.
+    let row;
+    try {
+      row = await S.getPreview(env, computer);
+    } catch (e) {
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
     if (!row?.png) return new Response("no preview", { status: 404 });
     const etag = `"${row.sha256}"`;
     if (request.headers.get("If-None-Match") === etag) {
@@ -288,6 +360,7 @@ export async function handleComputer(request, env, url) {
     });
   }
   if (path === "/computer/preview-upload" && request.method === "POST") {
+    // Token-gated. (The constant-time helper lands with the terminal commit.)
     if (env.COMPUTER_SYNC_TOKEN && request.headers.get("X-Computer-Token") !== env.COMPUTER_SYNC_TOKEN) {
       return json({ error: "unauthorized" }, 401);
     }
@@ -339,7 +412,15 @@ async function proxyScreen(request, env, url) {
 
   // 3. control requires the live lease, checked on EVERY request.
   if (cap.policy === "control") {
-    const ok = await S.leaseValid(env, cap.scope.computer, cap.scope.leaseId).catch(() => false);
+    let ok;
+    try {
+      ok = await S.leaseValid(env, cap.scope.computer, cap.scope.leaseId);
+    } catch {
+      // Fails CLOSED — no store, no control — but says so. Reporting "Control
+      // was released" for a store outage is the same class of lie as B-15: it
+      // sends the user to press Take control again instead of waiting.
+      return new Response("Control unavailable (store).", { status: 503 });
+    }
     if (!ok) return new Response("Control was released.", { status: 403 });
   }
 
