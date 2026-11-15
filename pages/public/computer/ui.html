@@ -464,6 +464,24 @@
       el.ovHeld.hidden = false;
     }
     state.screenUrl = s.data.url;
+    // DIAGNOSTIC (2026-11-16): the iframe reports 403 "Screen link expired or
+    // invalid." while the same URL returns 200 from curl. Fetch the URL from
+    // the page itself and show the real status, so we know whether the
+    // browser's request differs from curl's. Remove once diagnosed.
+    try {
+      const probe = await fetch(state.screenUrl, { cache: "no-store" });
+      const probeText = (await probe.text()).slice(0, 120);
+      const bar = document.getElementById("jsErrorBar");
+      if (bar) {
+        bar.hidden = false;
+        bar.textContent = "Screen probe: fetch " + state.screenUrl.slice(0, 60) + "… -> HTTP " + probe.status + " : " + probeText;
+      }
+      if (!probe.ok) { setPhase("failed", "Screen probe HTTP " + probe.status + ": " + probeText); return; }
+    } catch (e) {
+      const bar = document.getElementById("jsErrorBar");
+      if (bar) { bar.hidden = false; bar.textContent = "Screen probe: fetch threw " + (e && e.message); }
+      setPhase("failed", "Screen probe threw: " + (e && e.message)); return;
+    }
     mountFrames();
   }
 
