@@ -79,9 +79,14 @@ Gate harness went 116 → 127 checks this pass. Machine-free suite: **472 checks
 
 Move storage off KV. Token has D1:Edit; zero databases exist.
 
-- **TODO**: schema (`features/storage/`), backfill of live state (lease,
-  generation, needs_you, taught skills, modes), dual-write one day, cut over,
-  remove KV.
+- **CODE**: `features/storage/schema.sql` — 11 tables, validated by
+  `test_schema.py` (T73, 15 checks) against SQLite: applies cleanly, is
+  idempotent, makes one-lease-per-computer an engine guarantee, enforces a
+  strict 0/1 `follow_up`, and proves **every hot query is indexed** (no
+  full-table scan). Design rules and the takeover CAS in
+  `features/storage/README.md`.
+- **TODO**: the Worker rewrite to read/write D1; the backfill script; the R2
+  binding + `/__preview` ETag path; deleting the KV namespaces (last).
 - **Design decision already made:** preview PNGs go to **R2, not D1**. D1's
   2 MB row cap is not the blocker (previews are 243–707 KB); the blocker is
   volume — 2 computers changing every 120 s is ~0.79 GB/day against 5 GB
@@ -90,9 +95,10 @@ Move storage off KV. Token has D1:Edit; zero databases exist.
 - **Why it matters beyond quota:** B-1, B-3, B-7, B-8, B-9 and B-13 are all
   symptoms of KV's eventual consistency and single-key model. Six defect
   classes disappear with the migration.
-- **Note:** `features/storage/` was referenced as "work in progress" but
-  **was not in the repo** when this was written (no branch, no ref). The plan
-  above is designed from the live code; reconcile when it lands.
+- **Note:** `features/storage/` was referenced as "work in progress" but was
+  **not in the repo** on any ref when the design work started. The schema here
+  was derived from the live Worker code, not from that missing work. Reconcile
+  if it lands later.
 
 ## Phase 3 — Memory (CODE, needs one live run)
 

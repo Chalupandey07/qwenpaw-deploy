@@ -774,6 +774,27 @@ the whole architecture, and both had a real burn before they were fixed.
 
 ---
 
+## (v) Storage — D1 schema (local, no deploy)
+
+### T73 — D1 schema: engine guarantees + indexed hot queries
+- Area: `storage` · Method: `protocol`
+- Check (local): `python3 features/storage/test_schema.py`
+- Expected: `15 passed, 0 failed`. Applies `features/storage/schema.sql` to a
+  fresh SQLite database (D1's engine, so this is a real compatibility check),
+  proves it is idempotent, and asserts the properties the migration depends on:
+  **one lease per computer is an engine guarantee** (a second INSERT raises),
+  `follow_up` rejects a non-0/1 value (the old board coerced `"false"` → true),
+  keepalive is a single row, `preview` has **no bytes column**, and — most
+  importantly — **every hot query is indexed**: `EXPLAIN QUERY PLAN` shows no
+  full-table scan for the needs-you, lease, routine-run, taught-skill, board,
+  comment and pending-expiry queries. On D1 an unindexed query is a row-read
+  *charge*, so a missing index is a billing bug, not just slowness.
+- Evidence: the final tally line.
+- **Not covered:** actual D1 behaviour (no account here), the Worker rewrite,
+  and the R2 binding. Muse deploys and verifies.
+
+---
+
 ## Out of scope for this catalogue (do not add tests here without a new decision)
 
 - **JEV / Drex** — not implemented (PLAN.md Phase 2/3). No tests until they land.

@@ -92,7 +92,7 @@ Last updated: 2026-11-15 (after the correctness pass).
 
 | Want | Design lives in | Effort |
 |---|---|---|
-| **D1 migration** (leases, generations, modes, needs-you, skills, board, routines) | `PLAN.md` Phase 2, `BUGS.md` | Large — highest value |
+| **D1 migration** — schema DONE, Worker rewrite TODO | `features/storage/` | Schema 15 checks (T73); rewrite is the larger half |
 | **R2 for preview images** | `PLAN.md` Phase 2 | Small, follows D1 |
 | Per-computer needs-you records (B-2) | `BUGS.md` | Small |
 | Rate limits on desktop endpoints (B-10) | `BUGS.md` | Small |

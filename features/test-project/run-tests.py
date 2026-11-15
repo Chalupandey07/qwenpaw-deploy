@@ -1151,6 +1151,15 @@ def t64():
             f"tally={m.group(0) if m else 'none'}")
 
 
+def t73():
+    """D1 schema: applies cleanly, one-lease guarantee, all hot queries indexed.
+
+    15 checks against SQLite (D1's engine). The index assertions matter
+    because on D1 an unindexed query is a row-READ charge, not just slowness.
+    """
+    return _py_harness("features/storage/test_schema.py", 15)
+
+
 def t72():
     """Content-aware routing: classification, abstention, bounded scan.
 
@@ -1427,6 +1436,7 @@ TESTS = [
     ("T70", "docs: every relative link + repo path resolves", "docs", "protocol", t70),
     ("T71", "pricing resolver: honest UNKNOWN, optional catalogue", "cost", "protocol", t71),
     ("T72", "content-aware routing: classify, abstain, bounded scan", "routing", "protocol", t72),
+    ("T73", "D1 schema: engine guarantees + indexed hot queries", "storage", "protocol", t73),
     ("T50", "__status per computer, full (cookie)", "desktop", "browser", None),
     ("T51", "side-panel renders beside chat", "desktop", "browser", None),
     ("T52", "/desktop chrome: take/release + terminal shell", "desktop", "browser", None),

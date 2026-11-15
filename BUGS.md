@@ -413,14 +413,14 @@ local harness runs.
 
 ## Part 3 — Summary
 
-| Severity | Open | Of which new this pass |
-|---|---|---|
-| P0 | 1 | 1 (B-1) |
-| P1 | 3 | 3 (B-2, B-3, B-4) |
-| P2 | 8 | 8 (B-5, B-6, B-8…B-13) — B-7 fixed |
-| P3 | 5 | 5 (B-14…B-18) |
-| **Total open** | **14** | **14** (4 fixed in code this pass: B-1, B-4, B-7, B-9) |
-| Fixed (audit) | 15 | — |
+| Severity | Open | Fixed in code this pass | Ids |
+|---|---|---|---|
+| P0 | **0** | 1 | B-1 fixed |
+| P1 | **2** | 1 | open: B-2, B-3 · fixed: B-4 |
+| P2 | **7** | 2 | open: B-5, B-6, B-8, B-10, B-11, B-12, B-13 · fixed: B-7, B-9 |
+| P3 | **5** | 0 | B-14…B-18 |
+| **Total** | **14 open** | **4 fixed** | of 18 new findings this pass |
+| Audit findings (earlier) | — | 15 of 19 | see Part 1 |
 
 **Fix order.** B-1 (security path, hides everything else) → B-3 (data loss)
 → B-2, B-4 (leaked authority) → then the D1 migration, which removes B-1's
