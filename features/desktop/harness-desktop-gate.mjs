@@ -73,6 +73,22 @@ function fakeRfbSocket() {
   };
 }
 
+// The real InstaBox proxy honors the FIRST __Host-instabox_port_auth
+// cookie when several are sent (per-port cookie, first wins). The mock
+// must do the same, or a stale cookie forwarded first would look
+// harmless here while 401ing in production (fix round 2).
+function firstProxyCookie(cookieHeader) {
+  if (!cookieHeader) return null;
+  for (const pair of cookieHeader.split(";")) {
+    const [k, ...rest] = pair.trim().split("=");
+    if (k === "__Host-instabox_port_auth") return rest.join("=");
+  }
+  return null;
+}
+
+// Keep-alive /status answer (test 38 flips it to "cooldown").
+let mockKeepaliveStatus = "up";
+
 globalThis.fetch = async (input, init) => {
   const req = input instanceof Request ? input : new Request(input, init);
   const url = req.url;
@@ -108,10 +124,10 @@ globalThis.fetch = async (input, init) => {
     // NOTE: a 101 cannot be built with `new Response(null, {status: 101})`
     // (Node rejects statuses outside 200-599), so this returns a plain
     // object with the fields the Worker reads: status, headers, webSocket.
-    if (req.headers.get("Upgrade") === "websocket" && u.pathname === "/websockify" && cookie.includes("__Host-instabox_port_auth=test-auth")) {
+    if (req.headers.get("Upgrade") === "websocket" && u.pathname === "/websockify" && firstProxyCookie(cookie) === "test-auth") {
       return { status: 101, headers: new Headers(), webSocket: fakeRfbSocket() };
     }
-    if (cookie.includes("__Host-instabox_port_auth=test-auth")) {
+    if (firstProxyCookie(cookie) === "test-auth") {
       const isJs = u.pathname.endsWith(".js");
       const isVnc = u.pathname.endsWith("vnc.html");
       return new Response(isJs ? "ui.js content" : isVnc ? "<html><head></head><body>vnc</body></html>" : "<html>vnc</html>", {
@@ -122,7 +138,7 @@ globalThis.fetch = async (input, init) => {
     return new Response("unauthorized", { status: 401 });
   }
   if (url.startsWith(KEEPALIVE_URL + "/status")) {
-    return new Response(JSON.stringify({ status: "up" }), { status: 200, headers: { "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ status: mockKeepaliveStatus }), { status: 200, headers: { "Content-Type": "application/json" } });
   }
   if (url.startsWith(KEEPALIVE_URL + "/ping")) {
     return new Response(JSON.stringify({ status: "up" }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -626,6 +642,53 @@ r = await call("/desktop/__screen", { method: "POST", headers: { "Content-Type":
 check("36 __screen control computer=qa with the default leaseId -> 403 no_lease",
   r.status === 403 && (await r.json()).error === "no_lease", `status=${r.status}`);
 await call("/desktop/__release", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ leaseId: defLease36, computer: "default" }) });
+
+// --- Fix round 2 (2026-11-15): the stream failure itself ----------------
+// The root causes, proven live: (a) Workers fetch() auto-follows the
+// proxy's 303, so fetchDesktopOrigin never saw it and the follow-up
+// 401'd ("origin_auth" while the desktop was up); (b) the browser's
+// Cookie header was forwarded FIRST, so a stale per-port proxy cookie
+// poisoned every fetch to a different origin (502s after the first
+// control session, Private never rendering); (c) a failed probe reported
+// "asleep", telling the user to Wake a machine that was already awake.
+// (a) is covered by harness-desktop-origin.mjs (real fetch + local mock
+// proxy); (b) and (c) are covered here too.
+// 37. A throwing origin with the machine up -> "down", never "asleep".
+mockFailOrigins.add(DESKTOP_VIEW_ORIGIN);
+r = await call("/desktop/__status", { headers: cookieHdr });
+j = await r.json();
+check("37 __status with the origin dead + machine up -> desktop down (not asleep)",
+  r.status === 200 && j.desktop === "down",
+  `body=${JSON.stringify(j)}`);
+mockFailOrigins.delete(DESKTOP_VIEW_ORIGIN);
+// 38. Same dead origin, but the machine itself is in cooldown: now
+// "asleep" is honest (the machine is the problem, Wake is the path).
+mockFailOrigins.add(DESKTOP_VIEW_ORIGIN);
+mockKeepaliveStatus = "cooldown";
+r = await call("/desktop/__status", { headers: cookieHdr });
+j = await r.json();
+check("38 __status with the origin dead + machine cooldown -> desktop asleep",
+  r.status === 200 && j.desktop === "asleep",
+  `body=${JSON.stringify(j)}`);
+mockFailOrigins.delete(DESKTOP_VIEW_ORIGIN);
+mockKeepaliveStatus = "up";
+// 39. A stale proxy-auth cookie in the browser jar must not poison the
+// session fetch: the Worker drops the browser's Cookie header and does
+// its own _token dance. With the old code this 502'd (stale cookie
+// forwarded first, then first again after the 303).
+r = await call("/desktop/__screen", { method: "POST", headers: { "Content-Type": "application/json", ...cookieHdr }, body: JSON.stringify({ mode: "view", computer: "default" }) });
+const staleCap = (await r.json()).url;
+r = await call(staleCap + "/vnc.html", { headers: { Cookie: `${goodCookie}; __Host-instabox_port_auth=stale-wrong-value` } });
+body = await r.text();
+check("39 session vnc.html with a stale browser proxy cookie -> 200 + shim (not 502)",
+  r.status === 200 && body.includes("__QWENPAW_DESKTOP_MODE"),
+  `status=${r.status}`);
+// 39b. The session response must not set a proxy-auth cookie on the
+// browser (the dance cookies stay server-side).
+const outCookies39 = typeof r.headers.getSetCookie === "function" ? r.headers.getSetCookie() : (r.headers.get("Set-Cookie") ? [r.headers.get("Set-Cookie")] : []);
+check("39b session response sets NO __Host-instabox_port_auth cookie",
+  !outCookies39.some((c) => c.split(";")[0].trim().toLowerCase().startsWith("__host-instabox_port_auth=")),
+  `set-cookie=${JSON.stringify(outCookies39)}`);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
