@@ -924,7 +924,7 @@ dead origin + machine cooldown → "asleep", stale browser cookie →
 39 fail on the pre-fix worker (37 → "asleep", 39 → 502). Gate 105/105,
 chrome harness 13/13 (new D-h/D-i/D-j for the down/origin_auth
 overlays; the old chrome has 0 occurrences of those branches).
-Deployed qwenpawx `<id>` + frontend `<id>` (2026-11-15 ~01:2x UTC).
+Deployed qwenpawx `cdcebd2f` + frontend `ce2ffbcc` (2026-11-15 01:18 UTC, both deploy success).
 Cleanup done in this round: diagnostic scratch publish port 9999
 (`pv-6jqdkvqiyfigkpab2di4b7qagu`) deleted (204, verified gone); leaked
 websockify child pid 121561 (stale test WS from 00:09 UTC) killed.
