@@ -1,0 +1,12 @@
+{
+  "exported_at": "2026-11-15T08:45:19Z",
+  "namespace": "90508a020d27455b83d137f8c0323774",
+  "namespace_title": "qwenpaw-board-tickets",
+  "key": "tickets",
+  "kv_updated_at": "2026-11-14T19:43:31.275Z",
+  "ticket_count": 0,
+  "value": {
+    "tickets": [],
+    "updated_at": "2026-11-14T19:43:31.275Z"
+  }
+}
