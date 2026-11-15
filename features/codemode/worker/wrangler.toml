@@ -12,12 +12,21 @@ compatibility_date = "2026-11-14"
 #     the benchmark justifies it. The runtime path needs a `ctx.exports`
 #     facet class, which requires the real @cloudflare/codemode build step.
 #
-# Free-tier note: `worker_loaders` availability is NOT documented. It is
-# commented out on purpose. Uncomment, deploy, and check /health for
-# loader="bound" before believing the sandbox path can work at all.
+# Free-tier note: `worker_loaders` availability is NOT documented. The binding
+# is ENABLED here on 2026-11-16 so a deploy can actually establish the fact —
+# a commented-out binding cannot answer the question. This is a code change
+# only; the Worker has NOT been deployed.
+#
+# Deploying it is still the experiment, not the conclusion: after `wrangler
+# deploy`, `GET /health` must report loader: "bound". If the free tier rejects
+# the binding, the deploy fails and we know the answer without shipping
+# anything — which is why enabling it is safe to try and why the code must not
+# assume it exists. `src/index.js` feature-detects `env.LOADER` and answers a
+# named 503 when it is absent, so a rejected binding leaves a working Worker
+# that says what is missing rather than a broken one.
 
-# [[worker_loaders]]
-# binding = "LOADER"
+[[worker_loaders]]
+binding = "LOADER"
 
 [vars]
 # Set with: wrangler secret put CODEMODE_TOKEN      (required for /api/run)

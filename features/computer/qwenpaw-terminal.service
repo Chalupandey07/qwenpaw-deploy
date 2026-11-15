@@ -1,0 +1,86 @@
+# Terminal for the computer — the PTY server behind the Terminal tab.
+#
+# WHAT THIS RUNS
+#   features/computer/terminal-server.py, synced to
+#   /data/home/qwenpaw/terminal-server.py on the machine. It listens on a Unix
+#   socket; websockify terminates the browser's WebSocket and dials it. One
+#   connection = one login shell on a pseudo-terminal.
+#
+# WHY THE UNIT IS SHAPED THIS WAY
+#
+#   RuntimeDirectory=qwenpaw-terminal
+#     systemd creates /run/qwenpaw-terminal (mode 0755, owned by the service
+#     user) on start and REMOVES it on stop. That is the whole reason the
+#     socket lives there and not in /tmp: a stale socket from a crashed process
+#     is the classic "it says running but nothing connects" failure, and
+#     RuntimeDirectory cannot go stale. It also means the socket path in the
+#     Worker's COMPUTER_TERMINAL_ORIGIN must match --socket exactly.
+#
+#   EnvironmentFile=/data/home/qwenpaw/.env
+#     The same file the rest of the machine services read. TERMINAL_SECRET /
+#     DISPLAY / PATH come from here, mode 600. No secret is in this unit.
+#
+#   --secret-file (the server's own default)
+#     /data/home/qwenpaw/terminal.secret, mode 0600. The server REFUSES TO
+#     START without it (exit 2) rather than serving a shell it cannot
+#     lease-bound — a shell that cannot be given a signed deadline is a shell
+#     that outlives its lease, which is BUGS.md B-4. If this unit crash-loops
+#     with exit 2, the secret is missing, and that is the correct behaviour.
+#
+#   Restart=always / RestartSec=10
+#     A terminal that dies must come back without a human, but not in a tight
+#     loop: 10 s keeps a genuinely broken config from filling the journal.
+#
+#   After=network-online.target (and Wants=)
+#     After= alone only orders the start; the service is also WANTED by the
+#     online target so a boot that reaches multi-user before the network is
+#     up still starts it afterwards. For a local Unix socket this is not
+#     strictly required, but it matches the other machine services and costs
+#     nothing.
+#
+#   No Type=notify, no PIDFile
+#     The server forks per connection (one shell per connection) and the
+#     parent stays in accept(). Type=simple is correct and tells systemd to
+#     track the parent, which is what should be restarted.
+#
+# DELIBERATELY NOT SET
+#   User= — the install path is root-owned and the shell is intended to run as
+#     the same user the rest of the box services use. If the machine runs this
+#     as a non-root user, add `User=` here; do not change the socket path,
+#     because RuntimeDirectory's ownership follows the service user.
+#   MemoryMax= — a login shell has no predictable footprint (a build in it can
+#     use GBs). The preview uploader has a 64M cap because it reads one PNG;
+#     the same cap here would kill a legitimate `make`. Left uncapped on
+#     purpose, and stated so nobody "fixes" it by copying the uploader's line.
+#
+# Install (Muse, machine side):
+#   cp features/computer/qwenpaw-terminal.service /etc/systemd/system/
+#   install -m 0600 /dev/null /data/home/qwenpaw/terminal.secret   # then write the secret
+#   systemctl daemon-reload && systemctl enable --now qwenpaw-terminal
+#   systemctl status qwenpaw-terminal        # expect: active (running)
+#   ls -l /run/qwenpaw-terminal/terminal.sock
+#
+# Verify WITHOUT a browser:
+#   printf 'default test-lease %s %s\n' "$(( $(date +%s%3N) + 60000 ))" "$sig" \
+#     | socat - UNIX-CONNECT:/run/qwenpaw-terminal/terminal.sock
+# A bad signature must be refused and logged; see terminal-server.py --selftest
+# for the 26 behaviour checks that do not need the machine at all.
+
+[Unit]
+Description=QwenPaw computer terminal (PTY server behind the Terminal tab)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/data/home/qwenpaw/.env
+RuntimeDirectory=qwenpaw-terminal
+RuntimeDirectoryMode=0755
+ExecStart=/usr/bin/python3 /data/home/qwenpaw/terminal-server.py --socket /run/qwenpaw-terminal/terminal.sock
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

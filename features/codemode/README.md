@@ -11,7 +11,7 @@ Research note: `features/research/code-mode.md`. Package:
 
 | Piece | State |
 |---|---|
-| Measured classic-vs-Code-Mode comparison (30 tools, 10-step job) | **done, 59 harness checks green, no deploy needed** |
+| Measured classic-vs-Code-Mode comparison (30 tools, 10-step job) | **done, 68 harness checks green, no deploy needed** |
 | HTML status page reporting the measurement + deploy-time state | **done** |
 | Token-authenticated `POST /api/run`, fail-closed when unset | **done** |
 | Audit trail of run attempts (in-memory) | **done** |
@@ -38,8 +38,11 @@ What it does now:
 
 The two facts only Muse can establish:
 1. **`worker_loaders` on the free tier is undocumented.** `wrangler.toml`
-   keeps the binding commented out; uncomment, deploy, and check `/health`
-   for `loader: "bound"`.
+   now DECLARES the binding (enabled 2026-11-16, code change only; the Worker
+   is not deployed). Deploy and check `/health` for `loader: "bound"` — a
+   rejected binding fails the deploy, which settles the question without
+   shipping anything, because `src/index.js` feature-detects `env.LOADER` and
+   answers a named 503 when it is absent.
 2. **The MCP SSE endpoint is not reachable from Cloudflare's edge.** The
    computer-use MCP proxy listens on `172.18.0.1:8898` *inside* the VM and
    needs a published, token-authenticated InstaBox port.
@@ -88,7 +91,7 @@ the context.
 ```
 features/codemode/
   README.md                    this file
-  harness-codemode.mjs         59 checks, runs the real Worker in Node
+  harness-codemode.mjs         68 checks, runs the real Worker in Node
   worker/
     wrangler.toml              no KV, no DO (see the comments for why)
     src/index.js               the Worker
@@ -98,7 +101,7 @@ features/codemode/
 
 ```bash
 node features/codemode/harness-codemode.mjs
-# -> 59 passed, 0 failed
+# -> 68 passed, 0 failed
 ```
 
 It imports the **real** `worker/src/index.js` — the same bytes that get
@@ -115,7 +118,8 @@ npx wrangler deploy                       # creates qwenpaw-codemode
 curl https://qwenpaw-codemode.<subdomain>.workers.dev/api/bench
 
 # only if you want the live sandbox path:
-#   1. uncomment [[worker_loaders]] in wrangler.toml, deploy, check /health
+#   1. [[worker_loaders]] is now ENABLED in wrangler.toml (2026-11-16) so the
+#      deploy can settle the free-tier question; check /health for loader:"bound"
 #   2. publish the MCP SSE port with a token (pattern: 6080/6081)
 #   3. wrangler secret put MCP_SSE_URL / MCP_SSE_TOKEN / CODEMODE_TOKEN
 ```
