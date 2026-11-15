@@ -1,11 +1,25 @@
-// qwenpaw-board — tiny ticket board for QwenPaw (Cloudflare Worker + KV).
-// Free-tier safe: one KV key ("tickets") holds the whole board as JSON.
+// qwenpaw-board — tiny ticket board for QwenPaw (Cloudflare Worker + D1).
+// Free-tier safe: one D1 row per ticket in qwenpaw-state (no more
+// single-KV-value board — KV's 1,000 writes/day account cap was burned
+// twice in 2026-11-15 and every board write 500'd). KV stays as the
+// fallback when USE_D1 is not "1" or the QWENPAW_DB binding is absent.
 // No external resources, no build step, English only.
 //
 // Auth: every /api/* call needs the shared board key, either as
 // ?key=... or header X-Board-Key. The key lives in the Worker secret
 // BOARD_TOKEN (set with the Cloudflare API, never in git). The HTML page
 // itself is public; it asks for the key once and keeps it in localStorage.
+//
+// Rate limiting (fix 2026-11-15, audit bug board-no-rate-limit-auth):
+// failed-auth attempts are throttled at 30/min/IP before auth
+// (key-guessing floods cost zero D1 rows); authenticated mutations are
+// capped at 30/min/IP + 1,000/day/IP. Both are counted by ONE Durable
+// Object (BoardRateLimiter) — a singleton, so counts are exact. The
+// first version used in-memory per-isolate counters, but live testing
+// proved they never fire (a low-traffic Worker rotates isolates per
+// request: 90 unauthenticated POSTs -> 0x429), so the DO is the real
+// limiter; the in-memory bucket is only the fallback when the DO is
+// unbound. Over-cap answers are 429 with Retry-After.
 //
 // Columns (Rakazo parity): todo / in-progress / in-review / blocked /
 // done / wont-do ("Won't do").
@@ -23,9 +37,11 @@
 //   GET    /api/tickets/:id/qwenpaw-task   {task_text, curl, api_url, note, sent}
 //   GET    /health
 //
-// KV note: Cloudflare KV is eventually consistent. A mutation response
-// already carries the authoritative ticket, so the UI updates from the
-// response and only re-fetches in the background a few seconds later.
+// D1 note: D1 is strongly consistent (read replication disabled), so a
+// mutation response is authoritative immediately — no stale-read lag
+// like the old KV board (worst observed ~60 s). The UI still updates
+// optimistically from the mutation response and re-fetches in the
+// background a few seconds later, so other tabs converge too.
 
 export const COLUMNS = [
   { id: "todo", label: "To do" },
@@ -46,13 +62,14 @@ const MAX_COMMENT_LEN = 1000;
 const CONSOLE_URL = "https://qwenpawx.pages.dev";
 const CONSOLE_CHAT_API = CONSOLE_URL + "/api/console/chat";
 
-function json(data, status = 200) {
+function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
       "x-content-type-options": "nosniff",
       "cache-control": "no-store",
+      ...extraHeaders,
     },
   });
 }
@@ -81,7 +98,79 @@ function authed(request, env) {
   return safeEqual(key, env.BOARD_TOKEN);
 }
 
-async function loadTickets(env) {
+// --- Storage: D1 first (one row per ticket), KV fallback ---------------
+// USE_D1="1" + a QWENPAW_DB binding = D1 (qwenpaw-state). Otherwise the
+// old single KV key ("tickets") is used. D1 is single-threaded per
+// database, so read-modify-write on one ticket row cannot lose a
+// concurrent update the way the whole-list KV rewrite could.
+// Rollback: set USE_D1=0 and redeploy; KV data was never deleted.
+function useD1(env) {
+  return env && env.USE_D1 === "1" && env.QWENPAW_DB;
+}
+
+function d1q(db, sql, ...params) {
+  return db.prepare(sql).bind(...params);
+}
+
+function rowToTicket(row) {
+  let comments = [];
+  try { comments = JSON.parse(row.comments || "[]"); } catch { comments = []; }
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description || "",
+    column: row.column,
+    agent: row.agent,
+    priority: row.priority,
+    follow_up: row.follow_up === 1,
+    comments: Array.isArray(comments) ? comments : [],
+    qwenpaw_session: row.qwenpaw_session || null,
+    sent_to_qwenpaw_at: row.sent_to_qwenpaw_at || null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+async function d1List(env) {
+  const res = await d1q(env.QWENPAW_DB, "SELECT * FROM tickets ORDER BY created_at ASC").all();
+  return (res.results || []).map(rowToTicket);
+}
+async function d1Get(env, id) {
+  const row = await d1q(env.QWENPAW_DB, "SELECT * FROM tickets WHERE id = ?", id).first();
+  return row ? rowToTicket(row) : null;
+}
+async function d1Insert(env, t) {
+  await d1q(env.QWENPAW_DB,
+    "INSERT INTO tickets (id, title, description, column, agent, priority, follow_up, comments, qwenpaw_session, sent_to_qwenpaw_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    t.id, t.title, t.description || "", t.column, t.agent, t.priority, t.follow_up ? 1 : 0,
+    JSON.stringify(t.comments || []), t.qwenpaw_session || null, t.sent_to_qwenpaw_at || null,
+    t.created_at, t.updated_at).run();
+}
+async function d1Update(env, id, changes) {
+  // changes: validated fields only, from a fixed allow-list — never
+  // raw request keys (column names are not user input).
+  const sets = [];
+  const params = [];
+  const COLS = { title: "title", description: "description", column: "column", agent: "agent", priority: "priority" };
+  for (const [k, col] of Object.entries(COLS)) {
+    if (changes[k] !== undefined) { sets.push(`${col} = ?`); params.push(changes[k]); }
+  }
+  if (changes.follow_up !== undefined) { sets.push("follow_up = ?"); params.push(changes.follow_up ? 1 : 0); }
+  if (changes.comments !== undefined) { sets.push("comments = ?"); params.push(JSON.stringify(changes.comments)); }
+  if (changes.qwenpaw_session !== undefined) { sets.push("qwenpaw_session = ?"); params.push(changes.qwenpaw_session); }
+  if (changes.sent_to_qwenpaw_at !== undefined) { sets.push("sent_to_qwenpaw_at = ?"); params.push(changes.sent_to_qwenpaw_at); }
+  sets.push("updated_at = ?");
+  params.push(changes.updated_at || new Date().toISOString());
+  params.push(id);
+  const r = await d1q(env.QWENPAW_DB, `UPDATE tickets SET ${sets.join(", ")} WHERE id = ?`, ...params).run();
+  return r.meta.changes > 0;
+}
+async function d1Delete(env, id) {
+  const r = await d1q(env.QWENPAW_DB, "DELETE FROM tickets WHERE id = ?", id).run();
+  return r.meta.changes > 0;
+}
+
+async function kvList(env) {
   const raw = await env.TICKETS.get(KV_KEY);
   if (!raw) return [];
   try {
@@ -91,9 +180,194 @@ async function loadTickets(env) {
     return [];
   }
 }
-
-async function saveTickets(env, tickets) {
+async function kvSave(env, tickets) {
   await env.TICKETS.put(KV_KEY, JSON.stringify({ tickets, updated_at: new Date().toISOString() }));
+}
+
+// One interface, two backends. Handlers use only these.
+async function listTickets(env) {
+  if (useD1(env)) return d1List(env);
+  return kvList(env);
+}
+async function getTicket(env, id) {
+  if (useD1(env)) return d1Get(env, id);
+  return (await kvList(env)).find((t) => t.id === id) || null;
+}
+async function createTicket(env, ticket) {
+  if (useD1(env)) { await d1Insert(env, ticket); return ticket; }
+  const tickets = await kvList(env);
+  tickets.push(ticket);
+  await kvSave(env, tickets);
+  return ticket;
+}
+async function updateTicket(env, id, changes) {
+  // Returns the updated ticket, or null when the id does not exist.
+  if (useD1(env)) {
+    const ok = await d1Update(env, id, changes);
+    return ok ? d1Get(env, id) : null;
+  }
+  const tickets = await kvList(env);
+  const idx = tickets.findIndex((t) => t.id === id);
+  if (idx === -1) return null;
+  Object.assign(tickets[idx], changes, { updated_at: changes.updated_at || new Date().toISOString() });
+  await kvSave(env, tickets);
+  return tickets[idx];
+}
+async function deleteTicket(env, id) {
+  if (useD1(env)) return d1Delete(env, id);
+  const tickets = await kvList(env);
+  const idx = tickets.findIndex((t) => t.id === id);
+  if (idx === -1) return false;
+  tickets.splice(idx, 1);
+  await kvSave(env, tickets);
+  return true;
+}
+async function addComment(env, id, text) {
+  // Returns {ticket} or {error, status}.
+  const ticket = await getTicket(env, id);
+  if (!ticket) return { error: "ticket not found", status: 404 };
+  const comments = Array.isArray(ticket.comments) ? ticket.comments : [];
+  if (comments.length >= MAX_COMMENTS) return { error: "too many comments (max 50)", status: 400 };
+  comments.push({ at: new Date().toISOString(), text });
+  const updated = await updateTicket(env, id, { comments, updated_at: new Date().toISOString() });
+  return { ticket: updated };
+}
+async function markSent(env, id) {
+  // Idempotent: a ticket already marked sent is returned unchanged
+  // (no re-stamp, no column move). D1 does it as one conditional
+  // UPDATE; KV does the same check in code.
+  const ticket = await getTicket(env, id);
+  if (!ticket) return { error: "ticket not found", status: 404 };
+  if (ticket.sent_to_qwenpaw_at) return { ticket };
+  const now = new Date().toISOString();
+  const changes = { qwenpaw_session: `board-${ticket.id.slice(0, 8)}`, sent_to_qwenpaw_at: now, updated_at: now };
+  if (ticket.column === "todo") changes.column = "in-progress";
+  const updated = await updateTicket(env, id, changes);
+  return { ticket: updated };
+}
+
+// --- Rate limiting (fix 2026-11-15, audit bug board-no-rate-limit-auth)
+// Two layers, both counted by ONE Durable Object (BoardRateLimiter
+// below) — a singleton, so counts are exact. The first version used
+// in-memory per-isolate counters, but live testing proved they never
+// fire: a low-traffic Worker rotates isolates per request, so no
+// isolate ever sees 30 attempts (90 unauthenticated POSTs -> 0x429).
+// (1) Failed-auth throttle: 30 failed auth attempts/min/IP, checked
+// BEFORE auth, so key-guessing floods cost zero D1 rows and are
+// stopped at the edge. (2) Authenticated mutation caps: 30
+// mutations/min/IP and 1,000 mutations/day/IP. Worst case per IP per
+// day: 1,000 ticket ops — the rate checks are DO subrequests, not D1
+// rows, so they cost nothing against the D1 budget. When the DO is
+// not bound (KV fallback / local harness without it), the same caps
+// run on the in-memory bucket (per-isolate, best-effort).
+const RATE_FAILED_AUTH_PER_MIN = 30;
+const RATE_MUT_PER_MIN = 30;
+const RATE_MUT_PER_DAY = 1000;
+
+const _memBuckets = new Map(); // key -> {count, windowStart}; per-isolate fallback only
+function memHit(key, cap, windowStart) {
+  const now = Date.now();
+  let b = _memBuckets.get(key);
+  if (!b || b.windowStart !== windowStart) {
+    b = { count: 0, windowStart };
+    _memBuckets.set(key, b);
+    if (_memBuckets.size > 5000) {
+      for (const [k, v] of _memBuckets) if (now - v.windowStart > 120000) _memBuckets.delete(k);
+    }
+  }
+  b.count += 1;
+  return b.count > cap;
+}
+function clientIp(request) {
+  return request.headers.get("cf-connecting-ip") || "unknown";
+}
+
+// Durable Object: exact per-IP rate limiting. All board requests go
+// through ONE object ("board"), serialized, with buckets in DO storage
+// (survives hibernation) — the same pattern as the groupchat's
+// 30/min/IP write brake. POST /hit {kind, ip} -> {limited, retryAfter}.
+// kind "fail" = failed-auth attempts (30/min/IP); kind "mut" =
+// authenticated mutations (30/min/IP + 1,000/day/IP).
+export class BoardRateLimiter {
+  constructor(ctx) { this.ctx = ctx; }
+
+  async fetch(request) {
+    const body = await request.json().catch(() => ({}));
+    const kind = body.kind;
+    const ip = typeof body.ip === "string" && body.ip ? body.ip : "unknown";
+    if (kind !== "fail" && kind !== "mut") {
+      return json({ error: "bad kind" }, 400);
+    }
+    const now = Date.now();
+    const buckets = (await this.ctx.storage.get("buckets")) || {};
+    // Prune stale windows (minute buckets live 60 s, day buckets 24 h).
+    for (const [key, v] of Object.entries(buckets)) {
+      if (!v || now - v.windowStart >= (key.startsWith("day:") ? 86400000 : 60000)) delete buckets[key];
+    }
+    if (Object.keys(buckets).length > 1000) {
+      const sorted = Object.entries(buckets).sort((a, b) => a[1].windowStart - b[1].windowStart);
+      for (const [key] of sorted.slice(0, Object.keys(buckets).length - 1000)) delete buckets[key];
+    }
+    let limited = false;
+    let retryAfter = 0;
+    const hit = (key, cap, resetAt) => {
+      let b = buckets[key];
+      if (!b) { b = { count: 0, windowStart: now }; buckets[key] = b; }
+      b.count += 1;
+      if (b.count > cap) {
+        limited = true;
+        retryAfter = Math.max(retryAfter, Math.max(1, Math.ceil((resetAt - now) / 1000)));
+      }
+    };
+    if (kind === "fail") {
+      const minute = Math.floor(now / 60000);
+      hit(`fail:${ip}`, RATE_FAILED_AUTH_PER_MIN, (minute + 1) * 60000);
+    } else {
+      const minute = Math.floor(now / 60000);
+      const day = new Date(now).toISOString().slice(0, 10);
+      hit(`mut:${ip}`, RATE_MUT_PER_MIN, (minute + 1) * 60000);
+      hit(`day:${ip}:${day}`, RATE_MUT_PER_DAY, Date.parse(day + "T00:00:00Z") + 86400000);
+    }
+    await this.ctx.storage.put("buckets", buckets);
+    return json({ limited, retryAfter });
+  }
+}
+
+async function rateHit(env, kind, ip) {
+  // Returns {limited, retryAfter} from the DO, or null when the DO is
+  // not bound / errors (caller falls back to the in-memory bucket).
+  if (!env.RATE_LIMITER) return null;
+  try {
+    const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName("board"));
+    const res = await stub.fetch(new Request("https://rate-limit/hit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind, ip }),
+    }));
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+async function failedAuthLimited(env, request) {
+  // Returns {limited, retryAfter}.
+  const ip = clientIp(request);
+  const hit = await rateHit(env, "fail", ip);
+  if (hit) return hit;
+  const minute = Math.floor(Date.now() / 60000);
+  return { limited: memHit(`fail:${ip}:${minute}`, RATE_FAILED_AUTH_PER_MIN, minute * 60000), retryAfter: 60 };
+}
+async function mutationLimited(env, request) {
+  // Returns {limited, retryAfter}.
+  const ip = clientIp(request);
+  const hit = await rateHit(env, "mut", ip);
+  if (hit) return hit;
+  const minute = Math.floor(Date.now() / 60000);
+  const day = new Date().toISOString().slice(0, 10);
+  const over = memHit(`mut:${ip}:${minute}`, RATE_MUT_PER_MIN, minute * 60000)
+    || memHit(`mutday:${ip}:${day}`, RATE_MUT_PER_DAY, Date.parse(day + "T00:00:00Z"));
+  return { limited: over, retryAfter: 60 };
 }
 
 function cleanTicket(t) {
@@ -243,7 +517,7 @@ code{background:#0f172a;padding:1px 4px;border-radius:4px}
 <body>
 <header>
   <h1>QwenPaw Ticket Board</h1>
-  <p>Columns: To do / In progress / In review / Blocked / Done / Won't do &middot; stored in Cloudflare KV</p>
+  <p>Columns: To do / In progress / In review / Blocked / Done / Won't do &middot; stored in Cloudflare D1 (one row per ticket)</p>
   <span id="keybar">
     <input type="password" id="key" placeholder="Board key" size="18">
     <button id="savekey">Use key</button>
@@ -281,8 +555,8 @@ function api(path, opts={}){
   opts.headers = Object.assign({}, opts.headers||{}, {"x-board-key": KEY, "content-type":"application/json"});
   return fetch(path, opts).then(async r=>{ const t = await r.text(); let d; try{ d=JSON.parse(t);}catch{ d={error:t}; } if(!r.ok) throw new Error(d.error||("HTTP "+r.status)); return d; });
 }
-// KV is eventually consistent: trust the mutation response immediately and
-// only re-fetch in the background a few seconds later to converge.
+// D1 is strongly consistent: trust the mutation response immediately and
+// only re-fetch in the background a few seconds later to converge other tabs.
 function refreshSoon(){ setTimeout(()=>load(true), 4000); }
 async function load(quiet){
   if(!quiet) err("");
@@ -358,18 +632,38 @@ export default {
 
     if (path === "/health") {
       if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
-      return json({ ok: true, worker: "qwenpaw-board" });
+      return json({ ok: true, worker: "qwenpaw-board", store: useD1(env) ? "d1" : "kv" });
     }
     if (path === "/" || path === "/index.html") {
       return new Response(BOARD_HTML, { headers: { "content-type": "text/html; charset=utf-8", "x-content-type-options": "nosniff", "x-frame-options": "SAMEORIGIN", "content-security-policy": "frame-ancestors 'self'" } });
     }
 
     if (!path.startsWith("/api/")) return json({ error: "not found" }, 404);
+    const isMut = request.method === "POST" || request.method === "PATCH" || request.method === "DELETE";
     if (!authed(request, env)) {
+      // Failed-auth throttle runs before the 401: key-guessing floods
+      // are stopped at the edge and cost zero D1 rows.
+      const lim = await failedAuthLimited(env, request);
+      if (lim.limited) {
+        return json({ error: "too many failed attempts — try again in a minute" }, 429, { "retry-after": String(lim.retryAfter || 60) });
+      }
       return json(
         { error: "unauthorized — send the board key as ?key= or X-Board-Key header" },
         401,
       );
+    }
+    if (isMut) {
+      try {
+        const lim = await mutationLimited(env, request);
+        if (lim.limited) {
+          return json({ error: "rate limit exceeded — slow down" }, 429, { "retry-after": String(lim.retryAfter || 60) });
+        }
+      } catch (e) {
+        // The limiter must never block a legit mutation: on a store
+        // error it fails open (the ticket op itself still validates
+        // and writes through the same store).
+        console.log("board rate-limit error:", e?.message || e);
+      }
     }
 
     const parts = path.split("/").filter(Boolean); // ["api","tickets", id?, action?]
@@ -377,7 +671,7 @@ export default {
     try {
       if (parts[1] === "tickets" && parts.length === 2) {
         if (request.method === "GET") {
-          const tickets = await loadTickets(env);
+          const tickets = await listTickets(env);
           return json(tickets.map(cleanTicket));
         }
         if (request.method === "POST") {
@@ -400,9 +694,7 @@ export default {
             created_at: now,
             updated_at: now,
           };
-          const tickets = await loadTickets(env);
-          tickets.push(ticket);
-          await saveTickets(env, tickets);
+          await createTicket(env, ticket);
           return json(cleanTicket(ticket), 201);
         }
         return json({ error: "method not allowed" }, 405);
@@ -419,13 +711,11 @@ export default {
         } catch {
           return json({ error: "invalid ticket id" }, 400);
         }
-        const tickets = await loadTickets(env);
-        const idx = tickets.findIndex((t) => t.id === id);
-        if (idx === -1) return json({ error: "ticket not found" }, 404);
-        const ticket = tickets[idx];
 
         if (parts.length === 4 && parts[3] === "qwenpaw-task") {
           if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
+          const ticket = await getTicket(env, id);
+          if (!ticket) return json({ error: "ticket not found" }, 404);
           return json(qwenpawTask(ticket));
         }
         if (parts.length === 4 && parts[3] === "comments") {
@@ -434,30 +724,25 @@ export default {
           const text = typeof body.text === "string" ? body.text.trim() : "";
           if (!text || text.length > MAX_COMMENT_LEN)
             return json({ error: "comment text must be 1-1000 chars" }, 400);
-          ticket.comments = Array.isArray(ticket.comments) ? ticket.comments : [];
-          if (ticket.comments.length >= MAX_COMMENTS)
-            return json({ error: "too many comments (max 50)" }, 400);
-          ticket.comments.push({ at: new Date().toISOString(), text });
-          ticket.updated_at = new Date().toISOString();
-          await saveTickets(env, tickets);
-          return json(cleanTicket(ticket));
+          const res = await addComment(env, id, text);
+          if (res.error) return json({ error: res.error }, res.status);
+          return json(cleanTicket(res.ticket));
         }
         if (parts.length === 4 && parts[3] === "mark-sent") {
           if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
           // Idempotent (fix 2026-11-15, audit bug
           // board-business-logic-quirks): re-marking must not re-stamp
           // the timestamp or move the column again.
-          if (ticket.sent_to_qwenpaw_at) return json(cleanTicket(ticket));
-          const now = new Date().toISOString();
-          ticket.qwenpaw_session = `board-${ticket.id.slice(0, 8)}`;
-          ticket.sent_to_qwenpaw_at = now;
-          if (ticket.column === "todo") ticket.column = "in-progress";
-          ticket.updated_at = now;
-          await saveTickets(env, tickets);
-          return json(cleanTicket(ticket));
+          const res = await markSent(env, id);
+          if (res.error) return json({ error: res.error }, res.status);
+          return json(cleanTicket(res.ticket));
         }
         if (parts.length !== 3) return json({ error: "not found" }, 404);
 
+        // Plain /:id — existence is checked before body validation,
+        // exactly as the old whole-list code did.
+        const ticket = await getTicket(env, id);
+        if (!ticket) return json({ error: "ticket not found" }, 404);
         if (request.method === "GET") return json(cleanTicket(ticket));
         if (request.method === "PATCH") {
           const body = await request.json().catch(() => ({}));
@@ -469,13 +754,13 @@ export default {
           if (Object.keys(v.value).length === 0) {
             return json({ error: "empty patch: nothing to update" }, 400);
           }
-          Object.assign(ticket, v.value, { updated_at: new Date().toISOString() });
-          await saveTickets(env, tickets);
-          return json(cleanTicket(ticket));
+          const updated = await updateTicket(env, id, { ...v.value, updated_at: new Date().toISOString() });
+          if (!updated) return json({ error: "ticket not found" }, 404);
+          return json(cleanTicket(updated));
         }
         if (request.method === "DELETE") {
-          tickets.splice(idx, 1);
-          await saveTickets(env, tickets);
+          const ok = await deleteTicket(env, id);
+          if (!ok) return json({ error: "ticket not found" }, 404);
           return json({ deleted: true, id });
         }
         return json({ error: "method not allowed" }, 405);
@@ -486,6 +771,10 @@ export default {
       // Generic on purpose: the old message echoed e.message, which can
       // leak internals (fix 2026-11-15, audit bug board-decode-uri-500).
       console.log("board error:", e?.message || e);
+      // A store failure on the D1 path is an honest 503 (same shape as
+      // the other Workers' store_unavailable); the KV fallback keeps
+      // the old 500.
+      if (useD1(env)) return json({ error: "store unavailable — try again shortly" }, 503);
       return json({ error: "server error" }, 500);
     }
   },
