@@ -1,0 +1,27 @@
+# Machine-side preview uploader. Mirrors the screen to the Worker, change-only.
+#
+# The OLD unit ran an unconditional 15 s upload (~11,500 writes/day against a
+# 1,000/day KV budget) and spent the budget by mid-afternoon, which took the
+# whole desktop down. This unit's script refuses to write unless the screen
+# changed AND the floor has elapsed, so an idle desktop costs nothing.
+[Unit]
+Description=QwenPaw computer preview uploader (change-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The .env holds COMPUTER_URL / COMPUTER_SYNC_TOKEN / COMPUTER_NAME / DISPLAY.
+# Mode 600, owned by the service user; never in git.
+EnvironmentFile=/data/home/qwenpaw/.env
+ExecStart=/usr/bin/python3 /data/home/qwenpaw/computer/preview-uploader.py
+Restart=always
+RestartSec=10
+# A tight memory cap: this script reads one PNG and posts it. Anything above
+# 64 MB means a leak, and killing it is better than swapping the box.
+MemoryMax=64M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

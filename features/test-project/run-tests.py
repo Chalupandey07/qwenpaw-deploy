@@ -1337,6 +1337,21 @@ def t80():
 def t81():
     return _harness("features/infra/workers/email-router/harness-email-router.mjs", 24)
 
+def t87():
+    """Preview uploader: change-only writes, floor, backoff, control guard.
+
+    12 checks. This is the component that burned the KV quota; its write
+    accounting is now a test rather than a claim.
+    """
+    rc, out, err = run_local(
+        [sys.executable, str(REPO / "features/computer/preview-uploader.py"), "--selftest"],
+        timeout=120)
+    m = re.search(r"(\d+) passed, (\d+) failed", out)
+    ok = rc == 0 and m and int(m.group(2)) == 0 and int(m.group(1)) == 12
+    return ("PASS" if ok else "FAIL",
+            f"preview-uploader --selftest: exit={rc} tally={m.group(0) if m else 'none'}")
+
+
 def t86():
     """REBUILT computer: capability seal, lease atomicity, enforcement order.
 
@@ -1512,6 +1527,7 @@ TESTS = [
     ("T84", "decision models: fail-closed, calibration, low-conf safety", "decisions", "protocol", t84),
     ("T85", "skill scanner: credential/RCE/injection patterns", "skills", "protocol", t85),
     ("T86", "rebuilt computer: seal, lease atomicity, enforcement order", "computer", "protocol", t86),
+    ("T87", "preview uploader: change-only writes, floor, backoff", "computer", "protocol", t87),
 ]
 
 SKIP_NOTE = {

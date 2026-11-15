@@ -99,6 +99,34 @@ interval, but making the write conditional on a change.
 takeover, which is why D1 (100k) rather than KV (1k) is the right store. On KV
 this design would still be 5.9× over quota while idle.
 
+## The preview uploader (machine side)
+
+`features/computer/preview-uploader.py` + `computer-preview.service`.
+
+This is where the quota burn used to happen. The rule it enforces is the whole
+fix, and it is asserted in its own `--selftest`:
+
+| Situation | Uploads/day |
+|---|---|
+| Static screen | **1** (the first capture; then zero forever) |
+| Screen changing every tick | ~720 (capped by the 120 s floor) |
+| Human holding control | **0** (the guard runs before the capture) |
+| Store returning 429/503 | 0 for 300 s (backoff, not a retry storm) |
+| Old unconditional uploader | 5,760–11,500 |
+
+Three details that are easy to get wrong and are covered:
+
+- **Capture with `scrot`**, not AT-SPI. The AT-SPI path returned a bare desktop
+  while the window was unmapped — the recorded "phantom desktop" symptom.
+- **The control guard runs before the capture**, not after. Capturing while a
+  human drives is pure cost; they are already looking at it.
+- **A 429/503 sets a 5-minute backoff.** Retrying into a spent budget is how the
+  original incident escalated from "slow" to "the desktop is down".
+
+The token is a header (`X-Computer-Token`) and never appears in a URL, and a
+browser User-Agent is set because Cloudflare answers 403 to python-urllib's
+default.
+
 ## Deployment (Muse)
 
 1. **D1 binding.** The router expects `COMPUTER_DB` bound to the
