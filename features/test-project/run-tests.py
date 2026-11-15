@@ -1315,7 +1315,34 @@ def t75():
     return _py_harness("features/desktop/test_lease_watcher.py", 29)
 
 def t76():
+    """The RETIRED Cloudflare Worker's harness (68 checks).
+
+    Kept green on purpose. The Worker cannot run — `worker_loaders` needs a
+    paid plan (API 403 code 10195) — but its benchmark arithmetic is the
+    measurement of record and the VM runner reuses it verbatim, so this test
+    guards the numbers both implementations report.
+    """
     return _harness("features/codemode/harness-codemode.mjs", 68)
+
+
+def t94():
+    """Code Mode VM runner: fixed job, bounds, honest per-step reporting (64)."""
+    return _py_script_harness(["features/codemode/vm/codemode-runner.py", "--selftest"], 64)
+
+
+def t95():
+    """MCP client against a REAL SSE + JSON-RPC server (27 checks).
+
+    The retired Worker called MCP as `POST {url}?tool=<name>`, a shape that
+    does not exist. It never ran against a real proxy and three layers of mocks
+    agreed with each other. This test speaks the actual transport.
+    """
+    return _py_harness("features/codemode/vm/test_mcp.py", 27)
+
+
+def t96():
+    """Code Mode end to end: runner -> real MCP -> real HTTP (44 checks)."""
+    return _py_harness("features/codemode/vm/test_e2e.py", 44)
 
 def t77():
     return _py_script_harness(["features/board/pricing.py", "--selftest"], 20)
@@ -1616,6 +1643,9 @@ TESTS = [
     ("T91", "routines history: append-only, no lost ticks", "routines", "protocol", t91),
     ("T92", "terminal: lease-bound shell + PTY frame validation", "computer", "protocol", t92),
     ("T93", "teach: real recorder, redaction, draft validation", "computer", "protocol", t93),
+    ("T94", "Code Mode VM runner: fixed job, bounds, per-step honesty", "codemode", "protocol", t94),
+    ("T95", "MCP client vs a real SSE + JSON-RPC server", "codemode", "protocol", t95),
+    ("T96", "Code Mode end to end: runner -> real MCP -> real HTTP", "codemode", "protocol", t96),
 ]
 
 SKIP_NOTE = {

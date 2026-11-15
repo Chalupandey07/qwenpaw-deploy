@@ -1,0 +1,76 @@
+# Code Mode pilot — the VM runner.
+#
+# WHAT THIS RUNS
+#   features/codemode/vm/codemode-runner.py, synced to
+#   /data/home/qwenpaw/codemode/codemode-runner.py on the machine. It runs the
+#   FIXED 10-step job against the machine's MCP proxy and reports per-step
+#   outcomes.
+#
+# WHY THE VM AND NOT CLOUDFLARE
+#   The pilot was first built to run in a Cloudflare Worker Loader. That path
+#   is DEAD: `worker_loaders` (Dynamic Workers) requires a paid plan. Verified
+#   live — the Workers API returns 403 code 10195 — and the user has ruled out
+#   paying. This unit is the replacement. See features/codemode/README.md.
+#
+# WHY IT LISTENS ON A UNIX SOCKET BY DEFAULT
+#   The run endpoint starts tool calls on the desktop. Exposing it on a TCP
+#   port by default would repeat the private-port incident recorded in
+#   HANDOFF-AUTOCLAW.md. The socket lives in a systemd RuntimeDirectory, so a
+#   stale socket cannot survive a crash — the classic "says running, nothing
+#   connects" failure.
+#
+#   If a TCP listener is genuinely needed, do NOT add --bind 0.0.0.0 here.
+#   Publish a private InstaBox port in front of the socket and set a token.
+#
+# TOKEN
+#   CODEMODE_TOKEN must be set in /data/home/qwenpaw/.env. Without it the run
+#   endpoint is CLOSED (fail closed) and /health says so — the service still
+#   starts, because a closed write path is a valid state while a crash-loop is
+#   not.
+#
+# MCP
+#   MCP_SSE_URL points at the machine's computer-use MCP proxy
+#   (http://172.18.0.1:8898 by default). Without it /health reports
+#   ready:false and every run reports the blocker instead of executing.
+#
+# Install (Muse, machine side):
+#   install -d -m 0755 /data/home/qwenpaw/codemode
+#   cp features/codemode/vm/codemode-runner.py /data/home/qwenpaw/codemode/
+#   cp features/codemode/vm/mcp.py              /data/home/qwenpaw/codemode/
+#   cp features/codemode/qwenpaw-codemode.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now qwenpaw-codemode
+#
+#   # verify without a browser:
+#   systemctl status qwenpaw-codemode          # expect active (running)
+#   curl --unix-socket /run/qwenpaw-codemode/runner.sock http://localhost/health
+#   curl --unix-socket /run/qwenpaw-codemode/runner.sock \
+#        -H "X-Codemode-Token: $CODEMODE_TOKEN" -X POST http://localhost/api/run
+#
+# Read-only pilot: the fixed job touches nothing. It reads the ticket board,
+# the desktop and the history; it does not post, click, or write.
+
+[Unit]
+Description=QwenPaw Code Mode pilot runner (VM)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/data/home/qwenpaw/.env
+RuntimeDirectory=qwenpaw-codemode
+RuntimeDirectoryMode=0750
+WorkingDirectory=/data/home/qwenpaw/codemode
+ExecStart=/usr/bin/python3 /data/home/qwenpaw/codemode/codemode-runner.py --socket /run/qwenpaw-codemode/runner.sock
+Restart=always
+RestartSec=10
+# A single job is bounded to 120 s and each MCP call to 15 s, so a healthy
+# process is idle almost always. 256M is generous for one job's JSON and small
+# enough that a leak is caught rather than swapped. This is a MemoryMax, NOT an
+# RLIMIT_AS: it restarts the service instead of making later requests fail with
+# MemoryError (a bug this repo already had — see _limit_self in the runner).
+MemoryMax=256M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

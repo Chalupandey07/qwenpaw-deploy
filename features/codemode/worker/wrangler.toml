@@ -2,6 +2,24 @@ name = "qwenpaw-codemode"
 main = "src/index.js"
 compatibility_date = "2026-11-14"
 
+# ============================================================================
+# RETIRED 2026-11-16. DO NOT DEPLOY THIS.
+#
+# `worker_loaders` (Dynamic Workers) requires a PAID Cloudflare plan. Verified
+# live: the Workers API returns 403 code 10195. The account is on the free
+# tier and a paid plan is out of scope, so this Worker cannot run the job it
+# was written for.
+#
+# This file is kept as the RECORD of what was tried, and because its
+# benchmark arithmetic is still the measurement of record (the VM runner
+# reuses it verbatim so the numbers stay comparable). Execution now happens
+# on the InstaBox VM: features/codemode/vm/ + qwenpaw-codemode.service.
+#
+# The binding below stays ENABLED in history's name only — enabling it is what
+# produced the 10195 that settled the question. Deploying again would spend a
+# deploy to re-learn a known answer.
+# ============================================================================
+
 # Phase 5 Code Mode PILOT. Read features/codemode/README.md first.
 #
 # There is deliberately NO KV namespace and NO Durable Object here yet:
@@ -12,18 +30,9 @@ compatibility_date = "2026-11-14"
 #     the benchmark justifies it. The runtime path needs a `ctx.exports`
 #     facet class, which requires the real @cloudflare/codemode build step.
 #
-# Free-tier note: `worker_loaders` availability is NOT documented. The binding
-# is ENABLED here on 2026-11-16 so a deploy can actually establish the fact —
-# a commented-out binding cannot answer the question. This is a code change
-# only; the Worker has NOT been deployed.
-#
-# Deploying it is still the experiment, not the conclusion: after `wrangler
-# deploy`, `GET /health` must report loader: "bound". If the free tier rejects
-# the binding, the deploy fails and we know the answer without shipping
-# anything — which is why enabling it is safe to try and why the code must not
-# assume it exists. `src/index.js` feature-detects `env.LOADER` and answers a
-# named 503 when it is absent, so a rejected binding leaves a working Worker
-# that says what is missing rather than a broken one.
+# The binding that answered the question. Kept enabled because disabling it
+# would erase the evidence: it is the declaration whose deploy returned
+# 403 / 10195.
 
 [[worker_loaders]]
 binding = "LOADER"

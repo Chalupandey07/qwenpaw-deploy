@@ -1,3 +1,22 @@
+// RETIRED 2026-11-16 — DO NOT DEPLOY. Execution moved to the InstaBox VM.
+//
+// `worker_loaders` (Dynamic Workers) requires a PAID Cloudflare plan. Verified
+// live: the Workers API returns 403 code 10195. The account is free-tier and a
+// paid plan is out of scope, so this Worker can never run the job it was
+// written for. The replacement is features/codemode/vm/codemode-runner.py.
+//
+// This file is kept deliberately:
+//   * it is the RECORD of what was tried — deleting it would delete the
+//     evidence that produced the answer;
+//   * its benchmark arithmetic is the measurement of record, and the VM runner
+//     reuses it verbatim so the two implementations stay comparable;
+//   * its `/health` feature-detection (`env.LOADER ? "bound" : "unbound"`) is
+//     why enabling the binding was safe to try.
+//
+// Nothing in the live system calls it. Its harness still passes (68 checks) and
+// still runs, because a retired component with a green harness is a component
+// whose documentation you can still trust.
+//
 // qwenpaw-codemode — Phase 5 Code Mode pilot (Cloudflare Worker, Free tier).
 //
 // WHAT THIS IS
