@@ -926,5 +926,86 @@ mockSlowRfbMs = 0;
   kv.map.delete("lease:default");
 }
 
+
+// 42. BUGS.md B-4 — a capability must never outlive the control it was
+// minted under. The old code gave every capability a flat 60-minute TTL, so
+// a terminal capability minted at second 30 of a 90 s lease kept a ROOT
+// SHELL alive for another 59 minutes after the user handed control back.
+// 42a. A terminal capability's expiry is clamped to the lease deadline.
+{
+  const tk = await call("/desktop/__takeover", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ computer: "default" }),
+  });
+  const tj = await tk.json();
+  const term = await call("/desktop/__screen", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "terminal", leaseId: tj.leaseId, computer: "default" }),
+  });
+  const termJson = await term.json();
+  const exp = Number(String(termJson.url || "").split("/")[4]?.split(".")[0] || 0);
+  const leaseDeadline = Math.ceil((tj.expiresAt || 0) / 1000);
+  check("42a terminal capability expiry is clamped to the lease deadline",
+    term.status === 200 && exp > 0 && exp <= leaseDeadline + 30,
+    `exp=${exp} leaseDeadline=${leaseDeadline} url=${termJson.url}`);
+  // 90 s lease + 30 s grace = ~120 s; allow the +1s rounding of ceil().
+  check("42a2 terminal TTL is ~2 minutes, not the old flat hour",
+    exp - Math.floor(Date.now() / 1000) <= 125,
+    `ttl=${exp - Math.floor(Date.now() / 1000)}s`);
+  kv.map.delete("lease:default");
+}
+
+// 42b. After release, the terminal capability no longer verifies.
+{
+  const tk = await call("/desktop/__takeover", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ computer: "default" }),
+  });
+  const tj = await tk.json();
+  const term = await call("/desktop/__screen", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "terminal", leaseId: tj.leaseId, computer: "default" }),
+  });
+  const termUrl = (await term.json()).url;
+  await call("/desktop/__release", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ leaseId: tj.leaseId, computer: "default" }),
+  });
+  r = await call(termUrl);
+  check("42b a terminal capability dies when the lease is released",
+    r.status === 403, `status=${r.status}`);
+}
+
+// 43. BUGS.md B-9 — a client may not INFLATE the generation. A future value
+// used to be accepted via Math.max, which self-DoSed other screens and
+// masked a lost bump (B-1).
+{
+  const tk = await call("/desktop/__takeover", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ computer: "default" }),
+  });
+  const tj = await tk.json();
+  const stored = Number(await kv.get("generation:default"));
+  const r2 = await call("/desktop/__screen", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "view", gen: stored + 50, computer: "default" }),
+  });
+  const j2 = await r2.json();
+  const capGen = Number(String(j2.url || "").split("/")[4]?.split(".")[0] || 0);
+  // The capability must carry the STORED generation, not the inflated one.
+  const verified = await call(j2.url || "/desktop/session/view/0.x/");
+  check("43 a client cannot inflate the generation (future value ignored)",
+    verified.status === 200 && stored === Number(await kv.get("generation:default")),
+    `stored=${stored} capUrl=${j2.url} verify=${verified.status}`);
+  kv.map.delete("lease:default");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

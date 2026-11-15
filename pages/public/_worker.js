@@ -41,6 +41,12 @@ const LEASE_TTL_MS = 90_000;
 // Sealed screen capability (AES-256-GCM): 60-min TTL, scoped to the
 // generation + (for control) the lease id. See desktopCapability* below.
 const CAPABILITY_TTL_S = 3600;
+// How long a control/terminal capability may outlive its lease. The lease is
+// renewed every 15 s and lives 90 s, so +30 s covers a heartbeat that lands a
+// moment late without ever letting a capability survive a real release
+// (BUGS.md B-4: a terminal capability used to keep a root shell alive for a
+// full hour after control was handed back).
+const LEASE_CAP_GRACE_S = 30;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1180,9 +1186,24 @@ async function desktopScreen(request, env) {
       return jsonResp({ ok: false, error: "kv_unavailable" }, 500);
     }
   }
+  // B-9 fix (BUGS.md): accept the client's generation only when it is NOT
+  // ahead of the stored one. The old Math.max let a client choose a FUTURE
+  // generation, which self-DoSed every other open screen and — worse —
+  // masked a failed bump (B-1) by making one lost increment invisible. A
+  // stale LOWER client value is harmless and still wins over nothing, so we
+  // keep "client value may lag, never lead".
   const clientGen = Number(body.gen);
-  if (Number.isFinite(clientGen) && clientGen >= 0) gen = Math.max(gen, clientGen);
-  const exp = Math.floor(Date.now() / 1000) + CAPABILITY_TTL_S;
+  if (Number.isFinite(clientGen) && clientGen >= 0 && clientGen <= gen) {
+    gen = clientGen;
+  }
+  // B-4 fix (BUGS.md): a capability must never outlive the control it was
+  // minted under. The old code gave every capability a flat 60-minute TTL,
+  // so a terminal capability minted at second 30 of a 90 s lease kept
+  // working for another 59 minutes — a ROOT SHELL on the box while the
+  // agent believed it had exclusive control. Now the expiry is clamped to
+  // the lease deadline (+ GRACE_S so a heartbeat that lands a moment late
+  // does not kill a live screen).
+  let exp = Math.floor(Date.now() / 1000) + CAPABILITY_TTL_S;
   if (mode === "control" || mode === "terminal") {
     let lease;
     try {
@@ -1198,6 +1219,8 @@ async function desktopScreen(request, env) {
     if (!leaseActive(lease) || body.leaseId !== lease.leaseId) {
       return jsonResp({ ok: false, error: "no_lease" }, 403);
     }
+    const leaseDeadlineS = Math.ceil(lease.expiresAt / 1000) + LEASE_CAP_GRACE_S;
+    exp = Math.min(exp, leaseDeadlineS);
     const token = await sealCapability(env, { mode, exp, gen, leaseId: lease.leaseId, computer });
     return jsonResp({ ok: true, url: `/desktop/session/${mode}/${exp}.${token}`, expiresAt: exp * 1000 });
   }
