@@ -295,5 +295,36 @@ check("D-e wake that never comes up shows a failure, not Booting… forever",
   el("overlayTitle").textContent === "The desktop did not come up" && el("statusPill").textContent === "Asleep",
   `title=${el("overlayTitle").textContent} pill=${el("statusPill").textContent}`);
 
+// (h) Fix round 2: a "down" status (machine up, desktop path broken) is
+// NOT "Asleep" — init() shows "Down" + "The desktop is not responding"
+// with Retry / Wake, never the Asleep overlay.
+mockStatus.desktop = "down";
+mockStatus.screen = "unknown";
+await D.init();
+await sleep(300);
+check("D-h init() with desktop down shows Down + not-responding overlay",
+  el("statusPill").textContent === "Down" && el("overlayTitle").textContent === "The desktop is not responding",
+  `title=${el("overlayTitle").textContent} pill=${el("statusPill").textContent}`);
+
+// (i) An "origin_auth" status shows "Auth error", not "Asleep".
+mockStatus.desktop = "origin_auth";
+mockStatus.screen = "unknown";
+await D.init();
+await sleep(300);
+check("D-i init() with desktop origin_auth shows Auth error",
+  el("statusPill").textContent === "Auth error" && el("overlayTitle").textContent === "Could not reach the desktop",
+  `title=${el("overlayTitle").textContent} pill=${el("statusPill").textContent}`);
+
+// (j) A wake that times out while the desktop is "down" reports the
+// failure with the Down pill, not Asleep.
+mockStatus.desktop = "down";
+mockStatus.screen = "unknown";
+calls.length = 0;
+await D.wake();
+await sleep(6000);
+check("D-j wake timeout with desktop down shows failure + Down pill",
+  el("overlayTitle").textContent === "The desktop did not come up" && el("statusPill").textContent === "Down",
+  `title=${el("overlayTitle").textContent} pill=${el("statusPill").textContent}`);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
