@@ -130,6 +130,36 @@ CREATE TABLE IF NOT EXISTS write_budget (
   day   TEXT PRIMARY KEY,        -- 'YYYY-MM-DD' (UTC)
   count INTEGER NOT NULL DEFAULT 0
 );
+
+-- Board tickets (migrated 2026-11-15 from ONE KV value `tickets` to
+-- one row per ticket). The board worker does NOT use the KV-shaped
+-- store.js — it has its own typed D1 layer (d1List/d1Get/d1Insert/
+-- d1Update/d1Delete in features/board/worker/src/index.js) because
+-- tickets are queried by column and mutated per row. KV stays the
+-- fallback (same row shape as one JSON value). Export backup:
+-- features/storage/board-kv-export-2026-11-15.json (0 tickets).
+CREATE TABLE IF NOT EXISTS tickets (
+  id               TEXT PRIMARY KEY,
+  title            TEXT NOT NULL,
+  description      TEXT NOT NULL DEFAULT '',
+  column           TEXT NOT NULL DEFAULT 'todo',
+  agent            TEXT NOT NULL DEFAULT 'default',
+  priority         TEXT NOT NULL DEFAULT 'normal',
+  follow_up        INTEGER NOT NULL DEFAULT 0,  -- 0/1 boolean
+  comments         TEXT NOT NULL DEFAULT '[]',  -- JSON array
+  qwenpaw_session  TEXT,
+  sent_to_qwenpaw_at TEXT,
+  created_at       TEXT NOT NULL,               -- ISO timestamp
+  updated_at       TEXT NOT NULL                -- ISO timestamp
+);
+CREATE INDEX IF NOT EXISTS idx_tickets_column ON tickets(column);
+
+-- Rate limiting for the board is NOT a D1 table: it is a Durable
+-- Object (BoardRateLimiter, features/board/worker/src/index.js) whose
+-- buckets live in DO storage (fail:<ip> / mut:<ip>). A `rate_limits`
+-- table was created during the migration and then dropped — rate
+-- checks are DO subrequests, not D1 rows, so they cost nothing
+-- against the 100,000 rows/day D1 budget.
 ```
 
 ## Key -> table routing (store.js)
@@ -182,13 +212,16 @@ CREATE TABLE IF NOT EXISTS write_budget (
    typed tables make this possible; the emulation layer keeps the
    old behaviour for the cutover. Do this after the D1 cutover is
    verified live.
-2. Board tickets: the board worker stores ALL tickets in ONE KV
-   value (`TICKETS` key — confirmed in `features/board/worker/src/`),
-   so every ticket mutation rewrites the whole list and concurrent
-   writes can lose tickets (KV has no CAS). Migrate to a `tickets`
-   table (one row per ticket) in the same database, together with the
-   board's open audit items (rate-limit/auth). Separate change; not
-   in this migration.
+2. Board tickets: **DONE 2026-11-15** (was: the board worker stored
+   ALL tickets in ONE KV value (`TICKETS` key), so every ticket
+   mutation rewrote the whole list and concurrent writes could lose
+   tickets). Migrated to a `tickets` table (one row per ticket, see
+   above) + the board's open audit item `board-no-rate-limit-auth`
+   fixed in the same pass (Durable Object `BoardRateLimiter`,
+   30/min/IP failed-auth + 30/min/IP and 1,000/day/IP mutations,
+   429 + Retry-After; live proof 30×401 + 5×429 from the machine;
+   test T63). KV export backup:
+   `features/storage/board-kv-export-2026-11-15.json` (0 tickets).
 3. R2 for previews if a preview ever exceeds the 1.5 MB upload cap
    (requires the user to enable R2 on the account first).
 4. Tighten the generation check to exact-match if read replication
