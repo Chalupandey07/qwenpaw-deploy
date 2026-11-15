@@ -742,6 +742,102 @@ desktop was NOT churned.
 - X search / logged-in X still needs a one-time X login in the Camoufox
   persistent profile (never paste an X password in chat).
 
+## Fix round — the 4 browser defects (2026-11-15 ~06:00 IST)
+
+The parent verified the Rakazo-style build in a real browser (05:24–05:40
+IST) and found 4 real defects. All 4 were fixed with root-cause diagnosis
+from logs/code first; harness `features/desktop/harness-desktop-gate.mjs`
+(101 tests) + new `features/desktop/harness-desktop-chrome.mjs` (10 tests,
+DOM shim over the real chrome page) are green. Deployed qwenpawx
+`3ce1a2f1` + frontend `37bfeb75` (2026-11-15 00:34 UTC). The cookie-gated
+paths were verified by the harnesses + protocol checks; a real-browser
+re-check is still needed (logged-in /desktop: pill, terminal, Team→Private,
+wake) — see the report.
+
+### Defect 1 — Wake/boot slow + stream 502s + "Asleep" after ~3 min
+Diagnosis (live, 00:10–00:20 UTC): the machine was UP the whole time
+(uptime 6 h, keep-alive "up", 0 failures) — NOT a machine pause. All 19
+desktop/MCP/bridge/terminal services active; all 5 websockify ports answer
+GET 200 and WS 101 (RFB banner). Real causes, all three:
+- `__wake` only pinged the keep-alive Worker (machine wake) and never
+  called the InstaBox desktop `start` API — if the desktop stack was down,
+  Wake could never bring it back.
+- `fetchDesktopOrigin` returned null on ANY thrown subrequest with no
+  retry — one transient proxy/Worker blip made the desktop look "asleep"
+  and the screen probe 502. That is the 502 the parent saw.
+- The :1 Chromium frame goes `IsUnMapped` (found unmapped at 00:19 UTC,
+  right after the parent's session; earlier at 22:44–22:49 UTC too). When
+  unmapped, the VNC framebuffer shows a bare/black desktop even though
+  Chromium is alive. Trigger unproven (correlated with MCP global clicks
+  before; this time after the control session ended). Fixed live by
+  `xdotool windowmap + windowactivate` (frame 0xe00003, "Today's Puzzle
+  Answers", back to IsViewable, screenshot 243 KB).
+- Also: `wake()`/`init()` polled `__status` FOREVER with no timeout — the
+  ~6 min "Booting…" with no failure path. And `__status`'s GET probe
+  returns 200 even if the VNC backend is dead.
+Fixes: `fetchDesktopOrigin` retries once per hop on throw;
+`desktopWake` calls the InstaBox desktop `start` API when
+`INSTABOX_API_KEY` is set and :1 is not already up (response is honest:
+`desktopStart` = already-running / started / failed / unavailable);
+`desktopStatus` gains a best-effort WebSocket/RFB `screen` field
+("live" only on the "RFB 003.008" banner; it never changes `desktop`);
+`wake()`/`init()` share a bounded `pollDesktopUp` (3 min, then an honest
+failure overlay with Wake-again / Reload). New service
+`desktop-window-watch.service` (`features/desktop/desktop-window-watch.py`)
+re-maps any large Chromium window that goes IsUnMapped on :1 or :2 every
+10 s and logs it — live-tested by deliberately unmapping the :1 frame and
+watching it come back IsViewable in ~10 s.
+
+### Defect 2 — "You have control" pill never clears (and appears twice)
+Root cause (code): `screenState("connected")` set the status pill to
+"You have control" when in control mode — duplicating `controlPill` —
+and `setControlUI(false)` never reset the status pill, and
+`scheduleReconnect` never touched it, so a failed remount left the pill
+stuck forever. Fix: the status pill is the LIVE indicator only
+("Live" on connect, "Reconnecting…" while reconnecting, "Screen not
+connected" when exhausted); `controlPill` is the only "You have control"
+in the header; `setControlUI(false)` resets the status pill to "Live"
+when connected.
+
+### Defect 3 — Terminal tab never opens a shell
+Root cause (code): `openTerminal` rendered the gate once and
+`setControlUI(true)` never re-opened the terminal when a lease was
+granted, so taking control in the header left the Terminal tab gated;
+the gate's own Take control button called `takeControl()` unconditionally,
+so when the header already held the lease `__takeover` 409'd with
+"Someone else is using this computer" — the "someone else" was the user's
+own header lease. Fix: the terminal uses the SAME lease as the header
+(one hold, not two) — `setControlUI(true)` re-opens the terminal if its
+tab is active, `setControlUI(false)` drops it back to the gate. The 6083
+pty path itself was healthy (WS 101 verified live).
+
+### Defect 4 — Team→Private never renders the :2 desktop
+Root causes (code + live): `desktopStatus` probed ONLY the :1 view origin
+and read ONLY the default lease/generation — it ignored `computer`
+entirely, so Private (and the /chat side panel, which is the same chrome
+in an iframe) reported :1's state. The :2 stack itself was UP the whole
+time (Xvfb :2, x11vnc 5903/5904, websockify 6084/6085 200 + WS 101, QA
+Chromium IsViewable). The "Screen link expired" came from two places:
+(a) switching computers while in control mode kept the :1 leaseId and
+asked for a :2 CONTROL screen — the Worker 403s `no_lease` (a lease for
+one computer can never mint for the other); (b) KV is eventually
+consistent across edge POPs, so a verify read could lag the mint read by
+one generation and the exact-match gen check 403'd. Fixes:
+`desktopStatus` is per-computer (origin + token + lease + generation) and
+every `__status` call passes `?computer=`; the mode switch releases the
+old computer's lease first and mounts the new computer in VIEW mode;
+`verifyCapability` accepts a cap whose generation is the read one or
+exactly one NEWER (one-sided — a cap OLDER than the current generation
+is still rejected, so a release still kills old caps), retries the gen /
+lease read once after 250 ms, and a KV error now THROWS so the session
+answers 502 "try again" instead of a false 403; `watchCapability` needs
+2 consecutive failures before closing a live socket; the mint accepts the
+chrome's known generation (from its __takeover/__release response) when
+newer than the KV read. Note: the parent's "Recover computer fixed it"
+was coincidental — `__action` recover/reset/update return 501 because
+the InstaBox desktop API has no such actions (only stop works via the
+API); Wake (now with the desktop-start step) is the real recovery path.
+
 ## Useful commands
 
 ```bash
