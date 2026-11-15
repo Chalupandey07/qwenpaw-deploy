@@ -2,11 +2,38 @@ name = "qwenpaw-board"
 main = "src/index.js"
 compatibility_date = "2026-11-14"
 
-# Ticket data lives in this KV namespace (created 2026-11-15 via the
-# Cloudflare API; id below). One KV key, "tickets", holds the whole board.
+[vars]
+# D1 store flag: "1" = use the qwenpaw-state D1 database when its binding
+# is present; anything else = the KV namespace below (fallback).
+USE_D1 = "1"
+
+# Ticket data lives in D1 (qwenpaw-state, `tickets` table — one row per
+# ticket). The KV namespace below is the fallback only: the old single
+# "tickets" key held the whole board as JSON, and every mutation
+# rewrote it (KV's 1,000 writes/day account cap was burned twice in
+# 2026-11-15).
 [[kv_namespaces]]
 binding = "TICKETS"
 id = "90508a020d27455b83d137f8c0323774"
+
+# D1 database (created 2026-11-15, uuid below). Same rule as
+# qwenpaw-keepalive: USE_D1 = "1" + this binding = D1; otherwise KV.
+[[d1_databases]]
+binding = "QWENPAW_DB"
+database_name = "qwenpaw-state"
+database_id = "5f58a2f8-e4bb-45e5-8a94-4fc283b90871"
+
+# Durable Object for exact per-IP rate limiting (BoardRateLimiter).
+# First deploy MUST include the migration below; redeploys must OMIT
+# it (re-sending new_sqlite_classes for an existing class is rejected
+# with API error 10074 — see features/groupchat/worker/deploy-groupchat.py).
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "BoardRateLimiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BoardRateLimiter"]
 
 # Secret (NOT in this file, set via the API):
 #   BOARD_TOKEN — shared board key; API calls need ?key= or X-Board-Key.
