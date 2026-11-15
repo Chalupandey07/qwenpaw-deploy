@@ -468,9 +468,14 @@ export async function handleComputer(request, env, url) {
     if (request.headers.get("If-None-Match") === etag) {
       return new Response(null, { status: 304, headers: { ETag: etag } });
     }
-    return new Response(row.png, {
+    // D1 hands a BLOB back as an ArrayBuffer; wrap it so the Response body
+    // is a byte view, not an empty body. (Fix 2026-11-16: the endpoint
+    // answered 200 image/png with a 0-byte body until this conversion.)
+    const png = row.png instanceof ArrayBuffer ? new Uint8Array(row.png) : row.png;
+    return new Response(png, {
       headers: {
         "Content-Type": "image/png", ETag: etag,
+        "Content-Length": String(png.byteLength ?? png.length ?? 0),
         "Cache-Control": "private, max-age=120",
       },
     });
