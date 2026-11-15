@@ -724,12 +724,13 @@ the whole architecture, and both had a real burn before they were fixed.
 - Area: `docs` · Method: `protocol`
 - Check (local): `python3 scripts/check-links.py`
 - Expected: `all links and paths resolve`, exit 0. Scans every markdown file
-  for (a) relative `[text](path)` links and (b) backticked repo paths that
+  for (a) relative markdown links and (b) backticked repo paths that
   start with a known top-level directory, and asserts each exists.
 - Why it matters: a broken link in `AGENTS.md` sends a new agent to a file
   that does not exist. This check found **four real stale paths** left behind
   when the infra scripts moved into `features/infra/scripts/` — the docs still
-  said `scripts/fleet.py` etc., so anyone following them got "No such file".
+  pointed at the old `scripts/` location, so anyone following them got
+  "No such file".
 - Excluded on purpose: `features/jev/awesome-jev-tools-full-list.md` is a
   verbatim copy of upstream READMEs, so its relative links resolve against
   github.com/<repo>, not our tree — checking them yields guaranteed false

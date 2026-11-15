@@ -1,0 +1,37 @@
+{
+  "_readme": [
+    "Human-declared prices for models no public catalogue knows.",
+    "",
+    "A price here is an ASSERTION BY A PERSON, not a fact from a provider.",
+    "Every entry must therefore carry an as_of date and a note saying where",
+    "the number came from. features/board/pricing.py reports the source as",
+    "'local-override' so the dashboard can label it as user-declared rather",
+    "than provider-quoted.",
+    "",
+    "Do not add an entry you cannot source. A guessed price silently corrupts",
+    "every total that includes it, which is worse than the honest UNKNOWN this",
+    "file exists to replace.",
+    "",
+    "Rates are USD per 1,000,000 tokens.",
+    "",
+    "The public catalogue (pydantic/genai-prices) already covers 450+ models",
+    "including gpt-6-astra. Only add entries for CUSTOM providers such as",
+    "mosicn / xingchiapi that no catalogue knows."
+  ],
+  "as_of": null,
+  "models": {
+    "_example_nex-n2.6": {
+      "input_per_mtok": null,
+      "output_per_mtok": null,
+      "cached_input_per_mtok": null,
+      "as_of": "YYYY-MM-DD",
+      "note": "where the number came from, in one sentence",
+      "providers": {
+        "_optional_per-provider-override": {
+          "input_per_mtok": null,
+          "output_per_mtok": null
+        }
+      }
+    }
+  }
+}
