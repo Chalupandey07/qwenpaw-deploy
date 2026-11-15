@@ -826,5 +826,105 @@ check("40j __status with a 4 s-late RFB banner -> screen live (10 s budget)",
   `body=${JSON.stringify(j)}`);
 mockSlowRfbMs = 0;
 
+
+// 41. BUGS.md B-1 — bumpGeneration must never report a generation it
+// failed to persist. The old code swallowed the put error, returned the
+// incremented value, and read through the LENIENT getter, so (a) a
+// takeover could answer ok:true with an unverifiable generation and
+// (b) a read blip could move the generation BACKWARDS to 1 and
+// resurrect every capability minted at generation 1.
+// 41a. Write failure during takeover -> 503, and the stored generation
+// must be unchanged (no phantom bump reported).
+{
+  await call("/desktop/__release", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ leaseId: (await kv.get("lease:default", "json"))?.leaseId || "none", computer: "default" }),
+  });
+  const genStored = Number(await kv.get("generation:default"));
+  kv.failPutKeys.add("generation:default");
+  r = await call("/desktop/__takeover", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ computer: "default" }),
+  });
+  j = await r.json().catch(() => ({}));
+  check("41a takeover with a failing generation write -> 503 store_unavailable",
+    r.status === 503 && j.error === "store_unavailable",
+    `status=${r.status} body=${JSON.stringify(j)}`);
+  check("41a2 stored generation unchanged after the failed bump",
+    Number(await kv.get("generation:default")) === genStored,
+    `gen=${await kv.get("generation:default")} before=${genStored}`);
+  kv.failPutKeys.delete("generation:default");
+  // Clean up the lease the failed takeover may have written.
+  kv.map.delete("lease:default");
+}
+
+// 41b. Generation READ failure during takeover -> 503, never a silent
+// bump from a lenient 0 (which would jump backwards to 1).
+{
+  // Fail the key the takeover will actually read for the computer it is
+  // taking over (qa reads generation:qa — failing generation:default would
+  // prove nothing, which is how this test first passed vacuously).
+  const genQaBefore = await kv.get("generation:qa");
+  kv.failGetKeys.add("generation:qa");
+  r = await call("/desktop/__takeover", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ computer: "qa" }),
+  });
+  j = await r.json().catch(() => ({}));
+  check("41b takeover with a failing generation read -> 503, not a backwards bump",
+    r.status === 503 && j.error === "store_unavailable",
+    `status=${r.status} body=${JSON.stringify(j)}`);
+  kv.failGetKeys.delete("generation:qa");
+  check("41b2 qa generation untouched (no silent reset to 1)",
+    (await kv.get("generation:qa")) === genQaBefore,
+    `gen=${await kv.get("generation:qa")} before=${genQaBefore}`);
+  kv.map.delete("lease:qa");
+}
+
+// 41c. Release with a failing generation write -> 503 that says the
+// lease IS released but old links may live on (honesty, not a false ok).
+{
+  const tk = await call("/desktop/__takeover", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ computer: "default" }),
+  });
+  const tj = await tk.json();
+  kv.failPutKeys.add("generation:default");
+  r = await call("/desktop/__release", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ leaseId: tj.leaseId, computer: "default" }),
+  });
+  j = await r.json().catch(() => ({}));
+  check("41c release with a failing generation write -> 503 (not a false ok)",
+    r.status === 503 && j.ok === false && j.error === "store_unavailable",
+    `status=${r.status} body=${JSON.stringify(j)}`);
+  check("41c2 the message states the lease is released but links may survive",
+    /already released/i.test(j.note || "") && /up to an hour/i.test(j.note || ""),
+    `note=${j.note}`);
+  kv.failPutKeys.delete("generation:default");
+  kv.map.delete("lease:default");
+}
+
+// 41d. Normal path still works: a successful takeover returns a
+// generation that IS stored, and a mint at that generation verifies.
+{
+  const tk = await call("/desktop/__takeover", {
+    method: "POST",
+    headers: { ...cookieHdr, "Content-Type": "application/json" },
+    body: JSON.stringify({ computer: "default" }),
+  });
+  const tj = await tk.json();
+  const stored = Number(await kv.get("generation:default"));
+  check("41d takeover returns the generation it actually stored",
+    tk.status === 200 && Number(tj.generation) === stored,
+    `returned=${tj.generation} stored=${stored}`);
+  kv.map.delete("lease:default");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

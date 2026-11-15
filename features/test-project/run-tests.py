@@ -1105,7 +1105,7 @@ def _harness(relpath, expect):
 
 
 def t46():
-    return _harness("features/desktop/harness-desktop-gate.mjs", 116)
+    return _harness("features/desktop/harness-desktop-gate.mjs", 123)
 
 
 def t47():

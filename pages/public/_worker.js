@@ -908,11 +908,22 @@ async function getLeaseStrict(env, computer) {
   return env.DESKTOP_KV.get(leaseKey(computer), "json");
 }
 
+// Bump the generation and RETURN ONLY a value that was durably written.
+//
+// Fixed 2026-11-15 (BUGS.md B-1). The old version read via the LENIENT
+// getGeneration (returns 0 on error), swallowed the put error, and returned
+// the incremented number anyway. Two independent failures came from that:
+//   1. a failed write still reported {ok:true, generation:N}, so capabilities
+//      minted at N could never verify (the store still held N-1) — and the
+//      gen+1 tolerance in verifyCapability made the FIRST takeover after a
+//      failed bump look fine and the SECOND fail;
+//   2. a read blip made the next generation jump BACKWARDS to 1,
+//      resurrecting every capability ever minted at generation 1.
+// The security path must never report a generation it did not persist, so
+// this throws and the caller answers 503 instead of a plausible lie.
 async function bumpGeneration(env, computer) {
-  const gen = (await getGeneration(env, computer)) + 1;
-  try {
-    await env.DESKTOP_KV.put(generationKey(computer), String(gen));
-  } catch { /* best effort */ }
+  const gen = (await getGenerationStrict(env, computer)) + 1;
+  await env.DESKTOP_KV.put(generationKey(computer), String(gen));
   return gen;
 }
 
@@ -963,7 +974,16 @@ async function desktopTakeover(request, env) {
   if (!(await kvTry(() => env.DESKTOP_KV.put(leaseKey(computer), JSON.stringify(next))))) {
     return storeUnavailable();
   }
-  const gen = await bumpGeneration(env, computer);
+  // The generation write is part of the takeover's security guarantee: if it
+  // cannot be persisted, the takeover is NOT complete (a capability minted
+  // now would be unverifiable). Answer 503 and let the chrome retry; the
+  // lease we just wrote expires on its own within 90 s, so a retry is clean.
+  let gen;
+  try {
+    gen = await bumpGeneration(env, computer);
+  } catch {
+    return storeUnavailable();
+  }
   return jsonResp({ ok: true, leaseId: next.leaseId, expiresAt: next.expiresAt, fence: next.fence, generation: gen });
 }
 
@@ -1007,7 +1027,21 @@ async function desktopRelease(request, env) {
   if (!(await kvTry(() => env.DESKTOP_KV.delete(leaseKey(computer))))) {
     return jsonResp({ ok: false, error: "store_unavailable", note: STORE_UNAVAILABLE_NOTE + " The lease expires on its own within ~90 s." }, 503);
   }
-  const gen = await bumpGeneration(env, computer);
+  // Same rule as takeover: the release invalidates old capabilities via the
+  // generation, so a release that cannot persist the new generation has not
+  // really ended control. The lease row is already gone (the delete above
+  // succeeded), so the control file clears regardless — but say so honestly
+  // rather than reporting ok for a generation that was never stored.
+  let gen;
+  try {
+    gen = await bumpGeneration(env, computer);
+  } catch {
+    return jsonResp({
+      ok: false,
+      error: "store_unavailable",
+      note: STORE_UNAVAILABLE_NOTE + " The lease is already released, but old screen links may stay valid for up to an hour — treat control as handed back.",
+    }, 503);
+  }
   return jsonResp({ ok: true, released: true, generation: gen });
 }
 
