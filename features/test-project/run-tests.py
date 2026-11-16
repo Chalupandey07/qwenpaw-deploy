@@ -1348,6 +1348,32 @@ def t98():
     return _harness("features/computer/harness-screen-cors.mjs", 36)
 
 
+def t102():
+    """The first complete input line must not kill the terminal shell (25 checks).
+
+    THE LIVE FAILURE (13:25 IST, twice): prompt "# " arrived, then a full line
+    (`echo hello-terminal`) closed the socket in ~0.1 s with no output, while a
+    bare "x" or newline was tolerated for 12 s+.
+
+    ROOT CAUSE: terminal-server.py spoke ONLY the framed protocol
+    [kind:u8][len:u32be][payload]. Plain text has its first five bytes read as a
+    header — `e c h o <space>` declares 1,667,788,576 bytes — which exceeded the
+    1 MiB cap, raised FrameError, and CLOSED the session. A 1-2 byte message is
+    shorter than a header, so it survived; that is exactly why single characters
+    were tolerated and the first complete line was fatal.
+
+    THE REAL DEFECT was not the missing input format but the response to it: a
+    parse anomaly terminated a working shell. Now the first bytes decide the mode
+    once per session (framed vs raw keystrokes), and text is written to the PTY
+    instead of killing it. B-17 stays intact — the length bound means a hostile
+    4 GB declared length is treated as text, never allocated.
+
+    Fails 3/25 on the pre-fix tree with reason=oversize-frame and empty output;
+    25/25 after.
+    """
+    return _py_harness("features/computer/test_terminal_input.py", 25)
+
+
 def t101():
     """Manual rest + auto-wake, and the keep-alive respecting it (66 checks).
 
@@ -1740,6 +1766,7 @@ TESTS = [
     ("T99", "terminal: the WebSocket upgrade is proxied and tunnelled", "computer", "protocol", t99),
     ("T100", "preview: the Asleep overlay is hidden when the computer is live", "computer", "protocol", t100),
     ("T101", "machine rest + auto-wake; keep-alive respects a manual rest", "machine", "protocol", t101),
+    ("T102", "terminal: a full input line must not kill the shell", "computer", "protocol", t102),
 ]
 
 SKIP_NOTE = {

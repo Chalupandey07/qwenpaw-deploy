@@ -122,6 +122,47 @@ def parse_frames(buffer: bytes):
     return frames, buffer[offset:]
 
 
+def looks_framed(buffer: bytes) -> bool | None:
+    """Decide whether this stream is our framed protocol or raw keystrokes.
+
+    WHY THIS EXISTS (the "first complete line kills the session" bug)
+
+    The server spoke ONLY the framed protocol: `[kind:u8][len:u32be][payload]`.
+    That is what the /computer UI sends, and it works. But ANY client that sends
+    plain text — a protocol test, curl, a person with `websocat` — has its first
+    five bytes read as a header. `echo hello-terminal\\n` starts with `e` (0x65)
+    followed by `cho h`, so the declared length is 1667788576; that exceeds the
+    cap, `FrameError` is raised, and the connection was CLOSED. The prompt
+    arrived, one or two bytes were tolerated (too short to parse), and the first
+    complete line killed the shell — exactly what the live test observed.
+
+    The real defect was not the missing format, it was the response to it: a
+    parse anomaly must never terminate a working shell. If the bytes cannot be a
+    header, the honest reading is "this is typed text", not "kill the session".
+
+    Detection rule, deliberately conservative:
+      * kind in {STDIN, RESIZE, PING} AND declared length <= MAX_FRAME -> framed
+      * anything else                                                 -> raw
+
+    The length bound is what keeps B-17 intact: a hostile 4 GB length can never
+    be mistaken for a frame header, so nothing is ever allocated for it. It is
+    simply treated as text and handed to the PTY, where the tty's own flow
+    control bounds it — the same bound that applies to a human holding a key.
+
+    Returns True (framed), False (raw), or None when there are too few bytes to
+    tell yet — the caller then waits for more instead of guessing.
+    """
+    if len(buffer) < 5:
+        return None
+    kind = buffer[0]
+    if kind not in (KIND_STDIN, KIND_RESIZE, KIND_PING):
+        return False
+    (size,) = struct.unpack(">I", buffer[1:5])
+    if size > MAX_FRAME:
+        return False
+    return True
+
+
 def apply_frame(kind: int, payload: bytes, fd: int) -> str:
     """Act on one frame. Returns a short label for logging/tests.
 
@@ -218,6 +259,11 @@ def serve_pty(conn: socket.socket, deadline_ms: int, shell: str | None = None,
 
     stats = {"to_client": 0, "from_client": 0, "frames": 0, "reason": "eof"}
     pending = b""
+    # None = not decided yet; True = framed protocol; False = raw keystrokes.
+    # Decided once, on the first bytes that can be judged, then held for the
+    # session. Re-deciding per read would let one malformed packet switch a
+    # framed session into raw mode mid-stream and garble it.
+    framed = None
     try:
         while True:
             if deadline_passed(deadline_ms):
@@ -245,16 +291,36 @@ def serve_pty(conn: socket.socket, deadline_ms: int, shell: str | None = None,
                     break
                 stats["from_client"] += len(data)
                 pending += data
-                try:
-                    frames, pending = parse_frames(pending)
-                except FrameError:
-                    # A declared length beyond the cap: close rather than
-                    # allocate. This is B-17's fix and it must be fatal.
-                    stats["reason"] = "oversize-frame"
-                    break
-                for kind, payload in frames:
-                    apply_frame(kind, payload, fd)
-                    stats["frames"] += 1
+                if framed is None:
+                    framed = looks_framed(pending)
+                    if framed is None:
+                        # Fewer than 5 bytes: still ambiguous. Wait for more
+                        # rather than guessing (and rather than closing).
+                        continue
+                    stats["mode"] = "framed" if framed else "raw"
+                if framed:
+                    try:
+                        frames, pending = parse_frames(pending)
+                    except FrameError:
+                        # Unreachable via looks_framed() — kept because defence
+                        # in depth costs one clause, and a future edit to the
+                        # detector must not be able to resurrect the kill.
+                        # Fall back to raw rather than closing: a shell that is
+                        # working must not die because we mis-read a header.
+                        framed = False
+                        stats["mode"] = "raw"
+                        write_all(fd, pending)
+                        pending = b""
+                        continue
+                    for kind, payload in frames:
+                        apply_frame(kind, payload, fd)
+                        stats["frames"] += 1
+                else:
+                    # Raw keystrokes: everything is stdin. This is the path a
+                    # protocol test, curl, or `websocat` takes — and it must
+                    # behave exactly like a terminal.
+                    write_all(fd, pending)
+                    pending = b""
     except (BrokenPipeError, ConnectionResetError, OSError):
         stats["reason"] = "error"
     finally:

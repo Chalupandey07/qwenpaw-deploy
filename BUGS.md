@@ -656,6 +656,69 @@ actually renders is Muse's check and stays unclaimed until she reports it.
 
 ---
 
+## Part 2g — Found live, 2026-11-16 13:25 IST (B-32)
+
+### B-32 · P0 · The first complete input line killed the terminal shell — FIXED-CODE
+
+**File:** `features/computer/terminal-server.py` — `serve_pty()` / `parse_frames()`.
+
+Muse's live protocol test, run twice against the deployed Worker:
+
+| What was sent | Result |
+|---|---|
+| nothing | socket open 15 s+ (prompt only) |
+| bare `x` or bare newline | open 12 s+ (no echo, no close) |
+| `echo hello-terminal\n` | **closed in ~0.1 s, code 1000, no output** |
+
+The Worker half was proven correct first: mint OK, 101 open, `# ` prompt
+received, single bytes tolerated. So the fault was machine-side — and the
+"tolerated" column was the clue that identified it.
+
+**Cause.** The server spoke **only** the framed protocol
+`[kind:u8][len:u32be][payload]`, which is what the `/computer` UI sends. Any
+client sending plain text has its first five bytes read as a header:
+`e c h o <space>` declares a length of **1,667,788,576** — over the 1 MiB cap —
+so `FrameError` was raised and the connection was **closed**.
+
+A one- or two-byte message is shorter than a header, so it was buffered and
+survived. That is precisely why single characters were tolerated and the first
+*complete* line was fatal: the bug needs five bytes to fire.
+
+**The real defect was not the missing input format — it was the response to
+it.** A parse anomaly terminated a working shell. The honest reading of
+"these bytes cannot be a header" is "these are typed bytes", never "kill it".
+
+**Fix.** The first bytes that can be judged decide the mode **once per
+session**:
+
+- `kind ∈ {STDIN, RESIZE, PING}` **and** declared length ≤ `MAX_FRAME` → framed;
+- anything else → raw keystrokes, written straight to the PTY.
+
+Deciding once (not per read) matters: a later odd packet must not flip a framed
+session into raw mid-stream and garble it.
+
+**B-17 is intact.** The length bound is what keeps a hostile 4 GB declaration
+from being honoured: it is treated as *text*, never as an allocation request,
+so the original DoS-by-declared-length is still impossible. That is a stronger
+guarantee than before, not a weaker one.
+
+**The preamble/HMAC scheme is untouched** — same newline-terminated first line,
+same `compare_digest`, same signed deadline. Only the *input* path after the
+preamble changed.
+
+**Test.** T102 (`test_terminal_input.py`, 25 checks) reproduces the live
+failure: open a session, receive the prompt, send a full command line, assert
+the session stays open **and** the output comes back. Fails 3/25 on the pre-fix
+tree with `reason=oversize-frame` and empty output; 25/25 after. It also
+asserts the framed client still works, that a 1–2 byte message is "not decided
+yet" rather than guessed, that the mode is decided once, and that the
+preamble/deadline/clamp are unchanged.
+
+**Not browser-verified.** Muse deploys the machine-side file and runs the live
+protocol test plus a Terminal-tab check. The Worker did not change.
+
+---
+
 ## Part 2f — Found by Muse in a real browser, 2026-11-16 (B-31)
 
 ### B-31 · P0 · No CORS on the screen surface — noVNC's module scripts were blocked — FIXED-CODE
@@ -1097,7 +1160,7 @@ Test: T101, 66 checks.
 | P1 | **0** | 5 | fixed: B-2, B-3, B-4, B-22, B-23 |
 | P2 | **0** | 16 | fixed: B-5, B-6, B-7, B-8, B-9, B-10, B-11, B-12, B-13, B-19, B-20, B-24, B-25, B-26 |
 | P3 | **0** | 5 | fixed: B-14, B-15, B-16, B-17, B-27 |
-| **Total** | **0 open** | **32 fixed** | of 32 findings |
+| **Total** | **0 open** | **33 fixed** | of 33 findings |
 | Audit findings (earlier) | — | 15 of 19 | see Part 1 |
 
 **All 30 register findings are closed in code** (B-31 fixed, B-29 and B-30 diagnosed and queued behind it). Zero open, zero data-loss
