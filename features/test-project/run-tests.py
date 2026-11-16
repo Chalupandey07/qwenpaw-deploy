@@ -1348,6 +1348,23 @@ def t98():
     return _harness("features/computer/harness-screen-cors.mjs", 36)
 
 
+def t100():
+    """The Asleep overlay is hidden when the preview is live (21 checks).
+
+    B-30: the sidebar preview sat on "Asleep" with a Wake button while
+    /computer reported running and the large screen showed the real desktop.
+    The JS was right (`el.previewAsleep.hidden = live`); the CSS was not —
+    `.preview .asleep{display:grid}` (0,2,0) outranks the UA stylesheet's
+    `[hidden]{display:none}` (0,1,0), so the attribute was set and ignored.
+
+    Evaluates the CASCADE rather than grepping for the rule: computes selector
+    specificity and asserts the winning `display` is `none` when the attribute
+    is present. A string check would pass on a rule that is later overridden,
+    inside a non-matching @media, or reversed by !important.
+    """
+    return _harness("features/computer/harness-preview-asleep.mjs", 21)
+
+
 def t99():
     """The terminal route proxies and TUNNELS the upgrade (54 checks).
 
@@ -1702,6 +1719,7 @@ TESTS = [
     ("T97", "screen upgrade: the 101 WebSocket is tunnelled to the browser", "computer", "protocol", t97),
     ("T98", "screen CORS: module assets + preflight readable from the opaque frame", "computer", "protocol", t98),
     ("T99", "terminal: the WebSocket upgrade is proxied and tunnelled", "computer", "protocol", t99),
+    ("T100", "preview: the Asleep overlay is hidden when the computer is live", "computer", "protocol", t100),
 ]
 
 SKIP_NOTE = {

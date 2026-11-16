@@ -801,6 +801,200 @@ Fails 7/44 on the pre-fix tree (it answers `200 application/json`); 44/44 after.
 
 ---
 
+### B-30 · P2 · Preview said "Asleep" while status said "running" — FIXED-CODE
+
+**File:** `pages/public/computer/ui.html` — `.preview .asleep` CSS.
+
+`el.previewAsleep.hidden = live;` was **already correct**: `live` is true when
+status is `running` or `up`, so the overlay should hide. It did not, because of
+CSS specificity:
+
+```css
+.preview .asleep { display: grid; ... }   /* 0,2,0 */
+[hidden]        { display: none; }        /* 0,1,0 — UA stylesheet, loses */
+```
+
+The `hidden` attribute works through the UA stylesheet, and a class selector
+with `display: grid` outranks it. So the attribute was set, the computed
+`display` stayed `grid`, and an opaque overlay kept covering the preview iframe
+— which is why the preview showed neither the desktop nor anything else.
+
+**Every sibling overlay in the file already had an explicit `[hidden]`
+companion rule** — `.screen-veil[hidden]`, `.err[hidden]`, `.card[hidden]` — and
+`.asleep` was the one missing it. That is the whole bug: a pattern applied
+consistently except in one place.
+
+**Fix.** One declaration: `.preview .asleep[hidden]{display:none}`. Nothing else
+touched — not the preview iframe, the Wake button, the status logic, the
+preview-uploader or D1.
+
+**Why it looked like a logic bug.** The status text and the overlay are driven by
+different mechanisms — JS for the text, CSS for the overlay — so a correct JS
+assignment produced no visible change. Reading the JS alone showed nothing
+wrong, which is how it survived several rounds of review.
+
+**Test.** T100 (`harness-preview-asleep.mjs`, 21 checks) **models the cascade**
+rather than grepping for the rule: it parses the stylesheet, computes selector
+specificity, and asserts the winning `display` is `none` when `[hidden]` is
+present. A string assertion would pass on a rule that is later overridden,
+inside a non-matching `@media`, or reversed by `!important` — the bug is a
+cascade failure, so the test has to model the cascade. It also asserts the fix
+wins on **specificity rather than `!important`** (an `!important` would be a
+different, worse fix) and that the three sibling overlays still behave.
+
+Fails 4/21 without the rule, reporting the exact failure
+(`.preview .asleep => grid ([0,2,0])`); 21/21 with it.
+
+**Not browser-verified.** Muse deploys and confirms the preview shows the
+desktop while the status reads running.
+
+---
+
+## Part 2f — Found by Muse in a real browser, 2026-11-16 (B-31)
+
+### B-31 · P0 · No CORS on the screen surface — noVNC's module scripts were blocked — FIXED-CODE
+
+**File:** `pages/public/computer/router.js` — `proxyScreen()` (and every
+response it can produce).
+
+**Found by Muse**, live in a browser against the deployed `71a6501`. Her
+evidence, which is stronger than anything a protocol probe can give:
+
+- the WebSocket upgrade works: a Node client opening
+  `wss://…/computer/session/view/<cap>/websockify` gets OPEN, so B-28's tunnel
+  is live and correct;
+- the RFB handshake works: `RFB 003.008`, then security type `[1] = None` — no
+  VNC password is required;
+- every noVNC asset loads by direct fetch: `vnc.html` 200, `app/ui.js` 200
+  (61 KB), `core/rfb.js` 200 (122 KB), `logging.js` 200, `defaults.json` 200 —
+  **and none carries `Access-Control-Allow-Origin`**.
+
+**Cause.** The screen is embedded in iframes with
+`sandbox="allow-scripts allow-pointer-lock"` and deliberately **without**
+`allow-same-origin` — that omission is a security property: it keeps the remote
+desktop in an opaque origin, unable to reach the parent page's DOM or storage.
+Every request the frame makes is therefore cross-origin. noVNC loads as **ES
+modules** (`<script type="module" crossorigin="anonymous">` plus an inline
+module importing `./app/ui.js` and `./core/util/logging.js`), and module scripts
+are **always** fetched in CORS mode. With no ACAO the browser refuses them,
+noVNC never initializes, its WebSocket is never opened, and the frame sits on
+"The screen did not respond" — while the socket underneath works perfectly.
+
+**Why this survived so long, and why B-28 was still right to ship.** curl and
+Node do not enforce CORS. Every server-side probe — including my own B-28
+verification — passed while every real browser failed. B-28 was a real bug and
+is live; the browser simply never got far enough to use the fixed socket. Two
+independent bugs sat in series, and each one hid the next. That is worth
+recording as a pattern: **a protocol probe cannot prove a browser works**, which
+is precisely why Muse's browser check is the gate.
+
+**Fix.** `Access-Control-Allow-Origin: *` on every response `proxyScreen` can
+produce — module assets, the shimmed page, the 101 upgrade, and every error path
+(403 stale, 403 released, 503 store, 502 timeout). Plus an OPTIONS preflight
+answering 204 with the allow list. Errors carrying ACAO matters: a 403 without
+it appears in devtools as an opaque "CORS error" and hides the real message,
+which is how to keep hunting in the wrong layer.
+
+`*` is correct here, not lazy: **the URL is the authorization.** A capability is
+a sealed, expiring, scoped, unguessable token; anyone holding it is already
+entitled to that one screen. `Access-Control-Allow-Credentials` is never set, and
+the upstream provider token travels inside the seal server-side — so this grants
+read access to bytes the caller already had to be authorised to request.
+Echoing a specific Origin would add nothing and would break the opaque-origin
+case, where the browser sends `Origin: null`.
+
+**The iframe sandbox was NOT weakened.** `allow-same-origin` was not added; the
+CORS header is the correct fix, and T98 asserts the sandbox is unchanged.
+
+**Test.** T98 (`harness-screen-cors.mjs`, 36 checks) fetches module assets
+through a minted capability with an `Origin` header and asserts ACAO; asserts
+the OPTIONS preflight; asserts every error path carries it; asserts the 101
+tunnel keeps its minimal headers (so B-28 cannot regress); and asserts
+`/computer/state` does NOT gain CORS (the fix is scoped to the screen surface).
+Fails 13/36 on the pre-fix tree; 36/36 after.
+
+**Not browser-verified.** Muse deploys and confirms. The terminal close (B-29)
+and the preview "Asleep" disagreement (B-30) are untouched by this fix.
+
+---
+
+## Part 2e — Diagnosed 2026-11-16, not yet fixed (queued behind B-28)
+
+These two were diagnosed while fix 1 waited for browser verification. They are
+recorded here with their cause so the next change is a fix, not a hunt. Neither
+has been touched in code.
+
+### B-29 · P0 · The terminal route never proxied — it returned JSON — FIXED-CODE
+
+**File:** `pages/public/computer/router.js` — the `/computer/terminal/` branch.
+
+The terminal tab minted a capability (`POST /computer/terminal/session` → 200,
+URL, deadline) and then opened a WebSocket to `<cap>/websockify`. But the
+GET/upgrade branch authorised, and then **returned `json({ok:true, ...})`**. It
+never proxied to websockify and never tunnelled an upgrade.
+
+So the browser's socket received a JSON body where a 101 belonged, the socket
+closed, and the UI reported "The shell closed. Take control again to reopen it."
+— **while the lease was still held** (the browser test saw Holder "you" with
+86–88 s of lease remaining). The ~10–15 s before that message was the client
+giving up, not a server timeout. Every earlier note that called it a timeout was
+pointing at the wrong layer.
+
+Corroboration from the same browser check: the remote XFCE terminal opened from
+the taskbar over VNC worked perfectly (`echo hello-terminal` → `hello-terminal`),
+which proved the shell and the PTY stack were healthy and the fault was in this
+one route.
+
+**Fix.** `proxyTerminal()` — the same enforcement order and the same tunnel as
+`proxyScreen`:
+
+1. OPTIONS preflight (the terminal frame is cross-origin too);
+2. the capability opens (signature + expiry + policy from the AAD);
+3. the generation still matches;
+4. the sealed lease is still the LIVE lease — checked on every request;
+5. fetch the terminal origin through `fetchDesktopOrigin` (the `_token` +
+   cookie dance) and tunnel the 101 with `new Response(null, {status:101, webSocket})`.
+
+**Two integration gaps found while fixing it**, both of which would have failed
+even with a correct route:
+
+- `mintTerminal` sealed `token: null`. The terminal port is a **private**
+  InstaBox port, so the edge answers 401 without its `_token` — the proxy had no
+  credential to present. It now carries `COMPUTER_TERMINAL_TOKEN`. The token
+  stays server-side; the browser never sees it.
+- The signed preamble was created and **never sent by anything**. A tunnelled
+  WebSocket is spliced socket-to-socket: the Worker never handles a byte, so it
+  cannot write the first line. The browser must, and the mint response now
+  returns the preamble for it to send as the first frame on `open`.
+
+Handing the preamble to the browser is safe, and the reason is specific: it
+carries an **HMAC** over (computer, leaseId, deadline), not the secret. A client
+holding it can open the shell it already had the lease for, until the deadline
+already agreed. It cannot forge a later deadline, cannot move the session to
+another lease, and cannot reach another computer. T99 verifies all three by
+recomputing the HMAC independently.
+
+**Three independent expiry mechanisms, each covering a hole the others cannot:**
+
+| Mechanism | Covers |
+|---|---|
+| live-lease check per request | opening a NEW socket after release |
+| capability expiry | a socket that was never opened |
+| signed preamble deadline | an ALREADY-OPEN shell (the Worker is not in the loop for a tunnelled socket — B-4's 59-minute shell) |
+
+**Test.** T99 (`harness-terminal-proxy.mjs`, 44 checks): the upgrade returns 101
+with the **same socket object**; JSON is never returned; the lease is re-checked
+so the SAME link dies on release; an upstream 401 stays a 401 and never
+fabricates a socket; the preamble's HMAC verifies but does not survive a moved
+deadline / other lease / other computer; the terminal port token is presented
+server-side only; B-17's clamp and the lease-clamped expiry are unchanged.
+Fails 7/44 on the pre-fix tree (it answers `200 application/json`); 44/44 after.
+
+**Not browser-verified.** Needs a deploy; Muse confirms a prompt appears and
+`echo hello-terminal` prints.
+
+---
+
 ### B-30 · P2 · Preview says "Asleep" while status says "running"
 
 **File:** `pages/public/computer/ui.html` — `.preview .asleep` CSS.
@@ -838,7 +1032,7 @@ wrong — which is why this survived several rounds.
 | P1 | **0** | 5 | fixed: B-2, B-3, B-4, B-22, B-23 |
 | P2 | **0** | 16 | fixed: B-5, B-6, B-7, B-8, B-9, B-10, B-11, B-12, B-13, B-19, B-20, B-24, B-25, B-26 |
 | P3 | **0** | 5 | fixed: B-14, B-15, B-16, B-17, B-27 |
-| **Total** | **0 open** | **31 fixed** | of 31 findings |
+| **Total** | **0 open** | **32 fixed** | of 32 findings |
 | Audit findings (earlier) | — | 15 of 19 | see Part 1 |
 
 **All 30 register findings are closed in code** (B-31 fixed, B-29 and B-30 diagnosed and queued behind it). Zero open, zero data-loss
