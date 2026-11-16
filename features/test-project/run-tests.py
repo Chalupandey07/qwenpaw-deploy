@@ -1348,6 +1348,33 @@ def t98():
     return _harness("features/computer/harness-screen-cors.mjs", 36)
 
 
+def t103():
+    """The BROWSER's terminal path: preamble, framing, and xterm rendering (17).
+
+    The Node protocol test passed (101, prompt, echo) while the real browser's
+    Terminal tab stayed black and closed on its own. The difference is that the
+    Node test sends RAW text; the browser sends a signed PREAMBLE then FRAMED
+    input, and needs xterm's stylesheet to render.
+
+    Three bugs, each sufficient alone:
+      1. ORDERING — `new WebSocket()`, then `await <load xterm>`, then the `open`
+         listener. `open` can fire during that await, so the preamble was never
+         sent; the PTY server waits 5 s for its first line and closes. Hence
+         "connected then closed, prompt never renders".
+      2. NO xterm.css — xterm renders into absolutely positioned canvases whose
+         geometry comes from its stylesheet. Unlinked, the pane is black even
+         when bytes arrive.
+      3. THE PREAMBLE WAS TYPED INTO THE SHELL by any direct serve_pty caller,
+         because the parse lived in main() while serve_pty assumed it was gone.
+         It produced `/bin/sh: 2: Syntax error: word unexpected`.
+
+    Replays the browser's exact wire behaviour against the real PTY server
+    (preamble, RESIZE, framed stdin) and statically asserts the ordering and CSS
+    properties. Fails on all three pre-fix states; 17/17 after.
+    """
+    return _harness("features/computer/harness-terminal-browser.mjs", 17)
+
+
 def t102():
     """The first complete input line must not kill the terminal shell (25 checks).
 
@@ -1767,6 +1794,7 @@ TESTS = [
     ("T100", "preview: the Asleep overlay is hidden when the computer is live", "computer", "protocol", t100),
     ("T101", "machine rest + auto-wake; keep-alive respects a manual rest", "machine", "protocol", t101),
     ("T102", "terminal: a full input line must not kill the shell", "computer", "protocol", t102),
+    ("T103", "terminal: the browser path — preamble, framing, xterm CSS", "computer", "protocol", t103),
 ]
 
 SKIP_NOTE = {

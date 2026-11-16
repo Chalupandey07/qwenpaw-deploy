@@ -55,6 +55,19 @@ def check(name, cond, detail=""):
         print("  FAIL %s  %s" % (name, detail))
 
 
+SELFTEST_SECRET = b"unit-test-terminal-input-seed"
+
+
+def preamble_for(deadline_ms: int, lease: str = "unit-lease") -> bytes:
+    """A valid signed first line, exactly as the Worker mints one.
+
+    serve_pty consumes and verifies this itself, so every direct caller must
+    send it — an unauthenticated caller must never receive a prompt.
+    """
+    sig = ts.sign_deadline(SELFTEST_SECRET, "default", lease, deadline_ms)
+    return ("default %s %d %s\n" % (lease, deadline_ms, sig)).encode()
+
+
 def session(mode: str, command: bytes = b"echo hello-terminal\n", wait_s: float = 6.0):
     """Open a PTY session, wait for a prompt, send `command` in `mode`, collect.
 
@@ -70,6 +83,8 @@ def session(mode: str, command: bytes = b"echo hello-terminal\n", wait_s: float 
         daemon=True,
     )
     thread.start()
+    # The preamble first, newline-terminated, as the browser sends it.
+    b.sendall(preamble_for(deadline))
 
     b.settimeout(3.0)
     seen = b""
@@ -169,6 +184,7 @@ deadline = int(time.time() * 1000) + 6000
 res: dict = {}
 t = threading.Thread(target=lambda: res.update(ts.serve_pty(a, deadline, shell="/bin/sh", cwd="/tmp")), daemon=True)
 t.start()
+b.sendall(preamble_for(deadline))
 b.settimeout(2.0)
 try:
     b.recv(4096)  # prompt
@@ -196,6 +212,7 @@ deadline = int(time.time() * 1000) + 6000
 res2: dict = {}
 t2 = threading.Thread(target=lambda: res2.update(ts.serve_pty(a, deadline, shell="/bin/sh", cwd="/tmp")), daemon=True)
 t2.start()
+b.sendall(preamble_for(deadline))
 b.settimeout(2.0)
 try:
     b.recv(4096)

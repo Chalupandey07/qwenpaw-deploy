@@ -656,6 +656,78 @@ actually renders is Muse's check and stays unclaimed until she reports it.
 
 ---
 
+## Part 2h — Found live in a BROWSER, 2026-11-16 13:53 IST (B-33)
+
+### B-33 · P0 · The browser Terminal tab: preamble never sent, xterm never styled — FIXED-CODE
+
+Muse's 9th browser check, twice, on `/computer`: click "Open terminal" →
+"connected" → the terminal area stays **completely black**, no prompt ever
+renders, then the session closes on its own (25 s once, ~10 s once).
+
+Meanwhile the **Node protocol test passed** — 101, prompt `# `,
+`echo hello-terminal` printed. The difference is the whole diagnosis: the Node
+test sends **raw** text; the browser sends a signed **preamble** and then
+**framed** input, and renders through xterm.
+
+**Three bugs, each sufficient on its own.**
+
+**1. Ordering — the preamble was never sent.** `openTerminal()` did:
+
+```js
+socket = new WebSocket(...);
+await <load xterm.js>;                 // a yield point
+socket.addEventListener("open", ...);  // sends the preamble
+```
+
+A WebSocket can reach OPEN while that `await` is pending, and `open` does not
+wait for a listener. So `open` fired with nobody listening, the preamble was
+never sent, and the PTY server waited its 5 s for a first line and closed —
+exactly the "connected, then closed, prompt never renders" symptom. The prompt
+never arrived because **the shell never started**.
+
+**2. `xterm.css` was never linked.** xterm renders into absolutely positioned
+canvases whose geometry comes from its stylesheet (`.xterm{position:relative}`,
+`.xterm-screen canvas{position:absolute}`). Unlinked, the pane has no layout and
+stays black **even when bytes arrive**. A rendering bug, independent of (1) —
+fixing the ordering alone would have produced a connected, black terminal.
+
+**3. The preamble was typed into the shell.** `read_preamble` lived inline in
+`main()`, while `serve_pty()` assumed the line had already been consumed. Any
+direct caller leaked the preamble to the PTY as keystrokes, producing
+`/bin/sh: 2: Syntax error: word unexpected`. Found by this fix's own probe,
+not by reading.
+
+**Fix.**
+
+- `ensureXterm()` loads the stylesheet **and** the library, and now runs
+  **before** the socket is constructed — so construction and the `open`
+  listener happen in the same synchronous turn and no event can fall between
+  them.
+- `read_preamble()` is one exported function; `main()` and `serve_pty()` both
+  use it, so the two entry points cannot drift again. `serve_pty` consumes the
+  preamble itself unless the caller says it was already verified.
+- `main()` still reads and verifies **before** forking: serving first and
+  authenticating afterwards would hand a shell to an unauthenticated peer for
+  the duration of the check.
+
+**Test.** T103 (`harness-terminal-browser.mjs`, 17 checks) replays the browser's
+exact wire behaviour against the real PTY server — preamble, RESIZE frame,
+framed stdin — and asserts a prompt arrives, output comes back, and the session
+survives. It also asserts the ordering and the CSS statically, because those are
+what a future edit breaks silently.
+
+Fail-first, all three independently:
+- restoring the old ordering fails 2 checks (including
+  "no await between new WebSocket and the open listener");
+- pointing the link at a non-existent CSS fails 1;
+- removing the preamble consumption fails the wire probe with the real
+  `/bin/sh: Syntax error`.
+
+**Not browser-verified.** Muse syncs `terminal-server.py`, redeploys the Worker
+(`ui.html` changed), and re-checks the tab.
+
+---
+
 ## Part 2g — Found live, 2026-11-16 13:25 IST (B-32)
 
 ### B-32 · P0 · The first complete input line killed the terminal shell — FIXED-CODE
@@ -1160,7 +1232,7 @@ Test: T101, 66 checks.
 | P1 | **0** | 5 | fixed: B-2, B-3, B-4, B-22, B-23 |
 | P2 | **0** | 16 | fixed: B-5, B-6, B-7, B-8, B-9, B-10, B-11, B-12, B-13, B-19, B-20, B-24, B-25, B-26 |
 | P3 | **0** | 5 | fixed: B-14, B-15, B-16, B-17, B-27 |
-| **Total** | **0 open** | **33 fixed** | of 33 findings |
+| **Total** | **0 open** | **34 fixed** | of 34 findings |
 | Audit findings (earlier) | — | 15 of 19 | see Part 1 |
 
 **All 30 register findings are closed in code** (B-31 fixed, B-29 and B-30 diagnosed and queued behind it). Zero open, zero data-loss

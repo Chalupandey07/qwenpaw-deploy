@@ -231,13 +231,72 @@ def deadline_passed(deadline_ms: int, now_ms: float | None = None) -> bool:
 
 # --------------------------------------------------------------------- server
 
+def read_preamble(conn: socket.socket) -> tuple[str, str, int, str] | None:
+    """Read the signed first line. Returns (computer, lease, deadline, signature).
+
+    THE ONE PLACE THAT KNOWS THE PREAMBLE FORMAT.
+
+    It used to live inline in `main()`, which meant `serve_pty()` assumed the
+    line had already been consumed. Anything calling `serve_pty` directly — the
+    harnesses, or a future transport — then had its preamble written to the SHELL
+    as keystrokes. That is not a theoretical hazard: it produced
+    `/bin/sh: 2: Syntax error: word unexpected` on the first command, because the
+    shell had already executed the preamble text as a line of its own.
+
+    Keeping the parse in one exported function means the two entry points cannot
+    drift again.
+    """
+    try:
+        conn.settimeout(5.0)
+        line = b""
+        while not line.endswith(b"\n"):
+            chunk = conn.recv(1)
+            if not chunk:
+                break
+            line += chunk
+            if len(line) > 4096:      # a preamble is ~120 bytes; bound it
+                break
+        conn.settimeout(None)
+        parts = line.decode("utf-8", "replace").strip().split(" ")
+        if len(parts) != 4:
+            return None
+        computer, lease_id, deadline_text, signature = parts
+        return computer, lease_id, int(deadline_text), signature
+    except (OSError, ValueError):
+        try:
+            conn.settimeout(None)
+        except OSError:
+            pass
+        return None
+
+
 def serve_pty(conn: socket.socket, deadline_ms: int, shell: str | None = None,
-              cwd: str | None = None, env_extra: dict | None = None) -> dict:
+              cwd: str | None = None, env_extra: dict | None = None,
+              preamble_already_read: bool = False) -> dict:
     """Run one shell until the socket closes or the deadline passes.
 
     Returns counters the tests assert on: bytes each way, frames applied, and
     why it ended. `reason` is one of "eof", "deadline", "error".
+
+    `preamble_already_read` exists because `main()` must verify the signature
+    BEFORE it forks a shell: serving first and authenticating afterwards would
+    hand a shell to an unauthenticated peer for the few milliseconds the
+    signature check takes. `main()` therefore reads and verifies the line, then
+    calls this with the flag set. Every other caller leaves it False and this
+    function consumes the preamble itself — so no path can leak it into the PTY.
+
+    A preamble that is missing or malformed ends the session with
+    `reason="no_preamble"` rather than starting a shell: an unauthenticated
+    caller must not get a prompt.
     """
+    if not preamble_already_read:
+        line_parts = read_preamble(conn)
+        if line_parts is None:
+            # No valid first line: never start a shell. This is the 5 s timeout
+            # the browser used to hit when an `await` swallowed its `open` event.
+            return {"to_client": 0, "from_client": 0, "frames": 0,
+                    "reason": "no_preamble"}
+
     env = dict(os.environ, TERM="xterm-256color")
     if env_extra:
         env.update(env_extra)
@@ -416,12 +475,18 @@ def selftest() -> int:
     deadline = int(time.time() * 1000) + 4000
     import threading
     result = {}
+    # serve_pty now consumes the preamble itself (one place owns the format),
+    # so this caller must send a VALID signed line exactly as the Worker mints
+    # one. Previously the test skipped it and serve_pty assumed it was gone —
+    # which is how the preamble ended up being typed into the shell.
+    selftest_sig = sign_deadline(secret, "default", "selftest-lease", deadline)
 
     def run():
         result.update(serve_pty(a, deadline, shell="/bin/sh", cwd="/tmp"))
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
+    b.sendall(("default selftest-lease %d %s\n" % (deadline, selftest_sig)).encode())
     # Send a command through the frame protocol and expect the echo back.
     cmd = b"echo TERMINAL-OK\n"
     b.sendall(struct.pack(">BI", KIND_STDIN, len(cmd)) + cmd)
@@ -515,27 +580,17 @@ def main(argv=None) -> int:
         # the connection, newline-terminated, then the stream is raw frames.
         # Parsing it here (rather than trusting a URL) keeps the deadline out of
         # any access log.
-        try:
-            conn.settimeout(5.0)
-            line = b""
-            while not line.endswith(b"\n"):
-                chunk = conn.recv(1)
-                if not chunk:
-                    break
-                line += chunk
-            conn.settimeout(None)
-            parts = line.decode("utf-8", "replace").strip().split(" ")
-            if len(parts) != 4:
-                conn.close()
-                continue
-            computer, lease_id, deadline_text, signature = parts
-            deadline_ms = int(deadline_text)
-        except (OSError, ValueError):
+        # Parse with the SAME function serve_pty uses, so the two entry points
+        # cannot drift (they already had: serve_pty assumed the line was gone,
+        # so a direct caller leaked the preamble into the shell).
+        parts = read_preamble(conn)
+        if parts is None:
             try:
                 conn.close()
             except OSError:
                 pass
             continue
+        computer, lease_id, deadline_ms, signature = parts
 
         if not verify_deadline(secret, computer, lease_id, deadline_ms, signature):
             print("terminal-server: refusing a connection with a bad deadline "
@@ -549,7 +604,9 @@ def main(argv=None) -> int:
         if os.fork() == 0:
             server.close()
             try:
-                serve_pty(conn, deadline_ms)
+                # Verified above, before forking: never serve a shell and
+                # authenticate afterwards.
+                serve_pty(conn, deadline_ms, preamble_already_read=True)
             finally:
                 os._exit(0)
         conn.close()

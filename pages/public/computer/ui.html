@@ -582,6 +582,50 @@
     return buf;
   }
 
+  /**
+   * Load xterm.js AND its stylesheet, once.
+   *
+   * THE STYLESHEET IS NOT OPTIONAL (B-33). xterm renders into absolutely
+   * positioned canvases whose geometry comes from its CSS (`.xterm{position:
+   * relative}`, `.xterm-screen canvas{position:absolute}`). This page never
+   * linked `xterm.css`, so the canvases were laid out with no size: the
+   * terminal pane stayed COMPLETELY BLACK even when bytes arrived. That is a
+   * rendering bug, not a connection bug, and it had to be fixed separately
+   * from the ordering bug above — either one alone leaves a black pane.
+   *
+   * Loaded lazily (not a <link> in <head>) so the Live tab costs nothing
+   * until someone opens a shell, and cached across calls so reopening the
+   * terminal does not re-fetch.
+   */
+  let xtermReady = null;
+  function ensureXterm() {
+    if (xtermReady) return xtermReady;
+    xtermReady = (async () => {
+      // 1. The stylesheet. A <link> is enough; no need to await its load —
+      //    layout settles on its own once it applies.
+      if (!document.querySelector('link[data-xterm-css]')) {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = "/vendor/xterm.css";
+        link.setAttribute("data-xterm-css", "1");
+        document.head.appendChild(link);
+      }
+      // 2. The library. Vendored, never a CDN: this page also drives a shell,
+      //    and a third-party script here would be a supply-chain risk.
+      if (!window.Terminal) {
+        await new Promise((resolve) => {
+          const s = document.createElement("script");
+          s.src = "/vendor/xterm.js";
+          s.onload = resolve;
+          s.onerror = resolve;   // resolve either way; the caller checks
+          document.head.appendChild(s);
+        });
+      }
+      return Boolean(window.Terminal);
+    })();
+    return xtermReady;
+  }
+
   async function openTerminal() {
     if (!state.leaseId) { toast("Take control first — a shell needs the lease."); return; }
     if (state.terminal) return;
@@ -610,6 +654,23 @@
     // URL, so the scheme follows the page.
     const socketUrl = (location.protocol === "https:" ? "wss://" : "ws://")
       + location.host + r.data.url + "/websockify";
+
+    // ---- load xterm BEFORE opening the socket ----
+    //
+    // ORDER IS THE BUG THIS FIXES (B-33). This used to run the other way
+    // round: `new WebSocket(...)`, then `await` the xterm script, then
+    // register the `open` listener. A WebSocket can reach OPEN while that
+    // await is still pending, and the `open` event does not wait for a
+    // listener — so `open` fired with nobody listening, the preamble was
+    // NEVER SENT, and the PTY server timed out after 5 s waiting for its
+    // first line and closed the connection. That is the observed
+    // "connected ~10-25 s then closed, prompt never renders".
+    //
+    // Loading the library first makes the socket the LAST thing created, so
+    // its listeners are attached in the same synchronous turn as the
+    // constructor — no gap for an event to fall into.
+    await ensureXterm();
+
     let socket;
     try {
       socket = new WebSocket(socketUrl, ["binary"]);
@@ -620,16 +681,6 @@
     }
     socket.binaryType = "arraybuffer";
 
-    // xterm is vendored; it is loaded lazily so the Live tab costs nothing.
-    if (!window.Terminal) {
-      await new Promise((resolve) => {
-        const s = document.createElement("script");
-        s.src = "/vendor/xterm.js";
-        s.onload = resolve;
-        s.onerror = resolve;
-        document.head.appendChild(s);
-      });
-    }
     const term = window.Terminal
       ? new window.Terminal({ fontSize: 12, theme: { background: "#000000" }, cursorBlink: true })
       : null;
