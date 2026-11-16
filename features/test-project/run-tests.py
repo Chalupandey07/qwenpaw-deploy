@@ -1330,6 +1330,24 @@ def t94():
     return _py_script_harness(["features/codemode/vm/codemode-runner.py", "--selftest"], 64)
 
 
+def t98():
+    """CORS on the screen capability surface (36 checks).
+
+    The screen lives in an opaque-origin iframe (sandbox without
+    allow-same-origin, which is a security property we keep). noVNC loads as ES
+    modules, and module scripts are always fetched in CORS mode — so with no
+    Access-Control-Allow-Origin the browser refuses them, noVNC never
+    initializes, and its WebSocket is never opened. The frame sits on "The
+    screen did not respond" while the socket path works perfectly.
+
+    This is why every curl/Node probe passed and every browser failed: neither
+    enforces CORS. Asserts module assets and error paths carry ACAO, that
+    OPTIONS is a 204 preflight, that the 101 tunnel still keeps its minimal
+    headers, and that no allow-same-origin was added to the sandbox.
+    """
+    return _harness("features/computer/harness-screen-cors.mjs", 36)
+
+
 def t97():
     """The screen WebSocket upgrade is TUNNELLED (22 checks).
 
@@ -1664,6 +1682,7 @@ TESTS = [
     ("T95", "MCP client vs a real SSE + JSON-RPC server", "codemode", "protocol", t95),
     ("T96", "Code Mode end to end: runner -> real MCP -> real HTTP", "codemode", "protocol", t96),
     ("T97", "screen upgrade: the 101 WebSocket is tunnelled to the browser", "computer", "protocol", t97),
+    ("T98", "screen CORS: module assets + preflight readable from the opaque frame", "computer", "protocol", t98),
 ]
 
 SKIP_NOTE = {

@@ -618,20 +618,90 @@ export async function handleComputer(request, env, url) {
   return json({ error: "not_found" }, 404);
 }
 
+/**
+ * CORS for the screen capability surface.
+ *
+ * WHY THIS IS REQUIRED, AND WHY `*` IS CORRECT HERE
+ *
+ * The screen is embedded in iframes with `sandbox="allow-scripts
+ * allow-pointer-lock"` and deliberately WITHOUT `allow-same-origin` — that
+ * omission is a security property: it keeps the remote desktop in an opaque
+ * origin so it cannot reach this page's DOM or storage. The consequence is
+ * that every request the frame makes is cross-origin to us.
+ *
+ * noVNC loads as ES modules: `<script type="module" crossorigin="anonymous">`
+ * plus an inline module importing `./app/ui.js` and
+ * `./core/util/logging.js`. Module scripts are ALWAYS fetched in CORS mode, so
+ * without `Access-Control-Allow-Origin` the browser refuses them and noVNC
+ * never initializes — it never opens its WebSocket, and the frame sits on
+ * "The screen did not respond" while the socket itself works perfectly.
+ *
+ * That is why every curl/Node probe passed and every browser failed: curl and
+ * Node do not enforce CORS. The 101 tunnel fix was real and stayed live; the
+ * browser simply never got far enough to use it.
+ *
+ * `*` rather than an origin allowlist: the URL IS the authorization. A
+ * capability is a sealed, expiring, scoped token and is unguessable; anyone
+ * holding it is already entitled to that one screen. Echoing a specific Origin
+ * would add nothing (an attacker's page cannot forge the token) and would break
+ * the opaque-origin case, where the browser sends `Origin: null`.
+ *
+ * `*` does NOT expose credentials: `Access-Control-Allow-Credentials` is never
+ * set, and the upstream provider token travels inside the seal, server-side. So
+ * this grants read access to bytes the caller already had to be authorised to
+ * request.
+ */
+function withCors(headers) {
+  const out = new Headers(headers);
+  out.set("Access-Control-Allow-Origin", "*");
+  // No `Vary: Origin`: the response is identical for every Origin, so varying
+  // on it would only fragment caches.
+  return out;
+}
+
+/** Preflight: 204, no body. The frame asks; the browser reads the allow list. */
+function corsPreflight() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+      "Access-Control-Max-Age": "600",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
 /** Proxy one screen request, after all four checks. */
 async function proxyScreen(request, env, url) {
+  // Preflight first: an OPTIONS request carries no capability semantics and
+  // should not consume the store reads below.
+  if (request.method === "OPTIONS") return corsPreflight();
+
   const cap = await openCapability(env.COMPUTER_CAPABILITY_SECRET, url.pathname);
-  if (!cap) return new Response("Screen link expired or invalid.", { status: 403 });
+  if (!cap) {
+    return new Response("Screen link expired or invalid.", {
+      status: 403,
+      headers: withCors({ "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" }),
+    });
+  }
 
   // 2. generation must still match — a takeover or release invalidated it.
   let computer;
   try {
     computer = await S.getComputer(env, cap.scope.computer);
   } catch {
-    return new Response("Screen unavailable (store).", { status: 503 });
+    return new Response("Screen unavailable (store).", {
+      status: 503,
+      headers: withCors({ "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" }),
+    });
   }
   if (!computer || computer.generation !== cap.scope.generation) {
-    return new Response("Screen link expired.", { status: 403 });
+    return new Response("Screen link expired.", {
+      status: 403,
+      headers: withCors({ "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" }),
+    });
   }
 
   // 3. control requires the live lease, checked on EVERY request.
@@ -643,9 +713,17 @@ async function proxyScreen(request, env, url) {
       // Fails CLOSED — no store, no control — but says so. Reporting "Control
       // was released" for a store outage is the same class of lie as B-15: it
       // sends the user to press Take control again instead of waiting.
-      return new Response("Control unavailable (store).", { status: 503 });
+      return new Response("Control unavailable (store).", {
+        status: 503,
+        headers: withCors({ "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" }),
+      });
     }
-    if (!ok) return new Response("Control was released.", { status: 403 });
+    if (!ok) {
+      return new Response("Control was released.", {
+        status: 403,
+        headers: withCors({ "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" }),
+      });
+    }
   }
 
   // 4. proxy. The provider token rides in the sealed target and never reaches
@@ -669,7 +747,10 @@ async function proxyScreen(request, env, url) {
     upstreamReq, url, upstream.toString(), cap.target.url, cap.target.token || "",
   );
   if (!res) {
-    return new Response("Screen unavailable (upstream_timeout)", { status: 502 });
+    return new Response("Screen unavailable (upstream_timeout)", {
+      status: 502,
+      headers: withCors({ "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" }),
+    });
   }
 
   // WebSocket upgrade. THIS IS THE LINE THE SCREEN DEPENDED ON AND DID NOT HAVE.
@@ -706,11 +787,14 @@ async function proxyScreen(request, env, url) {
     if (text.length > 1024 * 1024) return new Response("Screen page too large.", { status: 502 });
     return new Response(injectShim(text, cap.policy === "view"), {
       status: res.status,
-      headers: rewrittenNovnc(res.headers),
+      headers: withCors(rewrittenNovnc(res.headers)),
     });
   }
 
   const out = new Headers(res.headers);
   out.delete("set-cookie");
-  return new Response(res.body, { status: res.status, headers: out });
+  // This is the line that unblocks noVNC: app.js, core/rfb.js, the CSS, the
+  // fonts — every module and asset the page imports — must carry ACAO or the
+  // opaque-origin iframe refuses them.
+  return new Response(res.body, { status: res.status, headers: withCors(out) });
 }
