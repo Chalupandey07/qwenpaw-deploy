@@ -6,3 +6,7 @@ node_modules/
 .wrangler/
 __pycache__/
 *.pyc
+
+# Credential store (kept outside the tree; this rule is belt-and-braces).
+.secrets/
+*.token
