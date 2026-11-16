@@ -347,8 +347,29 @@ export function requiresSession(path, method = "GET") {
   // real request behind it still carries a cookie and is still checked.
   if (method === "OPTIONS") return false;
 
-  // Static UI assets: no data, no secret.
-  if (path === "/computer" || path === "/computer/") return true;
+  // ---- the UI page itself: EXEMPT, and this is not a hole ----
+  //
+  // B-39: this returned `true` (gated) while its own comment said "Static UI
+  // assets: no data, no secret". A logged-in user could not reach the computer
+  // AT ALL: `/computer` answered 401 JSON before `serveUi` ever ran, so the
+  // page's own `ensureSession()` never executed — the only caller of
+  // `/api/session/mint` in the tree — and the cookie was never minted. That is
+  // a chicken-and-egg lockout, not a security boundary.
+  //
+  // Exempting it is safe for a specific reason, not a hand-wave: `ui.html` is
+  // static bytes. It contains no store access, no lease, no preview, no shell.
+  // Every endpoint it CALLS is still gated below, so an anonymous visitor who
+  // loads the page sees the honest "Sign in to the QwenPaw console first"
+  // state and can obtain nothing. The page is the way IN, and a gate on the
+  // door you must open to ask for a key is a lockout.
+  //
+  // This matches the rule the rest of this block already follows: assets are
+  // exempt (see the extension match below), data is gated.
+  if (path === "/computer" || path === "/computer/") return false;
+  // `ui.html` served directly is also just bytes — but it is not a public
+  // entry point, and `serveUi` is the only intended consumer. It stays exempt
+  // so a direct fetch gets the router's honest 404 instead of a misleading 401
+  // (the same reasoning as the `/vendor/` traversal note below).
   // `/vendor/` is matched on the URL as received. A traversal attempt is NOT
   // normalised here on purpose: `/vendor/../computer/ui.html` must reach the
   // vendor allowlist and get its honest 404, not fall through to a route that

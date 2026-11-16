@@ -427,7 +427,20 @@
 
   function consoleToken() {
     try {
-      var keys = ["token", "qwenpaw_token", "qwenpaw-token", "access_token"];
+      // `qwenpaw_auth_token` is the key the console ACTUALLY uses. Verified
+      // against the deployed bundle (2026-11-17): it declares
+      // `Id = "qwenpaw_auth_token"`, reads it in `It()` and writes it in `Z$()`
+      // (exported to the lazy login chunk), and sends it as
+      // `Authorization: Bearer <value>`.
+      //
+      // B-39: this list used to be [token, qwenpaw_token, qwenpaw-token,
+      // access_token] — a guess, and none of them is the real key. So even
+      // after the page became reachable, `ensureSession()` would have found no
+      // token and shown "sign in first" to a user who already had. Both halves
+      // had to be fixed or the lockout just changed its error message.
+      // The real key goes FIRST; the others stay as harmless fallbacks for a
+      // console rebuild that renames it.
+      var keys = ["qwenpaw_auth_token", "token", "qwenpaw_token", "qwenpaw-token", "access_token"];
       for (var i = 0; i < keys.length; i++) {
         var v = localStorage.getItem(keys[i]);
         if (v && v.length > 8) return v;

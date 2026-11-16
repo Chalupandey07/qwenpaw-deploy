@@ -1669,7 +1669,7 @@ def t86():
 
 
 def t88():
-    """The Pages Worker LOADS, RUNS, and REFUSES anonymous callers (70 checks).
+    """The Pages Worker LOADS, RUNS, and REFUSES anonymous callers (88 checks).
 
     Added because on 2026-11-15 the entire Worker was dead and every check in
     this suite stayed green. Two fatal defects:
@@ -1700,7 +1700,7 @@ def t88():
     gate runs BEFORE the store so an anonymous caller can never consume a
     lease, a generation, or an HMAC mint. It fails 28/70 on the pre-fix tree.
     """
-    return _harness("features/computer/harness-worker-load.mjs", 70)
+    return _harness("features/computer/harness-worker-load.mjs", 88)
 
 
 def t85():

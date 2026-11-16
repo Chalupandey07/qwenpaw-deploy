@@ -351,10 +351,189 @@ console.log("worker: /computer refuses an ANONYMOUS caller (P0 regression)");
     { COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
   check("the gate runs BEFORE the store (401, not 503)", noStore.status === 401, String(noStore.status));
 
-  // /computer itself stays reachable: it is the sign-in landing page, and a
-  // 401 there would be a lockout with no way in.
-  const ui = await mod.default.fetch(new Request("https://qwenpawx.pages.dev/computer"), { ASSETS: assets, COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
-  check("/computer itself answers (it is the way in)", ui.status === 200 || ui.status === 401, String(ui.status));
+  // ---------------------------------------------------------------------
+  // B-39: the page itself must be REACHABLE, and this is the assertion that
+  // would have caught the lockout.
+  //
+  // The previous version of this check accepted `200 || 401`, which is why it
+  // stayed green while every logged-in user was locked out: a gate on
+  // `/computer` returns 401 BEFORE `serveUi` runs, so the page's own
+  // `ensureSession()` — the only caller of `/api/session/mint` in the tree —
+  // never executes and the cookie is never minted. A test that accepts the
+  // broken answer is not a test.
+  //
+  // So: an ANONYMOUS visitor with no cookie at all must receive the UI,
+  // because the page is the only way to ask for a session.
+  const ui = await mod.default.fetch(
+    new Request("https://qwenpawx.pages.dev/computer"),
+    { ASSETS: assets, COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
+  check("ANON GET /computer -> 200 (the page is the way in)", ui.status === 200,
+    `${ui.status} — a 401 here is the chicken-and-egg lockout`);
+  check("…and it is the HTML UI, not a JSON error",
+    (ui.headers.get("Content-Type") || "").includes("text/html"),
+    String(ui.headers.get("Content-Type")));
+  const uiBody = await ui.text();
+  check("…carrying the sign-in affordance and the mint call",
+    uiBody.includes("<!doctype html>") && uiBody.includes("/api/session/mint"),
+    uiBody.slice(0, 80));
+  check("…and it still refuses to be framed cross-origin",
+    (ui.headers.get("Content-Security-Policy") || "").includes("frame-ancestors 'self'"),
+    String(ui.headers.get("Content-Security-Policy")));
+
+  // `/computer/` (trailing slash) must behave identically — a lockout that
+  // only affects one spelling is a bug that reappears in someone's bookmark.
+  const uiSlash = await mod.default.fetch(
+    new Request("https://qwenpawx.pages.dev/computer/"),
+    { ASSETS: assets, COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
+  check("ANON GET /computer/ -> 200 too", uiSlash.status === 200, String(uiSlash.status));
+
+  // THE OTHER HALF OF B-39: the page must be able to FIND the console's token.
+  //
+  // `qwenpaw_auth_token` is the key the deployed console bundle actually uses
+  // (it declares `Id = "qwenpaw_auth_token"`, reads it in `It()`, writes it in
+  // `Z$()`). `ui.html` used to look only for [token, qwenpaw_token,
+  // qwenpaw-token, access_token] — none of which is real — so even a reachable
+  // page could not mint, and a signed-in user was told to sign in. Both halves
+  // were the same bug and both are asserted here.
+  const uiSrc = readFileSync(resolve(PUBLIC, "computer/ui.html"), "utf8");
+  check("ui.html reads the console's REAL localStorage key",
+    /qwenpaw_auth_token/.test(uiSrc),
+    "without it, ensureSession() finds no token and the user is told to sign in");
+  check("…and the real key is tried FIRST",
+    /\["qwenpaw_auth_token",/.test(uiSrc),
+    "a fallback list that reaches it later still works, but first is honest");
+  // The two checks above can both be satisfied by a DECORATIVE mention (a
+  // comment, a string in an unused branch) because they only test for presence.
+  // A mutation test showed exactly that: deleting the key from the lookup array
+  // still left "…tried FIRST" failing but let "reads the real key" pass, because
+  // the comment above the array names it. This one reads the array itself, so
+  // only a real lookup entry satisfies it.
+  const keyList = /var keys = \[([^\]]*)\];/.exec(uiSrc);
+  check("…in the ACTUAL lookup array, not just a comment",
+    Boolean(keyList) && /"qwenpaw_auth_token"/.test(keyList[1]),
+    keyList ? keyList[1].slice(0, 90) : "no `var keys = [...]` found");
+
+  // Serving the page must not touch the store: a page load that costs a lease
+  // read on every visit is a different bug.
+  const uiNoStore = await mod.default.fetch(
+    new Request("https://qwenpawx.pages.dev/computer"),
+    { ASSETS: assets, COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
+  check("…and serving it needs no COMPUTER_DB at all", uiNoStore.status === 200,
+    String(uiNoStore.status));
+
+  // B-39 must not have opened a door: the DATA endpoints are still gated.
+  // Asserted again here for the two closest neighbours of the page itself, so
+  // a future "exempt /computer" edit that accidentally exempts children fails.
+  for (const p of ["/computer/state?computer=default", "/computer/computers"]) {
+    const res = await mod.default.fetch(
+      new Request("https://qwenpawx.pages.dev" + p),
+      { ASSETS: assets, COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
+    check(`ANON ${p} is STILL 401 after the page was exempted`, res.status === 401,
+      String(res.status));
+  }
+
+  // ---------------------------------------------------------------------
+  // B-39, the whole journey a real user takes — in order, because the ORDER is
+  // the bug. A signed-in user with no cookie yet must be able to:
+  //
+  //   1. load /computer            (anonymous; exempt)
+  //   2. POST /api/session/mint    (their console bearer, verified)
+  //   3. load /computer with the cookie, and reach the DATA
+  //
+  // Step 2 in the harness stubs the console's auth probe, so what is under
+  // test is OUR mint -> verify -> gate chain, not QwenPaw's login.
+  //
+  // Before B-39 this journey could not start: step 1 answered 401, so the page
+  // never ran `ensureSession()` and step 2 was never attempted.
+  // A minimal healthy store, local to this block (the one above is scoped to
+  // its own test). `stateFor()` needs generations + modes + leases + needs_you.
+  const journeyStmt = {
+    async run() { return { success: true, meta: { changes: 1 } }; },
+    async first() { return null; },
+    async all() { return { results: [] }; },
+  };
+  const journeyDb = {
+    prepare: () => ({ ...journeyStmt, bind: () => journeyStmt }),
+    batch: async (stmts) => stmts.map(() => ({ success: true })),
+  };
+  const journeyEnv = { ASSETS: assets, COMPUTER_SESSION_SECRET: SESSION_SECRET,
+                       COMPUTER_DB: journeyDb };
+
+  const step1 = await mod.default.fetch(
+    new Request("https://qwenpawx.pages.dev/computer"), journeyEnv, {});
+  check("journey 1/4: anonymous /computer loads the page", step1.status === 200,
+    String(step1.status));
+
+  // Mint. The console probe is stubbed to accept exactly one token, so a fake
+  // success would be caught by the negative case below.
+  const CONSOLE_TOKEN = "console-session-token-for-the-journey";
+  const realFetch = globalThis.fetch;
+  // NOTE the second argument: `authenticate()` calls `fetch(url, {headers})`,
+  // so the headers live in `init`, not on the first argument. A stub that only
+  // reads `input.headers` sees null and rejects every token — which is how the
+  // first version of this block reported a mint failure that did not exist.
+  globalThis.fetch = async (input, init) => {
+    const u = String(input && input.url ? input.url : input);
+    const hdrs = new Headers((init && init.headers) || (input && input.headers) || {});
+    if (u.includes("/api/cron/jobs")) {
+      return hdrs.get("Authorization") === "Bearer " + CONSOLE_TOKEN
+        ? new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } })
+        : new Response("no", { status: 401 });
+    }
+    return new Response("stub", { status: 200 });
+  };
+  let minted;
+  try {
+    const mintRes = await mod.default.fetch(new Request(
+      "https://qwenpawx.pages.dev/api/session/mint", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + CONSOLE_TOKEN },
+      }), journeyEnv, {});
+    check("journey 2/4: the console session mints a cookie", mintRes.status === 200,
+      String(mintRes.status));
+    const setCookie = mintRes.headers.get("Set-Cookie") || "";
+    check("…the cookie is HttpOnly, Secure and SameSite=Lax",
+      /HttpOnly/i.test(setCookie) && /Secure/i.test(setCookie) && /SameSite=Lax/i.test(setCookie),
+      setCookie.slice(0, 90));
+    minted = /DESKTOP_SESSION=([^;]+)/.exec(setCookie);
+    check("…and it is a DESKTOP_SESSION value", Boolean(minted), setCookie.slice(0, 60));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // A BOGUS console token must not mint. Without this, the journey above would
+  // "pass" against a mint that accepts anyone.
+  globalThis.fetch = async () => new Response("no", { status: 401 });
+  try {
+    const bad = await mod.default.fetch(new Request(
+      "https://qwenpawx.pages.dev/api/session/mint", {
+        method: "POST",
+        headers: { Authorization: "Bearer not-a-real-console-token" },
+      }), journeyEnv, {});
+    check("journey 2b: a rejected console token mints NOTHING", bad.status === 401,
+      String(bad.status));
+    check("…and sets no cookie",
+      !/DESKTOP_SESSION=/.test(bad.headers.get("Set-Cookie") || ""),
+      String(bad.headers.get("Set-Cookie")));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  if (minted) {
+    const cookie = "DESKTOP_SESSION=" + minted[1];
+    const step3 = await mod.default.fetch(
+      requestWith("/computer", { headers: { Cookie: cookie } }, minted[1]), journeyEnv, {});
+    check("journey 3/4: the page loads for the holder", step3.status === 200,
+      String(step3.status));
+
+    const step4 = await mod.default.fetch(
+      requestWith("/computer/state?computer=default", {}, minted[1]), journeyEnv, {});
+    check("journey 4/4: the DATA is reachable with that cookie", step4.status === 200,
+      String(step4.status) + " " + JSON.stringify(await step4.json().catch(() => ({}))).slice(0, 80));
+  } else {
+    check("journey 3/4: the page loads for the holder", false, "no cookie was minted");
+    check("journey 4/4: the DATA is reachable with that cookie", false, "no cookie was minted");
+  }
 
   // A missing secret is a DEPLOY error, and must say so instead of looping the
   // user through a sign-in that cannot succeed.

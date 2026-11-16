@@ -1626,3 +1626,118 @@ to 2 s deadline / 5 s wait; it now fails without the extension.
 and restart the terminal service — without the new server the extension frames
 are ignored and the session still dies at 60 s (the browser would keep renewing
 and the shell would still close, which is a confusing half-state worth avoiding).
+
+---
+
+## Part 7 — Found live, 2026-11-17 (the lockout)
+
+### B-39 · P0 · A logged-in user could not open `/computer` at all — the page was gated behind the cookie the page itself mints — FIXED-CODE
+
+**Files:** `pages/public/computer/router.js` (`requiresSession`),
+`pages/public/computer/ui.html` (`consoleToken`).
+
+**Found live** 2026-11-17 ~01:20 IST, after a successful console login as
+`satwik`: opening `https://qwenpawx.pages.dev/computer` returned **only raw
+JSON**, HTTP 401:
+
+```json
+{"error":"auth_required","reason":"absent","detail":"Open the QwenPaw console and sign in, then reload this page."}
+```
+
+No UI, no Terminal tab, no screen, no rail. A signed-in user could not reach the
+computer at all. Re-verified with curl while writing this:
+
+```
+GET /computer          -> 401 application/json
+GET /computer/         -> 401 application/json
+GET /computer/teach.js -> 200            (asset: already exempt)
+```
+
+**Cause 1 — the chicken and egg.** `requiresSession()` read:
+
+```js
+// Static UI assets: no data, no secret.
+if (path === "/computer" || path === "/computer/") return true;
+```
+
+The comment and the code disagree, and the comment was right: every other entry
+in that block returns `false`. `ui.html` itself was exempt (`*.html`), but the
+clean `/computer` URL was not — so the 401 fired **before `serveUi()` ran**.
+
+And that is fatal in a way a normal 401 is not, because the only caller of
+`POST /api/session/mint` in the entire tree is `ui.html`'s `ensureSession()`,
+which runs **after the page loads**. Nothing else mints: `computerPanelScript`
+just links to `/computer`, and `machine-control.js` never mints. So the page
+that would have obtained the cookie was locked behind the cookie. A gate on the
+door you must open to ask for a key is not a security boundary — it is a
+lockout, and it locked out the owner.
+
+**Cause 2 — the wrong storage key (found while fixing cause 1, and it would
+have re-created the same lockout with a different error).**
+`ui.html`'s `consoleToken()` searched:
+
+```js
+["token", "qwenpaw_token", "qwenpaw-token", "access_token"]
+```
+
+None of those is the key the console uses. The deployed bundle declares
+`Id = "qwenpaw_auth_token"`, reads it in `It()`, writes it in `Z$()` (exported
+to the lazy login chunk as `bd`), and sends `Authorization: Bearer <value>`.
+So even a reachable page would have found no token, `ensureSession()` would
+have returned `false`, and the user would have been told "Sign in to the
+QwenPaw console first" **while already signed in**. Both halves had to be
+fixed or the bug just changed its error message.
+
+**Fix.**
+
+* `/computer` and `/computer/` return `false`. This is safe for a specific
+  reason rather than a hand-wave: `ui.html` is static bytes — no store access,
+  no lease, no preview, no shell — and **every endpoint it calls is still
+  gated**. An anonymous visitor who loads it sees the honest "sign in first"
+  state and obtains nothing. That is also the rule the rest of the block
+  already followed: assets exempt, data gated.
+* `qwenpaw_auth_token` added **first** in the key list, with the old guesses
+  kept as harmless fallbacks for a console rebuild that renames it.
+
+**Why the existing tests missed it — and this is the part worth keeping.**
+T88 already had a check for exactly this:
+
+```js
+check("/computer itself answers (it is the way in)", ui.status === 200 || ui.status === 401, ...);
+```
+
+`200 || 401` accepts the broken answer. It was written during the B-36 work as a
+soft sanity check and it stayed green through a total lockout. **A test that
+accepts the failure mode it exists to prevent is not a test** — the same lesson
+as the 2026-11-15 suite that stayed green while the Worker could not load.
+
+**Test — T88 70 → 88 checks, fail-first 8/88** on the pre-fix tree:
+
+| Assertion | Pre-fix |
+|---|---|
+| ANON `GET /computer` → 200 | 401 |
+| …and it is `text/html`, not JSON | `application/json` |
+| …carrying `<!doctype html>` and `/api/session/mint` | the JSON error body |
+| …still `frame-ancestors 'self'` | header absent (error path) |
+| ANON `GET /computer/` → 200 | 401 |
+| `ui.html` reads `qwenpaw_auth_token` | absent |
+| …and tries it first | absent |
+| serving the page needs no `COMPUTER_DB` | 401 |
+
+Plus the **full user journey, in order**, because the order was the bug:
+1. anonymous `GET /computer` → 200;
+2. `POST /api/session/mint` with a console token → 200 + `Set-Cookie`
+   (`HttpOnly; Secure; SameSite=Lax`);
+3. `GET /computer` with that cookie → 200;
+4. `GET /computer/state` with that cookie → 200 (the DATA opens only now);
+5. and a **rejected** console token mints nothing and sets no cookie, so the
+   journey cannot pass against a mint that accepts anyone.
+
+The gate on data is re-asserted immediately after (`/computer/state` and
+`/computer/computers` are still 401 anonymously), so exempting the page cannot
+silently exempt its children.
+
+**NOT VERIFIED:** no browser has run this. Muse deploys
+`pages/public/computer/router.js` and `pages/public/computer/ui.html` to both
+Pages projects. No machine sync and no secret change is needed — the session
+secret and every data-endpoint rule are untouched.
