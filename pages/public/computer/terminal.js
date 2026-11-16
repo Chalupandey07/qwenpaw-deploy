@@ -126,7 +126,11 @@ export async function mintTerminal(env, computer, leaseId) {
     expiresAt,
     target: {
       url: target,
-      token: null,
+      // The terminal port is a PRIVATE InstaBox port, so the edge answers 401
+      // without its `_token`. It used to be `null`, which meant the proxy had
+      // no credential to present and the upgrade could never have reached
+      // websockify even with a correct route.
+      token: env.COMPUTER_TERMINAL_TOKEN || null,
       // The PTY server reads this line before the frame stream: computer,
       // lease, absolute deadline, signature. Space-separated, newline-ended.
       // Its own copy of the deadline is what stops an idle open socket.
@@ -139,7 +143,21 @@ export async function mintTerminal(env, computer, leaseId) {
     prefix: "/computer/terminal",
   });
 
-  return { ok: true, url, deadlineMs, leaseId: lease.leaseId, expiresAt };
+  // `preamble` is returned to the caller because the WORKER CANNOT INJECT IT.
+  //
+  // A proxied WebSocket is tunnelled socket-to-socket: the runtime splices the
+  // two ends and the Worker never gets to write a byte. So the first message
+  // must come from the browser, and this is the only place it can learn what to
+  // send.
+  //
+  // Handing it over is safe, and the reason is specific: it contains an HMAC
+  // over (computer, leaseId, deadline), NOT the secret. A client holding it can
+  // open the shell it already had the lease for, until the deadline that was
+  // already agreed — it cannot forge a later deadline, cannot move the session
+  // to another lease, and cannot reach another computer. The authority it
+  // confers is exactly the authority the lease already granted.
+  return { ok: true, url, deadlineMs, leaseId: lease.leaseId, expiresAt,
+           preamble: `${computer} ${lease.leaseId} ${deadlineMs} ${signature}` };
 }
 
 async function currentGeneration(env, computer) {

@@ -221,6 +221,21 @@ the shell locally **and** lets the signed deadline enforce it. T92 (39 checks)
 drives the real Worker against real SQLite and the PTY server against a real
 PTY; one of its assertions is that an idle but open session ends on its own.
 
+### Terminal transport — fixed 2026-11-16 (B-29)
+
+The Terminal tab minted a capability and opened a WebSocket, then got **JSON
+back where a 101 belonged**: the route authorised and returned `{ok:true}`. The
+socket closed, and the UI said "The shell closed" while the lease was still
+held. The ~10 s was the client giving up, not a timeout.
+
+`proxyTerminal()` now proxies and tunnels exactly as `proxyScreen` does. Two
+gaps found on the way, either of which would have failed on its own: the sealed
+target had `token: null` (a private InstaBox port answers 401 without `_token`),
+and the signed preamble was created but **never sent by anything** — a tunnelled
+WebSocket cannot be written to by the Worker, so the browser sends it as its
+first frame. It is an HMAC, not the secret: it cannot be moved to a later
+deadline, another lease, or another computer.
+
 ### Teach recording (`pages/public/computer/teach.js`)
 
 The old UI had Start/Stop and a toast saying a draft was saved, with no

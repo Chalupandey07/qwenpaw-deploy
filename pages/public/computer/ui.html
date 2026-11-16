@@ -588,6 +588,13 @@
       return;
     }
     const deadline = r.data.deadlineMs || 0;
+    // The PTY server's first line: computer, lease, absolute deadline, HMAC.
+    // The Worker cannot write it — a tunnelled WebSocket is spliced
+    // socket-to-socket and the Worker never handles a byte — so the browser
+    // sends it as the very first frame. It is a MAC, not the secret: it cannot
+    // forge a later deadline or reach another lease/computer, so it grants
+    // exactly the authority the lease already granted.
+    const preamble = r.data.preamble || "";
     // The capability path is same-origin; websockify wants a ws:// or wss://
     // URL, so the scheme follows the page.
     const socketUrl = (location.protocol === "https:" ? "wss://" : "ws://")
@@ -630,6 +637,12 @@
       el.termNote.textContent = deadline
         ? "This shell ends with your control session."
         : "This shell ends when you release control.";
+      // MUST be the first bytes on the wire: the PTY server reads one
+      // newline-terminated line before it will serve a shell, and closes the
+      // connection if the signature does not verify.
+      if (preamble) {
+        try { socket.send(new TextEncoder().encode(preamble + "\n")); } catch {}
+      }
       if (term) {
         term.onData((data) => {
           if (socket.readyState !== WebSocket.OPEN) return;

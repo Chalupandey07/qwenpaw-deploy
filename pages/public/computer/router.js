@@ -36,7 +36,7 @@ import * as S from "./state.js";
 import { LEASE_CAP_GRACE_MS } from "./state.js";
 import { enforce as rateLimit } from "./rate-limit.js";
 import {
-  mintTerminal, authorizeTerminal, requireSyncToken, MAX_TERM_DIM,
+  mintTerminal, authorizeTerminal, requireSyncToken,
 } from "./terminal.js";
 
 function json(data, status = 200) {
@@ -585,31 +585,25 @@ export async function handleComputer(request, env, url) {
     }
     // `deadlineMs` is the wall clock at which the PTY server kills the shell.
     // The browser shows it as a countdown so a user is never surprised.
-    return json({ url: r.url, deadlineMs: r.deadlineMs, expiresAt: r.expiresAt });
+    // `preamble` is the signed first line the PTY server requires; see
+    // mintTerminal for why the browser has to send it (a tunnelled WebSocket
+    // cannot be written to by the Worker).
+    return json({ url: r.url, deadlineMs: r.deadlineMs, expiresAt: r.expiresAt,
+                  preamble: r.preamble });
   }
 
-  // The websocket/stream upgrade itself. websockify terminates the browser's
-  // WS and dials the PTY server on the machine; this route authorises each
-  // attempt against live state and 302s to the signed upstream URL. The
-  // capability is a path segment, never a query parameter (B-16).
+  // The websocket upgrade itself. websockify terminates the browser's WS and
+  // dials the PTY server on the machine.
+  //
+  // THIS USED TO RETURN JSON. It authorised correctly and then answered
+  // `{ok:true, computer, deadlineMs, maxDim}` — never proxying, never
+  // tunnelling. The browser opened a WebSocket, received a JSON body where a
+  // 101 belonged, and its close handler fired: "The shell closed. Take control
+  // again to reopen it." That is why the failure looked like a ~10-15 s
+  // timeout while the lease was still held. The ~10 s was the client giving up,
+  // not a server deadline. BUGS.md B-29.
   if (path.startsWith("/computer/terminal/")) {
-    const auth = await authorizeTerminal(env, path, q.get("computer"));
-    if (!auth.ok) {
-      const body = auth.error === "store" ? "Terminal unavailable (store)."
-        : auth.error === "released" ? "Control was released."
-        : "Terminal link expired.";
-      return new Response(body, { status: auth.status });
-    }
-    return json({
-      ok: true,
-      computer: auth.computer,
-      // Never the provider token: the preamble is the PTY server's contract
-      // and it is handed over server-side, not to the browser.
-      deadlineMs: Number(auth.target.deadlineMs || 0) || null,
-      // The dimension cap is published so the client clamps before sending,
-      // instead of relying on the server to ignore a bad frame (B-17).
-      maxDim: MAX_TERM_DIM,
-    });
+    return proxyTerminal(request, env, url);
   }
 
   // ---- the stream + assets ----
@@ -671,6 +665,98 @@ function corsPreflight() {
       "Cache-Control": "no-store",
     },
   });
+}
+
+/**
+ * Proxy one TERMINAL request — the shell's WebSocket.
+ *
+ * Same enforcement order as the screen, and the same tunnel, because a shell is
+ * the higher-risk surface and must not have a weaker path:
+ *
+ *   1. OPTIONS preflight (the terminal frame is cross-origin too)
+ *   2. the capability opens (signature + expiry + policy from the AAD)
+ *   3. the generation still matches (a takeover invalidates old links)
+ *   4. the sealed lease is STILL the live lease — checked on every request, so
+ *      releasing control kills the ability to open a new socket immediately
+ *   5. proxy to the terminal origin and tunnel the 101
+ *
+ * It does NOT return JSON any more. It used to, and that was B-29: the browser
+ * received a JSON body where a 101 belonged, so its socket closed and the UI
+ * reported "The shell closed" while the lease was still held. The ~10 s was the
+ * client giving up, never a server deadline.
+ *
+ * The live-lease check here is the second of THREE independent expiry
+ * mechanisms, and all three are needed because each covers a hole the others
+ * cannot:
+ *   - this check refuses a NEW socket after release;
+ *   - the capability's own expiry bounds a socket that was never opened;
+ *   - the signed preamble deadline makes the PTY SERVER kill an ALREADY-OPEN
+ *     shell, which the Worker cannot do — it is not in the loop for a
+ *     tunnelled socket. (BUGS.md B-4's 59-minute shell.)
+ */
+async function proxyTerminal(request, env, url) {
+  if (request.method === "OPTIONS") return corsPreflight();
+
+  const auth = await authorizeTerminal(env, url.pathname, url.searchParams.get("computer"));
+  if (!auth.ok) {
+    const body = auth.error === "store" ? "Terminal unavailable (store)."
+      : auth.error === "released" ? "Control was released."
+      : "Terminal link expired.";
+    return new Response(body, {
+      status: auth.status,
+      headers: withCors({ "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" }),
+    });
+  }
+
+  const upstream = new URL(auth.target.url);
+  // websockify serves the WS on /websockify; the capability's own `rest` was the
+  // path noVNC appended, but for the terminal we always want that endpoint.
+  upstream.pathname = upstream.pathname.replace(/\/+$/, "") + "/websockify";
+
+  const headers = new Headers(request.headers);
+  headers.delete("cookie");
+  headers.delete("host");
+  headers.delete("authorization");
+  headers.delete("cf-connecting-ip");
+  headers.delete("cf-ipcountry");
+  headers.delete("cf-ray");
+  headers.delete("cf-visitor");
+
+  // The terminal port is private, so the edge needs its token. This goes
+  // server-side only — the browser never sees it (same rule as the screen's
+  // provider token).
+  let res;
+  try {
+    res = await fetchDesktopOrigin(
+      new Request(upstream.toString(), { method: request.method, headers }),
+      url, upstream.toString(), auth.target.url, auth.target.token || "",
+    ).then((r) => r.res);
+  } catch {
+    res = null;
+  }
+  if (!res) {
+    return new Response("Terminal unavailable (upstream_timeout).", {
+      status: 502,
+      headers: withCors({ "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" }),
+    });
+  }
+
+  // The whole point: tunnel the upgrade, exactly as the screen does. Without
+  // this the runtime refuses to construct a 101 and the socket never opens.
+  if (res.status === 101 && res.webSocket) {
+    const upgradeHeaders = new Headers(res.headers);
+    upgradeHeaders.delete("set-cookie");
+    upgradeHeaders.delete("content-length");
+    upgradeHeaders.delete("content-type");
+    return new Response(null, { status: 101, headers: upgradeHeaders, webSocket: res.webSocket });
+  }
+
+  // A non-upgrade response is a real refusal from the terminal origin (401 from
+  // the edge, 503 waking, ...). Pass the status through so the browser's close
+  // handler can say something true, and never fabricate a socket.
+  const out = new Headers(res.headers);
+  out.delete("set-cookie");
+  return new Response(res.body, { status: res.status, headers: withCors(out) });
 }
 
 /** Proxy one screen request, after all four checks. */

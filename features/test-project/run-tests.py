@@ -1348,6 +1348,24 @@ def t98():
     return _harness("features/computer/harness-screen-cors.mjs", 36)
 
 
+def t99():
+    """The terminal route proxies and TUNNELS the upgrade (44 checks).
+
+    B-29: `/computer/terminal/<cap>/websockify` authorised correctly and then
+    answered `{ok:true, ...}` — JSON where a WebSocket upgrade belonged. The
+    browser's socket received JSON, closed, and the UI said "The shell closed.
+    Take control again to reopen it." while the lease was still held. The ~10 s
+    was the client giving up, never a server deadline.
+
+    Asserts the 101 is tunnelled with the SAME socket, that the lease is
+    re-checked so a release kills new sockets, that the signed preamble exists
+    and cannot be moved to a later deadline / another lease / another computer,
+    that CORS is present on terminal refusals, and that B-17's clamp and the
+    lease-clamped expiry are unchanged.
+    """
+    return _harness("features/computer/harness-terminal-proxy.mjs", 44)
+
+
 def t97():
     """The screen WebSocket upgrade is TUNNELLED (22 checks).
 
@@ -1683,6 +1701,7 @@ TESTS = [
     ("T96", "Code Mode end to end: runner -> real MCP -> real HTTP", "codemode", "protocol", t96),
     ("T97", "screen upgrade: the 101 WebSocket is tunnelled to the browser", "computer", "protocol", t97),
     ("T98", "screen CORS: module assets + preflight readable from the opaque frame", "computer", "protocol", t98),
+    ("T99", "terminal: the WebSocket upgrade is proxied and tunnelled", "computer", "protocol", t99),
 ]
 
 SKIP_NOTE = {
