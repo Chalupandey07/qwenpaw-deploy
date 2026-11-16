@@ -36,7 +36,7 @@ import * as S from "./state.js";
 import { LEASE_CAP_GRACE_MS } from "./state.js";
 import { enforce as rateLimit } from "./rate-limit.js";
 import {
-  mintTerminal, authorizeTerminal, requireSyncToken,
+  mintTerminal, authorizeTerminal, requireSyncToken, renewTerminal,
 } from "./terminal.js";
 import { sessionFromRequest } from "../session.js";
 
@@ -69,6 +69,11 @@ function limitClass(path, method) {
   if (path === "/computer/teach") return "teach";
   if (path === "/computer/terminal/session") return "terminal";
   if (path === "/computer/terminal/recording") return "teach";
+  // B-36: renewals are ~2/min per open shell (every 30 s), far below the
+  // 20/min terminal allowance, but they share that bucket with attaches. A
+  // dedicated class keeps a long session's renewals from ever competing with
+  // the attach that opens it.
+  if (path === "/computer/terminal/renew") return "renew";
   if (path.startsWith("/computer/terminal/")) return "terminal";
   if (path === "/computer/wake") return "mutation";
   if (method === "POST") return "mutation";
@@ -726,6 +731,31 @@ export async function handleComputer(request, env, url) {
     // cannot be written to by the Worker).
     return json({ url: r.url, deadlineMs: r.deadlineMs, expiresAt: r.expiresAt,
                   preamble: r.preamble });
+  }
+
+  // B-36: renewal for a LIVE session. The Worker never sees the bytes of an
+  // established WebSocket, so the browser is what asks for a new deadline and
+  // relays the signed result into the socket as a KIND_EXTEND frame.
+  //
+  // Deliberately a POST and deliberately lease-bound: this hands out a signed
+  // extension to a shell, so it carries exactly the authority of minting one.
+  // It re-checks the LIVE lease on every call, which is what keeps B-4 fixed —
+  // release control and the next renewal is refused.
+  if (path === "/computer/terminal/renew" && request.method === "POST") {
+    const { computer = "default", leaseId, currentDeadline } = await request.json().catch(() => ({}));
+    let r;
+    try {
+      r = await renewTerminal(env, computer, leaseId, Number(currentDeadline) || 0);
+    } catch (e) {
+      return json({ error: "store", detail: String(e).slice(0, 200) }, 503);
+    }
+    if (!r.ok) {
+      const status = r.error === "not_holder" ? 409
+        : r.error === "lease_expiring" ? 409
+        : r.error === "unconfigured" || r.error === "store" ? 503 : 403;
+      return json({ error: r.error }, status);
+    }
+    return json(r);
   }
 
   // The websocket upgrade itself. websockify terminates the browser's WS and

@@ -1545,3 +1545,84 @@ matter rather than page copy:
 
 T04 and T05 fail against the deployed site today, which is exactly what a
 regression test for a live vulnerability should do **before** the fix ships.
+
+---
+
+## Part 6 — Found live in a BROWSER, 2026-11-16 16:04 IST (B-36)
+
+### B-36 · P1 · The terminal closed itself after ~60 s while control was still held — FIXED-CODE
+
+**Files:** `pages/public/computer/terminal.js`, `pages/public/computer/router.js`,
+`pages/public/computer/ui.html`, `pages/public/computer/rate-limit.js`,
+`features/computer/terminal-server.py`.
+
+**Found live**, 12th browser round, reproduced three times: the Terminal tab
+worked — prompt appeared, `echo hello-terminal` printed back, Take control and
+Release both fine — and then the session closed on its own after about a
+minute, with control still held. A short command was fine; real work was not.
+
+**Not the lease.** The 90 s lease renews while the page is open; a probe left
+the lease reading 89 s minutes after takeover. The lease was healthy the whole
+time.
+
+**Two causes, and both had to be fixed:**
+
+1. `TERMINAL_TTL_MS = 60_000`, and `mintTerminal` set
+   `deadlineMs = min(now + 60_000, leaseDeadline)`. The PTY server enforces
+   that absolute deadline itself
+   (`features/computer/terminal-server.py`, `deadline_passed`), so it killed a
+   perfectly healthy shell at 60 s.
+2. The BROWSER also armed a local `setTimeout` for the same deadline
+   ("close a few seconds early so the user sees `closed`"). So even a shell
+   kept alive server-side would have been closed by its own page.
+
+**⚠️ The TTL is not a typo and was NOT raised.** It is a deliberate boundary:
+B-4 recorded a terminal outliving its lease by 59 minutes, and the short TTL is
+what makes a leaked URL worthless within a minute. Raising it to an hour would
+reinstate B-4 exactly.
+
+**Fix — the deadline now tracks the LIVE lease.**
+
+* `renewTerminal()` (Worker) returns a later deadline `min(now + TTL,
+  lease.expiresAt + grace)`, signed with the SAME HMAC over
+  `(computer, leaseId, deadline)` that the mint-time preamble uses, so one
+  verifier covers both and a captured renewal cannot be replayed onto another
+  lease. It re-checks the LIVE lease on every call — that is what keeps B-4
+  fixed: release control and the next renewal is refused, so the shell dies at
+  its last signed deadline.
+* `POST /computer/terminal/renew` (rate-limit class `renew`, 40/min — ~2/min
+  real, in its own bucket so renewals can never starve the attach that opens a
+  shell).
+* `KIND_EXTEND = 3` frame: the PTY server accepts a new deadline only if
+  (a) the signature verifies for THIS computer and lease, (b) it is strictly
+  LATER (`backwards` refused, so a renewal can never shorten or freeze a
+  session), and (c) it is inside `EXTEND_HORIZON_MS`. A refused extension is
+  NOT fatal — the session keeps its old deadline and runs on, because killing a
+  working shell over a malformed renewal is the same class of mistake as B-32.
+* The browser re-arms BOTH timers on success and renews at half the remaining
+  time; two consecutive failures surface an honest note instead of a scare.
+* The renewal endpoint sits under `/computer/terminal/`, which is exempt from
+  the session cookie by design (a sealed capability outranks a cookie). What
+  actually protects it is the LEASE: no `leaseId` means no deadline. That is
+  asserted by test, not assumed.
+
+**Test — 3 layers, all fail-first.**
+
+| Layer | Checks | Fails on the pre-fix tree |
+|---|---|---|
+| `terminal-server.py --selftest` | 43 (was 26) | the renewed shell dies at its original deadline |
+| `harness-terminal-proxy.mjs` | 68 (was 54) | no deadline, no signature, no `unchanged` |
+| `harness-terminal.mjs` | 39 | expected the 26-check selftest |
+
+The end-to-end proof is a real shell on a real PTY with a 2 s deadline: it
+executes a command, receives a signed extension, is still alive 5 s later
+(past the deadline + the 1 s slop), and reports exactly one accepted extension.
+A first version of that test used a 2.5 s deadline and **passed with extensions
+disabled entirely** — it was measuring the deadline slop, not the fix. Widened
+to 2 s deadline / 5 s wait; it now fails without the extension.
+
+**NOT VERIFIED:** no browser has run this. Muse deploys the four Pages files
+**and must also sync `features/computer/terminal-server.py` to the machine**
+and restart the terminal service — without the new server the extension frames
+are ignored and the session still dies at 60 s (the browser would keep renewing
+and the shell would still close, which is a confusing half-state worth avoiding).

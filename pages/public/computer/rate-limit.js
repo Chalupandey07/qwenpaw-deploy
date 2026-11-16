@@ -49,6 +49,9 @@ export const LIMITS = {
   upload: 30,
   // Terminal attach attempts. A shell is expensive; keep it tight.
   terminal: 20,
+  // B-36: deadline renewals for an OPEN shell — one per ~30 s per session.
+  // 40/min is ~20x the real rate (two shells) and still bounds a runaway loop.
+  renew: 40,
   // Teach record start/stop/save.
   teach: 30,
 };

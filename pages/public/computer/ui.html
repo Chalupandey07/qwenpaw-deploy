@@ -844,7 +844,9 @@
       term.write("Connecting to the computer's terminal…\r\n");
     }
 
-    const session = { socket, term, deadline, timer: null, sentResize: null };
+    const session = { socket, term, deadline, timer: null, sentResize: null,
+                      renewTimer: null, renewFailures: 0, leaseId: state.leaseId,
+                      computer: state.computer };
     state.terminal = session;
     render();
 
@@ -867,6 +869,10 @@
         term.onResize(({ cols, rows }) => sendResize(session, cols, rows));
         sendResize(session, term.cols, term.rows);
       }
+      // B-36: keep the shell alive for as long as control is held. Without
+      // this the PTY server kills the session at the mint-time deadline and a
+      // user loses their shell mid-command after a minute.
+      scheduleRenew(session);
     });
 
     socket.addEventListener("message", (ev) => {
@@ -893,10 +899,86 @@
 
     // A local safety net: close the socket a few seconds before the server's
     // deadline so the user sees "closed" rather than a dead terminal.
-    if (deadline) {
-      const ms = Math.max(0, deadline - Date.now() - 3000);
-      session.timer = setTimeout(() => closeTerminal("Session ended."), ms);
+    armDeadlineTimer(session, deadline);
+  }
+
+  /**
+   * Arm (or re-arm) the local close timer for the CURRENT deadline.
+   *
+   * B-36: this used to be a `setTimeout` fixed at mint time, so even a renewed
+   * shell would have been closed locally at the original deadline — the browser
+   * half of the same bug. Re-arming on every successful renewal is what makes
+   * the extension real from the user's side.
+   */
+  function armDeadlineTimer(session, deadline) {
+    clearTimeout(session.timer);
+    if (!deadline) return;
+    const ms = Math.max(0, deadline - Date.now() - 3000);
+    session.timer = setTimeout(() => closeTerminal("Session ended."), ms);
+  }
+
+  /**
+   * Ask the Worker for a later deadline, then push it into the open PTY.
+   *
+   * The renewal is deliberately allowed to fail quietly for TWO cycles before
+   * the user is told: a single blip (a sleeping laptop, a lost packet) must not
+   * turn into a scary message about a shell that is still working. The server
+   * still holds the last signed deadline, so a client that never succeeds just
+   * loses the shell at that deadline — the safe direction.
+   */
+  function scheduleRenew(session) {
+    clearTimeout(session.renewTimer);
+    // Renew ahead of the deadline, never sooner than 5 s (so a very short lease
+    // cannot produce a busy loop) and never later than half the remaining time
+    // (so the first attempt always leaves room for a retry).
+    const remaining = Math.max(0, session.deadline - Date.now());
+    const delay = Math.max(5_000, Math.min(30_000, Math.floor(remaining / 2)));
+    session.renewTimer = setTimeout(() => void renewTerminal(session), delay);
+  }
+
+  async function renewTerminal(session) {
+    if (!state.terminal || state.terminal !== session) return;
+    if (session.socket.readyState !== WebSocket.OPEN) return;
+    const r = await api("/computer/terminal/renew", {
+      computer: session.computer,
+      leaseId: session.leaseId,
+      currentDeadline: session.deadline,
+    });
+    if (!state.terminal || state.terminal !== session) return;
+    if (!r.ok || !r.data) {
+      session.renewFailures += 1;
+      const fatal = r.status === 409 || r.status === 403;
+      if (fatal) {
+        // Control was released or taken: this shell has no right to live.
+        closeTerminal(r.data?.error === "not_holder"
+          ? "Control of this computer changed hands."
+          : "Control was released — the shell closed.");
+        return;
+      }
+      if (session.renewFailures >= 2) {
+        el.termNote.textContent = "Could not renew the session — it will close at its current deadline.";
+      }
+      // Try again a bit sooner than the normal cadence; the signed deadline in
+      // the PTY server is unchanged, so this cannot extend anything by itself.
+      session.renewTimer = setTimeout(() => void renewTerminal(session), 8_000);
+      return;
     }
+    session.renewFailures = 0;
+    if (r.data.unchanged) {
+      session.renewTimer = setTimeout(() => void renewTerminal(session), Math.max(5_000, r.data.renewInMs || 30_000));
+      return;
+    }
+    // Push the signed deadline into the running shell. This is the only way it
+    // can learn about a later deadline: the Worker is not in the socket path.
+    session.deadline = r.data.deadlineMs;
+    const payload = new TextEncoder().encode(r.data.deadlineMs + " " + r.data.signature);
+    try {
+      session.socket.send(encodeFrame(3, payload));
+    } catch { /* socket closing: the close handler owns the outcome */ }
+    armDeadlineTimer(session, session.deadline);
+    render();
+    session.renewTimer = setTimeout(
+      () => void renewTerminal(session), Math.max(5_000, r.data.renewInMs || 30_000));
   }
 
   function sendResize(session, cols, rows) {
@@ -920,6 +1002,7 @@
     if (!session) return;
     state.terminal = null;
     clearTimeout(session.timer);
+    clearTimeout(session.renewTimer);
     try { session.socket.close(); } catch {}
     try { session.term?.dispose?.(); } catch {}
     el.termState.textContent = "closed";

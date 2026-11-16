@@ -73,10 +73,22 @@ MAX_DIM = 1000
 KIND_STDIN = 0
 KIND_RESIZE = 1
 KIND_PING = 2
+#: Extend the signed deadline (B-36). Payload is `<deadlineMs> <hmac>` as ASCII.
+#: A shell that dies 60 s after it opened is correct for a leaked URL and wrong
+#: for a user who is still holding control; this frame is how the Worker pushes
+#: a later, lease-bound deadline into a session that is ALREADY OPEN.
+KIND_EXTEND = 3
 
 #: How long a shell may outlive its signed deadline before it is killed. This
 #: is a *scheduling* allowance (the killer runs on a tick), not extra life.
 DEADLINE_SLOP_S = 1.0
+
+#: How long an extension may reach into the future. The Worker never signs
+#: anything beyond the live lease + grace (seconds), so this bound only matters
+#: if the signing secret has already leaked — at which point a shell is the
+#: least of the problems. It exists so a bug in the caller cannot turn into an
+#: immortal shell.
+EXTEND_HORIZON_MS = 60 * 60 * 1000
 
 #: Output read size from the PTY.
 READ_SIZE = 65536
@@ -141,8 +153,9 @@ def looks_framed(buffer: bytes) -> bool | None:
     header, the honest reading is "this is typed text", not "kill the session".
 
     Detection rule, deliberately conservative:
-      * kind in {STDIN, RESIZE, PING} AND declared length <= MAX_FRAME -> framed
-      * anything else                                                 -> raw
+      * kind in {STDIN, RESIZE, PING, EXTEND} AND declared length <= MAX_FRAME
+                                                                  -> framed
+      * anything else                                             -> raw
 
     The length bound is what keeps B-17 intact: a hostile 4 GB length can never
     be mistaken for a frame header, so nothing is ever allocated for it. It is
@@ -155,7 +168,7 @@ def looks_framed(buffer: bytes) -> bool | None:
     if len(buffer) < 5:
         return None
     kind = buffer[0]
-    if kind not in (KIND_STDIN, KIND_RESIZE, KIND_PING):
+    if kind not in (KIND_STDIN, KIND_RESIZE, KIND_PING, KIND_EXTEND):
         return False
     (size,) = struct.unpack(">I", buffer[1:5])
     if size > MAX_FRAME:
@@ -169,6 +182,11 @@ def apply_frame(kind: int, payload: bytes, fd: int) -> str:
     `fd` is the PTY master. Unknown kinds are ignored rather than fatal: a
     newer client sending a kind this server does not know should degrade, not
     disconnect (the reverse of the length check, which must be fatal).
+
+    KIND_EXTEND is NOT handled here: it does not touch the PTY, it moves the
+    session's own deadline, so `serve_pty` handles it directly (it owns the
+    variable). Keeping it out of this function means this function stays a pure
+    "apply bytes to the tty" operation.
     """
     if kind == KIND_STDIN:
         write_all(fd, payload)
@@ -217,6 +235,53 @@ def verify_deadline(secret: bytes, computer: str, lease_id: str,
     # compare_digest, never `==`: a plain compare leaks the token byte by byte
     # to anyone who can time the response, and this token authorises a shell.
     return hmac.compare_digest(expected, signature or "")
+
+
+def verify_extension(secret: bytes, computer: str, lease_id: str,
+                     current_deadline_ms: int, payload: bytes,
+                     now_ms: float | None = None) -> tuple[int, str]:
+    """Verify one KIND_EXTEND payload. Returns `(new_deadline, reason)`.
+
+    THE RULE THIS ENFORCES (B-36)
+
+    A session may be extended, but only FORWARD and only by a signed deadline.
+    Every rejection answers `(0, reason)` and the caller keeps the OLD
+    deadline — an extension that does not verify is not an error, it is simply
+    not an extension. That distinction matters: a shell must not die because a
+    renewal was malformed, and a renewal must not be able to shorten or freeze
+    a session that is working.
+
+    Rejected, with reasons, because each is a distinct attack or bug:
+      * `malformed`    - payload is not `<deadline> <signature>`
+      * `bad_sig`      - the HMAC does not verify for THIS computer, lease and
+                         deadline. Same scheme as the mint-time preamble, so
+                         there is only ONE signature format in the system and
+                         a captured extension cannot be replayed onto another
+                         session.
+      * `backwards`    - a deadline at or before the current one. An extension
+                         must never SHORTEN a session: that would let a buggy
+                         or hostile client kill a shell.
+      * `too_far`      - beyond EXTEND_HORIZON_MS; the Worker never signs this.
+    """
+    if not secret:
+        return 0, "no_secret"
+    try:
+        text = payload.decode("ascii")
+        parts = text.strip().split(" ")
+        if len(parts) != 2:
+            return 0, "malformed"
+        new_deadline = int(parts[0])
+        signature = parts[1]
+    except (UnicodeDecodeError, ValueError):
+        return 0, "malformed"
+    if not verify_deadline(secret, computer, lease_id, new_deadline, signature):
+        return 0, "bad_sig"
+    if new_deadline <= current_deadline_ms:
+        return 0, "backwards"
+    now = now_ms if now_ms is not None else time.time() * 1000.0
+    if new_deadline > now + EXTEND_HORIZON_MS:
+        return 0, "too_far"
+    return new_deadline, "ok"
 
 
 def deadline_passed(deadline_ms: int, now_ms: float | None = None) -> bool:
@@ -272,7 +337,9 @@ def read_preamble(conn: socket.socket) -> tuple[str, str, int, str] | None:
 
 def serve_pty(conn: socket.socket, deadline_ms: int, shell: str | None = None,
               cwd: str | None = None, env_extra: dict | None = None,
-              preamble_already_read: bool = False) -> dict:
+              preamble_already_read: bool = False,
+              secret: bytes = b"", computer: str = "", lease_id: str = "",
+              on_stats=None) -> dict:
     """Run one shell until the socket closes or the deadline passes.
 
     Returns counters the tests assert on: bytes each way, frames applied, and
@@ -288,6 +355,28 @@ def serve_pty(conn: socket.socket, deadline_ms: int, shell: str | None = None,
     A preamble that is missing or malformed ends the session with
     `reason="no_preamble"` rather than starting a shell: an unauthenticated
     caller must not get a prompt.
+
+    B-36 — WHY `deadline_ms` IS NOW MUTABLE, AND WHY THAT IS STILL SAFE
+
+    The deadline used to be fixed at mint time (Worker: 60 s; PTY server: the
+    same value). That is right for a leaked URL and wrong for a real session: a
+    user holding control was cut off mid-command after a minute.
+
+    The fix is NOT a longer constant — B-4 recorded a shell outliving its lease
+    by 59 minutes, and a big TTL reintroduces exactly that. Instead a live
+    session may receive KIND_EXTEND frames carrying a LATER deadline signed with
+    the same HMAC over (computer, leaseId, deadline) that the mint-time preamble
+    uses. The Worker only ever signs `min(now + TTL, lease.expiresAt + grace)`
+    against the LIVE lease, so:
+
+      * the shell still cannot outlive control: a release kills the lease, and
+        the next extension attempt is refused by the Worker (not here);
+      * a client that stops renewing still dies at its last signed deadline,
+        so an abandoned tab cannot hold a shell;
+      * `secret` is required for this. When it is empty (a caller that has no
+        secret, e.g. a protocol test) extensions are refused and the original
+        fixed deadline governs — the old behaviour, still correct, still
+        closed.
     """
     if not preamble_already_read:
         line_parts = read_preamble(conn)
@@ -296,6 +385,9 @@ def serve_pty(conn: socket.socket, deadline_ms: int, shell: str | None = None,
             # the browser used to hit when an `await` swallowed its `open` event.
             return {"to_client": 0, "from_client": 0, "frames": 0,
                     "reason": "no_preamble"}
+        # A direct caller (harness, protocol test) gets the identity from the
+        # preamble it just sent. `main()` already has it and passes it in.
+        computer, lease_id, deadline_ms, _sig = line_parts
 
     env = dict(os.environ, TERM="xterm-256color")
     if env_extra:
@@ -317,6 +409,16 @@ def serve_pty(conn: socket.socket, deadline_ms: int, shell: str | None = None,
             os._exit(127)
 
     stats = {"to_client": 0, "from_client": 0, "frames": 0, "reason": "eof"}
+    # B-36 test seam: `serve_pty` returns only when the session ENDS, so a test
+    # that asserts on extensions has to observe them while the shell is still
+    # running. `on_stats` is called after each accepted or refused extension
+    # with the live dict. Production passes nothing and pays one `if`.
+    def note_stats():
+        if on_stats is not None:
+            try:
+                on_stats(stats)
+            except Exception:
+                pass
     pending = b""
     # None = not decided yet; True = framed protocol; False = raw keystrokes.
     # Decided once, on the first bytes that can be judged, then held for the
@@ -372,8 +474,24 @@ def serve_pty(conn: socket.socket, deadline_ms: int, shell: str | None = None,
                         pending = b""
                         continue
                     for kind, payload in frames:
-                        apply_frame(kind, payload, fd)
-                        stats["frames"] += 1
+                        if kind == KIND_EXTEND:
+                            # B-36: a live session's deadline moves only
+                            # FORWARD, only with a valid signature over
+                            # (computer, lease, deadline), and only within the
+                            # horizon. A rejected extension is NOT fatal — the
+                            # session keeps its old deadline and runs on.
+                            new_dl, why = verify_extension(
+                                secret, computer, lease_id, deadline_ms, payload)
+                            if new_dl:
+                                deadline_ms = new_dl
+                                stats["extensions"] = stats.get("extensions", 0) + 1
+                                note_stats()
+                            else:
+                                stats["extend_refused"] = why
+                                note_stats()
+                        else:
+                            apply_frame(kind, payload, fd)
+                            stats["frames"] += 1
                 else:
                     # Raw keystrokes: everything is stdin. This is the path a
                     # protocol test, curl, or `websocat` takes — and it must
@@ -470,6 +588,51 @@ def selftest() -> int:
     check("a tampered signature is refused",
           not verify_deadline(secret, "default", "lease-1", 1700000000000, sig[:-1] + "0"))
 
+    print("extension: a live session's deadline moves forward, signed (B-36)")
+    now_ms = 1_700_000_000_000
+    base = now_ms + 60_000
+    good_sig = sign_deadline(secret, "default", "lease-1", base + 1_500_000)
+    payload = ("%d %s" % (base + 1_500_000, good_sig)).encode()
+
+    got, why = verify_extension(secret, "default", "lease-1", base, payload, now_ms)
+    check("a signed later deadline is accepted", got == base + 1_500_000, "%s %s" % (got, why))
+    check("…and says ok", why == "ok", why)
+
+    # The three refusals that matter. Each keeps the OLD deadline, which the
+    # caller distinguishes by `new_deadline == 0`.
+    back_sig = sign_deadline(secret, "default", "lease-1", base - 30_000)
+    got, why = verify_extension(secret, "default", "lease-1", base,
+                                ("%d %s" % (base - 30_000, back_sig)).encode(), now_ms)
+    check("a BACKWARDS deadline is refused", got == 0 and why == "backwards", "%s %s" % (got, why))
+
+    got, why = verify_extension(secret, "default", "lease-1", base,
+                                payload, now_ms)
+    got2, why2 = verify_extension(secret, "default", "other-lease", base, payload, now_ms)
+    check("an extension for another LEASE is refused", got2 == 0 and why2 == "bad_sig",
+          "%s %s" % (got2, why2))
+    got3, why3 = verify_extension(secret, "qa", "lease-1", base, payload, now_ms)
+    check("an extension for another COMPUTER is refused", got3 == 0 and why3 == "bad_sig",
+          "%s %s" % (got3, why3))
+
+    tampered = payload[:-1] + (b"0" if payload[-1:] != b"0" else b"1")
+    got, why = verify_extension(secret, "default", "lease-1", base, tampered, now_ms)
+    check("a tampered signature is refused", got == 0 and why == "bad_sig", "%s %s" % (got, why))
+
+    far_sig = sign_deadline(secret, "default", "lease-1", now_ms + EXTEND_HORIZON_MS + 60_000)
+    got, why = verify_extension(secret, "default", "lease-1", base,
+                                ("%d %s" % (now_ms + EXTEND_HORIZON_MS + 60_000, far_sig)).encode(),
+                                now_ms)
+    check("an absurd horizon is refused", got == 0 and why == "too_far", "%s %s" % (got, why))
+
+    for bad in (b"", b"nonsense", b"123", b"abc def"):
+        got, why = verify_extension(secret, "default", "lease-1", base, bad, now_ms)
+        check("malformed payload %r is refused" % bad, got == 0 and why == "malformed",
+              "%s %s" % (got, why))
+
+    got, why = verify_extension(b"", "default", "lease-1", base, payload, now_ms)
+    check("no secret at all can never extend", got == 0 and why == "no_secret",
+          "%s %s" % (got, why))
+
     print("pty: a real shell runs, echoes, and dies at the deadline")
     a, b = socket.socketpair()
     deadline = int(time.time() * 1000) + 4000
@@ -528,6 +691,107 @@ def selftest() -> int:
     check("it ended because of the deadline", result.get("reason") == "deadline",
           str(result.get("reason")))
     b.close()
+
+    # ---------------------------------------------------------------- B-36
+    print("pty: a RENEWED session outlives its original deadline (B-36)")
+    a2, b2 = socket.socketpair()
+    # Deliberately short: the ORIGINAL deadline expires at ~2.5 s, and we wait
+    # well past it. Without a working extension this shell is dead and the
+    # command below comes back empty — that is the fail-first condition.
+    # 2.0 s, and the wait below is 5.0 s: `deadline_passed` allows
+    # DEADLINE_SLOP_S (1 s) of scheduling grace, so the shell is certainly dead
+    # by 3.0 s. A tighter margin made this test pass even with extensions
+    # ignored — it was measuring the slop, not the fix.
+    deadline2 = int(time.time() * 1000) + 2000
+    result2 = {}
+    selftest_sig2 = sign_deadline(secret, "default", "renew-lease", deadline2)
+
+    live2 = {}
+
+    def run2():
+        result2.update(serve_pty(a2, deadline2, shell="/bin/sh", cwd="/tmp",
+                                 secret=secret, computer="default",
+                                 lease_id="renew-lease",
+                                 on_stats=lambda st: live2.update(dict(st))))
+
+    t2 = threading.Thread(target=run2, daemon=True)
+    t2.start()
+    b2.sendall(("default renew-lease %d %s\n" % (deadline2, selftest_sig2)).encode())
+
+    # First command proves the shell is alive before renewal.
+    cmd2 = b"echo BEFORE-RENEW\n"
+    b2.sendall(struct.pack(">BI", KIND_STDIN, len(cmd2)) + cmd2)
+    seen = b""
+    b2.settimeout(5.0)
+    try:
+        while b"BEFORE-RENEW" not in seen and len(seen) < 65536:
+            chunk = b2.recv(4096)
+            if not chunk:
+                break
+            seen += chunk
+    except socket.timeout:
+        pass
+    check("the shell works before renewal", b"BEFORE-RENEW" in seen, repr(seen[:120]))
+
+    # Renew: a signed deadline far beyond the original, well within the horizon.
+    new_deadline = int(time.time() * 1000) + 30_000
+    renew_sig = sign_deadline(secret, "default", "renew-lease", new_deadline)
+    renew_payload = ("%d %s" % (new_deadline, renew_sig)).encode()
+    b2.sendall(struct.pack(">BI", KIND_EXTEND, len(renew_payload)) + renew_payload)
+    time.sleep(0.2)
+
+    # Wait WELL past the original deadline (2 s + 1 s slop = 3 s dead). If the
+    # extension did nothing, the shell is long gone by now.
+    time.sleep(5.0)
+    alive2 = b"echo AFTER-OLD-DEADLINE\n"
+    try:
+        b2.sendall(struct.pack(">BI", KIND_STDIN, len(alive2)) + alive2)
+    except OSError:
+        pass
+    seen = b""
+    try:
+        while b"AFTER-OLD-DEADLINE" not in seen and len(seen) < 65536:
+            chunk = b2.recv(4096)
+            if not chunk:
+                break
+            seen += chunk
+    except (socket.timeout, OSError):
+        pass
+    check("the shell SURVIVED its original deadline after renewal",
+          b"AFTER-OLD-DEADLINE" in seen,
+          "%r — without B-36 the shell is killed at its first deadline" % seen[:120])
+    check("the server counted exactly one accepted extension",
+          live2.get("extensions") == 1, str(live2.get("extensions")))
+
+    # A backwards renewal must be refused and must NOT kill the session.
+    back_sig = sign_deadline(secret, "default", "renew-lease", deadline2)
+    back_payload = ("%d %s" % (deadline2, back_sig)).encode()
+    b2.sendall(struct.pack(">BI", KIND_EXTEND, len(back_payload)) + back_payload)
+    time.sleep(0.2)
+    still = b"echo STILL-HERE\n"
+    try:
+        b2.sendall(struct.pack(">BI", KIND_STDIN, len(still)) + still)
+    except OSError:
+        pass
+    seen = b""
+    try:
+        while b"STILL-HERE" not in seen and len(seen) < 65536:
+            chunk = b2.recv(4096)
+            if not chunk:
+                break
+            seen += chunk
+    except (socket.timeout, OSError):
+        pass
+    check("a BACKWARDS renewal does not kill a working shell", b"STILL-HERE" in seen,
+          "%r" % seen[:120])
+    check("…and the server recorded why it was refused",
+          live2.get("extend_refused") == "backwards",
+          str(live2.get("extend_refused")))
+    try:
+        b2.close()
+    except OSError:
+        pass
+    t2.join(timeout=3)
 
     print()
     total = passed + len(failed)
@@ -606,7 +870,8 @@ def main(argv=None) -> int:
             try:
                 # Verified above, before forking: never serve a shell and
                 # authenticate afterwards.
-                serve_pty(conn, deadline_ms, preamble_already_read=True)
+                serve_pty(conn, deadline_ms, preamble_already_read=True,
+                          secret=secret, computer=computer, lease_id=lease_id)
             finally:
                 os._exit(0)
         conn.close()

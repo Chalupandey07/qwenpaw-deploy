@@ -1587,7 +1587,7 @@ def t99():
     that CORS is present on terminal refusals, and that B-17's clamp and the
     lease-clamped expiry are unchanged.
     """
-    return _harness("features/computer/harness-terminal-proxy.mjs", 54)
+    return _harness("features/computer/harness-terminal-proxy.mjs", 68)
 
 
 def t97():

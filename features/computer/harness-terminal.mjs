@@ -298,11 +298,11 @@ console.log("terminal: the PTY server clamps and enforces (its own selftest)");
     out = execFileSync("python3", [resolve(REPO, "features/computer/terminal-server.py"), "--selftest"], {
       encoding: "utf8", timeout: 120_000,
     });
-    ok = /26 passed, 0 failed/.test(out);
+    ok = /43 passed, 0 failed/.test(out);
   } catch (e) {
     out = String(e.stdout || e.message);
   }
-  check("terminal-server --selftest is 26/26", ok,
+  check("terminal-server --selftest is 43/43 (B-36 extension checks added)", ok,
     out.trim().split("\n").slice(-2).join(" | "));
   check("the clamp is asserted, not assumed",
     /cols 65535 -> 1000/.test(out), "B-17");

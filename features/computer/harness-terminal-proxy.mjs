@@ -401,6 +401,85 @@ console.log("preflight: the terminal frame is cross-origin too");
     res.headers.get("Access-Control-Allow-Origin") === "*");
 }
 
+console.log("renewal: a live shell can extend its deadline, and only its own (B-36)");
+{
+  // B-36: the terminal used to die at the mint-time deadline (~60 s) even while
+  // the user still held control. The fix is a renewal, so the properties that
+  // matter are: it works for the holder, it is refused without the lease, it
+  // never goes backwards, and it never outlives `lease.expiresAt + grace`.
+  // Take a FRESH lease: an earlier block in this harness releases control, so
+  // reading the table here found nothing (and a renewal test must start from a
+  // held lease anyway).
+  const fresh = await (await post("/computer/takeover", { computer: "default" })).json();
+  const lease = db.prepare("SELECT lease_id, expires_at FROM leases WHERE computer='default'").get();
+  check("fixture: a lease is held for the renewal", Boolean(fresh.leaseId && lease),
+    JSON.stringify(fresh).slice(0, 100));
+  const before = await call("/computer/terminal/renew", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ computer: "default", leaseId: lease.lease_id, currentDeadline: 0 }),
+  });
+  check("the holder gets a later deadline", before.status === 200, String(before.status));
+  const b = await before.json().catch(() => ({}));
+  check("…with a signature to push into the PTY",
+    typeof b.signature === "string" && b.signature.length === 64, String(b.signature && b.signature.length));
+  check("…clamped to the live lease, never an hour",
+    Number.isFinite(b.deadlineMs) && b.deadlineMs <= lease.expires_at + 15_000,
+    `${b.deadlineMs} vs lease+grace ${lease.expires_at + 15_000}`);
+  check("…and it tells the client when to ask again",
+    Number.isFinite(b.renewInMs) && b.renewInMs > 0, String(b.renewInMs));
+
+  // The signature must verify with the SAME scheme the PTY server uses for the
+  // mint-time preamble, or the server would refuse every renewal.
+  const serverSrc = readFileSync(resolve(REPO, "features/computer/terminal-server.py"), "utf8");
+  check("the PTY server verifies the same (computer|lease|deadline) HMAC",
+    /def verify_extension/.test(serverSrc) && /verify_deadline\(secret, computer, lease_id, new_deadline/.test(serverSrc));
+  check("the PTY server can only move the deadline FORWARD",
+    /new_deadline <= current_deadline_ms/.test(serverSrc));
+  check("…and within a bounded horizon",
+    /EXTEND_HORIZON_MS/.test(serverSrc));
+
+  // No lease -> no renewal. Same rule as minting.
+  const none = await call("/computer/terminal/renew", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ computer: "default" }),
+  });
+  check("no leaseId -> refused", none.status === 403, String(none.status));
+
+  const wrong = await call("/computer/terminal/renew", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ computer: "default", leaseId: "someone-elses-lease" }),
+  });
+  check("another lease -> 409, never a deadline", wrong.status === 409, String(wrong.status));
+  check("…and it does not leak a signature",
+    !("signature" in (await wrong.json().catch(() => ({})))), "no signature may cross the wire");
+
+  // A last deadline the session already holds must never be shortened.
+  const far = await call("/computer/terminal/renew", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ computer: "default", leaseId: lease.lease_id,
+                           currentDeadline: lease.expires_at + 15_000 }),
+  });
+  const f = await far.json().catch(() => ({}));
+  check("a renewal never moves the deadline backwards",
+    far.status === 200 && f.unchanged === true, JSON.stringify(f).slice(0, 120));
+
+  // An unauthenticated caller must not obtain a deadline. NOTE the shape: the
+  // renewal lives under `/computer/terminal/`, which is EXEMPT from the session
+  // cookie by design — a sealed capability is stronger evidence than a cookie,
+  // and that is what authorises the rest of this surface. The renewal has no
+  // capability in its path, so what actually protects it is the LEASE check: no
+  // leaseId means no deadline. Asserting 401 here would be asserting the wrong
+  // mechanism (and a 503 "unconfigured" is the honest answer on a bare env).
+  const anon = await worker.default.fetch(new Request(
+    "https://qwenpawx.pages.dev/computer/terminal/renew",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), env, {});
+  check("anonymous renewal yields NO deadline", anon.status !== 200,
+    String(anon.status));
+  const anonBody = await anon.json().catch(() => ({}));
+  check("…and never a signature", !("signature" in anonBody), JSON.stringify(anonBody).slice(0, 120));
+}
+
 console.log("unchanged behaviour: B-17's clamp and B-4's deadline still hold");
 {
   check("MAX_TERM_DIM is still 1000", termMod.MAX_TERM_DIM === 1000, String(termMod.MAX_TERM_DIM));

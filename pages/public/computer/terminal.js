@@ -20,6 +20,16 @@
 //      the signed deadline is what governs. A leaked URL is worthless in a
 //      minute and worthless immediately after a release.
 //
+//      B-36 (2026-11-16): that 60 s used to be the LIFE OF THE SHELL, so a user
+//      holding control was cut off mid-command after a minute. The TTL is still
+//      60 s and is still not a typo — it now bounds ONE grant, and an open
+//      session renews it via `renewTerminal()` before it lapses. Every renewal
+//      re-checks the live lease, so the shell still dies with control; the
+//      last signed deadline is `min(now + TTL, lease.expiresAt + grace)` at
+//      every renewal, exactly as at mint time. If you are here to "fix" the
+//      TTL by making it bigger, that reopens B-4 and breaks that property —
+//      extend the renewal instead.
+//
 //   3. Every request re-checks the live lease. A terminal capability presented
 //      after a release gets 403, whatever its own expiry says.
 //
@@ -39,7 +49,24 @@
 import { openCapability, sealCapability } from "./capability.js";
 import * as S from "./state.js";
 
-/** How long a terminal capability URL stays useful. Seconds, on purpose. */
+/**
+ * The terminal dies this long after its lease at the latest.
+ *
+ * B-36 — THE 60 s TTL IS KEPT, AND IS NO LONGER A SESSION LENGTH.
+ *
+ * This value was the whole life of a shell, so a user holding control was cut
+ * off after a minute. It is a deliberate security boundary (B-4: a terminal
+ * once outlived its lease by 59 minutes; a leaked URL must be worthless fast),
+ * so the answer is NOT a bigger constant — that reopens B-4.
+ *
+ * Instead this is now the length of ONE lease-bound grant, and a live session
+ * renews it with `renewTerminal()` before it lapses. Every renewal re-checks
+ * the LIVE lease in the Worker, so the shell still cannot outlive control:
+ * release it and the next renewal is refused, and the last signed deadline
+ * kills the shell. The renewal only ever moves the deadline forward to
+ * `min(now + TTL, lease.expiresAt + grace)` — the same rule as mint time, so
+ * there is exactly one deadline policy in the system.
+ */
 export const TERMINAL_TTL_MS = 60_000;
 
 /** The terminal dies this long after its lease at the latest. */
@@ -183,6 +210,84 @@ async function currentGeneration(env, computer) {
   const c = await S.getComputer(env, computer);
   return c.generation;
 }
+
+/**
+ * Renew a live terminal session's signed deadline (BUGS.md B-36).
+ *
+ * WHY A RENEWAL RATHER THAN A LONGER TTL
+ *
+ * A shell that dies 60 s after it opened is correct for a leaked URL and wrong
+ * for a user who is still holding control. Raising the constant would reopen
+ * B-4 (a terminal that outlived its lease by 59 minutes); dropping the deadline
+ * would hand out immortal shells. The only correct answer is a deadline that
+ * tracks the LIVE lease, which means it has to be refreshed while the session
+ * runs.
+ *
+ * WHAT THIS ENFORCES
+ *
+ *   * the caller must name the lease it holds — the same check as minting, so a
+ *     renewal is exactly as hard to obtain as the shell itself;
+ *   * the lease must be LIVE right now. This is the property that keeps B-4
+ *     fixed: a release invalidates the next renewal, so the shell's last
+ *     signed deadline is at most `lease.expiresAt + grace`, exactly as before;
+ *   * the new deadline is `min(now + TTL, leaseDeadline)` and must be LATER
+ *     than the current one. A renewal can never shorten or freeze a session;
+ *   * the signature is the same HMAC over (computer, leaseId, deadline) that
+ *     the mint-time preamble uses, so the PTY server verifies both with one
+ *     function and a captured renewal cannot be replayed onto another lease.
+ *
+ * Returns `{ok:true, deadlineMs, signature, renewInMs}` or `{ok:false, error}`.
+ * `renewInMs` tells the client when to ask again — it is derived here so the
+ * policy lives in one place instead of being duplicated in the browser.
+ */
+export async function renewTerminal(env, computer, leaseId, leaseConstraint) {
+  if (!env.COMPUTER_CAPABILITY_SECRET) return { ok: false, error: "unconfigured" };
+  if (!leaseId) return { ok: false, error: "no_lease" };
+
+  let lease;
+  try {
+    lease = await S.getLease(env, computer);
+  } catch {
+    return { ok: false, error: "store" };
+  }
+  if (!lease || !lease.live) return { ok: false, error: "no_lease" };
+  if (lease.leaseId !== leaseId) return { ok: false, error: "not_holder" };
+
+  const now = Date.now();
+  const leaseDeadline = lease.expiresAt + TERMINAL_GRACE_MS;
+  const deadlineMs = Math.min(now + TERMINAL_TTL_MS, leaseDeadline);
+
+  // A lease that is about to lapse cannot extend anything: the shell is at the
+  // end of its life and the client should be told, not given a deadline two
+  // milliseconds in the future that looks like a working session.
+  if (deadlineMs <= now) return { ok: false, error: "lease_expiring" };
+  // Same rule as an extension: never behind what the session already has. The
+  // client sends the deadline it currently holds so this stays a one-way ratchet
+  // even if two tabs renew out of order.
+  if (leaseConstraint && deadlineMs <= leaseConstraint) {
+    return { ok: true, deadlineMs: leaseConstraint, unchanged: true,
+             renewInMs: Math.max(1, leaseConstraint - now - RENEW_AHEAD_MS) };
+  }
+
+  const signature = await hmacHex(
+    env.COMPUTER_CAPABILITY_SECRET,
+    `${computer}|${lease.leaseId}|${deadlineMs}`,
+  );
+  return {
+    ok: true, deadlineMs, signature, leaseId: lease.leaseId,
+    renewInMs: Math.max(1, deadlineMs - now - RENEW_AHEAD_MS),
+  };
+}
+
+/**
+ * How long before the deadline the client should renew.
+ *
+ * Half the TTL: late enough that a healthy session renews once per 30 s (not a
+ * busy loop), early enough that two failed attempts still fit before the shell
+ * dies. A renewal that is never answered leaves the current deadline in force,
+ * so the failure mode is a closed shell, not an immortal one.
+ */
+export const RENEW_AHEAD_MS = 30_000;
 
 /**
  * Authorise a terminal request.
