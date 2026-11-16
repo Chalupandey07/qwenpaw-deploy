@@ -1348,6 +1348,25 @@ def t98():
     return _harness("features/computer/harness-screen-cors.mjs", 36)
 
 
+def t101():
+    """Manual rest + auto-wake, and the keep-alive respecting it (66 checks).
+
+    Rohan's feature: rest the machine when it is not needed, and the site wakes
+    it on the next visit. The reason is the Free-plan maximum run length —
+    holding the box awake for 8 hours ends in a 2-hour cooldown, so resting it
+    on purpose beats being forced into one at a bad moment.
+
+    Asserts the five cases the brief named (unauth never suspends; unset key is
+    a clear error with no API call; a visit attempts the public URL once and
+    serves the waking page; a 409 shows the end time and does not retry early;
+    the keep-alive skips the wake during a rest) PLUS the two that decide
+    whether it is safe: an unreadable marker must NOT wake (fail-safe in the
+    direction that respects the user), and the marker is written BEFORE the
+    suspend so a failed suspend cannot be undone by the next cron tick.
+    """
+    return _harness("features/machine/harness-machine-rest.mjs", 66)
+
+
 def t100():
     """The Asleep overlay is hidden when the preview is live (21 checks).
 
@@ -1720,6 +1739,7 @@ TESTS = [
     ("T98", "screen CORS: module assets + preflight readable from the opaque frame", "computer", "protocol", t98),
     ("T99", "terminal: the WebSocket upgrade is proxied and tunnelled", "computer", "protocol", t99),
     ("T100", "preview: the Asleep overlay is hidden when the computer is live", "computer", "protocol", t100),
+    ("T101", "machine rest + auto-wake; keep-alive respects a manual rest", "machine", "protocol", t101),
 ]
 
 SKIP_NOTE = {

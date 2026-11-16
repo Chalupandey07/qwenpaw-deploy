@@ -11,6 +11,19 @@
 
 const PING_TIMEOUT_MS = 30_000;
 const RETRY_DELAY_MS = 60_000;
+
+/**
+ * The retry delay, overridable for tests.
+ *
+ * A 503 with `allowRetry` sleeps 60 s between the two attempts — correct in
+ * production (a wake takes a minute) and untestable as a literal (a harness
+ * would wait a minute per tick). Reading it per call keeps the production
+ * default and lets the harness set `RETRY_DELAY_MS` in its env.
+ */
+function retryDelayMs(env) {
+  const override = Number(env && env.RETRY_DELAY_MS);
+  return Number.isFinite(override) && override >= 0 ? override : RETRY_DELAY_MS;
+}
 const WAKE_MIN_GAP_MS = 10 * 60_000;
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -81,7 +94,7 @@ async function probeQwenPaw(env, { allowRetry = true } = {}) {
       // API wake. Live /status?live=1 passes allowRetry=false, so it
       // still answers fast without retrying.
       if (allowRetry && attempt === 1) {
-        await sleep(RETRY_DELAY_MS);
+        await sleep(retryDelayMs(env));
         continue;
       }
       return { status: "offline", httpStatus: 0, note: `fetch failed (attempt ${attempt}): ${err?.name || "error"}` };
@@ -96,7 +109,7 @@ async function probeQwenPaw(env, { allowRetry = true } = {}) {
       const body = await readSmallText(res);
       const retryAfter = parseRetryAfter(res, body);
       if (allowRetry && attempt === 1) {
-        await sleep(RETRY_DELAY_MS);
+        await sleep(retryDelayMs(env));
         continue;
       }
       return { status: "waking", httpStatus, retryAfterSeconds: retryAfter, note: "InstaBox is waking the machine (503 Sandbox is waking up)" };
@@ -250,11 +263,72 @@ async function callInstaBoxWake(env) {
   }
 }
 
+/**
+ * Is a manual rest in effect?
+ *
+ * THE POINT OF THE WHOLE FEATURE: this cron runs every 5 minutes and its ping
+ * WAKES the machine. Without this check, a user who rests the machine would
+ * have it woken within five minutes and their explicit instruction would be
+ * silently undone — which is worse than never offering the button.
+ *
+ * Returns `{resting: boolean, reason: string}`. THREE states, and the third is
+ * the one that matters:
+ *
+ *   resting:true   a manual rest is in effect -> do not wake
+ *   resting:false  no rest                    -> wake as before
+ *   resting:true (reason "store_error"/"no_store")
+ *                  WE COULD NOT TELL -> do not wake
+ *
+ * That last case is the deliberate inversion of the usual default. Everywhere
+ * else in this Worker a failed read fails OPEN (keep trying, report honestly).
+ * Here it must fail CLOSED: interpreting "I could not read the rest flag" as
+ * "no rest" would resume the exact behaviour the user switched off, at the
+ * exact moment something is already going wrong. A missed wake is a nuisance
+ * the user fixes by opening the site; undoing their rest is a betrayal that
+ * also costs them a cooldown.
+ */
+async function manualRestInEffect(env) {
+  const db = env.QWENPAW_DB && env.USE_D1 === "1" ? env.QWENPAW_DB : null;
+  if (!db) {
+    // No D1 binding: we cannot know. Before this feature the keep-alive woke
+    // unconditionally, but that was when nothing could set a rest. Now that a
+    // rest can exist, "cannot tell" has to mean "leave it alone".
+    return { resting: true, reason: "no_store" };
+  }
+  try {
+    const row = await db.prepare(`SELECT value FROM meta WHERE key = ?`)
+      .bind("machine:rest").first();
+    if (!row || !row.value) return { resting: false, reason: "none" };
+    let marker = null;
+    try { marker = JSON.parse(row.value); } catch { marker = null; }
+    if (!marker || typeof marker !== "object") {
+      // A corrupt marker cannot be trusted to mean "rest", and cannot be
+      // trusted to mean "no rest" either. Treat it as no rest but LOUDLY —
+      // a marker we cannot read is a bug to fix, not a policy to keep.
+      return { resting: false, reason: "corrupt_marker" };
+    }
+    const until = Number(marker.until);
+    if (Number.isFinite(until) && until > Date.now()) {
+      return { resting: true, reason: "manual_rest" };
+    }
+    return { resting: false, reason: "expired" };
+  } catch (e) {
+    return { resting: true, reason: "store_error" };
+  }
+}
+
 async function keepAliveTick(env, source) {
   const result = await probeQwenPaw(env, { allowRetry: true });
   const saved = await saveStatus(env, { ...result, source });
   console.log(`[keepalive:${source}]`, result.status, result.httpStatus, result.note || "");
   if ((result.status === "offline" || result.status === "waking") && env.INSTABOX_API_KEY && env.INSTABOX_MACHINE_ID) {
+    // Respect a manual rest BEFORE spending a wake. This is the check that
+    // makes the Rest button mean anything.
+    const rest = await manualRestInEffect(env);
+    if (rest.resting) {
+      console.log(`[keepalive:rest] skipping wake (${rest.reason})`);
+      return saved || result;
+    }
     const lastWake = saved?.lastWakeAt ? Date.parse(saved.lastWakeAt) : 0;
     if (Date.now() - lastWake >= WAKE_MIN_GAP_MS) {
       const wake = await callInstaBoxWake(env);

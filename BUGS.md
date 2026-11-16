@@ -1024,6 +1024,71 @@ wrong — which is why this survived several rounds.
 
 ---
 
+## Part 4 — Feature, 2026-11-16: manual rest + auto-wake
+
+Not a bug fix. Rohan's request, and the reason it exists is the Free-plan
+maximum run length: the keep-alive holds the machine awake, and eight straight
+hours of that ends in a two-hour cooldown at whatever moment it lands. Letting
+the user rest it on purpose is better than being forced into one.
+
+**Three pieces, one shared marker.** `pages/public/machine-rest.js` holds the
+semantics; `machine-control.js` holds the endpoints; `worker/src/index.js`
+holds the keep-alive rule.
+
+| Piece | Behaviour |
+|---|---|
+| `POST /api/machine/rest` | verifies a console session, writes the marker, then suspends |
+| a visit to `/` | the public-port request IS the wake; 503 shows the waking page, 409 shows the cooldown end time |
+| keep-alive cron | reads the marker and does **not** wake while a manual rest is in effect |
+
+### Decisions worth recording
+
+**The visitor's session is verified by asking the console.** Suspending the
+machine is destructive and user-visible, so an anonymous caller must never be
+able to do it. Rather than invent a second auth scheme, the Worker forwards the
+caller's bearer token to the console's own authenticated endpoint and trusts
+only a 200. A revoked token therefore stops working here at the same moment it
+stops working there. If the console cannot be reached, the request is REFUSED —
+and a paused machine does not need resting anyway.
+
+**The marker is written BEFORE the suspend.** If the order were reversed, a
+failed marker write would leave a suspended machine that the keep-alive wakes
+five minutes later, silently undoing an explicit instruction. A marker with no
+suspension is harmless; a suspension with no marker is not.
+
+**The keep-alive fails CLOSED on a store error.** Everywhere else in this repo a
+failed read fails open. Here it must not: reading "I could not check for a rest"
+as "no rest" would resume the exact behaviour the user switched off, at the
+exact moment something is already wrong. A missed wake is a nuisance the user
+fixes by opening the site; undoing their rest also costs them a cooldown.
+
+**The asymmetry is deliberate.** A cron tick is not evidence of intent; a human
+opening the page is. So a broken store suppresses the cron's wake but does not
+block the visit's wake.
+
+**The marker expires after 24 h.** Without a bound, a user who rested the
+machine and never returned would leave it asleep forever and the keep-alive
+would look broken. `REST_MAX_MS` caps it, after which the previous behaviour
+resumes.
+
+**The end time is shown, not just a duration.** InstaBox's 409 carries both
+`retryAfterSeconds` and a human "cooling down until …" string (verified live:
+`3038` and `2026-11-16T07:53:20Z`). The page renders the wall-clock instant and
+refreshes no sooner than it, because "come back at 15:59" is actionable and
+"wait" is not.
+
+### What is NOT ready
+
+`INSTABOX_API_KEY` is **not set** on either Pages project. Until it is, the rest
+endpoint answers `503 instabox_api_key_unset` and the button says so — it does
+not pretend. The key was not invented, and the keep-alive continues exactly as
+before. Auto-wake needs no key at all (the public-port request does the waking),
+so that half works as soon as this is deployed.
+
+Test: T101, 66 checks.
+
+---
+
 ## Part 3 — Summary
 
 | Severity | Open | Fixed in code | Ids |

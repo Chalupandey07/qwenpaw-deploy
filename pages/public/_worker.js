@@ -11,6 +11,7 @@
 // What remains is exactly the console proxy plus the wake/cooldown handling,
 // and that is the entire responsibility of this file.
 import { handleComputer } from "./computer/router.js";
+import { restMachine, machineState } from "./machine-control.js";
 
 const ORIGIN = "https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
 const WAKE_WAIT_MS = 45_000;
@@ -118,6 +119,23 @@ function computerPanelScript() {
     btn.title = "QwenPaw's computer — watch and drive the live desktop";
     btn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483647;padding:10px 16px;border-radius:999px;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
 
+    // ---- Rest button ----
+    // Deliberately a visible button next to "Computer", NOT a menu item: the
+    // whole point is that the user can rest the machine in one click when they
+    // are done. Hiding it in a submenu is how a feature gets forgotten.
+    //
+    // It is only meaningful while the machine is running, so the label reflects
+    // state: "Rest machine" when up, "Resting" (disabled) when already rested.
+    // A click never happens by accident: it asks once, then posts with the
+    // console's own bearer token. If that token is missing the Worker refuses,
+    // and the button says so rather than pretending.
+    var restBtn = document.createElement("button");
+    restBtn.id = "qwenpawRestBtn";
+    restBtn.type = "button";
+    restBtn.textContent = "Rest machine";
+    restBtn.title = "Send the machine to rest when you are done — opening the site wakes it again";
+    restBtn.style.cssText = "position:fixed;right:16px;bottom:64px;z-index:2147483647;padding:10px 16px;border-radius:999px;border:1px solid #34404f;background:#171a21;color:#c8d1dc;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
+
     var panel = document.createElement("div");
     panel.id = "qwenpawComputerPanel";
     panel.style.cssText = "position:fixed;top:0;right:0;bottom:0;width:316px;max-width:100vw;z-index:2147483646;background:#0f1115;border-left:1px solid #262a33;display:none;flex-direction:column;box-shadow:-12px 0 32px rgba(0,0,0,.4);";
@@ -140,6 +158,93 @@ function computerPanelScript() {
     panel.appendChild(frame);
     document.body.appendChild(panel);
     document.body.appendChild(btn);
+    document.body.appendChild(restBtn);
+
+    // ---- rest button behaviour ----
+    // The console keeps its session token in localStorage; read it directly
+    // rather than scraping a header, so this works on any console page.
+    function consoleToken() {
+      try {
+        var keys = ["token", "qwenpaw_token", "qwenpaw-token", "access_token"];
+        for (var i = 0; i < keys.length; i++) {
+          var v = localStorage.getItem(keys[i]);
+          if (v && v.length > 8) return v;
+        }
+        // Some builds store a JSON blob.
+        for (var j = 0; j < localStorage.length; j++) {
+          var k = localStorage.key(j);
+          var raw = localStorage.getItem(k);
+          if (!raw || raw.length < 8) continue;
+          try {
+            var o = JSON.parse(raw);
+            if (o && typeof o === "object") {
+              var t = o.token || o.access_token || o.accessToken;
+              if (typeof t === "string" && t.length > 8) return t;
+            }
+          } catch (e) { /* not JSON */ }
+        }
+      } catch (e) { /* storage blocked */ }
+      return "";
+    }
+
+    var resting = false;
+    function paintRest() {
+      restBtn.textContent = resting ? "Resting" : "Rest machine";
+      restBtn.disabled = resting;
+      restBtn.style.opacity = resting ? "0.6" : "1";
+      restBtn.style.cursor = resting ? "default" : "pointer";
+    }
+    function toastRest(text, bad) {
+      var t = document.createElement("div");
+      t.textContent = text;
+      t.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483647;"
+        + "background:" + (bad ? "#3a1d22" : "#1b2130") + ";border:1px solid " + (bad ? "#5a2a31" : "#2a3346")
+        + ";color:" + (bad ? "#ffb4b4" : "#e8eaf0") + ";border-radius:10px;padding:10px 16px;"
+        + "font:600 13px system-ui,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.5);max-width:80vw;";
+      document.body.appendChild(t);
+      setTimeout(function () { try { t.remove(); } catch (e) {} }, 6000);
+    }
+    restBtn.addEventListener("click", async function () {
+      if (resting) return;
+      if (!window.confirm("Send the machine to rest? Open the site again to wake it.")) return;
+      restBtn.textContent = "Resting…";
+      restBtn.disabled = true;
+      try {
+        var tok = consoleToken();
+        var r = await fetch("/api/machine/rest", {
+          method: "POST",
+          headers: tok ? { Authorization: "Bearer " + tok } : {},
+        });
+        var j = null;
+        try { j = await r.json(); } catch (e) { j = null; }
+        if (r.ok && j && j.ok) {
+          resting = true;
+          paintRest();
+          toastRest(j.message || "Machine resting — open the site again to wake it.");
+          return;
+        }
+        // Every refusal has a reason worth showing; guess nothing.
+        var why = (j && (j.error || j.detail)) || ("HTTP " + r.status);
+        if (j && j.error === "auth_required") why = "Sign in to the console first, then rest the machine.";
+        if (j && j.error === "instabox_api_key_unset") why = "Rest is not configured yet (INSTABOX_API_KEY missing).";
+        if (j && j.error === "machine_not_running") why = "The machine is already paused.";
+        toastRest(String(why), true);
+        paintRest();
+      } catch (e) {
+        toastRest("Could not reach the machine: " + (e && e.message ? e.message : "network"), true);
+        paintRest();
+      }
+    });
+    // Reflect an existing rest on load, so a page reload does not offer to rest
+    // a machine that is already resting.
+    (async function initRest() {
+      try {
+        var r = await fetch("/api/machine/state");
+        var j = await r.json();
+        resting = !!(j && j.resting);
+        paintRest();
+      } catch (e) { /* leave the default label */ }
+    })();
 
     var open = false;
     try { open = sessionStorage.getItem("qwenpawComputerOpen") === "1"; } catch (e) {}
@@ -173,16 +278,30 @@ function wakingPage(retryAfter) {
   );
 }
 
-function cooldownPage(retryAfter) {
+/**
+ * The cooldown page.
+ *
+ * `retryAfter` is seconds; `untilText` is the human wall-clock ("2026-11-16
+ * 07:53 UTC") parsed from InstaBox's own message. Showing the time is the
+ * difference between "wait" and "come back at 13:23" — the second is actionable,
+ * and it is what Rohan asked for.
+ */
+function cooldownPage(retryAfter, untilText) {
   const mins = retryAfter ? Math.ceil(retryAfter / 60) : null;
   return new Response(
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+    // Auto-refresh exactly when the cooldown is due to end, so the visitor does
+    // not have to guess — and so we do not poll early (every early request is
+    // refused and teaches the user the page is broken).
+    (retryAfter ? `<meta http-equiv="refresh" content="${Math.max(5, mins ? mins * 60 : 60)}">` : ``) +
     `<meta name="viewport" content="width=device-width, initial-scale=1">` +
     `<title>QwenPaw — Cooldown</title></head><body style="font-family:system-ui,sans-serif;background:#0f1115;color:#e8eaf0;padding:2rem">` +
     `<h1>QwenPaw is in max-run cooldown</h1>` +
     `<p>The InstaBox Free machine hit its maximum run length and is cooling down. ` +
-    `Nothing can wake it until the cooldown ends${mins ? ` — about ${mins} minutes` : ``}. ` +
-    `The 5-minute keep-alive Worker will bring it back automatically when the cooldown ends.</p>` +
+    `Nothing can wake it until the cooldown ends${mins ? ` — about ${mins} minutes` : ``}${
+      untilText ? ` (<strong>${untilText}</strong>)` : ``
+    }. This page refreshes itself when that time arrives.</p>` +
+    `<p style="color:#9aa4b2;font-size:13px">The keep-alive Worker will also bring it back once the cooldown ends.</p>` +
     `<p><a style="color:#22c55e" href="/status">Status page</a></p>` +
     `</body></html>`,
     { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "SAMEORIGIN", "Content-Security-Policy": "frame-ancestors 'self'", ...(retryAfter ? { "Retry-After": String(retryAfter) } : {}) } },
@@ -281,12 +400,28 @@ async function proxy(request, url) {
   if (res.status === 409) {
     let retryAfter = null;
     let code = null;
+    let untilText = null;
     try {
       const bodyText = await res.text();
       retryAfter = parseRetryAfter(res, bodyText);
+      // InstaBox's own message carries the wall-clock instant:
+      //   "machine is cooling down until 2026-11-16T07:53:20Z"
+      // Quoting it back turns "wait" into "come back at 13:23", which is what
+      // Rohan asked for and what a person can act on.
+      const m = /until\s+([0-9T:.\-]+Z)/i.exec(bodyText || "");
+      if (m) {
+        const t = Date.parse(m[1]);
+        if (Number.isFinite(t)) {
+          untilText = new Date(t).toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
+          // Trust the timestamp over the seconds field when both exist: the
+          // seconds are relative to the response and drift if it is cached.
+          const derived = Math.max(1, Math.round((t - Date.now()) / 1000));
+          if (Number.isFinite(derived)) retryAfter = Math.min(retryAfter ?? derived, derived);
+        }
+      }
       code = JSON.parse(bodyText || "{}")?.error?.code ?? null;
     } catch { /* ignore */ }
-    if (code === "machine_cooldown") return cooldownPage(retryAfter);
+    if (code === "machine_cooldown") return cooldownPage(retryAfter, untilText);
     return new Response(
       `QwenPaw is busy with another operation (409 ${code || ""}). Retry in a moment.`,
       { status: 409, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
@@ -357,6 +492,28 @@ export default {
         return await handleComputer(request, env, url);
       } catch (err) {
         return new Response(JSON.stringify({ error: "computer_error", detail: String(err).slice(0, 200) }), {
+          status: 500, headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // ---- machine rest / state (Rohan's manual-rest feature) ----
+    // The Rest button lives in the console header (injected below) so it is
+    // always reachable; these are the endpoints behind it.
+    if (path === "/api/machine/rest") {
+      try {
+        return await restMachine(request, env, ORIGIN);
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "machine_rest_error", detail: String(err).slice(0, 200) }), {
+          status: 500, headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+    if (path === "/api/machine/state") {
+      try {
+        return await machineState(env);
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "machine_state_error", detail: String(err).slice(0, 200) }), {
           status: 500, headers: { "Content-Type": "application/json" },
         });
       }
