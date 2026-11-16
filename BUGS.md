@@ -656,6 +656,72 @@ actually renders is Muse's check and stays unclaimed until she reports it.
 
 ---
 
+## Part 2j — Found live in a BROWSER, 2026-11-16 15:41 IST (B-35)
+
+### B-35 · P0 · `/vendor/*` was never routed, so xterm.js was served as HTML — FIXED-CODE
+
+11th browser check: the sidebar was fixed (B-34 verified), Take control worked
+(Gen 73–74, 89 s lease), "Open terminal" showed Session **"connected"** in
+green — and the terminal area stayed **completely black** for 30–50 s. Typing
+produced nothing. The lease expired and the session ended. The exact pre-fix
+B-33 symptom.
+
+**What ruled the server out.** Muse's Node test passes (prompt + echo), and T103
+replays the browser's wire behaviour against the real PTY server and passes. But
+**neither exercises the SERVED PAGE's JavaScript** — and that was the gap.
+
+**The clue that found it** was small: the page's own courtesy line,
+`"Connecting to the computer's terminal…"`, which the code writes into xterm
+immediately after `term.open()`, **never appeared either**. So no data had to be
+missing — xterm itself was never running.
+
+**Root cause.** `/vendor/*` was never routed. `_worker.js` sent every unmatched
+path to the console proxy, so:
+
+```
+GET /vendor/xterm.js   ->  200   text/html   45,989 bytes   (the console SPA)
+GET /vendor/xterm.css  ->  200   text/html   45,989 bytes   (the same SPA)
+```
+
+Verified live before the fix. A `<script src>` answered with HTML parses as
+nothing, so `window.Terminal` stayed `undefined`, and the code fell back to
+`term = null` and wrote bytes nowhere.
+
+**It failed silently, and that is the part worth keeping.** HTTP 200 is 200: no
+`onerror`, no window `error` event, no console line. The page said "connected"
+because the *socket* had connected; only the renderer was missing. A 200 with
+the wrong body type is the worst failure shape available — there is nothing to
+grep for.
+
+**Fix.**
+
+- `_worker.js` routes `/vendor/*` into the computer surface, and the router
+  serves it from the Pages asset binding with an **explicit MIME type** and an
+  exact two-entry allowlist (`xterm.js`, `xterm.css`). An unknown or traversal
+  path is a 404, never a wildcard passthrough.
+- `ensureXterm()` now **probes the response** when `window.Terminal` is still
+  undefined, and reports `HTTP <status>, Content-Type: <type>` — naming the SPA
+  case explicitly. The diagnosis this cost a round trip to find is now printed
+  on the page.
+- `openTerminal()` **refuses to start** without xterm and shows the reason,
+  instead of building a `null` terminal and going black.
+- A **capture-phase resource error trap** was added: `<script>`/`<link>`/`<img>`
+  failures do not bubble and do not fire on window, and a script answered with
+  HTML fires `onload` rather than `onerror` — so this class of failure had no
+  handler at all.
+
+**Test.** T105 (`harness-terminal-served.mjs`, 32 checks) drives the **real
+router** with a Pages-ASSETS stub over the actual files, so it asserts the
+served MIME types and bytes, not just the source. Fails 6/32 pre-fix
+(`text/plain`, 4 bytes) and 32/32 after. Also verified through the packed
+esbuild bundle: `/vendor/xterm.js` → 200, `application/javascript`,
+**283,404 bytes**.
+
+**Not browser-verified.** Muse redeploys the Worker (`ui.html`, `_worker.js` and
+`router.js` changed; `terminal-server.py` did **not**).
+
+---
+
 ## Part 2i — Found live in a BROWSER, 2026-11-16 15:22 IST (B-34)
 
 ### B-34 · P0 · The sidebar auto-hid and could not be reopened — FIXED-CODE
@@ -1295,7 +1361,7 @@ Test: T101, 66 checks.
 | P1 | **0** | 5 | fixed: B-2, B-3, B-4, B-22, B-23 |
 | P2 | **0** | 16 | fixed: B-5, B-6, B-7, B-8, B-9, B-10, B-11, B-12, B-13, B-19, B-20, B-24, B-25, B-26 |
 | P3 | **0** | 5 | fixed: B-14, B-15, B-16, B-17, B-27 |
-| **Total** | **0 open** | **35 fixed** | of 35 findings |
+| **Total** | **0 open** | **36 fixed** | of 36 findings |
 | Audit findings (earlier) | — | 15 of 19 | see Part 1 |
 
 **All 30 register findings are closed in code** (B-31 fixed, B-29 and B-30 diagnosed and queued behind it). Zero open, zero data-loss

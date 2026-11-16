@@ -487,7 +487,17 @@ export default {
 
     // Computer (rebuilt from Rakazo's design, 2026-11-15). Everything under
     // /computer is its own surface; the console proxy below is untouched.
-    if (path === "/computer" || path.startsWith("/computer/")) {
+    // `/vendor/*` is routed to the computer surface too. The UI loads xterm
+    // from `/vendor/xterm.js`, and without this the request fell through to the
+    // CONSOLE PROXY — which answered it with the QwenPaw SPA: 200, text/html,
+    // 45,989 bytes. A `<script src>` served as HTML parses as nothing, so
+    // `window.Terminal` was never defined and the terminal pane stayed black
+    // while the session still showed "connected" (BUGS.md B-35).
+    //
+    // A 200 with the wrong body type is the worst failure shape there is: no
+    // onerror, no console message, nothing to grep. Serving it from the Pages
+    // asset binding with the right MIME is the fix.
+    if (path === "/computer" || path.startsWith("/computer/") || path.startsWith("/vendor/")) {
       try {
         return await handleComputer(request, env, url);
       } catch (err) {

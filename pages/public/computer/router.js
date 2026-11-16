@@ -342,6 +342,42 @@ export async function handleComputer(request, env, url) {
   // these must be served from the Pages asset binding or the imports 404
   // and the Teach/Terminal tabs are dead. (Fix 2026-11-16: both returned
   // 404, which is why the browser's Teach/Terminal never loaded.)
+  // `/vendor/*` — xterm.js and its stylesheet (BUGS.md B-35).
+  //
+  // THESE WERE NEVER ROUTED. Every other path falls through to the console
+  // proxy, so `/vendor/xterm.js` was answered by the QWENPAW CONSOLE with its
+  // SPA index page — 200, text/html, 45 KB. A `<script src>` served as HTML
+  // parses as nothing, so `window.Terminal` stayed undefined, xterm never
+  // existed, and the terminal pane was black. Worse, it failed SILENTLY: the
+  // script "loaded" (200), so no onerror fired and nothing logged.
+  //
+  // Proven live before the fix:
+  //   GET /vendor/xterm.js -> 200  text/html  45989  (the console SPA)
+  //   GET /vendor/xterm.css -> 200  text/html  45989  (the same SPA)
+  //
+  // The MIME type is set explicitly rather than trusted from the asset store:
+  // a JS file served as text/plain is refused by strict module loaders, and a
+  // stylesheet served as anything else is ignored silently.
+  if (path.startsWith("/vendor/")) {
+    const name = path.slice("/vendor/".length);
+    // Exact allowlist: no traversal, no wildcards, no unknown ext.
+    const types = { "xterm.js": "application/javascript; charset=utf-8",
+                    "xterm.css": "text/css; charset=utf-8" };
+    const type = types[name];
+    if (!type || !env.ASSETS) return new Response("not found", { status: 404 });
+    const res = await env.ASSETS.fetch(new Request(new URL(path, url.origin)));
+    if (!res || !res.ok) return new Response("not found", { status: 404 });
+    return new Response(res.body, {
+      headers: {
+        "Content-Type": type,
+        // Vendored third-party files are immutable for a given path; a short
+        // cache is safe and stops a re-download on every tab switch.
+        "Cache-Control": "public, max-age=3600",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+
   if (path === "/computer/teach.js" || path === "/computer/terminal.js") {
     if (env.ASSETS) {
       const res = await env.ASSETS.fetch(new Request(new URL(path, url.origin)));

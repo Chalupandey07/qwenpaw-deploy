@@ -1348,6 +1348,34 @@ def t98():
     return _harness("features/computer/harness-screen-cors.mjs", 36)
 
 
+def t105():
+    """The SERVED page's terminal path: /vendor must be JS, not the SPA (32).
+
+    11th browser check: sidebar fixed, Take control OK, "Open terminal" ->
+    Session "connected" green, terminal area COMPLETELY BLACK for 30-50 s,
+    typing produced nothing, lease expired. The exact pre-fix B-33 symptom.
+
+    Muse's Node test passes and T103 replays the browser wire correctly, but
+    neither exercises the SERVED PAGE's JavaScript — that gap is where the bug
+    was. The deciding clue was that the page's own "Connecting to the computer's
+    terminal…" courtesy line never appeared either, so xterm itself never ran.
+
+    ROOT CAUSE: `/vendor/*` was never routed, so it fell through to the console
+    proxy, which answered `GET /vendor/xterm.js` with the QwenPaw SPA —
+    200, text/html, 45,989 bytes (verified live). A <script src> served as HTML
+    parses as nothing, so window.Terminal stayed undefined and the code fell
+    back to a null terminal. It failed SILENTLY: 200 is 200, no onerror, no
+    console line.
+
+    Asserts the served MIME types through the real router, that unknown/hostile
+    /vendor paths 404 rather than leaking the SPA, that a missing xterm is
+    reported instead of going black, that resource-load failures are trapped,
+    and that the terminal still writes to a real attached instance.
+    Fails 6/32 pre-fix; 32/32 after.
+    """
+    return _harness("features/computer/harness-terminal-served.mjs", 32)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -1824,6 +1852,7 @@ TESTS = [
     ("T102", "terminal: a full input line must not kill the shell", "computer", "protocol", t102),
     ("T103", "terminal: the browser path — preamble, framing, xterm CSS", "computer", "protocol", t103),
     ("T104", "rail: sidebar reachable + Terminal tab clickable after connect", "computer", "protocol", t104),
+    ("T105", "terminal: /vendor served as JS, not the console SPA", "computer", "protocol", t105),
 ]
 
 SKIP_NOTE = {

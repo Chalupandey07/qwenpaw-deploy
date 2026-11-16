@@ -333,6 +333,21 @@
     const bar = document.getElementById("jsErrorBar");
     if (bar) { bar.hidden = false; bar.textContent = "Page error: " + window.__computerErrors.join(" | "); }
   });
+  // RESOURCE failures do not surface as `error` events on window, and a
+  // <script> answered with HTML fires onload rather than onerror — so the
+  // silent case needs its own trap (B-35: /vendor/xterm.js was served as the
+  // console's SPA, text/html, 200, and nothing anywhere said so).
+  window.addEventListener("error", (e) => {
+    const t = e && e.target;
+    if (!t || !t.tagName) return;
+    const tag = String(t.tagName).toLowerCase();
+    if (tag !== "script" && tag !== "link" && tag !== "img" && tag !== "iframe") return;
+    const url = t.src || t.href || "(no url)";
+    const msg = `Resource failed: <${tag}> ${url}`;
+    window.__computerErrors.push(msg);
+    const bar = document.getElementById("jsErrorBar");
+    if (bar) { bar.hidden = false; bar.textContent = "Page error: " + window.__computerErrors.join(" | "); }
+  }, true);   // CAPTURE phase: resource errors do not bubble
 (() => {
   "use strict";
 
@@ -669,6 +684,22 @@
           document.head.appendChild(s);
         });
       }
+      // A <script> whose response is HTML still fires `onload` — 200 is 200 —
+      // so a mis-served library fails SILENTLY. Say so instead: this is the
+      // check that turns "the pane is black" into "xterm.js was not served as
+      // JavaScript". It cost a browser round trip and 74 minutes to find once.
+      if (!window.Terminal) {
+        let detail = "";
+        try {
+          const probe = await fetch("/vendor/xterm.js", { method: "GET", cache: "no-store" });
+          const ct = probe.headers.get("Content-Type") || "(none)";
+          detail = ` /vendor/xterm.js -> HTTP ${probe.status}, Content-Type: ${ct}`;
+          if (/text\/html/i.test(ct)) detail += " (the console SPA answered it, not the asset)";
+        } catch (e) {
+          detail = " /vendor/xterm.js could not be fetched: " + (e && e.message);
+        }
+        throw new Error("xterm.js did not load, so the terminal cannot render." + detail);
+      }
       return Boolean(window.Terminal);
     })();
     return xtermReady;
@@ -717,7 +748,20 @@
     // Loading the library first makes the socket the LAST thing created, so
     // its listeners are attached in the same synchronous turn as the
     // constructor — no gap for an event to fall into.
-    await ensureXterm();
+    // If xterm cannot load, SAY WHY rather than leaving a black pane. This is
+    // the branch that would have diagnosed B-35 in seconds: the library was
+    // answered with the console's HTML, `window.Terminal` stayed undefined,
+    // and the old code built a `null` terminal and silently wrote bytes
+    // nowhere.
+    try {
+      const loaded = await ensureXterm();
+      if (!loaded) throw new Error("xterm.js did not define window.Terminal.");
+    } catch (e) {
+      el.termState.textContent = "failed";
+      el.termNote.textContent = "Terminal cannot start: " + (e && e.message ? e.message : "xterm failed to load");
+      toast("Terminal cannot start: xterm.js did not load.");
+      return;
+    }
 
     let socket;
     try {
