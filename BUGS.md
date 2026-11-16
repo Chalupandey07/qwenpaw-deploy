@@ -656,6 +656,68 @@ actually renders is Muse's check and stays unclaimed until she reports it.
 
 ---
 
+## Part 2e — Diagnosed 2026-11-16, not yet fixed (queued behind B-28)
+
+These two were diagnosed while fix 1 waited for browser verification. They are
+recorded here with their cause so the next change is a fix, not a hunt. Neither
+has been touched in code.
+
+### B-29 · P0 · The terminal route never proxies — it returns JSON
+
+**File:** `pages/public/computer/router.js` — the `/computer/terminal/` branch.
+
+The terminal tab mints a capability (`POST /computer/terminal/session` → 200,
+a URL, a deadline) and then opens a WebSocket to `<cap>/websockify`. But the
+GET/upgrade branch at `path.startsWith("/computer/terminal/")` calls
+`authorizeTerminal()` and, when authorised, **returns `json({ok:true, ...})`**.
+It never proxies to websockify and never tunnels an upgrade.
+
+So the browser's terminal socket gets a JSON body instead of a 101. The UI's
+own `close` handler fires, and at ~15 s it reports "The shell closed" — while
+the lease is still held, which is exactly what the browser test saw
+(Session "closed", Holder "you", 86–88 s of lease remaining). The 15 s is not a
+server timeout: it is the client giving up on a socket that was answered with
+the wrong kind of response.
+
+**Fix (not applied):** that branch must, after authorising, proxy to
+`COMPUTER_TERMINAL_ORIGIN` and tunnel the 101 exactly as `proxyScreen` now
+does for the screen. The authorisation half is already correct and tested
+(T92, 39 checks) — it is only the transport that is missing.
+
+**Why T92 did not catch it:** T92 drives the router and asserts the
+authorisation *decisions* (403/409/503/200-on-authorised). It asserts that an
+authorised request is answered `{ok:true}` — which is the bug, asserted as if
+it were the contract. A test can only catch what it is written to question.
+
+### B-30 · P2 · Preview says "Asleep" while status says "running"
+
+**File:** `pages/public/computer/ui.html` — `.preview .asleep` CSS.
+
+`el.previewAsleep.hidden = live;` is correct logic: `live` is true when status
+is `running`, so the overlay should be hidden. It is not, because of CSS
+specificity:
+
+```css
+.preview .asleep { display: grid; ... }   /* specificity 0,2,0 */
+```
+
+The `hidden` attribute works through the UA stylesheet's
+`[hidden] { display: none }` (specificity 0,1,0). A class selector with
+`display: grid` **outranks it**, so the overlay stays visible no matter what
+the JS sets. Every other overlay in the file that uses `hidden` has an explicit
+`[hidden]{display:none}` companion rule — `.screen-veil[hidden]`,
+`.err[hidden]`, `.card[hidden]` — and `.asleep` is the one that is missing it.
+
+**Fix (not applied):** add `.preview .asleep[hidden]{display:none}`. One line,
+no JS change.
+
+**Why it looked like a logic bug:** the status text and the overlay are driven
+by different mechanisms (JS for the text, CSS for the overlay), so a correct JS
+assignment produced no visible change. Reading the JS alone showed nothing
+wrong — which is why this survived several rounds.
+
+---
+
 ## Part 3 — Summary
 
 | Severity | Open | Fixed in code | Ids |
