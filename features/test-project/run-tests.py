@@ -1349,7 +1349,7 @@ def t98():
 
 
 def t99():
-    """The terminal route proxies and TUNNELS the upgrade (44 checks).
+    """The terminal route proxies and TUNNELS the upgrade (54 checks).
 
     B-29: `/computer/terminal/<cap>/websockify` authorised correctly and then
     answered `{ok:true, ...}` — JSON where a WebSocket upgrade belonged. The
@@ -1363,7 +1363,7 @@ def t99():
     that CORS is present on terminal refusals, and that B-17's clamp and the
     lease-clamped expiry are unchanged.
     """
-    return _harness("features/computer/harness-terminal-proxy.mjs", 44)
+    return _harness("features/computer/harness-terminal-proxy.mjs", 54)
 
 
 def t97():

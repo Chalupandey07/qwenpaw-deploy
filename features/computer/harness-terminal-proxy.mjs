@@ -236,11 +236,105 @@ console.log("proxy: the upgrade is TUNNELLED, not answered with JSON");
     "it belongs to the Worker, not the page");
 }
 
+console.log("token: the sealed target resolves, with a documented fallback");
+{
+  // THE DEPLOY BLOCKER (2026-11-16). `COMPUTER_TERMINAL_TOKEN` is a name this
+  // rebuild introduced and it is NOT set on either Pages project, so the sealed
+  // token was null and the edge answered 401 — the tunnelling was correct and
+  // the session still could not start. Pages secrets are WRITE-ONLY, so the
+  // deployer cannot read the already-set `DESKTOP_TERMINAL_TOKEN` back to copy
+  // it; the code falls back to it instead.
+  //
+  // Asserted as BEHAVIOUR — what actually lands in the sealed target — not by
+  // grepping for the expression, which would pass on a short-circuited line.
+  const capMod = await import("file://" + resolve(PUBLIC, "computer/capability.js"));
+  const K = ["COMPUTER_CAP", "ABILITY_", "SECRET"].join("");
+  const MODERN = ["COMPUTER_TERMINAL_", "TOKEN"].join("");
+  const LEGACY = ["DESKTOP_TERMINAL_", "TOKEN"].join("");
+
+  // Mint against a FRESH lease every time, using an env that differs only in
+  // the token names. `mintTerminal` reads the lease from COMPUTER_DB, so the
+  // clone must keep it — dropping it made every mint answer `not_holder`, which
+  // reads like a code bug and was a test bug.
+  async function mintWith(overrides) {
+    db.exec("DELETE FROM leases");
+    const t = await (await post("/computer/takeover", { computer: "default" })).json();
+    const e = { ...env };
+    delete e[MODERN];
+    delete e[LEGACY];
+    Object.assign(e, overrides);
+    const r = await termMod.mintTerminal(e, "default", t.leaseId);
+    const cap = r.ok ? await capMod.openCapability(e[K], r.url) : null;
+    // Release through the ROUTE, not a raw DELETE: the next block expects a
+    // clean slate it can take from, and a raw delete leaves the generation
+    // unbumped so a later release sees a lease it does not hold (409).
+    await post("/computer/release", { computer: "default", leaseId: t.leaseId });
+    return { r, cap };
+  }
+
+  // 1. Modern name set.
+  {
+    const { r, cap } = await mintWith({ [MODERN]: fake("modern") });
+    check("mints with COMPUTER_TERMINAL_TOKEN set", r.ok, JSON.stringify(r).slice(0, 120));
+    check("the sealed target carries the modern token",
+      cap && cap.target.token === fake("modern"), cap && String(cap.target.token));
+  }
+
+  // 2. Modern name ABSENT — the already-set legacy name must rescue it.
+  {
+    const { r, cap } = await mintWith({ [LEGACY]: fake("legacy") });
+    check("mints with only DESKTOP_TERMINAL_TOKEN set", r.ok,
+      JSON.stringify(r).slice(0, 160));
+    check("the sealed target FALLS BACK to DESKTOP_TERMINAL_TOKEN",
+      cap && cap.target.token === fake("legacy"),
+      `got ${cap && cap.target.token} — null here is the deploy blocker`);
+  }
+
+  // 3. Neither set: still mints, and the token is null rather than the string
+  //    "undefined". The proxy then fails honestly at the edge.
+  {
+    const { r, cap } = await mintWith({});
+    check("minting does not crash with no token at all", typeof r.ok === "boolean",
+      JSON.stringify(r).slice(0, 120));
+    check("the token is null, not the string 'undefined'",
+      cap && cap.target.token === null, cap && String(cap.target.token));
+  }
+
+  // 4. Precedence is not accidental.
+  {
+    const { cap } = await mintWith({ [MODERN]: fake("modern2"), [LEGACY]: fake("legacy2") });
+    check("COMPUTER_TERMINAL_TOKEN takes precedence over the fallback",
+      cap && cap.target.token === fake("modern2"), cap && String(cap.target.token));
+  }
+
+  // 5. The fallback does not leak into the response the browser sees.
+  {
+    const { r } = await mintWith({ [LEGACY]: fake("legacy3") });
+    check("the provider token never appears in the mint response",
+      !JSON.stringify(r).includes(fake("legacy3")),
+      "the browser must never receive the port token");
+  }
+
+  // 6. Source: the fallback is documented, because it exists for a reason that
+  //    cannot be re-derived from the code alone (write-only secrets).
+  {
+    const src = readFileSync(resolve(PUBLIC, "computer/terminal.js"), "utf8");
+    check("the fallback explains WHY (write-only Pages secrets)",
+      /WRITE-ONLY/i.test(src), "a bare `||` with no reason invites deletion");
+    check("the legacy name is the documented port-6083 token",
+      /6083/.test(src), "the pairing must be stated, not assumed");
+  }
+}
+
 console.log("proxy: refusals are refusals, with a readable reason");
 {
-  // No lease: the route must refuse and must NOT open a socket.
-  const rel = await post("/computer/release", { computer: "default", leaseId: taken.leaseId });
-  check("release succeeds (fixture)", rel.status === 200, String(rel.status));
+  // Establish a clean, lease-free state. The token block above already released
+  // its leases, so releasing `taken` again would 409 for a correct reason —
+  // it is no longer the holder. Clear the row instead of asserting on a stale
+  // handle, which is what made this read as a code failure.
+  db.exec("DELETE FROM leases");
+  const st = await (await call("/computer/state?computer=default")).json();
+  check("the fixture is lease-free", st.lease === null, JSON.stringify(st.lease));
 
   const mintedWhileHeld = await (await post("/computer/terminal/session", {
     computer: "default", leaseId: "not-a-real-lease",

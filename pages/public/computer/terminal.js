@@ -130,7 +130,26 @@ export async function mintTerminal(env, computer, leaseId) {
       // without its `_token`. It used to be `null`, which meant the proxy had
       // no credential to present and the upgrade could never have reached
       // websockify even with a correct route.
-      token: env.COMPUTER_TERMINAL_TOKEN || null,
+      //
+      // FALLBACK TO `DESKTOP_TERMINAL_TOKEN` (2026-11-16). `COMPUTER_TERMINAL_TOKEN`
+      // is a new name this rebuild introduced and it is NOT set on either Pages
+      // project, so the sealed token was null and the edge 401'd — the tunnelling
+      // was correct and the session still could not start.
+      //
+      // It cannot simply be populated: Pages secrets are WRITE-ONLY. The deployer
+      // cannot read `DESKTOP_TERMINAL_TOKEN` back to copy it, and the value exists
+      // nowhere else (not in /data/home, /etc/systemd, /home/user or .env — the
+      // deployer grepped). Rather than block on a value nobody can retrieve, fall
+      // back to the secret that is ALREADY set and was PROVEN to be the port-6083
+      // token: the retired worker paired `DESKTOP_TERMINAL_TOKEN` with
+      // `DESKTOP_TERMINAL_ORIGIN = https://6083-…instabox.tech`, which is this
+      // exact port. Nothing else in the repo reads that name, so this is its only
+      // use and the pairing cannot drift.
+      //
+      // Precedence is deliberate: `COMPUTER_TERMINAL_TOKEN` wins when someone sets
+      // it, so the modern name still governs; the fallback only rescues the case
+      // where it is absent.
+      token: env.COMPUTER_TERMINAL_TOKEN || env.DESKTOP_TERMINAL_TOKEN || null,
       // The PTY server reads this line before the frame stream: computer,
       // lease, absolute deadline, signature. Space-separated, newline-ended.
       // Its own copy of the deadline is what stops an idle open socket.
