@@ -102,9 +102,28 @@
   label.toggle{display:flex;align-items:center;gap:8px;cursor:pointer}
 
   /* ---- overlay ---- */
-  #overlay{position:fixed;inset:0;z-index:30;background:var(--bg);display:none;
+  /*
+   * THE OVERLAY MUST NEVER COVER THE RAIL (BUGS.md B-34).
+   *
+   * This used to be `inset:0` — a full-viewport layer above everything — and
+   * the boot code opened it automatically whenever the window was wider than
+   * 1100px. On any normal desktop that meant the rail (Live / Terminal / Teach
+   * / Advanced, the preview, "Open terminal") was covered permanently, with no
+   * visible way back: the overlay's own ✕ closed it, but the sidebar was
+   * unreachable BEFORE that because the layer sat on top of it and the screen
+   * iframe inside swallowed the clicks ("covered").
+   *
+   * The fix is not a shorter timer or a higher z-index — it is that the overlay
+   * is now a layer BESIDE the rail, starting where the rail ends. The rail is
+   * always visible and always clickable, so there is nothing to "get back".
+   */
+  #overlay{position:fixed;top:0;right:0;bottom:0;left:316px;z-index:30;background:var(--bg);display:none;
     flex-direction:column}
   #overlay[data-open]{display:flex}
+  /* Below 860px the rail is full-width (see the media query), so the overlay
+     has no rail to sit beside and takes the whole viewport. The rail is then
+     reached by closing the overlay, which the ✕ still does. */
+  @media (max-width:860px){ #overlay{left:0} }
   #overlay .screen-wrap{flex:1}
   .banner{padding:8px 14px;border-bottom:1px solid #3d2f1a;background:#241d10;color:var(--warn);
     font-size:12.5px}
@@ -136,6 +155,14 @@
   <header>
     <span class="title" id="railTitle">Computer</span>
     <span class="pill" id="railLive">…</span>
+    <!--
+      A persistent way into the overlay, in the RAIL header — never covered by
+      the screen. B-34 was the absence of any such control: the overlay covered
+      the rail and its only exit was its own ✕, so once covered there was no
+      way back. This button is always visible while the rail is, and the rail
+      is never covered now that the overlay starts at 316px.
+    -->
+    <button class="btn ghost" id="railExpand" title="Open the full-screen computer">Open</button>
   </header>
   <div class="card" id="needsYou" hidden>
     <h4>Needs you</h4>
@@ -223,6 +250,16 @@
 
 <div id="stage">
   <div class="screen-wrap" style="height:100%">
+    <!--
+      The stage's own frame. It was missing entirely (B-34): #stage held only a
+      veil, so the ONLY place a screen could appear was the full-viewport
+      overlay — which is why opening the overlay was effectively mandatory and
+      why covering the rail seemed harmless. With a frame here, the desktop
+      shows beside the rail and the rail never needs to be "recovered".
+    -->
+    <iframe id="stageFrame" class="screen" title="Computer screen"
+            sandbox="allow-scripts allow-pointer-lock"
+            allow="clipboard-read; clipboard-write; fullscreen"></iframe>
     <div class="screen-veil" id="stageVeil">
       <div><div class="spinner"></div><div id="stageVeilText">Opening the computer…</div></div>
     </div>
@@ -346,6 +383,7 @@
     ovVeil: $("ovVeil"), ovVeilText: $("ovVeilText"),
     ovBanner: $("ovBanner"), ovErr: $("ovErr"),
     stageVeil: $("stageVeil"), stageVeilText: $("stageVeilText"),
+    stageFrame: $("stageFrame"), railExpand: $("railExpand"),
     toast: $("toast"),
   };
 
@@ -393,6 +431,13 @@
     el.ovTeach.hidden = !held;
     el.ovFrame.style.pointerEvents = held ? "auto" : "none";
     el.ovFrame.classList.toggle("held", !held);
+    // The stage frame gets the SAME gate. It renders the same screen and must
+    // not be drivable without the lease — the lease in the Worker is the
+    // enforcement, but the UI must not invite a click that cannot work.
+    if (el.stageFrame) {
+      el.stageFrame.style.pointerEvents = held ? "auto" : "none";
+      el.stageFrame.classList.toggle("held", !held);
+    }
 
     el.stStatus.textContent = state.status;
     el.stGen.textContent = String(state.generation);
@@ -508,6 +553,9 @@
     const screenPage = state.screenUrl + "/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=" + encodeURIComponent(state.screenUrl + "/websockify");
     el.previewFrame.src = screenPage;
     el.ovFrame.src = screenPage;
+    // The stage frame is the one that makes the rail usable without the
+    // overlay: the desktop renders beside the rail instead of on top of it.
+    if (el.stageFrame) el.stageFrame.src = screenPage;
     setPhase("loading");
     loadTimer = setTimeout(() => {
       if (state.phase === "loading") {
@@ -1041,6 +1089,7 @@
 
   // ------------------------------------------------------------ listeners
   el.previewOpen.addEventListener("click", () => openOverlay());
+  el.railExpand.addEventListener("click", () => openOverlay());
   el.previewWake.addEventListener("click", () => void wake());
   el.ovTake.addEventListener("click", () => void takeControl());
   el.ovRelease.addEventListener("click", () => void releaseControl());
@@ -1134,8 +1183,13 @@
       if (!state.computers.includes(state.computer)) state.computer = state.computers[0] || "default";
     }
     await refresh();
-    if (q.get("overlay") === "1" || window.innerWidth > 1100) openOverlay();
-    else { void loadScreen(); }
+    // Open the overlay ONLY when explicitly asked (`?overlay=1`) or when the
+    // user clicked Open. It used to open on any window wider than 1100px,
+    // which covered the rail on every desktop and made the Terminal tab
+    // unreachable — B-34. The rail is the primary surface; the overlay is
+    // something you opt into.
+    void loadScreen();
+    if (q.get("overlay") === "1") openOverlay();
     setInterval(() => void refresh(), 10000);
     setInterval(() => void heartbeat(), HEARTBEAT_MS);
     setInterval(() => render(), 1000);   // countdown

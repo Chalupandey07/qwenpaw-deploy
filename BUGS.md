@@ -656,6 +656,69 @@ actually renders is Muse's check and stays unclaimed until she reports it.
 
 ---
 
+## Part 2i — Found live in a BROWSER, 2026-11-16 15:22 IST (B-34)
+
+### B-34 · P0 · The sidebar auto-hid and could not be reopened — FIXED-CODE
+
+The 10th browser check ran **74 minutes** because the browser kept trying to
+get the rail back. It was visible only for 1–2 s during "Opening the computer…",
+then hid permanently. Reload-race, pixel clicks at the rail coordinates,
+element-reference clicks (**refused as "covered"**), Tab (which went into noVNC
+and reached the remote desktop), edge hover/drag, the top-bar controls, and a
+new tab — none revealed it. The Terminal tab could therefore never be selected,
+which is why **B-33 could not be verified at all**.
+
+**Two structural faults, neither a timer.**
+
+**1. The overlay covered the rail, by construction.** It was
+`position:fixed; inset:0; z-index:30` — a full-viewport layer above everything —
+and boot opened it automatically:
+
+```js
+if (q.get("overlay") === "1" || window.innerWidth > 1100) openOverlay();
+```
+
+On any normal desktop (`innerWidth > 1100`) the rail was covered from the first
+second, and the screen iframe *inside the overlay* swallowed clicks aimed at it.
+That is precisely the "covered" refusal in the browser's own log. Lengthening a
+timer could not have helped: nothing was timing out, the rail was underneath.
+
+**2. `#stage` had no iframe at all** — only a veil. So the overlay was the ONLY
+place a screen could appear, which is why making it mandatory looked harmless.
+It also meant there was no second surface to fall back to.
+
+**And no persistent control existed.** The overlay's own ✕ closed it, but once
+covered there was no way to reach it again — the one exit was inside the thing
+that was hidden.
+
+**Fix.**
+
+- The overlay now starts where the rail ends: `left:316px` instead of `inset:0`,
+  with a `@media (max-width:860px)` reset to `left:0` for the layout where the
+  rail is full-width and `#stage` is hidden (there is no rail to sit beside, and
+  the ✕ still closes it).
+- **The width-based auto-open is gone.** The overlay opens on `?overlay=1` or a
+  click, nothing else. The rail is the primary surface; the overlay is opt-in.
+- `#stage` gained a real sandboxed frame, so the desktop renders **beside** the
+  rail. It obeys the same `pointerEvents` control gate as the overlay frame.
+- A persistent **Open** button in the rail header — inside `#rail`, therefore
+  never covered. The preview's Open button still works.
+
+**Test.** T104 (`harness-rail-reachable.mjs`, 25 checks) models the two things a
+browser would prove and which were the actual defects: **geometry** (does the
+overlay rectangle overlap the rail?) and **stacking** (is anything z-indexed
+above the rail?). It also asserts the auto-open is gone, the persistent control
+exists and is wired, `#stage` has a frame obeying the gate, and the Terminal tab
+is inside the rail.
+
+Fails 7/25 on the pre-fix tree — including "the overlay is not `inset:0`" and
+"the width-based auto-open is gone" — and 25/25 after.
+
+**Not browser-verified.** Muse redeploys the Worker (`ui.html` only) and re-runs
+the Terminal check, which has been blocked behind this.
+
+---
+
 ## Part 2h — Found live in a BROWSER, 2026-11-16 13:53 IST (B-33)
 
 ### B-33 · P0 · The browser Terminal tab: preamble never sent, xterm never styled — FIXED-CODE
@@ -1232,7 +1295,7 @@ Test: T101, 66 checks.
 | P1 | **0** | 5 | fixed: B-2, B-3, B-4, B-22, B-23 |
 | P2 | **0** | 16 | fixed: B-5, B-6, B-7, B-8, B-9, B-10, B-11, B-12, B-13, B-19, B-20, B-24, B-25, B-26 |
 | P3 | **0** | 5 | fixed: B-14, B-15, B-16, B-17, B-27 |
-| **Total** | **0 open** | **34 fixed** | of 34 findings |
+| **Total** | **0 open** | **35 fixed** | of 35 findings |
 | Audit findings (earlier) | — | 15 of 19 | see Part 1 |
 
 **All 30 register findings are closed in code** (B-31 fixed, B-29 and B-30 diagnosed and queued behind it). Zero open, zero data-loss

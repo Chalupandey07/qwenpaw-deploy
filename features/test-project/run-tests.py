@@ -1348,6 +1348,34 @@ def t98():
     return _harness("features/computer/harness-screen-cors.mjs", 36)
 
 
+def t104():
+    """The rail must stay reachable after the screen connects (25 checks).
+
+    The 10th browser check spent 74 minutes trying to get the sidebar back: the
+    rail showed for 1-2 s during "Opening the computer…", then hid, and no
+    reload-race, pixel click, element reference ("covered"), Tab, edge drag, or
+    top-bar control would reveal it. The Terminal tab could never be selected,
+    which is why the B-33 terminal fix could not even be verified.
+
+    TWO STRUCTURAL FAULTS, not a timer:
+      1. #overlay was `position:fixed; inset:0; z-index:30` — a full-viewport
+         layer — and boot opened it automatically on any window wider than
+         1100px. On every desktop that covered the rail, and the screen iframe
+         inside swallowed clicks aimed at it. Hence "covered".
+      2. #stage had NO iframe, only a veil, so the overlay was the ONLY place a
+         screen could appear — which is why making it mandatory looked harmless.
+    There was also no persistent control to reopen it: the only exit was the
+    overlay's own ✕.
+
+    Asserts geometry (the overlay starts at 316px, never inset:0), that the
+    width-based auto-open is gone, that a persistent Open button exists inside
+    the rail, that #stage has a real sandboxed frame obeying the control gate,
+    that nothing z-indexed spans the rail, and that the Terminal tab is inside
+    the rail and wired. Fails 7/25 pre-fix; 25/25 after.
+    """
+    return _harness("features/computer/harness-rail-reachable.mjs", 25)
+
+
 def t103():
     """The BROWSER's terminal path: preamble, framing, and xterm rendering (17).
 
@@ -1795,6 +1823,7 @@ TESTS = [
     ("T101", "machine rest + auto-wake; keep-alive respects a manual rest", "machine", "protocol", t101),
     ("T102", "terminal: a full input line must not kill the shell", "computer", "protocol", t102),
     ("T103", "terminal: the browser path — preamble, framing, xterm CSS", "computer", "protocol", t103),
+    ("T104", "rail: sidebar reachable + Terminal tab clickable after connect", "computer", "protocol", t104),
 ]
 
 SKIP_NOTE = {
