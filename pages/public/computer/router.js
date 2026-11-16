@@ -38,6 +38,7 @@ import { enforce as rateLimit } from "./rate-limit.js";
 import {
   mintTerminal, authorizeTerminal, requireSyncToken,
 } from "./terminal.js";
+import { sessionFromRequest } from "../session.js";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -319,9 +320,108 @@ async function serveUi(env, url) {
   );
 }
 
+/**
+ * Does this path require a console session cookie?
+ *
+ * Written as an explicit ALLOWLIST OF EXEMPTIONS, not as an allowlist of
+ * gated paths: a new endpoint added later is therefore protected by default.
+ * The opposite shape (a list of paths that need auth) is how the original hole
+ * happened — `/computer/state` was written long after nobody was thinking
+ * about auth, and nothing about adding it forced the question.
+ *
+ * The two exemption families are justified in handleComputer; in short, a
+ * sealed capability is stronger than a session, and the machine's uploader is
+ * authenticated by its own shared token.
+ */
+export function requiresSession(path, method = "GET") {
+  // CORS preflight carries NO cookie by design (the browser sends it before the
+  // real request, precisely so it can learn whether to send credentials at all).
+  // Gating it would make every cross-origin module request fail as an opaque
+  // CORS error — which is exactly the failure B-31 recorded, one layer down.
+  // The preflight authorises nothing: it returns an allow list and no data. The
+  // real request behind it still carries a cookie and is still checked.
+  if (method === "OPTIONS") return false;
+
+  // Static UI assets: no data, no secret.
+  if (path === "/computer" || path === "/computer/") return true;
+  // `/vendor/` is matched on the URL as received. A traversal attempt is NOT
+  // normalised here on purpose: `/vendor/../computer/ui.html` must reach the
+  // vendor allowlist and get its honest 404, not fall through to a route that
+  // happens to serve the same bytes under a different rule. Deciding what a
+  // hostile path means is the router's job, not the gate's.
+  if (path.startsWith("/vendor/")) return false;
+  if (path === "/computer/teach.js" || path === "/computer/terminal.js") return false;
+  // Any other STATIC asset under /computer (the UI html, a stylesheet, a module)
+  // is bytes on disk, not state. Matching on a known extension rather than on a
+  // path list means a new endpoint — which never has an extension — is gated by
+  // default, while a traversal that normalises into a static path still gets the
+  // router's 404 instead of a misleading 401.
+  if (/^\/computer\/[A-Za-z0-9_.-]+\.(html|css|js|map|svg|png|ico|woff2?)$/.test(path)) return false;
+
+  // Capability-authorised surfaces. The capability is minted only for a
+  // session-holding caller, is unforgeable, and re-checks the live lease on
+  // every request — so it is strictly stronger evidence than the cookie.
+  if (path.startsWith("/computer/session/")) return false;
+  if (path.startsWith("/computer/terminal/")) return false;
+
+  // Machine-facing (uploader, agent relay): shared-token authenticated.
+  if (path === "/computer/preview-upload" && method === "POST") return false;
+  if (path === "/computer/needs-you" && method === "POST") return false;
+  if (path === "/computer/teach/pending" && method === "GET") return false;
+  if (path === "/computer/teach/ack" && method === "POST") return false;
+
+  // Everything else under /computer is user-facing state and MUST be gated.
+  return true;
+}
+
 export async function handleComputer(request, env, url) {
   const path = url.pathname;
   const q = url.searchParams;
+
+  // ---- authentication gate (P0, 2026-11-16) ----
+  //
+  // THIS ROUTE HAD NO AUTH OF ANY KIND. Verified live before this line
+  // existed: an anonymous curl got a 1920x1080 screenshot of the user's
+  // desktop, created a live control lease, minted a `policy:"control"` screen
+  // capability, and minted a terminal capability — a pre-authentication
+  // remote ROOT SHELL, since minting one needs only a live lease and a lease
+  // needed only a POST.
+  //
+  // The check runs BEFORE any store access so an unauthenticated caller can
+  // never consume a lease, a generation, a preview read, or an HMAC mint.
+  //
+  // Three surfaces are deliberately exempt, and each has its own proof:
+  //   * `/computer/session/*` and `/computer/terminal/*` — the sealed
+  //     capability IS the authorization (unforgeable, scoped, expiring), and
+  //     the framing iframes are opaque-origin so a cookie would not survive
+  //     there anyway. Re-checking a session here would break the screen
+  //     without adding a guarantee the capability does not already give.
+  //   * agent/machine endpoints — authenticated by COMPUTER_SYNC_TOKEN
+  //     (constant-time, fail-closed when unset) because the caller is the
+  //     machine's uploader, not a browser.
+  //   * static assets — `/vendor/*`, `teach.js`, `terminal.js` contain no
+  //     data and no secret; gating them only shifts a 404 into a login page.
+  if (requiresSession(path, request.method)) {
+    const session = await sessionFromRequest(env, request);
+    if (!session.ok) {
+      // A missing secret is a DEPLOY error, not a visitor problem. Answering
+      // 401 "please sign in" for it sends the user round a login loop that can
+      // never succeed, and hides a broken deploy behind a plausible page.
+      if (session.reason === "unconfigured") {
+        return json({
+          error: "session_unconfigured",
+          reason: "unconfigured",
+          detail: "COMPUTER_SESSION_SECRET (or COMPUTER_CAPABILITY_SECRET) is not set on "
+            + "this Pages project, so no session can be verified.",
+        }, 503);
+      }
+      return json({
+        error: "auth_required",
+        reason: session.reason,
+        detail: "Open the QwenPaw console and sign in, then reload this page.",
+      }, 401);
+    }
+  }
 
   // ---- rate limit (BUGS.md B-10) ----
   // Classified by endpoint, not by URL pattern, because the cost of each one

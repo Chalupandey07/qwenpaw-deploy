@@ -117,9 +117,23 @@ export async function authenticate(request, env, origin) {
     }
   }
 
-  // 2. A console session. Forward the caller's bearer token to the console and
-  //    trust only its answer. The path is a read-only endpoint the console
-  //    already exposes; we do not add an endpoint to QwenPaw.
+  // 2. A console session. Forward the caller's bearer token to an endpoint the
+  //    console ACTUALLY PROTECTS, and trust only its answer.
+  //
+  //    THIS USED TO FORWARD TO `/api/auth/status`, WHICH IS PUBLIC BY DESIGN.
+  //    It answers 200 `{"enabled":true,"has_users":true}` to any caller —
+  //    that is how the login screen learns whether to show a sign-in form, so
+  //    it cannot require a session. Verifying a credential against an endpoint
+  //    that answers everyone verifies NOTHING: any non-empty string passed.
+  //    Verified live 2026-11-16 — `Authorization: Bearer bogus-token-…` was
+  //    accepted, and the only reason the request then failed was that the
+  //    machine happened to be in cooldown. On a running machine that is an
+  //    anonymous caller suspending the user's box.
+  //
+  //    `/api/cron/jobs` is the endpoint the 2026-11-15 audit used for exactly
+  //    this check: it answers 401 without a valid session and 200 with one
+  //    (recorded in the retest: "/api/cron/jobs 401 on Pages and direct URL").
+  //    It is read-only, so using it as a probe cannot change state.
   const auth = request.headers.get("Authorization") || "";
   const m = /^Bearer\s+(.+)$/i.exec(auth);
   if (!m || !origin) {
@@ -133,12 +147,12 @@ export async function authenticate(request, env, origin) {
     return { ok: false, status: 401, error: "auth_required" };
   }
   try {
-    const res = await fetch(origin + "/api/auth/status", {
+    const res = await fetch(origin + "/api/cron/jobs", {
       headers: { Authorization: "Bearer " + token },
       signal: AbortSignal.timeout(8000),
     });
     if (res.ok) {
-      // Read the body: `{"enabled":true,...}` on a live console. A 200 with a
+      // Read the body: a live console answers a JSON array. A 200 with a
       // non-JSON body is not the console (a captive portal, say), so do not
       // accept it.
       const text = await res.text();

@@ -28,6 +28,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { sessionCookie, requestWith } from "./_session.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..", "..");
@@ -97,8 +98,9 @@ globalThis.fetch = async (input) => {
   return new Response("stub", { status: 200 });
 };
 
+const COOKIE = await sessionCookie(env);
 const call = (path, init = {}) => worker.default.fetch(
-  new Request("https://qwenpawx.pages.dev" + path, init), env, {});
+  requestWith(path, init, COOKIE), env, {});
 
 const post = (path, body) => call(path, {
   method: "POST",

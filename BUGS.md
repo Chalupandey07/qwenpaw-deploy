@@ -1427,3 +1427,121 @@ latency) → B-12, B-14…B-18 (hygiene).
 eighteen — are symptoms of KV's eventual consistency and single-key model, not
 independent mistakes. That is the real argument for the D1 migration: not the
 quota number, but six defect classes disappearing at once.
+
+---
+
+## Part 5 — Found live, 2026-11-16 (the open door)
+
+Both of these were found by probing the DEPLOYED site with curl, not by reading
+code, and both were exploited end to end before being fixed. They are the most
+serious findings in this register: the entire /computer surface, which includes
+a root shell, was reachable by anyone on the internet.
+
+### B-36 · P0 · `/computer/*` had NO authentication — anonymous desktop screenshot, anonymous control, anonymous ROOT SHELL — FIXED-CODE
+
+**File:** `pages/public/computer/router.js` (the whole `handleComputer` entry),
+`pages/public/session.js` (new).
+
+**Found live.** Four requests, no credentials, in order:
+
+| Request | Answer before the fix |
+|---|---|
+| `GET /computer/preview?computer=default` | **200 `image/png`, 381,490 bytes** — a real 1920×1080 screenshot of the user's desktop |
+| `POST /computer/takeover {"computer":"qa"}` | **200** `{"leaseId":"1bc7046e-…","fence":2,"generation":6}` |
+| `GET /computer/session?computer=qa` | **200** `{"ok":true,…,"policy":"control"}` |
+| `POST /computer/terminal/session` | **200** `{"url":"/computer/terminal/control/1784…"}` |
+
+The last row is a **pre-authentication remote root shell**. Minting a terminal
+capability requires only a live lease (`pages/public/computer/terminal.js`), and a
+lease required only an unauthenticated POST. The machine holds
+`working.secret/auth.json`, the user's chat history, and the workspace.
+
+**Why nothing caught it.** Every harness drove the router by *calling* it, so
+none of them ever asked "what happens with no cookie?" — the same shape as the
+2026-11-15 defect where 81 tests passed while the Worker could not load. The
+README documented a `DESKTOP_SESSION` HMAC cookie gate; **no such code existed**
+(`grep -rn DESKTOP_SESSION` returned only prose). A design note is not an
+access control.
+
+**Fix.** A store-free gate that runs first, in `handleComputer`:
+
+* `pages/public/session.js` — mint/verify `DESKTOP_SESSION` as
+  `v1.<exp>.<hmac>`, HMAC-SHA-256 over `session:v1:<exp>:console`, constant-time
+  compare on digests (B-16's rule), 12 h TTL, `HttpOnly; Secure; SameSite=Lax`.
+  It deliberately does **not** wrap the QwenPaw bearer token: a cookie carrying
+  a console credential is a credential leak with extra steps.
+* Minted only by `POST /api/session/mint`, which requires a bearer token the
+  console accepts. GET is refused (405) — a mint reachable by GET is a mintable
+  `<img src>`.
+* `requiresSession()` is an allowlist of **exemptions**, so a new endpoint is
+  protected by default. That is the structural half of the fix: the original
+  hole happened because `/computer/state` was written after anyone was thinking
+  about auth, and nothing about adding it forced the question.
+* Three exemption families, each with its own proof: sealed capabilities
+  (`/computer/session/*`, `/computer/terminal/*` — unforgeable, scoped,
+  expiring, re-checked against the live lease every request); machine-facing
+  endpoints (`preview-upload`, `needs-you`, `teach/pending`, `teach/ack` —
+  `COMPUTER_SYNC_TOKEN`, constant-time, fail-closed); static assets.
+* `OPTIONS` is exempt because **CORS preflight carries no cookies by design.**
+  Gating it would turn every cross-origin module request into an opaque CORS
+  error — B-31 one layer down. The preflight returns an allow list and no data.
+* The gate runs **before any store access**, asserted by a test that uses an env
+  with no `COMPUTER_DB`: the answer must be 401, not 503.
+* `503 session_unconfigured` when the secret is missing — a deploy error must
+  not masquerade as "please sign in", which is an unbreakable login loop.
+
+**Test — T88, 70 checks, fail-first 28/70** on the pre-fix tree. It asserts
+twelve user-facing paths refuse an anonymous caller, that a forged cookie is
+refused *identically* to an absent one (if those answers differ, an attacker
+learns which guesses were close), and that the gate precedes the store.
+
+**NOT VERIFIED:** no browser has run this. Muse deploys `_worker.js`,
+`computer/router.js`, `computer/ui.html`, `machine-control.js`, `session.js`
+and sets `COMPUTER_SESSION_SECRET` (or reuses `COMPUTER_CAPABILITY_SECRET`).
+
+### B-37 · P0 · Machine rest verified the caller against a PUBLIC endpoint, so any token passed — FIXED-CODE
+
+**File:** `pages/public/machine-control.js` — `authenticate()`.
+
+`POST /api/machine/rest` forwarded the caller's bearer token to
+`{ORIGIN}/api/auth/status` and treated a 200 as proof of a session.
+`/api/auth/status` is **public by design** — it answers
+`{"enabled":true,"has_users":true}` to everyone, because the login screen must
+read it before anyone has signed in. Verifying a credential against an endpoint
+that answers everyone verifies nothing: any string of 8+ characters passed.
+
+**Verified live:** `Authorization: Bearer totally-invalid-token-1234567890`
+reached the suspend path. The only reason the request then failed was that the
+machine happened to be in max-run cooldown (`409 machine_not_running`) — on a
+running machine that is an anonymous caller suspending the user's box.
+
+**Fix.** Verify against `/api/cron/jobs` instead: read-only, and the endpoint
+the 2026-11-15 audit used for exactly this check ("`/api/cron/jobs` 401 on Pages
+and direct URL" in `features/audit-2026-11-15/retest-2026-11-15/REPORT.md`).
+The response body is now required to parse as an object, so a captive portal
+answering 200 HTML still refuses.
+
+**Test:** T101 (66 checks) — the harness stub now models the console honestly
+(the buggy target was baked into the STUB as well as the code, which is why it
+stayed green; a stub that agrees with the bug proves nothing).
+
+### B-38 · P2 · Three live tests asserted on the DELETED `/desktop` surface — FIXED-CODE
+
+T04, T05 and T06 had been red since the 2026-11-15 computer rebuild, because
+they fetched `/desktop`, `/desktop/__lease` and `/desktop/vendor/xterm.js` —
+pages deleted with the 8,399 lines. A permanently red row nobody can act on is
+its own hazard: it teaches people that red is normal, which is the failure mode
+`AGENTS.md` §1 exists to prevent.
+
+Rewritten against the live surface, and made to assert the properties that
+matter rather than page copy:
+
+* **T04** — anonymous `/computer/state` must be 401 and must not contain
+  `leaseId`/`generation`/`preview`.
+* **T05** — anonymous takeover must not return a `leaseId`; anonymous
+  `/computer/session` must not return a `policy`.
+* **T06** — asserts Content-Type is `javascript` and the body is not the
+  console SPA. A 200 with the wrong body type is how B-35 shipped silently.
+
+T04 and T05 fail against the deployed site today, which is exactly what a
+regression test for a live vulnerability should do **before** the fix ships.

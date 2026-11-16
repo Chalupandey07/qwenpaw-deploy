@@ -410,14 +410,76 @@
     toastTimer = setTimeout(() => el.toast.removeAttribute("data-show"), 3200);
   }
 
+  // ------------------------------------------------------- session (auth)
+  //
+  // `/computer/*` is gated from 2026-11-16 (see pages/public/session.js). This
+  // page is served to a signed-in browser, but the PAGE has no cookie of its own
+  // until it asks for one: `DESKTOP_SESSION` is HttpOnly, so JS cannot mint it.
+  //
+  // The bearer token comes from the console SPA's localStorage — the same value
+  // the console itself uses. It is sent once, over same-origin HTTPS, to
+  // `/api/session/mint`, which verifies it against the console and answers with
+  // a Set-Cookie. On a direct visit to `/computer` in a fresh tab the token may
+  // be absent (sessionStorage/localStorage is per-tab in some flows), in which
+  // case the honest answer is "open the console and sign in" — not a blank
+  // screen and not a fake retry loop.
+  let sessionState = "unknown";   // unknown | ok | needed
+
+  function consoleToken() {
+    try {
+      var keys = ["token", "qwenpaw_token", "qwenpaw-token", "access_token"];
+      for (var i = 0; i < keys.length; i++) {
+        var v = localStorage.getItem(keys[i]);
+        if (v && v.length > 8) return v;
+      }
+      for (var j = 0; j < localStorage.length; j++) {
+        var raw = localStorage.getItem(localStorage.key(j));
+        if (!raw || raw.length < 8) continue;
+        try {
+          var o = JSON.parse(raw);
+          if (o && typeof o === "object") {
+            var t = o.token || o.access_token || o.accessToken;
+            if (typeof t === "string" && t.length > 8) return t;
+          }
+        } catch (e) { /* not JSON */ }
+      }
+    } catch (e) { /* storage blocked */ }
+    return "";
+  }
+
+  /** Ask for a session cookie. Idempotent and safe to call on every 401. */
+  async function ensureSession() {
+    const already = await fetch("/api/session/state", { cache: "no-store", credentials: "same-origin" });
+    const st = await already.json().catch(() => ({}));
+    if (st && st.ok) { sessionState = "ok"; return true; }
+    const token = consoleToken();
+    if (!token) { sessionState = "needed"; return false; }
+    const res = await fetch("/api/session/mint", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token },
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (res.ok) { sessionState = "ok"; return true; }
+    sessionState = "needed";
+    return false;
+  }
+
   async function api(path, body, method) {
-    const res = await fetch(path, {
+    const doFetch = () => fetch(path, {
       method: method || (body === undefined ? "GET" : "POST"),
       headers: body === undefined ? {} : { "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
       credentials: "same-origin",
       cache: "no-store",
     });
+    let res = await doFetch();
+    // One silent re-auth, then surface it. A 401 loop must never be silent:
+    // the old surface showed a black screen for exactly this reason.
+    if (res.status === 401) {
+      const ok = await ensureSession();
+      if (ok) res = await doFetch();
+    }
     let data = null;
     try { data = await res.json(); } catch { data = null; }
     return { ok: res.ok, status: res.status, data };
@@ -1218,10 +1280,22 @@
   (async () => {
     const q = new URLSearchParams(location.search);
     if (q.get("computer")) state.computer = q.get("computer");
+    // Session first: every call below is gated, so asking for one afterwards
+    // would waste the first three requests and show three error states.
+    await ensureSession();
+    if (sessionState === "needed") {
+      setPhase("failed", "Sign in to the QwenPaw console first — this page shows the "
+        + "computer that account controls.");
+      return;
+    }
     // teach.js is loaded once at boot: the recorder handlers must not depend on
     // a lazy import that may still be in flight when the user clicks Start.
     await loadTeach();
     const r = await api("/computer/computers");
+    if (!r.ok && r.status === 401) {
+      setPhase("failed", "Your console session expired. Sign in again, then reload.");
+      return;
+    }
     if (r.ok && Array.isArray(r.data?.computers)) {
       state.computers = r.data.computers;
       if (!state.computers.includes(state.computer)) state.computer = state.computers[0] || "default";

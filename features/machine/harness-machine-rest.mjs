@@ -114,7 +114,10 @@ const call = (path, init = {}) => worker.default.fetch(
   new Request("https://qwenpawx.pages.dev" + path, init), env, {});
 const postRest = (headers = {}) => call("/api/machine/rest", { method: "POST", headers });
 
-// The console auth check forwards to ORIGIN/api/auth/status.
+// The console auth check forwards to ORIGIN/api/cron/jobs — an endpoint the
+// console actually protects. (It used to forward to /api/auth/status, which is
+// PUBLIC by design so the login screen can read it: any non-empty token
+// passed. Verified live 2026-11-16 — that was a P0.)
 const AUTH_OK = () => new Response(JSON.stringify({ enabled: true, has_users: true }), {
   status: 200, headers: { "Content-Type": "application/json" },
 });
@@ -140,7 +143,7 @@ console.log("rest: an unauthenticated visitor can NEVER suspend the machine");
 
   const bogus = await postRest({ Authorization: "Bearer not-a-real-session-token" });
   check("a bogus bearer -> 401 (console says no)", bogus.status === 401, String(bogus.status));
-  check("…the console WAS asked", calls.some((c) => /\/api\/auth\/status/.test(c.url)),
+  check("…the console WAS asked", calls.some((c) => /\/api\/cron\/jobs/.test(c.url)),
     JSON.stringify(calls.map((c) => c.url)));
   check("…but the machine API was never touched",
     !calls.some((c) => /instabox\.sh/.test(c.url)), "an auth failure must not suspend anything");
@@ -157,7 +160,7 @@ console.log("rest: a session is verified against the console, not guessed");
 {
   calls = [];
   stubFetch(async (u) => {
-    if (/\/api\/auth\/status/.test(u.url)) {
+    if (/\/api\/cron\/jobs/.test(u.url)) {
       // Only the real session works — the console is the authority.
       return (u.headers.get("Authorization") === "Bearer " + SESS) ? AUTH_OK()
         : new Response("no", { status: 401 });
@@ -176,7 +179,7 @@ console.log("rest: INSTABOX_API_KEY unset -> clear error, NO API call");
 {
   calls = [];
   delete env.INSTABOX_API_KEY;
-  stubFetch(async (u) => (/\/api\/auth\/status/.test(u.url) ? AUTH_OK() : new Response("{}", { status: 200 })));
+  stubFetch(async (u) => (/\/api\/cron\/jobs/.test(u.url) ? AUTH_OK() : new Response("{}", { status: 200 })));
 
   const res = await postRest(authHeaders(SESS));
   check("unset key -> 503", res.status === 503, String(res.status));
@@ -198,7 +201,7 @@ console.log("rest: the happy path — marker written BEFORE the suspend");
   env.INSTABOX_API_KEY = fake("apikey");
   let markerAtSuspend = null;
   stubFetch(async (u, init) => {
-    if (/\/api\/auth\/status/.test(u.url)) return AUTH_OK();
+    if (/\/api\/cron\/jobs/.test(u.url)) return AUTH_OK();
     if (/instabox\.sh/.test(u.url)) {
       // Read the marker at the moment of the suspend call. This is the ordering
       // assertion: if the marker is not there yet, a failed suspend would leave
@@ -238,7 +241,7 @@ console.log("rest: a failed suspend still leaves the user's instruction standing
   calls = [];
   db.exec("DELETE FROM meta");
   stubFetch(async (u) => {
-    if (/\/api\/auth\/status/.test(u.url)) return AUTH_OK();
+    if (/\/api\/cron\/jobs/.test(u.url)) return AUTH_OK();
     if (/instabox\.sh/.test(u.url)) return new Response("boom", { status: 500 });
     return new Response("{}", { status: 200 });
   });
@@ -258,7 +261,7 @@ console.log("rest: a broken store blocks the suspend (no marker = no rest)");
   db.exec("DELETE FROM meta");
   const brokenEnv = { ...env, COMPUTER_DB: { prepare() { throw new Error("D1 down"); } },
                       QWENPAW_DB: { prepare() { throw new Error("D1 down"); } } };
-  stubFetch(async (u) => (/\/api\/auth\/status/.test(u.url) ? AUTH_OK() : new Response("{}", { status: 200 })));
+  stubFetch(async (u) => (/\/api\/cron\/jobs/.test(u.url) ? AUTH_OK() : new Response("{}", { status: 200 })));
   const res = await worker.default.fetch(new Request("https://qwenpawx.pages.dev/api/machine/rest", {
     method: "POST", headers: { Authorization: "Bearer " + SESS },
   }), brokenEnv, {});

@@ -11,7 +11,10 @@
 // What remains is exactly the console proxy plus the wake/cooldown handling,
 // and that is the entire responsibility of this file.
 import { handleComputer } from "./computer/router.js";
-import { restMachine, machineState } from "./machine-control.js";
+import { restMachine, machineState, authenticate } from "./machine-control.js";
+import {
+  mintSession, sessionFromRequest, sessionSetCookie, sessionClearCookie, SESSION_TTL_MS,
+} from "./session.js";
 
 const ORIGIN = "https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
 const WAKE_WAIT_MS = 45_000;
@@ -505,6 +508,85 @@ export default {
           status: 500, headers: { "Content-Type": "application/json" },
         });
       }
+    }
+
+    // ---- session for the /computer surface (see pages/public/session.js) ----
+    //
+    // This is the ONLY place a DESKTOP_SESSION cookie is minted. It requires a
+    // bearer token the console actually accepts, so the cookie inherits the
+    // console's own revocation behaviour: revoke the token upstream and the
+    // next mint fails. The cookie carries no console credential — it is only
+    // proof that this browser passed that check within the TTL.
+    //
+    // POST only: a GET would be mintable by any <img src>, which turns every
+    // page that can embed a URL into a session factory.
+    if (path === "/api/session/mint") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "method_not_allowed" }), {
+          status: 405, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+      const auth = await authenticate(request, env, ORIGIN);
+      if (!auth.ok) {
+        return new Response(JSON.stringify({
+          error: auth.error,
+          detail: auth.detail || null,
+        }), {
+          status: auth.status || 401,
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+      const secret = env.COMPUTER_SESSION_SECRET || env.COMPUTER_CAPABILITY_SECRET;
+      const value = await mintSession(secret, { ttlMs: SESSION_TTL_MS });
+      if (!value) {
+        // Fail closed and NAME the missing secret. Minting an unsigned or
+        // default-keyed session would be worse than minting none.
+        return new Response(JSON.stringify({
+          error: "unconfigured",
+          detail: "COMPUTER_SESSION_SECRET (or COMPUTER_CAPABILITY_SECRET) is not set, "
+            + "so no session can be minted.",
+        }), {
+          status: 503,
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, expiresInMs: SESSION_TTL_MS }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+          "Set-Cookie": sessionSetCookie(value),
+        },
+      });
+    }
+
+    // Honest status read: the /computer page asks this on load so it can tell
+    // "you are not signed in" apart from "the store is broken". No cookie is
+    // returned by this endpoint, so it is safe to answer anonymously.
+    if (path === "/api/session/state") {
+      const s = await sessionFromRequest(env, request);
+      return new Response(JSON.stringify({ ok: s.ok, reason: s.ok ? null : s.reason }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+
+    // Clearing is a POST for the same reason minting is: a logout reachable by
+    // GET is a logout a third-party <img> can trigger.
+    if (path === "/api/session/clear") {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "method_not_allowed" }), {
+          status: 405, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+          "Set-Cookie": sessionClearCookie(),
+        },
+      });
     }
 
     // ---- machine rest / state (Rohan's manual-rest feature) ----

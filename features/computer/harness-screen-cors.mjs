@@ -40,6 +40,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { sessionCookie, requestWith } from "./_session.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..", "..");
@@ -100,8 +101,9 @@ const worker = await import("file://" + resolve(PUBLIC, "_worker.js"));
 
 const realFetch = globalThis.fetch;
 const stubFetch = (impl) => { globalThis.fetch = impl; };
+const COOKIE = await sessionCookie(env);
 const call = (path, init = {}) => worker.default.fetch(
-  new Request("https://qwenpawx.pages.dev" + path, init), env, {});
+  requestWith(path, init, COOKIE), env, {});
 
 // The upstream (websockify/x11vnc origins) must answer without real network.
 const serveUpstream = (handler) => stubFetch(async (input) => {

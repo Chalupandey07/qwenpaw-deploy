@@ -541,3 +541,231 @@ Caveat: T32 reports FAIL with an empty reason because `skills_list()` returns
 not-ok for the same missing-connector cause, so its own error path swallows the
 message. That is a runner reporting bug, not a system failure, and it predates
 this pass.
+
+## Round 9 — 2026-11-16T15:48:13Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: NEEDS-REBUILD=4, PASS=15.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T46 | harness | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T47 | harness | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T48 | harness | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T62 | storage | protocol | PASS | features/storage/harness-store.mjs: exit=0 tally=42 passed, 0 failed tail=42 passed, 0 failed |
+| T70 | memory | protocol | PASS | features/memory/test_recall.py: exit=0 tally=44 passed, 0 failed tail=44 passed, 0 failed (44 checks) |
+| T71 | memory | protocol | PASS | features/memory/test_lessons.py: exit=0 tally=45 passed, 0 failed tail=45 passed, 0 failed (45 checks) |
+| T72 | memory | protocol | PASS | reme_doctor --selftest: exit=0 tally=11 passed, 0 failed |
+| T73 | memory | protocol | PASS | features/memory/test_install_ripwire.py: exit=0 tally=49 passed, 0 failed tail=49 passed, 0 failed (49 checks) |
+| T74 | keepalive | protocol | PASS | worker/harness-keepalive.mjs: exit=0 tally=19 passed, 0 failed tail=19 passed, 0 failed (19 checks) |
+| T75 | desktop | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T76 | codemode | protocol | PASS | features/codemode/harness-codemode.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+| T77 | cost | protocol | PASS | features/board/pricing.py --selftest: exit=0 tally=20 passed, 0 failed |
+| T78 | routing | protocol | PASS | features/routing/policy.py --selftest: exit=0 tally=27 passed, 0 failed |
+| T79 | docs | protocol | PASS | check-links.py exit=0 tail=all links and paths resolve |
+| T80 | storage | protocol | PASS | features/storage/test_schema.py: exit=0 tally=15 passed, 0 failed tail=15 passed, 0 failed (15 checks) |
+| T81 | infra | protocol | PASS | features/infra/workers/email-router/harness-email-router.mjs: exit=0 tally=24 passed, 0 failed tail=24 passed, 0 failed (24 checks) |
+| T82 | groupchat | protocol | PASS | features/groupchat/harness-groupchat-cors.mjs: exit=0 tally=13 passed, 0 failed tail=13 passed, 0 failed (13 checks) |
+| T83 | memory | protocol | PASS | consolidate --selftest: exit=0 tally=27 passed, 0 failed |
+| T84 | decisions | protocol | PASS | decisions --selftest: exit=0 tally=33 passed, 0 failed |
+
+### Notes (non-pass rows)
+- **T46** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T47** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T48** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T75** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+
+## Round 10 — 2026-11-16T15:52:47Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: PASS=36.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T62 | storage | protocol | PASS | features/storage/harness-store.mjs: exit=0 tally=42 passed, 0 failed tail=42 passed, 0 failed |
+| T70 | memory | protocol | PASS | features/memory/test_recall.py: exit=0 tally=44 passed, 0 failed tail=44 passed, 0 failed (44 checks) |
+| T71 | memory | protocol | PASS | features/memory/test_lessons.py: exit=0 tally=45 passed, 0 failed tail=45 passed, 0 failed (45 checks) |
+| T72 | memory | protocol | PASS | reme_doctor --selftest: exit=0 tally=11 passed, 0 failed |
+| T73 | memory | protocol | PASS | features/memory/test_install_ripwire.py: exit=0 tally=49 passed, 0 failed tail=49 passed, 0 failed (49 checks) |
+| T74 | keepalive | protocol | PASS | worker/harness-keepalive.mjs: exit=0 tally=19 passed, 0 failed tail=19 passed, 0 failed (19 checks) |
+| T76 | codemode | protocol | PASS | features/codemode/harness-codemode.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+| T77 | cost | protocol | PASS | features/board/pricing.py --selftest: exit=0 tally=20 passed, 0 failed |
+| T78 | routing | protocol | PASS | features/routing/policy.py --selftest: exit=0 tally=27 passed, 0 failed |
+| T79 | docs | protocol | PASS | check-links.py exit=0 tail=all links and paths resolve |
+| T80 | storage | protocol | PASS | features/storage/test_schema.py: exit=0 tally=15 passed, 0 failed tail=15 passed, 0 failed (15 checks) |
+| T81 | infra | protocol | PASS | features/infra/workers/email-router/harness-email-router.mjs: exit=0 tally=24 passed, 0 failed tail=24 passed, 0 failed (24 checks) |
+| T82 | groupchat | protocol | PASS | features/groupchat/harness-groupchat-cors.mjs: exit=0 tally=13 passed, 0 failed tail=13 passed, 0 failed (13 checks) |
+| T83 | memory | protocol | PASS | consolidate --selftest: exit=0 tally=27 passed, 0 failed |
+| T84 | decisions | protocol | PASS | decisions --selftest: exit=0 tally=33 passed, 0 failed |
+| T85 | skills | protocol | PASS | skills/scan --selftest: exit=0 tally=41 passed, 0 failed |
+| T86 | computer | protocol | PASS | features/computer/harness-computer.mjs: exit=0 tally=88 passed, 0 failed tail=88 passed, 0 failed (88 checks) |
+| T87 | computer | protocol | PASS | preview-uploader --selftest: exit=0 tally=12 passed, 0 failed |
+| T88 | computer | protocol | PASS | features/computer/harness-worker-load.mjs: exit=0 tally=40 passed, 0 failed tail=40 passed, 0 failed (40 checks) |
+| T89 | computer | protocol | PASS | features/computer/harness-rate-limit.mjs: exit=0 tally=28 passed, 0 failed tail=28 passed, 0 failed (28 checks) |
+| T90 | computer | protocol | PASS | features/computer/harness-preview-refetch.mjs: exit=0 tally=29 passed, 0 failed tail=29 passed, 0 failed (29 checks) |
+| T91 | routines | protocol | PASS | features/routines/harness-routines-history.mjs: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T92 | computer | protocol | PASS | features/computer/harness-terminal.mjs: exit=0 tally=39 passed, 0 failed tail=39 passed, 0 failed (39 checks) |
+| T93 | computer | protocol | PASS | features/computer/harness-teach.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+| T94 | codemode | protocol | PASS | features/codemode/vm/codemode-runner.py --selftest: exit=0 tally=64 passed, 0 failed |
+| T95 | codemode | protocol | PASS | features/codemode/vm/test_mcp.py: exit=0 tally=27 passed, 0 failed tail=27 passed, 0 failed (27 checks) |
+| T96 | codemode | protocol | PASS | features/codemode/vm/test_e2e.py: exit=0 tally=44 passed, 0 failed tail=44 passed, 0 failed (44 checks) |
+| T97 | computer | protocol | PASS | features/computer/harness-screen-upgrade.mjs: exit=0 tally=22 passed, 0 failed tail=22 passed, 0 failed (22 checks) |
+| T98 | computer | protocol | PASS | features/computer/harness-screen-cors.mjs: exit=0 tally=36 passed, 0 failed tail=36 passed, 0 failed (36 checks) |
+| T99 | computer | protocol | PASS | features/computer/harness-terminal-proxy.mjs: exit=0 tally=54 passed, 0 failed tail=54 passed, 0 failed (54 checks) |
+| T100 | computer | protocol | PASS | features/computer/harness-preview-asleep.mjs: exit=0 tally=21 passed, 0 failed tail=21 passed, 0 failed (21 checks) |
+| T101 | machine | protocol | PASS | features/machine/harness-machine-rest.mjs: exit=0 tally=66 passed, 0 failed tail=66 passed, 0 failed (66 checks) |
+| T102 | computer | protocol | PASS | features/computer/test_terminal_input.py: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T103 | computer | protocol | PASS | features/computer/harness-terminal-browser.mjs: exit=0 tally=17 passed, 0 failed tail=17 passed, 0 failed (17 checks) |
+| T104 | computer | protocol | PASS | features/computer/harness-rail-reachable.mjs: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T105 | computer | protocol | PASS | features/computer/harness-terminal-served.mjs: exit=0 tally=32 passed, 0 failed tail=32 passed, 0 failed (32 checks) |
+
+## Round 11 — 2026-11-16T15:53:39Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: PASS=14, FAIL=4.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T01 | console | protocol | PASS | HTTP 200 size=45981 markers=['qwenpawComputerBtn', 'qwenpawComputerPanel'] |
+| T02 | console | protocol | PASS | HTTP 200 size=5587 title=True |
+| T03 | console | protocol | PASS | HTTP 200 body={"enabled":true,"has_users":true} |
+| T04 | console | protocol | FAIL | HTTP 200 size=45981 gate=False |
+| T05 | console | protocol | FAIL | unparsable lease JSON: default=<!doctype html> <html lang="en"> <head> <meta charset="UTF-8" /> <link rel="icon" type="image/svg+xm qa=<!doctype html> <html lang="en"> <head> <meta charset="UTF-8" /> <link rel="icon" type="image/svg+xm |
+| T06 | console | protocol | FAIL | HTTP 200 size=45981 |
+| T18 | bridge | protocol | FAIL | ib.py exit 2: python3: can't open file '/root/workspace/custom-connectors/custom.instabox/bin/ib.py': [Errno 2] No such file or directory |
+| T21 | routines | protocol | PASS | / HTTP 200; /api/status HTTP 200 qwenpaw={'status': 'up', 'httpStatus': 200, 'note': 'QwenPaw console answered'} routines=['daily-summary', 'inbox-check-30m'] |
+| T23 | routines | protocol | PASS | POST /trigger no token -> HTTP 401 body={ "error": "unauthorized" } |
+| T25 | groupchat | protocol | PASS | HTTP 200 body={"service":"qwenpaw-groupchat","thread":"one shared thread for QwenPaw agents default + QwenPaw_QA_Agent_0.2","store":"durable-object (sqlite)","auth_required":true,"endpoints":["GET /thread[?since=<s |
+| T26 | groupchat | protocol | PASS | POST /thread/message HTTP 401 {"error":"unauthorized"}; GET /thread HTTP 401 {"error":"unauthorized"} |
+| T27 | board | protocol | PASS | / HTTP 200; /health HTTP 200 body={"ok":true,"worker":"qwenpaw-board","store":"d1"} |
+| T28 | board | protocol | PASS | GET /api/tickets no key -> HTTP 401 body={"error":"unauthorized — send the board key as ?key= or X-Board-Key header"} |
+| T29 | botpages | protocol | PASS | HTTP 200 size=1293 |
+| T30 | botpages | protocol | PASS | HTTP 200 size=9831 |
+| T43 | keepalive | protocol | PASS | HTTP 200 status=up httpStatus=200 failures=0 source=cron:*/5 * * * * |
+| T44 | keepalive | protocol | PASS | HTTP 200 status=up source=manual-ping |
+| T45 | keepalive | protocol | PASS | backup root=200 status=200 auth=200 body={"enabled":true,"has_users":true} |
+
+### Notes (non-pass rows)
+- **T04** (FAIL): HTTP 200 size=45981 gate=False
+- **T05** (FAIL): unparsable lease JSON: default=<!doctype html> <html lang="en"> <head> <meta charset="UTF-8" /> <link rel="icon" type="image/svg+xm qa=<!doctype html> <html lang="en"> <head> <meta charset="UTF-8" /> <link rel="icon" type="image/svg+xm
+- **T06** (FAIL): HTTP 200 size=45981
+- **T18** (FAIL): ib.py exit 2: python3: can't open file '/root/workspace/custom-connectors/custom.instabox/bin/ib.py': [Errno 2] No such file or directory
+
+## Round 12 — 2026-11-16T16:07:59Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: FAIL=2, PASS=1.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T04 | console | protocol | FAIL | HTTP 200 auth_required=False leaked_state=True |
+| T05 | console | protocol | FAIL | takeover HTTP 200 lease=True; session HTTP 200 policy=True |
+| T06 | console | protocol | PASS | HTTP 200 type=application/javascript; charset=utf-8 size=283218 |
+
+### Notes (non-pass rows)
+- **T04** (FAIL): HTTP 200 auth_required=False leaked_state=True
+- **T05** (FAIL): takeover HTTP 200 lease=True; session HTTP 200 policy=True
+
+## Round 13 — 2026-11-16T16:09:29Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: PASS=36.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T62 | storage | protocol | PASS | features/storage/harness-store.mjs: exit=0 tally=42 passed, 0 failed tail=42 passed, 0 failed |
+| T70 | memory | protocol | PASS | features/memory/test_recall.py: exit=0 tally=44 passed, 0 failed tail=44 passed, 0 failed (44 checks) |
+| T71 | memory | protocol | PASS | features/memory/test_lessons.py: exit=0 tally=45 passed, 0 failed tail=45 passed, 0 failed (45 checks) |
+| T72 | memory | protocol | PASS | reme_doctor --selftest: exit=0 tally=11 passed, 0 failed |
+| T73 | memory | protocol | PASS | features/memory/test_install_ripwire.py: exit=0 tally=49 passed, 0 failed tail=49 passed, 0 failed (49 checks) |
+| T74 | keepalive | protocol | PASS | worker/harness-keepalive.mjs: exit=0 tally=19 passed, 0 failed tail=19 passed, 0 failed (19 checks) |
+| T76 | codemode | protocol | PASS | features/codemode/harness-codemode.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+| T77 | cost | protocol | PASS | features/board/pricing.py --selftest: exit=0 tally=20 passed, 0 failed |
+| T78 | routing | protocol | PASS | features/routing/policy.py --selftest: exit=0 tally=27 passed, 0 failed |
+| T79 | docs | protocol | PASS | check-links.py exit=0 tail=all links and paths resolve |
+| T80 | storage | protocol | PASS | features/storage/test_schema.py: exit=0 tally=15 passed, 0 failed tail=15 passed, 0 failed (15 checks) |
+| T81 | infra | protocol | PASS | features/infra/workers/email-router/harness-email-router.mjs: exit=0 tally=24 passed, 0 failed tail=24 passed, 0 failed (24 checks) |
+| T82 | groupchat | protocol | PASS | features/groupchat/harness-groupchat-cors.mjs: exit=0 tally=13 passed, 0 failed tail=13 passed, 0 failed (13 checks) |
+| T83 | memory | protocol | PASS | consolidate --selftest: exit=0 tally=27 passed, 0 failed |
+| T84 | decisions | protocol | PASS | decisions --selftest: exit=0 tally=33 passed, 0 failed |
+| T85 | skills | protocol | PASS | skills/scan --selftest: exit=0 tally=41 passed, 0 failed |
+| T86 | computer | protocol | PASS | features/computer/harness-computer.mjs: exit=0 tally=88 passed, 0 failed tail=88 passed, 0 failed (88 checks) |
+| T87 | computer | protocol | PASS | preview-uploader --selftest: exit=0 tally=12 passed, 0 failed |
+| T88 | computer | protocol | PASS | features/computer/harness-worker-load.mjs: exit=0 tally=70 passed, 0 failed tail=70 passed, 0 failed (70 checks) |
+| T89 | computer | protocol | PASS | features/computer/harness-rate-limit.mjs: exit=0 tally=28 passed, 0 failed tail=28 passed, 0 failed (28 checks) |
+| T90 | computer | protocol | PASS | features/computer/harness-preview-refetch.mjs: exit=0 tally=29 passed, 0 failed tail=29 passed, 0 failed (29 checks) |
+| T91 | routines | protocol | PASS | features/routines/harness-routines-history.mjs: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T92 | computer | protocol | PASS | features/computer/harness-terminal.mjs: exit=0 tally=39 passed, 0 failed tail=39 passed, 0 failed (39 checks) |
+| T93 | computer | protocol | PASS | features/computer/harness-teach.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+| T94 | codemode | protocol | PASS | features/codemode/vm/codemode-runner.py --selftest: exit=0 tally=64 passed, 0 failed |
+| T95 | codemode | protocol | PASS | features/codemode/vm/test_mcp.py: exit=0 tally=27 passed, 0 failed tail=27 passed, 0 failed (27 checks) |
+| T96 | codemode | protocol | PASS | features/codemode/vm/test_e2e.py: exit=0 tally=44 passed, 0 failed tail=44 passed, 0 failed (44 checks) |
+| T97 | computer | protocol | PASS | features/computer/harness-screen-upgrade.mjs: exit=0 tally=22 passed, 0 failed tail=22 passed, 0 failed (22 checks) |
+| T98 | computer | protocol | PASS | features/computer/harness-screen-cors.mjs: exit=0 tally=36 passed, 0 failed tail=36 passed, 0 failed (36 checks) |
+| T99 | computer | protocol | PASS | features/computer/harness-terminal-proxy.mjs: exit=0 tally=54 passed, 0 failed tail=54 passed, 0 failed (54 checks) |
+| T100 | computer | protocol | PASS | features/computer/harness-preview-asleep.mjs: exit=0 tally=21 passed, 0 failed tail=21 passed, 0 failed (21 checks) |
+| T101 | machine | protocol | PASS | features/machine/harness-machine-rest.mjs: exit=0 tally=66 passed, 0 failed tail=66 passed, 0 failed (66 checks) |
+| T102 | computer | protocol | PASS | features/computer/test_terminal_input.py: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T103 | computer | protocol | PASS | features/computer/harness-terminal-browser.mjs: exit=0 tally=17 passed, 0 failed tail=17 passed, 0 failed (17 checks) |
+| T104 | computer | protocol | PASS | features/computer/harness-rail-reachable.mjs: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T105 | computer | protocol | PASS | features/computer/harness-terminal-served.mjs: exit=0 tally=32 passed, 0 failed tail=32 passed, 0 failed (32 checks) |
+
+## Round 14 — 2026-11-16T16:11:01Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: PASS=15.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T86 | computer | protocol | PASS | features/computer/harness-computer.mjs: exit=0 tally=88 passed, 0 failed tail=88 passed, 0 failed (88 checks) |
+| T87 | computer | protocol | PASS | preview-uploader --selftest: exit=0 tally=12 passed, 0 failed |
+| T88 | computer | protocol | PASS | features/computer/harness-worker-load.mjs: exit=0 tally=70 passed, 0 failed tail=70 passed, 0 failed (70 checks) |
+| T89 | computer | protocol | PASS | features/computer/harness-rate-limit.mjs: exit=0 tally=28 passed, 0 failed tail=28 passed, 0 failed (28 checks) |
+| T90 | computer | protocol | PASS | features/computer/harness-preview-refetch.mjs: exit=0 tally=29 passed, 0 failed tail=29 passed, 0 failed (29 checks) |
+| T92 | computer | protocol | PASS | features/computer/harness-terminal.mjs: exit=0 tally=39 passed, 0 failed tail=39 passed, 0 failed (39 checks) |
+| T93 | computer | protocol | PASS | features/computer/harness-teach.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+| T97 | computer | protocol | PASS | features/computer/harness-screen-upgrade.mjs: exit=0 tally=22 passed, 0 failed tail=22 passed, 0 failed (22 checks) |
+| T98 | computer | protocol | PASS | features/computer/harness-screen-cors.mjs: exit=0 tally=36 passed, 0 failed tail=36 passed, 0 failed (36 checks) |
+| T99 | computer | protocol | PASS | features/computer/harness-terminal-proxy.mjs: exit=0 tally=54 passed, 0 failed tail=54 passed, 0 failed (54 checks) |
+| T100 | computer | protocol | PASS | features/computer/harness-preview-asleep.mjs: exit=0 tally=21 passed, 0 failed tail=21 passed, 0 failed (21 checks) |
+| T101 | machine | protocol | PASS | features/machine/harness-machine-rest.mjs: exit=0 tally=66 passed, 0 failed tail=66 passed, 0 failed (66 checks) |
+| T103 | computer | protocol | PASS | features/computer/harness-terminal-browser.mjs: exit=0 tally=17 passed, 0 failed tail=17 passed, 0 failed (17 checks) |
+| T104 | computer | protocol | PASS | features/computer/harness-rail-reachable.mjs: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T105 | computer | protocol | PASS | features/computer/harness-terminal-served.mjs: exit=0 tally=32 passed, 0 failed tail=32 passed, 0 failed (32 checks) |
+
+## Round 15 — 2026-11-16T16:13:02Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: PASS=36.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T62 | storage | protocol | PASS | features/storage/harness-store.mjs: exit=0 tally=42 passed, 0 failed tail=42 passed, 0 failed |
+| T70 | memory | protocol | PASS | features/memory/test_recall.py: exit=0 tally=44 passed, 0 failed tail=44 passed, 0 failed (44 checks) |
+| T71 | memory | protocol | PASS | features/memory/test_lessons.py: exit=0 tally=45 passed, 0 failed tail=45 passed, 0 failed (45 checks) |
+| T72 | memory | protocol | PASS | reme_doctor --selftest: exit=0 tally=11 passed, 0 failed |
+| T73 | memory | protocol | PASS | features/memory/test_install_ripwire.py: exit=0 tally=49 passed, 0 failed tail=49 passed, 0 failed (49 checks) |
+| T74 | keepalive | protocol | PASS | worker/harness-keepalive.mjs: exit=0 tally=19 passed, 0 failed tail=19 passed, 0 failed (19 checks) |
+| T76 | codemode | protocol | PASS | features/codemode/harness-codemode.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+| T77 | cost | protocol | PASS | features/board/pricing.py --selftest: exit=0 tally=20 passed, 0 failed |
+| T78 | routing | protocol | PASS | features/routing/policy.py --selftest: exit=0 tally=27 passed, 0 failed |
+| T79 | docs | protocol | PASS | check-links.py exit=0 tail=all links and paths resolve |
+| T80 | storage | protocol | PASS | features/storage/test_schema.py: exit=0 tally=15 passed, 0 failed tail=15 passed, 0 failed (15 checks) |
+| T81 | infra | protocol | PASS | features/infra/workers/email-router/harness-email-router.mjs: exit=0 tally=24 passed, 0 failed tail=24 passed, 0 failed (24 checks) |
+| T82 | groupchat | protocol | PASS | features/groupchat/harness-groupchat-cors.mjs: exit=0 tally=13 passed, 0 failed tail=13 passed, 0 failed (13 checks) |
+| T83 | memory | protocol | PASS | consolidate --selftest: exit=0 tally=27 passed, 0 failed |
+| T84 | decisions | protocol | PASS | decisions --selftest: exit=0 tally=33 passed, 0 failed |
+| T85 | skills | protocol | PASS | skills/scan --selftest: exit=0 tally=41 passed, 0 failed |
+| T86 | computer | protocol | PASS | features/computer/harness-computer.mjs: exit=0 tally=88 passed, 0 failed tail=88 passed, 0 failed (88 checks) |
+| T87 | computer | protocol | PASS | preview-uploader --selftest: exit=0 tally=12 passed, 0 failed |
+| T88 | computer | protocol | PASS | features/computer/harness-worker-load.mjs: exit=0 tally=70 passed, 0 failed tail=70 passed, 0 failed (70 checks) |
+| T89 | computer | protocol | PASS | features/computer/harness-rate-limit.mjs: exit=0 tally=28 passed, 0 failed tail=28 passed, 0 failed (28 checks) |
+| T90 | computer | protocol | PASS | features/computer/harness-preview-refetch.mjs: exit=0 tally=29 passed, 0 failed tail=29 passed, 0 failed (29 checks) |
+| T91 | routines | protocol | PASS | features/routines/harness-routines-history.mjs: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T92 | computer | protocol | PASS | features/computer/harness-terminal.mjs: exit=0 tally=39 passed, 0 failed tail=39 passed, 0 failed (39 checks) |
+| T93 | computer | protocol | PASS | features/computer/harness-teach.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+| T94 | codemode | protocol | PASS | features/codemode/vm/codemode-runner.py --selftest: exit=0 tally=64 passed, 0 failed |
+| T95 | codemode | protocol | PASS | features/codemode/vm/test_mcp.py: exit=0 tally=27 passed, 0 failed tail=27 passed, 0 failed (27 checks) |
+| T96 | codemode | protocol | PASS | features/codemode/vm/test_e2e.py: exit=0 tally=44 passed, 0 failed tail=44 passed, 0 failed (44 checks) |
+| T97 | computer | protocol | PASS | features/computer/harness-screen-upgrade.mjs: exit=0 tally=22 passed, 0 failed tail=22 passed, 0 failed (22 checks) |
+| T98 | computer | protocol | PASS | features/computer/harness-screen-cors.mjs: exit=0 tally=36 passed, 0 failed tail=36 passed, 0 failed (36 checks) |
+| T99 | computer | protocol | PASS | features/computer/harness-terminal-proxy.mjs: exit=0 tally=54 passed, 0 failed tail=54 passed, 0 failed (54 checks) |
+| T100 | computer | protocol | PASS | features/computer/harness-preview-asleep.mjs: exit=0 tally=21 passed, 0 failed tail=21 passed, 0 failed (21 checks) |
+| T101 | machine | protocol | PASS | features/machine/harness-machine-rest.mjs: exit=0 tally=66 passed, 0 failed tail=66 passed, 0 failed (66 checks) |
+| T102 | computer | protocol | PASS | features/computer/test_terminal_input.py: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T103 | computer | protocol | PASS | features/computer/harness-terminal-browser.mjs: exit=0 tally=17 passed, 0 failed tail=17 passed, 0 failed (17 checks) |
+| T104 | computer | protocol | PASS | features/computer/harness-rail-reachable.mjs: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T105 | computer | protocol | PASS | features/computer/harness-terminal-served.mjs: exit=0 tally=32 passed, 0 failed tail=32 passed, 0 failed (32 checks) |

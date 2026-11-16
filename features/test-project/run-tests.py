@@ -97,6 +97,42 @@ def http_get(url, timeout=30):
     return 0, f"fetch error: curl rc={rc} err={one_line(err, 120)}"
 
 
+def http_get_meta(url, timeout=30):
+    """(status, body_text, headers). curl-based, same reason as http_get.
+
+    Needed because some defects here are not visible in the status or the body:
+    B-35 was `/vendor/xterm.js` answering **200 text/html** with the console
+    SPA. A 200 is a 200, so only the Content-Type distinguishes "the module"
+    from "46 KB of the wrong page".
+    """
+    for attempt in (1, 2, 3):
+        rc, out, err = run_local(
+            ["curl", "-s", "-S", "-D", "-", "--max-time", str(timeout),
+             "-w", "\n__HTTP_CODE__:%{http_code}", url],
+            timeout=timeout + 30)
+        if rc == 0 and "\n__HTTP_CODE__:" in out:
+            head_and_body, _, code = out.rpartition("\n__HTTP_CODE__:")
+            # Split the header block from the body at the first blank line.
+            if "\r\n\r\n" in head_and_body:
+                head, _, body = head_and_body.partition("\r\n\r\n")
+            elif "\n\n" in head_and_body:
+                head, _, body = head_and_body.partition("\n\n")
+            else:
+                head, body = head_and_body, ""
+            headers = {}
+            for line in head.replace("\r\n", "\n").split("\n"):
+                if ":" in line:
+                    k, _, v = line.partition(":")
+                    headers[k.strip().lower()] = v.strip()
+            try:
+                return int(code.strip()), body, headers
+            except ValueError:
+                pass
+        if attempt < 3:
+            time.sleep(5)
+    return 0, f"fetch error: curl rc={rc} err={one_line(err, 120)}", {}
+
+
 def http_post_json(url, payload, timeout=30):
     """(status, body_text). curl-based, same reason as http_get."""
     data = json.dumps(payload)
@@ -416,33 +452,76 @@ def t03():
 
 
 def t04():
-    code, body = http_get(PAGES + "/desktop", timeout=60)
-    ok = code == 200 and "Opening the desktop" in body \
-        and "Checking your QwenPaw login" in body
-    return ("PASS" if ok else "FAIL",
-            f"HTTP {code} size={len(body)} gate={'Opening the desktop' in body}")
+    """The /computer surface refuses an anonymous caller (P0, 2026-11-16).
+
+    This test used to assert the OLD `/desktop` gate page's copy ("Opening the
+    desktop" / "Checking your QwenPaw login"). That surface was deleted in the
+    2026-11-15 rebuild, so the test had been failing against a page that no
+    longer exists — a red row nobody could act on, which is its own hazard.
+
+    It now asserts the thing that actually matters on the replacement surface,
+    live, from outside: `/computer/state` must NOT hand a visitor the desktop's
+    state. Before 2026-11-16 it answered 200 with the live mode, generation,
+    lease holder and preview hash to anyone on the internet.
+    """
+    code, body = http_get(PAGES + "/computer/state?computer=default", timeout=60)
+    if code == 503:
+        # No session secret configured on the project: a deploy error, and the
+        # Worker says so explicitly rather than looping the user through a
+        # sign-in that cannot succeed.
+        return ("FAIL", f"HTTP 503 — COMPUTER_SESSION_SECRET/CAPABILITY_SECRET unset: {one_line(body, 120)}")
+    has_auth = "auth_required" in body
+    ok = code == 401 and has_auth
+    leaked = any(k in body for k in ('"leaseId"', '"generation"', '"preview"'))
+    return ("PASS" if ok and not leaked else "FAIL",
+            f"HTTP {code} auth_required={has_auth} leaked_state={leaked}")
 
 
 def t05():
-    _, d_body = http_get(PAGES + "/desktop/__lease", timeout=30)
-    _, q_body = http_get(PAGES + "/desktop/__lease?computer=qa", timeout=30)
-    try:
-        d, q = json.loads(d_body), json.loads(q_body)
-    except Exception:
-        return "FAIL", f"unparsable lease JSON: default={one_line(d_body, 100)} qa={one_line(q_body, 100)}"
-    ok = d.get("holder") == "agent" and d.get("leaseId") is None \
-        and q.get("holder") == "agent" and q.get("leaseId") is None \
-        and isinstance(d.get("generation"), int) \
-        and isinstance(q.get("generation"), int)
+    """Two things a visitor must never be able to do: mint, or take control.
+
+    Was `/desktop/__lease` (deleted surface). The live equivalents are the two
+    endpoints that hand out authority, and both are checked anonymously here:
+
+      * `POST /computer/takeover` — a 200 would be a stranger seizing the
+        desktop. Verified live before the 2026-11-16 fix: it returned a real
+        leaseId to curl.
+      * `GET  /computer/session`  — a 200 would be a screen capability. The
+        same probe returned `{"ok":true,"policy":"control"}`.
+
+    The store is NOT touched by either assertion when the gate works, so this
+    is safe to run on a live deployment.
+    """
+    code, body = http_post_json(PAGES + "/computer/takeover",
+                                {"computer": "default"}, timeout=30)
+    t_ok = code in (401, 405) and "leaseId" not in body
+    code2, body2 = http_get(PAGES + "/computer/session?computer=default", timeout=30)
+    s_ok = code2 in (401, 405) and '"policy"' not in body2
+    ok = t_ok and s_ok
     return ("PASS" if ok else "FAIL",
-            f"default={one_line(d_body, 120)} qa={one_line(q_body, 120)}")
+            f"takeover HTTP {code} lease={'leaseId' in body}; "
+            f"session HTTP {code2} policy={'policy' in body2}")
 
 
 def t06():
-    code, body = http_get(PAGES + "/desktop/vendor/xterm.js", timeout=60)
-    ok = code == 200 and len(body) > 100000 and "xterm" in body.lower()
+    """xterm.js is served as JAVASCRIPT, not as the console SPA (B-35).
+
+    Was `/desktop/vendor/xterm.js` (deleted surface). The live path is
+    `/vendor/xterm.js`, and the defect this guards is specific and silent: an
+    unrouted path fell through to the console proxy, which answered 200
+    `text/html` with 45,989 bytes of the SPA. A `<script src>` answered with
+    HTML parses as nothing — no onerror, no console line — so `window.Terminal`
+    stayed undefined and the terminal pane was black while the session showed
+    "connected". HTTP 200 is 200.
+
+    So this asserts the CONTENT TYPE and the byte count, not just the status.
+    """
+    code, body, meta = http_get_meta(PAGES + "/vendor/xterm.js", timeout=60)
+    ctype = (meta.get("content-type") or "").lower()
+    ok = (code == 200 and "javascript" in ctype and len(body) > 100000
+          and "xterm" in body.lower() and "<!doctype html>" not in body[:200].lower())
     return ("PASS" if ok else "FAIL",
-            f"HTTP {code} size={len(body)}")
+            f"HTTP {code} type={ctype or '?'} size={len(body)}")
 
 
 def t07():
@@ -1590,7 +1669,7 @@ def t86():
 
 
 def t88():
-    """The Pages Worker LOADS and RUNS (40 checks).
+    """The Pages Worker LOADS, RUNS, and REFUSES anonymous callers (70 checks).
 
     Added because on 2026-11-15 the entire Worker was dead and every check in
     this suite stayed green. Two fatal defects:
@@ -1608,8 +1687,20 @@ def t88():
     proves it contains a string, not that it parses, links, or runs. So this
     test imports the real module graph and drives its fetch handler with
     stubbed origin and asset bindings — no network, no account, no machine.
+
+    EXTENDED 2026-11-16 for a worse defect than either of those: `/computer/*`
+    had NO authentication at all. Verified live against the deployed Worker:
+    an anonymous curl read a 1920x1080 screenshot of the user's desktop, took
+    a control lease, minted a `policy:"control"` screen capability, and minted
+    a TERMINAL capability — a pre-authentication remote root shell, because
+    minting one needs only a live lease and a lease needed only a POST.
+
+    The new block asserts every user-facing path is REFUSED without a session,
+    that a forged cookie is refused identically to an absent one, and that the
+    gate runs BEFORE the store so an anonymous caller can never consume a
+    lease, a generation, or an HMAC mint. It fails 28/70 on the pre-fix tree.
     """
-    return _harness("features/computer/harness-worker-load.mjs", 40)
+    return _harness("features/computer/harness-worker-load.mjs", 70)
 
 
 def t85():
@@ -1835,7 +1926,7 @@ TESTS = [
     ("T85", "skill scanner: credential/RCE/injection patterns", "skills", "protocol", t85),
     ("T86", "rebuilt computer: seal, lease atomicity, enforcement order", "computer", "protocol", t86),
     ("T87", "preview uploader: change-only writes, floor, backoff", "computer", "protocol", t87),
-    ("T88", "Pages Worker loads and runs (proxy + /computer wired)", "computer", "protocol", t88),
+    ("T88", "Pages Worker loads, runs, and REFUSES anonymous /computer callers", "computer", "protocol", t88),
     ("T89", "rate limiting: per-endpoint 429, zero-cost healthy path", "computer", "protocol", t89),
     ("T90", "preview: change-only writes, no blob read per poll", "computer", "protocol", t90),
     ("T91", "routines history: append-only, no lost ticks", "routines", "protocol", t91),

@@ -34,6 +34,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { sessionCookie, requestWith } from "./_session.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..", "..");
@@ -144,8 +145,9 @@ function with101Shim(fn) {
     .then((r) => ({ res: r, built }));
 }
 
+const COOKIE = await sessionCookie(env);
 const call = (path, init = {}) => worker.default.fetch(
-  new Request("https://qwenpawx.pages.dev" + path, init), env, {});
+  requestWith(path, init, COOKIE), env, {});
 const post = (path, body) => call(path, {
   method: "POST",
   headers: { "Content-Type": "application/json" },

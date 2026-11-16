@@ -32,6 +32,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { sessionCookie, requestWith } from "./_session.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..", "..");
@@ -102,8 +103,9 @@ function stubFetch(impl) {
   globalThis.fetch = impl;
 }
 
+const COOKIE = await sessionCookie(env);
 const call = (path, init = {}) => worker.default.fetch(
-  new Request("https://qwenpawx.pages.dev" + path, init), env, {});
+  requestWith(path, init, COOKIE), env, {});
 
 // Take control so a control capability can be minted.
 const taken = await (await call("/computer/takeover", {

@@ -36,6 +36,11 @@ import { readFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Fake a SIGNED-IN browser. /computer/* gained a hard auth gate on 2026-11-16
+// (an anonymous curl used to read a desktop screenshot and mint a root shell);
+// a harness is a fake browser, and a signed-in browser sends a session cookie.
+import { sessionCookie, requestWith } from "./_session.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..", "..");
 const PUBLIC = resolve(REPO, "pages/public");
@@ -68,6 +73,14 @@ const assets = {
     return new Response("not found", { status: 404 });
   },
 };
+
+// The /computer surface needs a session from 2026-11-16. Mint one against the
+// harness's own secret so the fake browser is genuinely signed in.
+const SESSION_SECRET = "harness-session-secret-0123456789";
+const COOKIE = await sessionCookie({ COMPUTER_SESSION_SECRET: SESSION_SECRET });
+
+/** A Request for `path`, carrying the harness's session cookie. */
+const asUser = (path, init = {}) => requestWith(path, init, COOKIE);
 
 console.log("worker: it loads at all");
 
@@ -166,7 +179,7 @@ console.log("worker: redirect and cookie hygiene (audit A-6, restored with rewri
 
 console.log("worker: /computer is wired, not a 404");
 {
-  const res = await mod.default.fetch(new Request("https://qwenpawx.pages.dev/computer"), { ASSETS: assets }, {});
+  const res = await mod.default.fetch(asUser("/computer"), { ASSETS: assets, COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
   check("/computer serves HTML", res.status === 200 && (res.headers.get("Content-Type") || "").includes("text/html"),
     `${res.status} ${res.headers.get("Content-Type")}`);
   const html = await res.text();
@@ -177,7 +190,7 @@ console.log("worker: /computer is wired, not a 404");
 
   // A missing asset binding must be a loud 500 with an actionable message,
   // never a silent empty page.
-  const noAssets = await mod.default.fetch(new Request("https://qwenpawx.pages.dev/computer"), {}, {});
+  const noAssets = await mod.default.fetch(asUser("/computer"), { COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
   check("a missing ASSETS binding is an honest 500", noAssets.status === 500, String(noAssets.status));
   check("and it names the missing file",
     (await noAssets.text()).includes("computer/ui.html"));
@@ -192,12 +205,12 @@ console.log("worker: a broken store is a 503, never a 500 or a lie");
     "/computer/state?computer=default",
     "/computer/session?computer=default",
   ]) {
-    const res = await mod.default.fetch(new Request("https://qwenpawx.pages.dev" + path), {}, {});
+    const res = await mod.default.fetch(asUser(path), { COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
     check(`${path} with no COMPUTER_DB -> 503`, res.status === 503, String(res.status));
     const body = await res.json().catch(() => ({}));
     check(`${path} names the failure`, body.error === "store", JSON.stringify(body));
   }
-  const post = await mod.default.fetch(new Request("https://qwenpawx.pages.dev/computer/takeover", {
+  const post = await mod.default.fetch(asUser("/computer/takeover", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ computer: "default" }),
@@ -212,7 +225,7 @@ console.log("worker: broken-store reporting is never ambiguous (B-14 / B-15)");
   // Both are the same defect — an error that looks like data — so both are
   // asserted where a browser would see them.
   const prevRes = await mod.default.fetch(
-    new Request("https://qwenpawx.pages.dev/computer/preview?computer=default"), {}, {});
+    asUser("/computer/preview?computer=default"), { COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
   check("a broken store on /preview is 503, not 404",
     prevRes.status === 503,
     `${prevRes.status} — 404 must keep meaning "never captured"`);
@@ -243,8 +256,8 @@ console.log("worker: broken-store reporting is never ambiguous (B-14 / B-15)");
     },
   };
   const good = await mod.default.fetch(
-    new Request("https://qwenpawx.pages.dev/computer/state?computer=default"),
-    { COMPUTER_DB: okDb }, {});
+    asUser("/computer/state?computer=default"),
+    { COMPUTER_DB: okDb, COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
   check("a healthy store answers 200", good.status === 200, String(good.status));
   const goodBody = await good.json().catch(() => ({}));
   check("it reports store: \"ok\" explicitly", goodBody.store === "ok", JSON.stringify(goodBody.store));
@@ -271,8 +284,84 @@ console.log("worker: no latency padding on the screen path (B-13)");
 
 console.log("worker: unknown /computer paths are 404, not a crash");
 {
-  const res = await mod.default.fetch(new Request("https://qwenpawx.pages.dev/computer/nope"), {}, {});
+  const res = await mod.default.fetch(asUser("/computer/nope"), { COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
   check("unknown subpath -> 404", res.status === 404, String(res.status));
+}
+
+// ---------------------------------------------------------------------------
+// THE REGRESSION TEST FOR THE 2026-11-16 P0.
+//
+// `/computer/*` shipped with NO authentication at all. Verified live against
+// the deployed Worker before this fix:
+//
+//   GET  /computer/preview?computer=default -> 200 image/png, 381,490 bytes
+//        (a real 1920x1080 screenshot of the user's desktop)
+//   POST /computer/takeover {computer:"qa"} -> 200 + a live leaseId
+//   GET  /computer/session?computer=qa      -> {"ok":true,"policy":"control"}
+//   POST /computer/terminal/session         -> 200 + a terminal capability URL
+//
+// The last one is a pre-authentication ROOT SHELL: minting needs only a live
+// lease, and a lease needed only an unauthenticated POST.
+//
+// These checks fail on the pre-fix tree. They are the reason the gate cannot
+// be quietly removed again: every user-facing path is asserted REFUSED without
+// a cookie, and the three capability/token surfaces are asserted to still work
+// (they carry their own, stronger authorization).
+// ---------------------------------------------------------------------------
+console.log("worker: /computer refuses an ANONYMOUS caller (P0 regression)");
+{
+  const env = { COMPUTER_SESSION_SECRET: SESSION_SECRET, ASSETS: assets };
+  const anonPaths = [
+    ["GET", "/computer/state?computer=default"],
+    ["GET", "/computer/state?computer=qa"],
+    ["GET", "/computer/computers"],
+    ["GET", "/computer/preview?computer=default"],
+    ["GET", "/computer/session?computer=default"],
+    ["POST", "/computer/takeover"],
+    ["POST", "/computer/heartbeat"],
+    ["POST", "/computer/release"],
+    ["POST", "/computer/mode"],
+    ["POST", "/computer/wake"],
+    ["POST", "/computer/teach"],
+    ["POST", "/computer/needs-you/resolve"],
+  ];
+  for (const [method, path] of anonPaths) {
+    const res = await mod.default.fetch(new Request("https://qwenpawx.pages.dev" + path, {
+      method,
+      headers: method === "POST" ? { "Content-Type": "application/json" } : {},
+      body: method === "POST" ? "{}" : undefined,
+    }), env, {});
+    check(`ANON ${method} ${path} -> 401`, res.status === 401, String(res.status));
+    const body = await res.json().catch(() => ({}));
+    check(`…${path} does not leak state`, body.error === "auth_required", JSON.stringify(body).slice(0, 80));
+  }
+
+  // A FORGED cookie must be refused exactly like an absent one. If these two
+  // answers ever differ, an attacker learns which guesses were close.
+  for (const bad of ["v1.9999999999999.deadbeef", "garbage", "v1.x.y"]) {
+    const res = await mod.default.fetch(requestWith("/computer/state?computer=default", {}, bad), env, {});
+    check(`forged cookie "${bad.slice(0, 12)}…" -> 401`, res.status === 401, String(res.status));
+  }
+
+  // The gate must run BEFORE the store: an anonymous caller must never cost a
+  // lease, a generation, a preview read, or an HMAC mint. Proven by using an
+  // env with NO COMPUTER_DB — a store-first implementation would answer 503.
+  const noStore = await mod.default.fetch(
+    new Request("https://qwenpawx.pages.dev/computer/takeover", { method: "POST", body: "{}" }),
+    { COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
+  check("the gate runs BEFORE the store (401, not 503)", noStore.status === 401, String(noStore.status));
+
+  // /computer itself stays reachable: it is the sign-in landing page, and a
+  // 401 there would be a lockout with no way in.
+  const ui = await mod.default.fetch(new Request("https://qwenpawx.pages.dev/computer"), { ASSETS: assets, COMPUTER_SESSION_SECRET: SESSION_SECRET }, {});
+  check("/computer itself answers (it is the way in)", ui.status === 200 || ui.status === 401, String(ui.status));
+
+  // A missing secret is a DEPLOY error, and must say so instead of looping the
+  // user through a sign-in that cannot succeed.
+  const unconfigured = await mod.default.fetch(
+    new Request("https://qwenpawx.pages.dev/computer/state?computer=default"), {}, {});
+  check("no secret -> 503 session_unconfigured, never a fake 401 loop",
+    unconfigured.status === 503, String(unconfigured.status));
 }
 
 console.log();

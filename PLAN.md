@@ -6,6 +6,24 @@ Rules that never change: English only, no China endpoints/data, InstaBox Free on
 
 ## Current state (verified live, 2026-11-15)
 
+- **2026-11-16 P0 (AutoClaw, FIXED-CODE, NOT deployed): `/computer/*` had NO
+  authentication.** Verified live against the deployed site with curl and no
+  credentials: `GET /computer/preview` returned a real 1920×1080 screenshot of
+  the desktop (381,490 bytes); `POST /computer/takeover` returned a live lease;
+  `GET /computer/session` returned `policy:"control"`; and
+  `POST /computer/terminal/session` returned a **terminal capability — a
+  pre-auth remote root shell**, because minting one needs only a live lease.
+  The README documented a `DESKTOP_SESSION` gate that had never been written.
+  Fix: `pages/public/session.js` (HMAC `v1.<exp>.<sig>` cookie, constant-time,
+  HttpOnly/Secure/SameSite=Lax) + a store-free gate in `handleComputer` whose
+  allowlist is a list of EXEMPTIONS, so new endpoints are gated by default.
+  Also fixed B-37: machine-rest verified tokens against `/api/auth/status`,
+  which is public by design, so any 8-char string passed. T88 is now 70 checks
+  (fail-first 28/70); T04/T05/T06 were rewritten off the deleted `/desktop`
+  surface. See BUGS.md B-36/B-37/B-38. **Muse must deploy `_worker.js`,
+  `computer/router.js`, `computer/ui.html`, `machine-control.js`, `session.js`
+  and set `COMPUTER_SESSION_SECRET` (or reuse `COMPUTER_CAPABILITY_SECRET`).**
+
 - Console: https://qwenpawx.pages.dev (login satwik), backup https://qwenpaw-frontend.pages.dev; InstaBox machine m_agq5wqqo2fvypym7rjlpvngc2m, QwenPaw Docker v2.3.0 healthy; keep-alive Worker up; Pages proxy live.
 - Desktop: XFCE 1920x1080 on :1, Chromium + wordsolverx.com open; Camoufox Firefox on :99 with x.com/0xsatwik; dashboard stream link VERIFIED rendering (22:13 UTC token, expires 2026-11-15T22:13:52Z); noVNC 6080 Connect works with NO password; /desktop embedded view VERIFIED rendering and staying rendered.
 - QwenPaw → desktop MCP wired natively (mcp-proxy, DriverCard computer-use.yaml). Agent screenshot FIXED (container phantom-desktop cause; mss now captures the host display; browser proof 04:23 IST shows the window). Approval prompts FIXED (DriverCard ask→allow; browser proof 04:23 IST: zero prompts).
