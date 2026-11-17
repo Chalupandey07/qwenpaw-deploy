@@ -15,6 +15,14 @@ INSTABOX_MACHINE_ID = "m_agq5wqqo2fvypym7rjlpvngc2m"
 # D1 store flag: "1" = use the qwenpaw-state D1 database when its binding
 # is present; anything else = the KV namespace below (fallback).
 USE_D1 = "1"
+# Pages Worker origin (the sleep executor — it holds INSTABOX_API_KEY).
+# The keep-alive Worker asks Pages to suspend via POST /api/machine/sleep.
+PAGES_URL = "https://qwenpawx.pages.dev"
+# Secrets (set via the API, never in this file):
+#   REPORTER_TOKEN — the machine reporter authenticates POST /report with it.
+#   SLEEP_TOKEN    — the keep-alive Worker authenticates POST /api/machine/sleep on Pages with it.
+#   WAKE_TOKEN     — POST /wake requires header X-Wake-Token to match.
+#   INSTABOX_API_KEY — optional API-wake fallback (NOT set today; the public-URL probe is the wake path).
 
 # KV namespace for last-known status. Create first:
 #   wrangler kv namespace create STATUS
