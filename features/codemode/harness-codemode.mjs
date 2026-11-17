@@ -78,8 +78,15 @@ console.log("benchmark");
   const b = await json(res);
   check("bench 200", res.status === 200, String(res.status));
   check("bench ok", b.ok === true);
-  check("models 30 tools", b.surface.tools === 30, String(b.surface.tools));
-  check("10-step job", b.surface.steps_in_job === 10,
+  // B-41: 30 tools and a 10-step job is what this RETIRED Worker models. It is
+  // kept exact on purpose — it is the record of what was measured, and the
+  // measurement was of an IMAGINARY surface (21 of those 30 tools, and 9 of the
+  // 10 steps, do not exist on the machine's MCP proxy). The live pilot now
+  // models the real 9. This harness must not be "fixed" to match, or the record
+  // of the wrong number disappears along with the correction.
+  check("models 30 tools (the HYPOTHETICAL surface — see B-41)", b.surface.tools === 30,
+    String(b.surface.tools));
+  check("10-step job (HYPOTHETICAL — see B-41)", b.surface.steps_in_job === 10,
     String(b.surface.steps_in_job));
   check("marks itself approximate", b.estimator.approximate === true);
   check("names the estimator", /chars \/ 3\.6/.test(b.estimator.method),

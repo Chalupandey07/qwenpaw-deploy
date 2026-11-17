@@ -56,8 +56,10 @@ with MockMcpServer(tools=[{"name": n, "description": d}
     result = runner.run_job({"mcp_url": server.url}, "e2e")
     check("status ok", result["status"] == "ok",
           "%s / %s" % (result["status"], result.get("note")))
-    check("all 10 steps ran", len(result["steps"]) == 10, str(len(result["steps"])))
-    check("all 10 succeeded", result["summary"]["ok"] == 10, json.dumps(result["summary"]))
+    check("every step ran", len(result["steps"]) == len(runner.BENCH_STEPS),
+          str(len(result["steps"])))
+    check("all succeeded", result["summary"]["ok"] == len(runner.BENCH_STEPS),
+          json.dumps(result["summary"]))
     check("each step names its tool",
           [s["tool"] for s in result["steps"]] == [s["tool"] for s in runner.BENCH_STEPS],
           json.dumps([s["tool"] for s in result["steps"]]))
@@ -69,40 +71,44 @@ with MockMcpServer(tools=[{"name": n, "description": d}
           result["server"]["name"] == "open-computer-use", str(result.get("server")))
     check("the note states no generated code ran",
           "no model-generated code" in result["note"], result.get("note"))
-    # The wire really carried 10 tool calls plus the handshake.
+    # The wire really carried one tool call per step, plus the handshake.
     methods = [r.get("method") for r in server.requests]
-    check("10 tools/call requests went over the wire",
-          methods.count("tools/call") == 10, str(methods.count("tools/call")))
+    check("one tools/call request per step went over the wire",
+          methods.count("tools/call") == len(runner.BENCH_STEPS),
+          str(methods.count("tools/call")))
     check("the handshake happened exactly once",
           methods.count("initialize") == 1, str(methods.count("initialize")))
 
 print("e2e: a tool that errors mid-job")
 with MockMcpServer(tools=[{"name": n, "description": d} for n, d in runner.TOOL_NAMES],
-                   fail_tools={"screenshot_desktop"}) as server:
+                   fail_tools={"press_key"}) as server:
     result = runner.run_job({"mcp_url": server.url}, "e2e-fail")
     check("status is partial", result["status"] == "partial", result["status"])
     bad = [s for s in result["steps"] if not s.get("ok")]
     check("exactly one step failed", len(bad) == 1, json.dumps(bad)[:200])
     check("the failed step is the one that errored",
-          bad[0]["tool"] == "screenshot_desktop", bad[0]["tool"])
-    check("the other nine still succeeded", result["summary"]["ok"] == 9,
+          bad[0]["tool"] == "press_key", bad[0]["tool"])
+    check("the other steps still succeeded",
+          result["summary"]["ok"] == len(runner.BENCH_STEPS) - 1,
           json.dumps(result["summary"]))
     check("the job continued past a tool-level error",
-          len(result["steps"]) == 10, str(len(result["steps"])))
+          len(result["steps"]) == len(runner.BENCH_STEPS), str(len(result["steps"])))
 
 print("e2e: a transport failure mid-job stops it and says so")
 with MockMcpServer(tools=[{"name": n, "description": d} for n, d in runner.TOOL_NAMES],
-                   http_error_tools={"list_projects"}) as server:
+                   http_error_tools={"scroll"}) as server:
     result = runner.run_job({"mcp_url": server.url}, "e2e-transport")
     check("status is not ok", result["status"] != "ok", result["status"])
-    check("it stopped at the failing step", len(result["steps"]) == 3,
-          str(len(result["steps"])))
+    # Steps run in order, so it stops at the failing step's index.
+    stop_at = [s["tool"] for s in runner.BENCH_STEPS].index("scroll") + 1
+    check("it stopped at the failing step", len(result["steps"]) == stop_at,
+          "%s vs %s" % (len(result["steps"]), stop_at))
     check("the note says the rest were not attempted",
           "not attempted" in (result.get("note") or ""), result.get("note"))
     # The critical property: it must NOT report the unattempted steps as
     # failures. A report of "10 failed" would be a lie in the other direction.
     check("unattempted steps are absent, not failed",
-          len(result["steps"]) < 10, str(len(result["steps"])))
+          len(result["steps"]) < len(runner.BENCH_STEPS), str(len(result["steps"])))
 
 print("e2e: no MCP configured")
 result = runner.run_job({}, "e2e-blocked")
@@ -157,7 +163,15 @@ check("health reports mcp unconfigured", health["mcp"] == "unconfigured")
 status, body = get("/api/bench")
 bench = json.loads(body)
 check("/api/bench is 200", status == 200, str(status))
-check("bench numbers are present", bench["multi_step_job"]["classic"]["turns"] == 10)
+check("bench numbers are present",
+      bench["desktop_job"]["classic"]["turns"] == len(runner.BENCH_STEPS))
+# B-41: the payload must describe the job that runs, and must not resurrect the
+# withdrawn headline as if it applied to desktop work.
+check("the bench does not claim a desktop turn collapse",
+      bench["desktop_job"]["turn_reduction"]["factor"] == 1.0,
+      str(bench["desktop_job"]["turn_reduction"]["factor"]))
+check("the batched figure is labelled hypothetical",
+      "NOT the desktop job" in bench["batched_job_hypothetical"]["applies_to"])
 
 status, body = post("/api/run")
 check("run without a token header is 401", status == 401, str(status))
@@ -209,7 +223,8 @@ with MockMcpServer(tools=[{"name": n, "description": d}
         code = r.status
         payload = json.loads(r.read().decode())
     check("a configured runner answers 200", code == 200, str(code))
-    check("the real job ran through real HTTP", payload["summary"]["ok"] == 10,
+    check("the real job ran through real HTTP",
+          payload["summary"]["ok"] == len(runner.BENCH_STEPS),
           json.dumps(payload.get("summary")))
     check("the response is the same shape as the blocked path",
           set(payload.keys()) >= {"id", "job", "status", "steps", "summary"},

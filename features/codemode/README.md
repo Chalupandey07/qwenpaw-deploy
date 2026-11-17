@@ -78,10 +78,10 @@ features/codemode/
    a transport failure stops the job and says the remaining steps were *not
    attempted* rather than reporting them as failures.
 
-**The fixed job is read-only**, and that is a change from the Worker version
-worth naming: it used `update_ticket`, `add_comment` and `close_ticket`. A
-pilot that mutates the board every time it runs is one nobody runs twice, so
-those three became `routine_history`, `read_thread` and `search_history`.
+**The fixed job drives the real desktop** (B-41). It is no longer read-only —
+every step's `mutates` flag says whether it moves the pointer or types. It stays
+re-runnable because it leaves no persistent state: no file, no ticket, no agent,
+no store write. See "The job drives the real desktop" below.
 
 ### Interface
 
@@ -102,46 +102,98 @@ Status codes: `200` ok · `502` ran and failed · `503` nothing was executed
 
 ---
 
-## The measurement (the actual deliverable)
+## The measurement (the actual deliverable) — REBUILT 2026-11-17 (B-41)
 
-Unchanged, because the point is comparability with the earlier numbers:
+**The previous numbers were measured against tools that do not exist and are
+withdrawn.** The bench modelled **30 tools** and a **10-step job**; the machine's
+MCP proxy exposes **nine**, all desktop-interaction, and nine of those ten steps
+named tools that are not there. The live run on 2026-11-16 scored **1/10** with
+nine `unsupportedTool` errors, while `/api/bench` reported a 99.0% reduction.
+
+Both figures are now computed from `DESKTOP_TOOLS`, the nine real tools
+(`list_apps`, `get_app_state`, `click`, `type_text`, `press_key`, `scroll`,
+`set_value`, `drag`, `perform_secondary_action` — verified live via
+`McpClient.list_tools()` and pinned by T11/T12).
+
+### What the honest result looks like
 
 ```
-30 tools, 10-step job          classic      code mode
- turns                         10           1
- prompt tokens / turn          2,196        212
- total prompt tokens           21,960       212
-                               with one retry: 424
- prompt token reduction        99.0% best case / 98.1% with one retry
-turn reduction                 10 → 1
+9 real desktop tools, 9-step job     classic      code mode
+ turns                                9            9      ← NO collapse
+ prompt tokens / turn                 388          128
+ total prompt tokens                  3,492        1,152
+ prompt-size reduction                67.0%
+ turn reduction                       none
 ```
 
-These are what the code computes (`GET /api/bench`), not aspirational ones.
-Both columns use the repo's estimator (**chars / 3.6**), so they are
-comparable with `features/memory/recall.py`. It is an estimate, not a
-tokenizer, and every response says so.
+**The turn count does not collapse, and that is the finding.** Desktop work is
+observe → decide → act: each step needs the model to look at the screen before
+choosing the next action, and a sandboxed script cannot supply that visual
+judgment (`features/research/code-mode.md` §4, the visual-judgment bound). Code
+Mode therefore removes **prompt weight** — nine tool schemas become one — and
+not turns. Claiming a 9× turn reduction for this surface would be the same
+mistake as the withdrawn 99%.
 
-**Read the reduction as an upper bound, not a constant.** And the negative
-results are in the output too:
+A **batched** workflow of the same size (a routine, a data job) is reported
+separately in `/api/bench` as `batched_job_hypothetical`, explicitly labelled
+`NOT the desktop job`, with the collapsed-turn arithmetic and its one-retry
+column (96.3% / 92.7% prompt-size). Keeping it visible next to the desktop
+number is deliberate: it is the shape the old figure was really describing, and
+labelling it is more useful than deleting it.
 
-- a **single** simple call is **worse** in Code Mode;
-- savings scale with **tool count × step count**, not call count;
-- **desktop work cannot batch screenshots** — each visual decision needs a
-  model turn, so the computer-use bound from the research note still applies;
-- a failed script costs a retry, hence the `with_one_retry` column.
+### The estimator is unchanged
 
----
+Both columns use the repo's estimator (**chars / 3.6**), so they stay comparable
+with `features/memory/recall.py`. It is an estimate, not a tokenizer, and every
+response says so.
+
+**Schema shapes are the job's real parameters, not invented ones.** The old
+`schema_tokens()` gave EVERY tool `id` and `body` fields — wrong for a `click`,
+and inflating each schema. Schemas are now built from `TOOL_PARAMS`, the
+arguments the job actually passes. They are still not the proxy's real
+`inputSchema`; that is only knowable on the machine, which is why every run now
+records it (see `describe_surface()` below).
+
+### Self-diagnosis on every run
+
+`describe_surface()` asks the live proxy what it offers and diffs it against the
+job:
+
+```json
+{"offered": [...], "expected": [...], "missing": [...], "unexpected": [...],
+ "matches": true, "schemas": {"click": {...inputSchema...}}}
+```
+
+A run whose `missing` is non-empty says so in its `note` before any step runs.
+This is the check that would have turned the original "9 of 10 steps failed"
+into one glance: **the job asked for tools that were not there.**
+
+### The job drives the real desktop — it is not read-only
+
+Every step carries `mutates`:
+
+| Steps | `mutates` | Effect |
+|---|---|---|
+| `list_apps`, `get_app_state` | `false` | observation only |
+| `click`, `type_text`, `press_key`, `scroll`, `set_value`, `drag`, `perform_secondary_action` | `true` | moves the pointer, sends keystrokes |
+
+Nothing here writes a file, creates a ticket, starts an agent or touches the
+QwenPaw store — the effect is transient and dies with the window, which is what
+makes it re-runnable. It is **not** the same property as "read-only", and the
+previous wording said read-only because all ten of its tools were API calls.
+`allow_interaction=False` runs only the two observation steps and reports the
+rest as `skipped` (never as `failed`), so the pilot has a safe mode.
 
 ## Run the tests (no machine, no account, no deploy)
 
 ```bash
-python3 features/codemode/vm/codemode-runner.py --selftest   # 64 checks
+python3 features/codemode/vm/codemode-runner.py --selftest   # 92 checks
 python3 features/codemode/vm/test_mcp.py                     # 27 checks
-python3 features/codemode/vm/test_e2e.py                     # 44 checks
+python3 features/codemode/vm/test_e2e.py                     # 46 checks
 node   features/codemode/harness-codemode.mjs                # 68 checks (retired Worker)
 ```
 
-135 checks across the three VM suites. `test_mcp.py` runs a **real** SSE +
+165 checks across the three VM suites. `test_mcp.py` runs a **real** SSE +
 JSON-RPC server in-process; `test_e2e.py` drives the real job through it over
 real HTTP. Neither mocks the wire — the retired version's dead
 `POST {url}?tool=<name>` call is exactly what three layers of agreeing mocks

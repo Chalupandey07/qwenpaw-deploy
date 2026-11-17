@@ -1397,16 +1397,27 @@ def t76():
     """The RETIRED Cloudflare Worker's harness (68 checks).
 
     Kept green on purpose. The Worker cannot run — `worker_loaders` needs a
-    paid plan (API 403 code 10195) — but its benchmark arithmetic is the
-    measurement of record and the VM runner reuses it verbatim, so this test
-    guards the numbers both implementations report.
+    paid plan (API 403 code 10195) — and its benchmark arithmetic is the record
+    of what was measured BEFORE B-41. That measurement was of an imaginary
+    surface (30 modelled tools, 21 of which do not exist on the machine's MCP
+    proxy), so this harness is kept green as the ARCHIVE of the wrong number,
+    not as a claim about the live pilot. The live pilot (T94/T96) now measures
+    the real 9-tool surface; see features/codemode/README.md.
     """
     return _harness("features/codemode/harness-codemode.mjs", 68)
 
 
 def t94():
-    """Code Mode VM runner: fixed job, bounds, honest per-step reporting (64)."""
-    return _py_script_harness(["features/codemode/vm/codemode-runner.py", "--selftest"], 64)
+    """Code Mode VM runner: the REAL 9-tool desktop job (92 checks).
+
+    B-41: this job used to call ten tools of which nine did not exist on the
+    machine's MCP proxy, so a live run scored 1/10 with `unsupportedTool` while
+    the bench reported a 99.0% prompt reduction computed from 30 imaginary
+    tools. It now runs one step per real desktop tool, reports the whole surface
+    on every run (`describe_surface`), and states plainly that desktop work does
+    NOT collapse turns. The 99.0% figure is withdrawn, not adjusted.
+    """
+    return _py_script_harness(["features/codemode/vm/codemode-runner.py", "--selftest"], 92)
 
 
 def t98():
@@ -1618,8 +1629,13 @@ def t95():
 
 
 def t96():
-    """Code Mode end to end: runner -> real MCP -> real HTTP (44 checks)."""
-    return _py_harness("features/codemode/vm/test_e2e.py", 44)
+    """Code Mode end to end: runner -> real MCP -> real HTTP (46 checks).
+
+    Drives the REAL 9-tool desktop job over the actual SSE + JSON-RPC transport
+    (B-41). The failing step for the error-path cases is now `press_key` and
+    `scroll` — real tools — instead of imaginary board ones.
+    """
+    return _py_harness("features/codemode/vm/test_e2e.py", 46)
 
 def t77():
     return _py_script_harness(["features/board/pricing.py", "--selftest"], 20)

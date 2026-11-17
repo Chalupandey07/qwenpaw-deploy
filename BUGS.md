@@ -1832,3 +1832,113 @@ Two notes from writing it, both worth keeping:
 **NOT VERIFIED:** no browser has run this. Muse deploys
 `pages/public/computer/ui.html` to both Pages projects. No machine sync, no
 secret change, and no change to the session gate or any data endpoint.
+
+---
+
+## Part 9 — Found live on the machine, 2026-11-16 (B-41)
+
+### B-41 · P1 · The Code Mode job measured a surface that does not exist — 9 of 10 steps called missing tools, and /api/bench's 99.0% was arithmetic on 21 imaginary tools — FIXED-CODE
+
+**Files:** `features/codemode/vm/codemode-runner.py` (`DESKTOP_TOOLS`,
+`BENCH_STEPS`, `bench()`, `describe_surface()`, `run_job()`),
+`features/codemode/vm/test_e2e.py`, `features/codemode/README.md`.
+
+**Found live** 2026-11-16: the VM runner's fixed job ran on the machine and
+scored **1/10**. Only `list_apps` passed; the other nine steps failed
+`unsupportedTool`. The machine's MCP proxy (`172.18.0.1:8898`) was queried
+directly with `McpClient.list_tools()` and exposes **exactly nine** tools, all
+desktop interaction:
+
+```
+click, drag, get_app_state, list_apps, perform_secondary_action,
+press_key, scroll, set_value, type_text
+```
+
+(Same nine pinned by T11/T12, server `open-computer-use 1.1.4`.) There is **no**
+ticket, project, routine, thread or history tool on this proxy — those belong to
+the QwenPaw board API behind a different service.
+
+The job called: `list_tickets`, `read_ticket`, `list_projects`, `read_project`,
+`screenshot_desktop`, `list_apps`, `get_page_text`, `routine_history`,
+`read_thread`, `search_history`. **Nine of those ten do not exist.**
+
+**And the benchmark was worse than the job.** `/api/bench` modelled **30 tools**
+with invented `id`/`body` parameters and reported:
+
+```
+prompt token reduction   99.0% best case / 98.1% with one retry
+turn reduction           10 → 1
+```
+
+Twenty-one of those 30 tools do not exist, and the turn collapse is not
+available for this surface at all. The number was never a measurement of
+anything — it was arithmetic on an imagined API. That is a worse failure than a
+missing feature, because it looked measured.
+
+**Why the tests did not catch it.** `test_mcp.py` and `test_e2e.py` both built
+their mock server from the same `runner.TOOL_NAMES` list the job used. Three
+layers agreed with each other about a surface nobody had asked the machine for.
+The only check that could have caught it — "ask the live proxy what it offers" —
+did not exist. It does now (`describe_surface()`, called on every run).
+
+**Fix — option (a), a real desktop benchmark.**
+
+* `DESKTOP_TOOLS` is the nine real tools; `DESKTOP_TOOL_NAMES` is the set the
+  job validates against. Nothing names a tool outside it.
+* `BENCH_STEPS` is **one step per real tool**, ordered so the least-certain call
+  (`perform_secondary_action`) comes last and a failure there still leaves eight
+  real observations. Each step carries explicit `args` (no invented `{"id": ""}`)
+  and an explicit `mutates` flag.
+* **The job is no longer described as read-only.** It moves the pointer and
+  sends keystrokes. It leaves no *persistent* state (no file, ticket, agent or
+  store write), which is what makes it re-runnable — a different property, and
+  the README now says both things separately. `allow_interaction=False` runs the
+  two observation steps only and reports the rest as `skipped`, never `failed`.
+* `describe_surface()`, called on **every run**, diffs offered vs expected and
+  puts `missing` in the run's `note` before any step executes. This is the
+  diagnostic the last round needed and wrote by hand.
+* `bench()` recomputed from the nine real schemas, with schemas built from
+  `TOOL_PARAMS` (the arguments the job actually passes) instead of giving every
+  tool an `id` and a `body`.
+* **The 99.0% figure is withdrawn, not adjusted.** The honest desktop result is
+  **67.0% prompt-size reduction with NO turn collapse** — desktop work is
+  observe → decide → act, so each step needs a fresh look at the screen and a
+  sandboxed script cannot supply that judgment (`features/research/code-mode.md`
+  §4). Code Mode removes nine tool schemas from each turn and replaces them with
+  one; it does not remove the turns.
+* The batched shape that the old figure was actually describing is kept as
+  `batched_job_hypothetical`, labelled `NOT the desktop job`, at 96.3% / 92.7%
+  with its turn collapse. Deleting it would hide the distinction that caused the
+  error; labelling it teaches it.
+* `features/codemode/harness-codemode.mjs` (T76) still asserts **30 tools /
+  10 steps** — deliberately. It is the archive of what the retired Worker
+  measured, and "fixing" it would delete the record of the wrong number along
+  with the correction.
+
+**Tests — fail-first, all three VM suites.**
+
+| Suite | Before | After | Fails on the pre-fix job |
+|---|---|---|---|
+| `--selftest` | 64 | **92** | 9 tools, 9 steps, turn factor, "read-only" claim |
+| `test_e2e.py` | 44 | **46** | job names tools the mock no longer offers |
+| `test_mcp.py` | 27 | 27 | unchanged (transport layer, not the job) |
+
+New assertions worth naming: the bench models **nine** tools and none of the
+nine withdrawn names; the desktop job reports `turn_reduction.factor == 1.0`
+with a reason mentioning the visual bound; the batched figure is labelled
+hypothetical and is larger than the desktop one; `allow_interaction=False`
+produces `skipped` and **not** `failed`; and a deliberately **narrower** proxy
+is detected with its missing tools named in the run note.
+
+One more gap this exposed: `FakeMcp` had no `list_tools()`, so a run through the
+fake exercised a different lifecycle than the machine's real client. The new
+`describe_surface()` call found it immediately — the same class of defect as the
+original bug, one layer down.
+
+**NOT VERIFIED:** no live run against the machine's proxy from here (it is not
+reachable from the dev environment — `172.18.0.1:8898` is machine-local). The
+job's `args` are the honest minimal shapes, but the proxy's real `inputSchema`
+for each of the nine tools is **unconfirmed**; a run on the machine now records
+it in `surface.schemas`, so confirming it costs one run rather than a research
+round. Muse deploys `codemode-runner.py` + `mcp.py` to
+`/data/home/qwenpaw/codemode/` and restarts the service.

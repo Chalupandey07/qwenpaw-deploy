@@ -109,66 +109,134 @@ JOB_AS_LIMIT_BYTES = 512 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
-# The tool surface (unchanged from the Worker: the measurement must be
-# comparable, so the same 30 tools and the same 10 steps are modelled).
+# THE TOOL SURFACE — the 9 tools that ACTUALLY exist on the machine
+#
+# WHY THIS IS 9 AND NOT 30 (BUGS.md B-41)
+#
+# This file used to model a 30-tool surface and run a 10-step job against it.
+# Nine of those ten steps did not exist on the machine, so the live run on
+# 2026-11-16 scored 1/10 with nine `unsupportedTool` errors, and the bench
+# reported a 99.0% prompt-token reduction computed from tools that were never
+# there. A measurement of an imaginary surface is not a measurement.
+#
+# The machine's MCP proxy (`http://172.18.0.1:8898`) exposes EXACTLY these
+# nine tools — verified live by `McpClient.list_tools()` on 2026-11-16, and
+# recorded in `features/test-project/TESTS.md` T11/T12 (server
+# `open-computer-use 1.1.4`, tool set asserted exactly):
+#
+#   click, drag, get_app_state, list_apps, perform_secondary_action,
+#   press_key, scroll, set_value, type_text
+#
+# ALL NINE are desktop interaction. There is no ticket, project, routine,
+# thread or history tool on this proxy — that is the QwenPaw board API on the
+# other side of a different service, not this MCP server. So the honest job is
+# a DESKTOP job, and the bench is computed from these nine schemas.
+#
+# WHAT IS DELIBERATELY *NOT* DONE HERE
+#
+# The argument shapes for these nine are NOT invented. `TOOL_PARAMS` mirrors the
+# arguments the job actually passes; it is still not the proxy's real
+# `inputSchema`, which is only knowable by asking the live proxy. Every run
+# therefore records `surface.schemas` (see `describe_surface()`), so the true
+# shapes are one run away on the machine rather than a research round away.
 # ---------------------------------------------------------------------------
 
-TOOL_NAMES = [
-    ("list_tickets", "List open tickets, newest first."),
-    ("read_ticket", "Read one ticket by id, including its full comment thread."),
-    ("create_ticket", "Create a ticket with a title, body and optional labels."),
-    ("update_ticket", "Update a ticket's title, body, status or labels."),
-    ("add_comment", "Append a comment to a ticket."),
-    ("close_ticket", "Close a ticket with an optional resolution note."),
-    ("list_projects", "List projects visible to the caller."),
-    ("read_project", "Read one project and its member list."),
-    ("create_project", "Create a project with a name and description."),
-    ("archive_project", "Archive a project so it stops appearing in lists."),
-    ("list_agents", "List agents registered on the machine."),
-    ("agent_status", "Read one agent's running state and active model."),
-    ("start_agent", "Start a stopped agent."),
-    ("stop_agent", "Stop a running agent, flushing its state first."),
-    ("send_message", "Send a message to an agent or a group thread."),
-    ("read_thread", "Read a group thread since a timestamp."),
-    ("list_routines", "List configured routines and their cron schedules."),
-    ("run_routine", "Trigger a routine once, outside its schedule."),
-    ("routine_history", "Read a routine's recent run history."),
-    ("screenshot_desktop", "Capture the current desktop screen as an image."),
+#: The nine tools the machine's MCP proxy exposes. Order is the order the job
+#: walks them; it is also the order `describe_surface()` reports.
+DESKTOP_TOOLS = [
     ("list_apps", "List applications with windows on the desktop."),
+    ("get_app_state", "Read the accessibility tree of the focused application."),
     ("click", "Click at a screen coordinate, or on a named accessibility node."),
     ("type_text", "Type text into the focused control."),
-    ("open_url", "Open a URL on the desktop's browser."),
-    ("get_page_text", "Read the visible text of the current browser page."),
-    ("list_skills", "List installed skills and whether each is enabled."),
-    ("run_skill", "Run one installed skill with named arguments."),
-    ("read_file", "Read a file from the agent workspace, with a byte cap."),
-    ("write_file", "Write a file into the agent workspace."),
-    ("search_history", "Search recorded conversation history for keywords."),
+    ("press_key", "Press a key or key combination."),
+    ("scroll", "Scroll the focused view."),
+    ("set_value", "Set the value of an accessibility node directly."),
+    ("drag", "Drag from one screen point to another."),
+    ("perform_secondary_action", "Invoke a secondary accessibility action on a node."),
 ]
 
-#: The fixed job. Read-only on purpose: a pilot that mutates the ticket board
-#: every time it runs is a pilot nobody will run twice. The two write-shaped
-#: steps the original modelled are replaced with their read equivalents, and
-#: that change is stated here rather than quietly made.
+#: Backwards-compatible alias: the name the retired Worker harness uses for
+#: "the modelled surface".
+TOOL_NAMES = DESKTOP_TOOLS
+
+#: Tool names as a plain set, for validation. Anything not in here is a bug in
+#: the job, not a missing capability, and the selftest asserts that every step
+#: is in it.
+DESKTOP_TOOL_NAMES = frozenset(name for name, _ in DESKTOP_TOOLS)
+
+#: Parameter names the job actually passes, per tool. Used to build a schema
+#: that is at least the RIGHT SHAPE.
+#:
+#: The previous version gave EVERY tool `id` and `body` fields — wrong for a
+#: `click`, and inflating every schema (which inflated the classic column and
+#: therefore flattered Code Mode).
+TOOL_PARAMS = {
+    "list_apps": {},
+    "get_app_state": {},
+    "click": {"x": "int", "y": "int"},
+    "type_text": {"text": "string"},
+    "press_key": {"key": "string"},
+    "scroll": {"dy": "int"},
+    "set_value": {"value": "string"},
+    "drag": {"x1": "int", "y1": "int", "x2": "int", "y2": "int"},
+    "perform_secondary_action": {},
+}
+
+#: ⚠️ THIS JOB DRIVES THE REAL DESKTOP. It is NOT read-only, and it says so.
+#:
+#: The previous job was read-only because all ten of its tools were API calls
+#: against a board nobody was looking at. This one is a *desktop* job: `click`,
+#: `type_text`, `press_key`, `scroll`, `set_value` and `drag` move the real
+#: pointer and send real keystrokes to whatever window has focus. That is the
+#: only way to measure this surface — but it must never be described as
+#: harmless.
+#:
+#: `mutates` is therefore explicit per step rather than a blanket claim.
+#: Nothing here writes a file, creates a ticket, starts an agent or touches the
+#: QwenPaw store: the effect is transient and dies with the window. That is what
+#: makes it re-runnable, NOT "read-only". A run with `allow_interaction=False`
+#: executes only the observation steps and reports the rest as skipped.
 BENCH_STEPS = [
-    {"tool": "list_tickets", "step": "read the ticket board"},
-    {"tool": "read_ticket", "step": "open the newest ticket"},
-    {"tool": "list_projects", "step": "find its project"},
-    {"tool": "read_project", "step": "read the project members"},
-    {"tool": "screenshot_desktop", "step": "capture the desktop"},
-    {"tool": "list_apps", "step": "check which windows are up"},
-    {"tool": "get_page_text", "step": "read the browser page"},
-    {"tool": "routine_history", "step": "check the routine's last run"},
-    {"tool": "read_thread", "step": "read the group thread"},
-    {"tool": "search_history", "step": "search past conversations"},
+    {"tool": "list_apps", "step": "see which applications are on the desktop",
+     "args": {}, "mutates": False},
+    {"tool": "get_app_state", "step": "read the focused application's accessibility tree",
+     "args": {}, "mutates": False},
+    {"tool": "click", "step": "click a point on the desktop",
+     "args": {"x": 400, "y": 300}, "mutates": True},
+    {"tool": "type_text", "step": "type a line of text",
+     "args": {"text": "codemode pilot"}, "mutates": True},
+    {"tool": "press_key", "step": "press Return",
+     "args": {"key": "Return"}, "mutates": True},
+    {"tool": "scroll", "step": "scroll the focused view down",
+     "args": {"dy": 3}, "mutates": True},
+    {"tool": "set_value", "step": "set a value through the accessibility API",
+     "args": {"value": "pilot"}, "mutates": True},
+    {"tool": "drag", "step": "drag across the desktop",
+     "args": {"x1": 400, "y1": 300, "x2": 500, "y2": 380}, "mutates": True},
+    {"tool": "perform_secondary_action", "step": "invoke a secondary accessibility action",
+     "args": {}, "mutates": True},
 ]
+
+#: Tools that would leave PERSISTENT state behind. None of these is on this
+#: proxy; the list exists so the assertion "this job is re-runnable" is checked
+#: against a definition rather than against whoever wrote the job that day.
+PERSISTENT_TOOLS = frozenset({
+    "create_ticket", "update_ticket", "close_ticket", "add_comment",
+    "create_project", "archive_project",
+    "run_routine", "run_skill", "start_agent", "stop_agent",
+    "write_file", "send_message",
+})
 
 
 def schema_tokens(name: str, description: str) -> str:
-    return ('{"name":"%s","description":"%s","parameters":{"type":"object","properties":{'
-            '"id":{"type":"string","description":"Target identifier"},'
-            '"body":{"type":"string","description":"Optional payload"}},"required":["id"]}}'
-            % (name, description))
+    """One tool schema, shaped from the parameters that tool actually takes."""
+    params = TOOL_PARAMS.get(name, {})
+    props = ",".join(
+        '"%s":{"type":"%s"}' % (p, ("integer" if t == "int" else "string"))
+        for p, t in params.items()
+    )
+    return ('{"name":"%s","description":"%s","parameters":{"type":"object",'
+            '"properties":{%s}}}' % (name, description, props))
 
 
 def estimate_tokens(text: str, chars_per_token: float = DEFAULT_CHARS_PER_TOKEN) -> int:
@@ -187,16 +255,31 @@ def round1(value: float) -> float:
 # ---------------------------------------------------------------------------
 
 def bench(chars_per_token: float = DEFAULT_CHARS_PER_TOKEN) -> dict:
-    classic_schemas = "\n".join(schema_tokens(n, d) for n, d in TOOL_NAMES)
+    """The measured comparison, computed from the REAL 9-tool surface.
+
+    WHAT CHANGED AND WHY IT HAD TO (BUGS.md B-41)
+
+    The previous version modelled 30 tools with rich arguments and reported a
+    99.0% prompt-token reduction from a 10-step job. Nine of those ten steps
+    named tools that do not exist on the machine, and twenty-one of the thirty
+    modelled tools do not exist either. The number was arithmetic on a surface
+    that was never there — worse than no number, because it looked measured.
+
+    This version is computed from `DESKTOP_TOOLS`: the nine real tools, with
+    their real (short) descriptions. Everything else is the same arithmetic, so
+    the result stays comparable with the retired Worker's method — only the
+    INPUT is now honest.
+
+    THE HONEST CONCLUSION IS MUCH SMALLER, AND THAT IS THE FINDING.
+    """
+    classic_schemas = "\n".join(schema_tokens(n, d) for n, d in DESKTOP_TOOLS)
     classic_prompt_tokens = estimate_tokens(classic_schemas, chars_per_token)
 
-    connector_hints = " ".join([
-        "tickets: list, read, create, update, comment, close. Use for the ticket board.",
-        "agents: list, status, start, stop, send_message, read_thread. Use for agents and group threads.",
-        "routines: list, run, history. Use for scheduled jobs.",
-        "desktop: screenshot, list_apps, click, type, open_url, get_page_text. Use for the live desktop.",
-        "files: read_file, write_file, search_history. Use for the workspace and past conversations.",
-    ])
+    # The Code Mode prompt for THIS surface. One connector (`desktop`) with the
+    # nine real method names — no invented tickets/agents/routines/files
+    # connectors, because there is nothing behind them on this proxy. Naming a
+    # connector that cannot answer is how the original 99% was manufactured.
+    connector_hints = "desktop: " + ", ".join(n for n, _ in DESKTOP_TOOLS) + "."
     codemode_prompt = (
         '{"name":"codemode","description":"Write TypeScript that calls connector methods. '
         'Use codemode.search(query) to discover methods and codemode.describe(path) for '
@@ -208,16 +291,49 @@ def bench(chars_per_token: float = DEFAULT_CHARS_PER_TOKEN) -> dict:
     codemode_prompt_tokens = estimate_tokens(codemode_prompt, chars_per_token)
 
     steps = len(BENCH_STEPS)
-    classic_turns = steps
-    codemode_turns = 1
-    codemode_turns_with_retry = 2
 
-    classic_total = classic_prompt_tokens * classic_turns
-    codemode_total = codemode_prompt_tokens * codemode_turns
-    codemode_total_retry = codemode_prompt_tokens * codemode_turns_with_retry
+    # =========================================================================
+    # THE DESKTOP MODEL — the one that describes the job we actually run.
+    #
+    # The old bench assumed Code Mode collapses N steps into ONE turn. For a
+    # board/API job that is defensible: the script can batch known calls. For
+    # THIS surface it is false, and the research note says so explicitly
+    # (`features/research/code-mode.md` §4, "the visual-judgment bound"):
+    #
+    #   Desktop work is observe -> decide -> act. Each step needs the model to
+    #   LOOK at the screen before choosing the next action, and a sandboxed
+    #   script cannot supply that visual judgment.
+    #
+    # So `click` may be callable from a script, but WHETHER to click, and
+    # WHERE, is a model decision that happens after seeing the result of the
+    # previous step. The turns do not collapse. Claiming they do is how the
+    # withdrawn figure was manufactured.
+    #
+    # What Code Mode DOES buy here is a smaller prompt per turn: the model
+    # carries one `codemode` tool instead of the nine desktop schemas. That is
+    # a real saving and it is the only one this surface can honestly claim.
+    # =========================================================================
+    desktop_classic_turns = steps
+    desktop_codemode_turns = steps          # NO turn collapse: visual bound
+    desktop_classic_total = classic_prompt_tokens * desktop_classic_turns
+    desktop_codemode_total = codemode_prompt_tokens * desktop_codemode_turns
+    desktop_reduction = round1((1 - desktop_codemode_total / desktop_classic_total) * 100)
 
+    # The BATCHED variant — kept, bounded, and explicitly not this job. It is
+    # the shape that applies when the steps are predictable (a routine, a data
+    # job) rather than visually driven. Reporting it next to the desktop number
+    # keeps the comparison honest instead of pretending one is the other.
+    batched_classic_turns = steps
+    batched_codemode_turns = 1
+    batched_total = codemode_prompt_tokens * batched_codemode_turns
+    batched_total_retry = codemode_prompt_tokens * 2
+    batched_reduction = round1((1 - batched_total / desktop_classic_total) * 100)
+    batched_reduction_retry = round1((1 - batched_total_retry / desktop_classic_total) * 100)
+
+    # A representative script body for this surface, used only for the
+    # single-call comparison below. It names a REAL tool.
     code_overhead = estimate_tokens(
-        'async () => { const t = await codemode.tickets.list_tickets({ id: "" }); return t; }',
+        'async () => { const a = await desktop.list_apps({}); return a; }',
         chars_per_token)
 
     return {
@@ -230,28 +346,57 @@ def bench(chars_per_token: float = DEFAULT_CHARS_PER_TOKEN) -> dict:
                      "features/memory/recall.py so both subsystems report comparable numbers."),
             "approximate": True,
         },
-        "surface": {"tools": len(TOOL_NAMES), "steps_in_job": steps},
-        "multi_step_job": {
+        "surface": {
+            "tools": len(DESKTOP_TOOLS),
+            "steps_in_job": steps,
+            "tool_names": [n for n, _ in DESKTOP_TOOLS],
+            "source": ("the machine's MCP proxy (open-computer-use 1.1.4) — all nine are "
+                       "desktop-interaction tools; there is no board/routine/history tool here"),
+        },
+        # The headline for the job that ACTUALLY runs: a desktop job, where the
+        # turn count does not collapse.
+        "desktop_job": {
+            "applies_to": ("the fixed job in this file: nine desktop-interaction tools, "
+                           "each step needing a fresh look at the screen"),
             "classic": {
-                "turns": classic_turns,
+                "turns": desktop_classic_turns,
                 "prompt_tokens_per_turn": classic_prompt_tokens,
-                "total_prompt_tokens": classic_total,
+                "total_prompt_tokens": desktop_classic_total,
             },
             "codemode": {
-                "turns": codemode_turns,
+                "turns": desktop_codemode_turns,
                 "prompt_tokens_per_turn": codemode_prompt_tokens,
-                "total_prompt_tokens": codemode_total,
-                "turns_with_one_retry": codemode_turns_with_retry,
-                "total_with_one_retry": codemode_total_retry,
+                "total_prompt_tokens": desktop_codemode_total,
+            },
+            "prompt_token_reduction_pct": desktop_reduction,
+            "turn_reduction": {
+                "from": desktop_classic_turns, "to": desktop_codemode_turns, "factor": 1.0,
+                "why": ("the visual-judgment bound: desktop steps cannot be batched into "
+                        "one script because each needs a model decision after seeing the "
+                        "previous result (research note §4)"),
+            },
+            "verdict": ("Code Mode wins on PROMPT SIZE ONLY for desktop work, never on "
+                        "turn count. It removes the nine tool schemas from every turn and "
+                        "replaces them with one; it does not remove the turns."),
+        },
+        # The batched shape, bounded and labelled as NOT this job. This is what
+        # the withdrawn figure was really describing — a predictable workflow,
+        # not a desktop one.
+        "batched_job_hypothetical": {
+            "applies_to": ("a PREDICTABLE workflow with the same step count (a routine or "
+                           "data job). NOT the desktop job above, and not measured here."),
+            "classic_total_prompt_tokens": desktop_classic_total,
+            "codemode": {
+                "turns": batched_codemode_turns,
+                "total_prompt_tokens": batched_total,
+                "turns_with_one_retry": 2,
+                "total_with_one_retry": batched_total_retry,
             },
             "prompt_token_reduction": {
-                "best_case_pct": round1((1 - codemode_total / classic_total) * 100),
-                "with_one_retry_pct": round1((1 - codemode_total_retry / classic_total) * 100),
+                "best_case_pct": batched_reduction,
+                "with_one_retry_pct": batched_reduction_retry,
             },
-            "turn_reduction": {
-                "from": classic_turns, "to": codemode_turns,
-                "factor": round1(classic_turns / codemode_turns),
-            },
+            "turn_reduction_factor": float(batched_classic_turns),
         },
         "single_call_job": {
             "classic_prompt_tokens": classic_prompt_tokens,
@@ -262,12 +407,21 @@ def bench(chars_per_token: float = DEFAULT_CHARS_PER_TOKEN) -> dict:
         },
         "caveats": [
             "Estimates only — the codemode repo publishes no benchmarks.",
-            "The codemode prompt here models 5 connectors with short hints; adding "
-            "connectors raises that side and narrows the gap. The reduction is an "
-            "upper bound for this surface, not a universal constant.",
+            "Computed from the NINE tools that actually exist on the machine's MCP "
+            "proxy. The previous headline reduction was computed from 30 modelled "
+            "tools, 21 of which do not exist; it is withdrawn, not adjusted "
+            "(BUGS.md B-41).",
+            "This surface is SMALL, so the saving is small. That is the finding, not "
+            "a defect in the measurement: nine short desktop schemas are a cheap "
+            "prompt, so there is little for Code Mode to remove.",
+            "The codemode prompt here models ONE connector (desktop) with the nine "
+            "real method names. Adding connectors raises that side and narrows the "
+            "gap; adding ones that cannot answer is what produced the old number.",
             "Astra-class models still need one turn per visual decision; desktop "
-            "work cannot batch screenshots into one script (research note §4).",
-            "Failures cost a retry: the with_one_retry column is the honest case.",
+            "work cannot batch screenshots into one script (research note §4). This "
+            "is the binding constraint for THIS surface, and it is why the turn "
+            "reduction should not be read as a latency win.",
+            "Failures cost a retry: the batched figure carries its with_one_retry column.",
             "Real prompt tokens depend on the provider's tokenizer and the model's "
             "actual schema rendering.",
             "Not measured here: the tokens the model spends WRITING the script "
@@ -326,8 +480,44 @@ def _limit_self() -> None:
         pass
 
 
+def describe_surface(client) -> dict:
+    """Ask the LIVE proxy what it actually offers, and diff it against the job.
+
+    THIS IS THE DIAGNOSTIC THE LAST ROUND NEEDED.
+
+    The previous job failed nine of ten steps with `unsupportedTool` and the
+    only way to find out why was to write a separate probe. A run that cannot
+    say "the proxy offers X, the job calls Y, they differ by Z" sends the next
+    person back to the machine with a hand-written client.
+
+    Returns `{offered, expected, missing, unexpected}` — `missing` is the set
+    the job needs and the proxy does not have, which is precisely the failure
+    that started this rewrite. Never raises for a shape surprise.
+    """
+    try:
+        tools = client.list_tools() or []
+    except Exception as exc:  # noqa: BLE001 - reported, not raised
+        return {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
+    offered = [t.get("name") for t in tools if isinstance(t, dict) and t.get("name")]
+    expected = [n for n, _ in DESKTOP_TOOLS]
+    return {
+        "ok": True,
+        "offered": offered,
+        "offeredCount": len(offered),
+        "expected": expected,
+        "missing": [n for n in expected if n not in offered],
+        "unexpected": [n for n in offered if n not in expected],
+        "matches": sorted(offered) == sorted(expected),
+        "schemas": {
+            t.get("name"): t.get("inputSchema")
+            for t in tools
+            if isinstance(t, dict) and t.get("name")
+        },
+    }
+
+
 def run_job(config: dict, job: str = "fixed-bench-job", client=None,
-            apply_limits: bool = False) -> dict:
+            apply_limits: bool = False, allow_interaction: bool = True) -> dict:
     """Run the fixed job. Returns the result dict; never raises for a step.
 
     `config` carries `mcp_url` and `mcp_token`. `client` exists so the harness
@@ -377,6 +567,16 @@ def run_job(config: dict, job: str = "fixed-bench-job", client=None,
         # code path than the machine runs.
         entry["server"] = getattr(box, "server_info", None)
 
+        # What the proxy ACTUALLY offers, on every run. This is the check that
+        # would have turned "9 of 10 steps failed with unsupportedTool" into one
+        # glance at the result: the job asked for tools that were not there.
+        surface = describe_surface(box)
+        entry["surface"] = surface
+        if surface.get("ok") and surface.get("missing"):
+            entry["note"] = ("The proxy does not offer %d tool(s) this job uses: %s. "
+                             "Steps naming them will fail; the rest still run."
+                             % (len(surface["missing"]), ", ".join(surface["missing"])))
+
         for index, step in enumerate(BENCH_STEPS, start=1):
             if time.time() - started > JOB_DEADLINE_S:
                 entry["steps"].append({
@@ -385,12 +585,25 @@ def run_job(config: dict, job: str = "fixed-bench-job", client=None,
                 })
                 continue
             step_started = time.time()
+            # A desktop job MOVES THE POINTER AND TYPES. `allow_interaction=False`
+            # is the safe subset: observation only, everything else reported as
+            # skipped rather than silently attempted.
+            if step.get("mutates") and not allow_interaction:
+                entry["steps"].append({
+                    "n": index, "tool": step["tool"], "purpose": step["step"],
+                    "mutates": bool(step.get("mutates")), "ok": False, "skipped": True,
+                    "error": "skipped: interaction disabled for this run",
+                })
+                continue
             try:
-                result = box.call(step["tool"], {"id": ""})
+                # `args` comes from the STEP, not a hardcoded {"id": ""}. The old
+                # value was invented for a board API and is meaningless here.
+                result = box.call(step["tool"], dict(step.get("args") or {}))
                 entry["steps"].append({
                     "n": index,
                     "tool": step["tool"],
                     "purpose": step["step"],
+                    "mutates": bool(step.get("mutates")),
                     "ok": bool(result.get("ok")),
                     "isError": bool(result.get("isError")),
                     "result": truncate(result.get("content")),
@@ -430,15 +643,25 @@ def run_job(config: dict, job: str = "fixed-bench-job", client=None,
                 pass
 
     attempted = len(entry["steps"])
-    failed = [s for s in entry["steps"] if not s.get("ok")]
+    # A SKIPPED step is not a FAILED step. Conflating them would report an
+    # observation-only run as broken, which is the "an error that looks like
+    # data" class this repo keeps recording (B-15, B-25).
+    failed = [s for s in entry["steps"] if not s.get("ok") and not s.get("skipped")]
+    skipped = [s for s in entry["steps"] if s.get("skipped")]
+    ok_steps = [s for s in entry["steps"] if s.get("ok")]
     if attempted == 0:
         entry["status"] = "error"
         entry["note"] = entry["note"] or "No steps were attempted."
-    elif not failed and attempted == len(BENCH_STEPS):
+    elif not failed and attempted == len(BENCH_STEPS) and not skipped:
         entry["status"] = "ok"
         entry["note"] = ("All %d steps succeeded through the MCP proxy on the machine. "
                          "The job is a fixed, auditable program; no model-generated code "
                          "was executed." % attempted)
+    elif not failed and skipped:
+        entry["status"] = "ok"
+        entry["note"] = ("%d of %d steps succeeded; %d interaction steps were skipped "
+                         "because interaction was disabled for this run."
+                         % (len(ok_steps), attempted, len(skipped)))
     else:
         entry["status"] = "partial" if not entry.get("error") else "error"
         entry["note"] = entry["note"] or (
@@ -448,9 +671,11 @@ def run_job(config: dict, job: str = "fixed-bench-job", client=None,
     entry["durationMs"] = int((time.time() - started) * 1000)
     entry["summary"] = {
         "attempted": attempted,
-        "ok": len([s for s in entry["steps"] if s.get("ok")]),
+        "ok": len(ok_steps),
         "failed": len(failed),
+        "skipped": len(skipped),
         "expected": len(BENCH_STEPS),
+        "interaction": "enabled" if allow_interaction else "disabled (observation only)",
     }
     return entry
 
@@ -589,7 +814,7 @@ def make_handler(config: dict):
 
 def status_page(config: dict) -> str:
     b = bench()
-    m = b["multi_step_job"]
+    d = b["desktop_job"]
     mcp_state = "configured" if config.get("mcp_url") else "not configured"
     token_state = "set" if config.get("token") else "unset (run endpoint closed)"
     return """<!doctype html>
@@ -615,17 +840,24 @@ path is dead: <code>worker_loaders</code> requires a paid Cloudflare plan
 
 <h2>Measured comparison (estimated tokens)</h2>
 <div class="card">
+ <div class="row"><span class="k">Surface</span>
+  <span class="ok">%d real desktop tools</span></div>
  <div class="row"><span class="k">Classic: prompt tokens for a %d-step job</span>
   <span class="ok">%s</span></div>
  <div class="row"><span class="k">Code Mode: same job</span>
   <span class="ok">%s</span></div>
- <div class="row"><span class="k">Reduction (best case / one retry)</span>
-  <span class="ok">%s%% / %s%%</span></div>
+ <div class="row"><span class="k">Reduction (prompt size only)</span>
+  <span class="ok">%s%%</span></div>
  <div class="row"><span class="k">Turn reduction</span>
-  <span class="ok">%s -> %s</span></div>
+  <span class="warn">none (%s -> %s)</span></div>
  <div class="row"><span class="k">Single simple call</span>
   <span class="bad">worse than classic</span></div>
 </div>
+<p><strong>Turn count does not collapse for desktop work.</strong> Each step needs
+the model to look at the screen before choosing the next action, so Code Mode
+removes prompt weight (nine tool schemas &rarr; one) and not turns. A batched
+workflow of the same size is reported separately in <code>/api/bench</code> and
+is <em>not</em> this job.</p>
 
 <h2>Runner state</h2>
 <div class="card">
@@ -649,12 +881,12 @@ and tests on the machine; this page reports what the code can prove on its own.
 </footer>
 </main></body></html>""" % (
         VERSION,
+        b["surface"]["tools"],
         b["surface"]["steps_in_job"],
-        format(m["classic"]["total_prompt_tokens"], ","),
-        format(m["codemode"]["total_prompt_tokens"], ","),
-        m["prompt_token_reduction"]["best_case_pct"],
-        m["prompt_token_reduction"]["with_one_retry_pct"],
-        m["turn_reduction"]["from"], m["turn_reduction"]["to"],
+        format(d["classic"]["total_prompt_tokens"], ","),
+        format(d["codemode"]["total_prompt_tokens"], ","),
+        d["prompt_token_reduction_pct"],
+        d["turn_reduction"]["from"], d["turn_reduction"]["to"],
         "ok" if config.get("mcp_url") else "warn", mcp_state,
         "ok" if config.get("token") else "warn", token_state,
     )
@@ -712,6 +944,19 @@ class FakeMcp:
     def close(self):
         self.closed = True
 
+    def list_tools(self):
+        """The REAL client has this; the fake must too, or a run through the
+        fake exercises a different lifecycle than the machine does.
+
+        This was missing and the new `describe_surface()` call caught it — which
+        is the same class of gap the Code Mode pilot exists to expose: a fake
+        that does not implement the real interface proves nothing.
+        """
+        return [
+            {"name": n, "description": d, "inputSchema": {"type": "object"}}
+            for n, d in DESKTOP_TOOLS
+        ]
+
     def call(self, name, arguments=None):
         self.calls.append(name)
         n = len(self.calls)
@@ -739,42 +984,106 @@ def selftest() -> int:
             failed.append(name)
             print("  FAIL %s  %s" % (name, detail))
 
-    print("bench: the measurement is unchanged and internally consistent")
+    print("surface: the bench is computed from the 9 tools that ACTUALLY exist (B-41)")
     b = bench()
-    check("30 tools modelled", b["surface"]["tools"] == 30, str(b["surface"]["tools"]))
-    check("10-step job", b["surface"]["steps_in_job"] == 10, str(b["surface"]["steps_in_job"]))
+    # The bug: the bench modelled 30 tools, 21 of which are not on the machine's
+    # MCP proxy, and the job called 9 that were not there either.
+    check("models NINE tools, not 30", b["surface"]["tools"] == 9, str(b["surface"]["tools"]))
+    check("…and they are the real desktop set",
+          set(b["surface"]["tool_names"]) == DESKTOP_TOOL_NAMES,
+          json.dumps(b["surface"]["tool_names"]))
+    check("no invented board/routine/history tool is modelled",
+          not any(t in b["surface"]["tool_names"] for t in (
+              "list_tickets", "read_ticket", "list_projects", "read_project",
+              "screenshot_desktop", "get_page_text", "routine_history",
+              "read_thread", "search_history")),
+          json.dumps(b["surface"]["tool_names"]))
+    check("job length matches the real step count",
+          b["surface"]["steps_in_job"] == len(BENCH_STEPS),
+          "%s vs %s" % (b["surface"]["steps_in_job"], len(BENCH_STEPS)))
+
+    print("bench: the arithmetic is internally consistent (same method as before)")
     check("runtime is vm", b["runtime"] == "vm", b["runtime"])
     check("marks itself approximate", b["estimator"]["approximate"] is True)
     check("names the estimator", "chars / 3.6" in b["estimator"]["method"], b["estimator"]["method"])
-    m = b["multi_step_job"]
-    check("classic turns equal steps", m["classic"]["turns"] == 10, str(m["classic"]["turns"]))
-    check("codemode is one turn", m["codemode"]["turns"] == 1)
+
+    d = b["desktop_job"]
+    check("desktop job turns equal steps", d["classic"]["turns"] == len(BENCH_STEPS),
+          str(d["classic"]["turns"]))
+    # THE POINT OF THIS REWRITE: turns do NOT collapse for desktop work.
+    check("Code Mode does NOT claim a turn collapse for desktop work",
+          d["turn_reduction"]["factor"] == 1.0, str(d["turn_reduction"]["factor"]))
+    check("…and it says why (the visual bound)", "visual" in d["turn_reduction"]["why"],
+          d["turn_reduction"]["why"])
     check("classic total = per-turn x turns",
-          m["classic"]["total_prompt_tokens"] == m["classic"]["prompt_tokens_per_turn"] * 10)
-    check("retry total = per-turn x retry turns",
-          m["codemode"]["total_with_one_retry"]
-          == m["codemode"]["prompt_tokens_per_turn"] * m["codemode"]["turns_with_one_retry"])
-    check("codemode reduces total prompt tokens",
-          m["codemode"]["total_prompt_tokens"] < m["classic"]["total_prompt_tokens"])
-    check("reduction survives one retry", m["prompt_token_reduction"]["with_one_retry_pct"] > 0)
-    check("turn factor is 10x", m["turn_reduction"]["factor"] == 10, str(m["turn_reduction"]["factor"]))
+          d["classic"]["total_prompt_tokens"]
+          == d["classic"]["prompt_tokens_per_turn"] * len(BENCH_STEPS))
+    check("codemode total = per-turn x turns",
+          d["codemode"]["total_prompt_tokens"]
+          == d["codemode"]["prompt_tokens_per_turn"] * len(BENCH_STEPS))
+    check("codemode still wins on PROMPT SIZE",
+          d["codemode"]["total_prompt_tokens"] < d["classic"]["total_prompt_tokens"],
+          "%s vs %s" % (d["codemode"]["total_prompt_tokens"],
+                        d["classic"]["total_prompt_tokens"]))
+    check("the desktop reduction is a prompt-size claim, not a turn claim",
+          d["prompt_token_reduction_pct"] > 0
+          and "PROMPT SIZE" in d["verdict"], d["verdict"])
+
+    # The batched shape must be labelled hypothetical and must NOT be presented
+    # as this job. That mislabelling is exactly what was withdrawn.
+    h = b["batched_job_hypothetical"]
+    check("the batched figure is labelled NOT this job",
+          "NOT the desktop job" in h["applies_to"], h["applies_to"])
+    check("the batched figure shows the collapsed turns", h["codemode"]["turns"] == 1)
+    check("the batched reduction is larger than the desktop one",
+          h["prompt_token_reduction"]["best_case_pct"]
+          > d["prompt_token_reduction_pct"],
+          "%s vs %s" % (h["prompt_token_reduction"]["best_case_pct"],
+                        d["prompt_token_reduction_pct"]))
+    check("the batched reduction survives one retry",
+          h["prompt_token_reduction"]["with_one_retry_pct"] > 0)
+
     check("reports single-call as WORSE", "WORSE" in b["single_call_job"]["verdict"])
     check("caveats listed", len(b["caveats"]) >= 3, str(len(b["caveats"])))
     check("caveat names the visual bound", any("visual" in c for c in b["caveats"]))
+    # The withdrawn number must not survive anywhere in the reported payload.
+    blob = json.dumps(b)
+    check("the old headline figure is gone", "99.0" not in blob, "a withdrawn number survived")
+    check("the caveats say the figure was withdrawn", "withdrawn" in blob.lower())
+    check("caveat names the real surface size", any("NINE" in c or "nine" in c for c in b["caveats"]))
     b4 = bench(4)
     check("custom chars_per_token honoured", b4["estimator"]["method"] == "chars / 4",
           b4["estimator"]["method"])
 
-    print("job: the fixed program is what runs, and it is read-only")
-    check("the job has exactly 10 steps", len(BENCH_STEPS) == 10, str(len(BENCH_STEPS)))
+    print("job: the fixed program is what runs, and it only uses real tools")
+    check("the job has one step per real tool", len(BENCH_STEPS) == len(DESKTOP_TOOLS),
+          "%s vs %s" % (len(BENCH_STEPS), len(DESKTOP_TOOLS)))
     tools_used = [s["tool"] for s in BENCH_STEPS]
-    check("no step mutates the board or the machine",
-          not any(t in ("create_ticket", "update_ticket", "add_comment", "close_ticket",
-                        "run_routine", "write_file", "run_skill", "click", "type_text",
-                        "start_agent", "stop_agent") for t in tools_used),
+    check("every step names a tool the proxy ACTUALLY offers",
+          all(t in DESKTOP_TOOL_NAMES for t in tools_used), json.dumps(tools_used))
+    check("no step names a tool that does not exist on this proxy",
+          not any(t in ("list_tickets", "read_ticket", "list_projects", "read_project",
+                        "screenshot_desktop", "get_page_text", "routine_history",
+                        "read_thread", "search_history") for t in tools_used),
           json.dumps(tools_used))
-    check("every step names a real tool",
-          all(t in dict(TOOL_NAMES) for t in tools_used), json.dumps(tools_used))
+    check("the job covers all nine tools exactly once",
+          sorted(tools_used) == sorted(DESKTOP_TOOL_NAMES), json.dumps(tools_used))
+    # It DRIVES the desktop, so it is not read-only — and the code must say so
+    # rather than inherit the old "read-only" claim from a board job.
+    check("interaction steps are marked as mutating",
+          all(s.get("mutates") is True for s in BENCH_STEPS
+              if s["tool"] in {"click", "type_text", "press_key", "scroll",
+                               "set_value", "drag", "perform_secondary_action"}),
+          json.dumps([(s["tool"], s.get("mutates")) for s in BENCH_STEPS]))
+    check("observation steps are marked as NOT mutating",
+          all(s.get("mutates") is False for s in BENCH_STEPS
+              if s["tool"] in {"list_apps", "get_app_state"}),
+          json.dumps([(s["tool"], s.get("mutates")) for s in BENCH_STEPS]))
+    check("no step leaves PERSISTENT state behind",
+          not any(t in PERSISTENT_TOOLS for t in tools_used), json.dumps(tools_used))
+    check("every step carries explicit args",
+          all(isinstance(s.get("args"), dict) for s in BENCH_STEPS),
+          json.dumps([s.get("args") for s in BENCH_STEPS]))
     # AST, not string matching. A substring check is what let the retired
     # Worker's fake MCP shape pass review: it "looked" right. Parsing the
     # module and walking the tree proves the ABSENCE of a construct, which is
@@ -815,8 +1124,10 @@ def selftest() -> int:
     fake = FakeMcp()
     ok = run_job({"mcp_url": "http://mcp.test"}, "j", client=fake)
     check("status ok", ok["status"] == "ok", ok["status"] + " / " + str(ok.get("note")))
-    check("all 10 steps recorded", len(ok["steps"]) == 10, str(len(ok["steps"])))
-    check("summary counts 10 ok", ok["summary"]["ok"] == 10, json.dumps(ok["summary"]))
+    check("every step recorded", len(ok["steps"]) == len(BENCH_STEPS),
+          str(len(ok["steps"])))
+    check("summary counts every step ok", ok["summary"]["ok"] == len(BENCH_STEPS),
+          json.dumps(ok["summary"]))
     check("every step is ok", all(s["ok"] for s in ok["steps"]))
     check("steps carry the tool name", ok["steps"][0]["tool"] == BENCH_STEPS[0]["tool"])
     check("steps carry a duration", isinstance(ok["steps"][0]["ms"], int))
@@ -831,10 +1142,57 @@ def selftest() -> int:
     check("status is partial", partial["status"] == "partial", partial["status"])
     check("the failing step says ok:false", partial["steps"][2]["ok"] is False)
     check("the failing step is flagged isError", partial["steps"][2]["isError"] is True)
-    check("the other steps still ran", partial["summary"]["ok"] == 9,
+    check("the other steps still ran",
+          partial["summary"]["ok"] == len(BENCH_STEPS) - 1,
           json.dumps(partial["summary"]))
     check("nothing is reported as successful that was not",
           partial["summary"]["failed"] == 1, json.dumps(partial["summary"]))
+
+    print("run: interaction can be disabled, and skipped is not failed")
+    fake_obs = FakeMcp()
+    obs = run_job({"mcp_url": "http://mcp.test"}, "j", client=fake_obs,
+                  allow_interaction=False)
+    check("the run still reports ok", obs["status"] == "ok", obs["status"])
+    check("observation steps ran", obs["summary"]["ok"] == 2, json.dumps(obs["summary"]))
+    check("interaction steps were skipped", obs["summary"]["skipped"] == len(BENCH_STEPS) - 2,
+          json.dumps(obs["summary"]))
+    check("skipped is NOT counted as failed", obs["summary"]["failed"] == 0,
+          json.dumps(obs["summary"]))
+    check("the note says interaction was off", "skipped" in (obs["note"] or ""), obs["note"])
+    check("only observation tools were actually called",
+          set(fake_obs.calls) == {"list_apps", "get_app_state"}, json.dumps(fake_obs.calls))
+
+    print("run: the surface is described and diffed on every run (the last round's blind spot)")
+    fake_surf = FakeMcp()
+    surf_run = run_job({"mcp_url": "http://mcp.test"}, "j", client=fake_surf)
+    surf = surf_run.get("surface") or {}
+    check("the run records what the proxy offers", surf.get("ok") is True, json.dumps(surf)[:160])
+    check("offered list is present", isinstance(surf.get("offered"), list), json.dumps(surf)[:160])
+    check("expected is the nine-tool set", sorted(surf.get("expected") or []) == sorted(DESKTOP_TOOL_NAMES),
+          json.dumps(surf.get("expected")))
+    check("it exposes the real inputSchema for diagnosis",
+          isinstance(surf.get("schemas"), dict), json.dumps(surf)[:160])
+
+    # The pre-fix failure mode: the proxy offers a NARROWER surface than the job
+    # assumes. The run must SAY which tools are missing, not just fail blindly.
+    class NarrowMcp(FakeMcp):
+        def list_tools(self):
+            return [{"name": "list_apps", "description": "only this", "inputSchema": {}}]
+
+        def call(self, name, arguments=None):
+            if name != "list_apps":
+                return {"ok": False, "content": [{"type": "text", "text": "unsupportedTool"}],
+                        "isError": True}
+            return super().call(name, arguments)
+
+    narrow = run_job({"mcp_url": "http://mcp.test"}, "j", client=NarrowMcp())
+    ns = narrow.get("surface") or {}
+    check("a narrower proxy is DETECTED", ns.get("matches") is False, json.dumps(ns)[:160])
+    check("…and the missing tools are named",
+          "get_app_state" in (ns.get("missing") or []), json.dumps(ns.get("missing")))
+    check("…the run is honest about the shortage in its note",
+          "does not offer" in (narrow.get("note") or ""), narrow.get("note"))
+    check("…and the result is not reported as ok", narrow["status"] != "ok", narrow["status"])
 
     print("run: a transport failure stops the job and says why")
     fake = FakeMcp(raise_at=4)
