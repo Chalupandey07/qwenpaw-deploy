@@ -146,7 +146,7 @@ default allow), scope (default `'agent'`, reserved), created_at, updated_at
 
 `features/vault/vault-broker.py` on the machine (systemd service
 `qwenpaw-vault-broker.service`, **TCP on the Docker bridge gateway
-172.18.0.1:8899** — not a Unix socket, not 0.0.0.0; see the header comment
+172.18.0.1:8896** — not a Unix socket, not 0.0.0.0; see the header comment
 in the file for why: the caller is the agent inside a Docker container,
 which can reach the bridge gateway but cannot see a host Unix socket,
 and adding a volume mount needs a container recreate). Header token
