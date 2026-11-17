@@ -2043,3 +2043,121 @@ never `failed`); and — over the real wire — every `tools/call` after
 neither `app` nor one of the step args, the preflight will now name it as a
 single skipped step rather than eight tool errors — so the next run either
 passes or says precisely what is missing.
+
+## Part 11 — Found by a LIVE run, 2026-11-17 ~15:3x IST (B-43)
+
+### B-43 · P1 · The 9-tool job passed the `app` fix but steps 6–9 still failed on the next layer of missing arguments — FIXED-CODE
+
+**Files:** `features/codemode/vm/codemode-runner.py`,
+`features/codemode/vm/test_mcp.py`, `features/codemode/vm/test_e2e.py`,
+`features/codemode/README.md`, `features/test-project/run-tests.py`.
+
+**Found by the run that B-42 predicted.** Muse deployed B-42 to the machine and
+ran the new job live (`run_1a1e8f3fd71`, 2026-11-17 ~15:3x IST):
+
+```
+status : partial
+steps  : 5/9
+step 1 list_apps                 OK
+step 2 get_app_state             OK
+step 3 click                     OK
+step 4 type_text                 OK
+step 5 press_key                 OK
+step 6 scroll                    Missing required argument: element_index
+step 7 set_value                 Missing required argument: element_index
+step 8 drag                      Missing required argument: from_x
+step 9 perform_secondary_action  Missing required argument: element_index
+```
+
+Exactly the failure shape B-42 predicted: "the next run either passes or says
+precisely what is missing." The proxy reports only the FIRST missing argument
+per call, so the four failures hid further missing args. The recorded
+`surface.schemas` (same run) is the full truth:
+
+| tool | required |
+|---|---|
+| list_apps | — |
+| get_app_state | app |
+| click | app |
+| type_text | app, text |
+| press_key | app, key |
+| scroll | app, element_index, direction |
+| set_value | app, element_index, value |
+| drag | app, from_x, from_y, to_x, to_y |
+| perform_secondary_action | app, element_index, action |
+
+**Two facts the schema itself supplied, which no guess would have found:**
+`direction` is documented in the schema description as "up, down, left, or
+right" — so `"down"` is a documented value, not a guess. And `element_index`
+is a STRING ("Element identifier"), not an integer — the job passes it as one.
+Coordinates are `number`, not `integer`.
+
+**Cause.** B-42 fixed `app` but left three invented argument shapes in place:
+`scroll` passed `dy` (not a proxy argument), `drag` passed `x1/y1/x2/y2` (not
+proxy arguments), and `perform_secondary_action` passed nothing beyond `app`.
+The values those steps need — an element index, a secondary action name, drag
+coordinates — only exist inside step 2's accessibility tree, and nothing in
+the job read it.
+
+**Fix — derive from the tree, never invent.**
+
+* `parse_tree()` reads the `get_app_state` text the proxy actually returned.
+  Lines are `TAB, index, role, name, [Secondary Actions: ...], [Frame: {...}]`;
+  the parse goes right-to-left (Frame, then Secondary Actions) so a name may
+  contain commas, parentheses, and the word "Frame:". Roles are matched
+  longest-first ("push button" is one role, not "push").
+* One parser, four selectors: `scroll` takes the largest scrollable container
+  (the tree carries no focus marker, so "the focused view" is the largest
+  scrollable — a deterministic proxy, not a guess); `set_value` takes the first
+  settable element (a frame has no AX value, so it is never settable);
+  `perform_secondary_action` takes the first element with Secondary Actions
+  and uses its first action verbatim (`doDefault`); `drag` takes the largest
+  draggable element and derives coordinates from its frame (centre ± offset).
+* `preflight_step()` resolves the tree markers (`ELEMENT_FROM_TREE`,
+  `ACTION_FROM_TREE`, `DRAG_FROM_TREE`) from `resolved["tree"]` and reports
+  ALL missing arguments with named reasons (`element_index:no_settable_element`,
+  `from_x:no_frame_bounds`), not just the first. An argument name outside the
+  tool's declared props is a skip (`undeclared_arg:dy`) — the B-42 guard.
+* One enum retry: when a tool error names the enum it wants, `scroll` retries
+  once with the matching member (e.g. `DOWN`); otherwise the verbatim error is
+  recorded. No second retry.
+* `TOOL_PARAMS` is now the proxy's declared schema (full props + types), and
+  `schema_tokens()` renders `number`/`boolean` types instead of calling
+  everything a string. The bench's token estimate now describes a surface
+  that can actually be called.
+
+**The honest outcome on the live app is 8 passed / 1 skipped / 0 failed.**
+The live tree is a single frame — no settable element exists — so `set_value`
+skips with `underivable:element_index:no_settable_element` and is never
+called. Sending it at a frame would produce a tool error indistinguishable
+from a real bug, which is exactly the confusion B-42 removed. Against a
+richer tree fixture (a text field, a web area, a list, a button) the same job
+scores 9/9 with no edit.
+
+**Tests — fail-first.**
+
+| Suite | Before | After | Fails on the pre-fix job |
+|---|---|---|---|
+| `--selftest` | 125 | **196** | the old `dy`/`x1` shapes, the missing `element_index`, the 9/9 claim on a frame-only tree |
+| `test_mcp.py` | 31 | **31** | — |
+| `test_e2e.py` | 48 | **53** | `app` absent from every interaction call; tree-derived args absent from the wire |
+
+New assertions: the tree parser (live frame line, multi-word roles, a name
+containing "Frame:" and a comma, header lines skipped); the four selectors;
+drag coordinates (880, 422, 1040, 582 on the live frame); the preflight
+naming every missing argument; the empty-tree and no-actions skips; the fake
+rejecting the old `dy`/`x1` shapes; the direction-enum retry (exactly two
+calls, second `DOWN`) and the no-retry case when the error names no enum; and
+a drift test asserting `TOOL_REQUIRED` == `schema_tokens` required ==
+the recorded live schema for all nine tools. `FakeMcp` and `MockMcpServer`
+both enforce the full schema now — unknown args, first-missing ordering, and
+the semantic checks (element in the tree, direction in the enum, settable
+role, valid action, coords in bounds) — against their own hand-written tree
+fixtures, not the runner's tables.
+
+**NOT VERIFIED:** no live run against the machine's proxy from here
+(`172.18.0.1:8898` is machine-local). The machine hit its 120-minute max run
+at ~21:46 IST on 2026-11-17, so the deploy waits until it returns. Muse
+redeploys `codemode-runner.py` + `mcp.py`, restarts
+`qwenpaw-codemode.service`, and runs the job live. Expected: **8 passed, 1
+skipped (`set_value`), 0 failed**.
