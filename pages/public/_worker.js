@@ -241,6 +241,72 @@ function computerPanelScript() {
       document.getElementById("qwenpawVaultPopupUserRow").style.display = kind === "basic" ? "" : "none";
       document.getElementById("qwenpawVaultPopupOrigin").required = kind !== "command";
     }
+    // ---- Vault provider presets ----
+    // Picking a provider fills in the kind, the origin and the header name
+    // (and suggests a name and a title when those are still empty), so
+    // adding a key is just: pick a provider, type a name, paste the key.
+    // "Custom" is the default and leaves every field alone, for a
+    // provider that is not listed. Pasting an origin that matches a
+    // preset picks that provider by itself. The same list lives in
+    // pages/public/vault/vault.js for the /vault page — keep them in
+    // sync. Origins are bare origins (no path): the router pins the key
+    // to exactly this origin. Providers that need an extra header the
+    // request endpoint cannot send yet (Anthropic needs anthropic-version,
+    // Notion needs Notion-Version, Linear uses a bare key, not Bearer)
+    // are deliberately NOT listed — use Custom for those for now.
+    var VAULT_PROVIDER_PRESETS = [
+      { key: "custom", label: "Custom — enter the details yourself", kind: "", origin: "", headerName: "", name: "", title: "" },
+      { key: "cloudflare", label: "Cloudflare", kind: "bearer", origin: "https://api.cloudflare.com", headerName: "", name: "cloudflare", title: "Cloudflare API token" },
+      { key: "deepseek", label: "DeepSeek", kind: "bearer", origin: "https://api.deepseek.com", headerName: "", name: "deepseek", title: "DeepSeek API key" },
+      { key: "github", label: "GitHub", kind: "bearer", origin: "https://api.github.com", headerName: "", name: "github", title: "GitHub personal access token" },
+      { key: "gemini", label: "Google Gemini", kind: "header", origin: "https://generativelanguage.googleapis.com", headerName: "x-goog-api-key", name: "gemini", title: "Google Gemini API key" },
+      { key: "groq", label: "Groq", kind: "bearer", origin: "https://api.groq.com", headerName: "", name: "groq", title: "Groq API key" },
+      { key: "huggingface", label: "Hugging Face", kind: "bearer", origin: "https://huggingface.co", headerName: "", name: "huggingface", title: "Hugging Face token" },
+      { key: "mistral", label: "Mistral", kind: "bearer", origin: "https://api.mistral.ai", headerName: "", name: "mistral", title: "Mistral API key" },
+      { key: "openai", label: "OpenAI", kind: "bearer", origin: "https://api.openai.com", headerName: "", name: "openai", title: "OpenAI API key" },
+      { key: "openrouter", label: "OpenRouter", kind: "bearer", origin: "https://openrouter.ai", headerName: "", name: "openrouter", title: "OpenRouter API key" },
+      { key: "slack", label: "Slack", kind: "bearer", origin: "https://slack.com", headerName: "", name: "slack", title: "Slack bot token" },
+      { key: "xai", label: "xAI", kind: "bearer", origin: "https://api.x.ai", headerName: "", name: "xai", title: "xAI API key" },
+    ];
+    function vaultPopupFindPreset(key) {
+      for (var i = 0; i < VAULT_PROVIDER_PRESETS.length; i++) {
+        if (VAULT_PROVIDER_PRESETS[i].key === key) return VAULT_PROVIDER_PRESETS[i];
+      }
+      return null;
+    }
+    function vaultPopupFindPresetByOrigin(origin) {
+      var o = (origin || "").trim().toLowerCase();
+      if (!o) return null;
+      for (var i = 0; i < VAULT_PROVIDER_PRESETS.length; i++) {
+        var p = VAULT_PROVIDER_PRESETS[i];
+        if (p.origin && p.origin.toLowerCase() === o) return p;
+      }
+      return null;
+    }
+    function vaultPopupApplyProvider() {
+      var sel = document.getElementById("qwenpawVaultPopupProvider");
+      var p = vaultPopupFindPreset(sel.value);
+      if (!p || p.key === "custom") return;
+      document.getElementById("qwenpawVaultPopupKind").value = p.kind;
+      document.getElementById("qwenpawVaultPopupOrigin").value = p.origin;
+      if (p.kind === "header") document.getElementById("qwenpawVaultPopupHeader").value = p.headerName;
+      var nameEl = document.getElementById("qwenpawVaultPopupName");
+      if (!nameEl.value.trim() && p.name) nameEl.value = p.name;
+      var titleEl = document.getElementById("qwenpawVaultPopupTitle");
+      if (!titleEl.value.trim() && p.title) titleEl.value = p.title;
+      vaultPopupSyncKind();
+    }
+    function vaultPopupDetectProvider() {
+      var origin = document.getElementById("qwenpawVaultPopupOrigin").value;
+      var p = vaultPopupFindPresetByOrigin(origin);
+      var sel = document.getElementById("qwenpawVaultPopupProvider");
+      if (p && sel.value !== p.key) {
+        sel.value = p.key;
+        vaultPopupApplyProvider();
+      } else if (!p && sel.value !== "custom") {
+        sel.value = "custom";
+      }
+    }
     function closeVaultPopup() {
       if (!vaultPopupEl) return;
       try {
@@ -303,6 +369,7 @@ function computerPanelScript() {
             '<div style="background:#fff;border-radius:16px;box-shadow:0 12px 48px rgba(0,0,0,0.35);width:min(480px,92vw);max-height:90vh;overflow:auto;padding:24px;font-family:system-ui,sans-serif;color:#1a1d24;">' +
             '<h2 style="margin:0 0 4px;font-size:18px;">Add a key to the Vault</h2>' +
             '<p style="margin:0 0 16px;font-size:13px;color:#5b6470;">Keys the agent can use but never see. The value is sealed on the server and never shown again.</p>' +
+            '<label style="display:block;font-size:13px;margin-bottom:10px;">Provider<br><select id="qwenpawVaultPopupProvider" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;margin-top:4px;"></select></label>' +
             '<label style="display:block;font-size:13px;margin-bottom:10px;">Name<br><input id="qwenpawVaultPopupName" type="text" placeholder="e.g. github-main" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;margin-top:4px;"></label>' +
             '<label style="display:block;font-size:13px;margin-bottom:10px;">Kind<br><select id="qwenpawVaultPopupKind" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;margin-top:4px;"><option value="bearer">API key (Authorization: Bearer)</option><option value="header">Custom header</option><option value="basic">Username + password</option><option value="command">Command / CLI env var</option></select></label>' +
             '<label id="qwenpawVaultPopupOriginRow" style="display:block;font-size:13px;margin-bottom:10px;">Origin<br><input id="qwenpawVaultPopupOrigin" type="text" placeholder="https://api.github.com" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;margin-top:4px;"></label>' +
@@ -321,6 +388,18 @@ function computerPanelScript() {
           vaultPopupEl = back;
           back.addEventListener("click", function (e) { if (e.target === back) closeVaultPopup(); });
           document.getElementById("qwenpawVaultPopupKind").addEventListener("change", vaultPopupSyncKind);
+          // Populate the provider select from the preset list (kept in
+          // sync with the /vault page) and wire autofill + auto-detect.
+          var provSel = document.getElementById("qwenpawVaultPopupProvider");
+          for (var pi = 0; pi < VAULT_PROVIDER_PRESETS.length; pi++) {
+            var opt = document.createElement("option");
+            opt.value = VAULT_PROVIDER_PRESETS[pi].key;
+            opt.textContent = VAULT_PROVIDER_PRESETS[pi].label;
+            provSel.appendChild(opt);
+          }
+          provSel.value = "custom";
+          provSel.addEventListener("change", vaultPopupApplyProvider);
+          document.getElementById("qwenpawVaultPopupOrigin").addEventListener("input", vaultPopupDetectProvider);
           document.getElementById("qwenpawVaultPopupSave").addEventListener("click", vaultPopupSave);
           document.getElementById("qwenpawVaultPopupCancel").addEventListener("click", closeVaultPopup);
           document.getElementById("qwenpawVaultPopupOpen").addEventListener("click", function (e) {
