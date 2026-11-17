@@ -446,9 +446,10 @@ def t01():
     markers = sorted(set(re.findall(r"qwenpaw(?:Computer(?:Btn|Panel)|VaultBtn)", body)))
     ok = code == 200 and "<title>QwenPaw Console</title>" in body \
         and "qwenpawComputerBtn" in markers and "qwenpawComputerPanel" in markers \
-        and "qwenpawVaultBtn" in markers
+        and "qwenpawVaultBtn" in markers \
+        and "data-qwenpaw-vault-menu" in body
     return ("PASS" if ok else "FAIL",
-            f"HTTP {code} size={len(body)} markers={markers}")
+            f"HTTP {code} size={len(body)} markers={markers} vaultmenu={'data-qwenpaw-vault-menu' in body}")
 
 
 def t02():
