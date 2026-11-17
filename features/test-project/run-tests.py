@@ -444,13 +444,16 @@ def skills_list():
 def t01():
     code, body = http_get(PAGES + "/", timeout=120)
     markers = sorted(set(re.findall(r"qwenpaw(?:Computer(?:Btn|Panel)|VaultBtn)", body)))
+    vcode, vbody = http_get(PAGES + "/vault", timeout=120)
     ok = code == 200 and "<title>QwenPaw Console</title>" in body \
         and "qwenpawComputerBtn" in markers and "qwenpawComputerPanel" in markers \
         and "qwenpawVaultBtn" in markers \
         and "data-qwenpaw-vault-menu" in body \
-        and "data-qwenpaw-vault-popup" in body
+        and "data-qwenpaw-vault-popup" in body \
+        and "qwenpawVaultPopupProvider" in body \
+        and vcode == 200 and "fProvider" in vbody
     return ("PASS" if ok else "FAIL",
-            f"HTTP {code} size={len(body)} markers={markers} vaultmenu={'data-qwenpaw-vault-menu' in body} vaultpopup={'data-qwenpaw-vault-popup' in body}")
+            f"HTTP {code} size={len(body)} markers={markers} vaultmenu={'data-qwenpaw-vault-menu' in body} vaultpopup={'data-qwenpaw-vault-popup' in body} vaultprovider={'qwenpawVaultPopupProvider' in body} vaultpage={vcode} vaultpageprovider={'fProvider' in vbody}")
 
 
 def t02():
