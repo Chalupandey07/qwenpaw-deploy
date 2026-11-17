@@ -1,11 +1,16 @@
 # API key vault — the model can USE a key but never SEE it (Rakazo-style)
 
-**Status: code complete 2026-11-17 (all 5 phases, by Muse + DeepSeek — no
-AutoClaw, per the user's 2026-11-17 21:16 redirect). Harnesses green:
-T106 55/55, T107 12/12, full machine-free suite green. NOT yet deployed:
-D1 schema apply + master-secret provisioning + Pages deploy + broker
-install + live verification (canary, real GitHub call, restart survival)
-are Muse's deploy-time work.**
+**Status: DEPLOYED + LIVE 2026-11-17 (D1 schema applied, master/broker
+secrets provisioned, both Pages deployed, broker installed on the machine
+at 172.18.0.1:8896, /health ready:true, /vault UI verified live in a real
+browser with a canary item). Harnesses green: T106 55/55, T107 14/14, full
+machine-free suite green. Live fixes during deploy: (1) broker port
+8899 -> 8896 (8899 is the Camoufox bridge); (2) broker sends its own
+User-Agent `QwenPaw-Vault-Broker/1.0` — Cloudflare blocks Python-urllib's
+default UA with 1010, which made /vault/export fail inside the broker and
+every broker /request return 502 upstream_error. Remaining live checks:
+broker /run redaction test + restart survival + a real GitHub call with a
+user-supplied key.**
 
 ## What the user wants (their words, 2026-11-17)
 A vault where the USER adds API keys (GitHub key, Cloudflare key, any custom
