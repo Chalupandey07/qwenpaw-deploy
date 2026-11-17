@@ -1472,6 +1472,56 @@ def t105():
     return _harness("features/computer/harness-terminal-served.mjs", 50)
 
 
+def t106():
+    """The vault: the model can USE a key but never SEE it (55 checks).
+
+    Rakazo-style vault (2026-11-17). The value is decrypted ONLY inside the
+    Worker; the model sends the key NAME + what it wants done; the Worker
+    builds the request with the real key and redacts every byte back.
+
+    Drives the REAL Worker (_worker.js -> vault router) against a D1 mock
+    backed by real SQLite (the real schema.sql), with the upstream fetch
+    stubbed. A fresh canary (random 32-hex) per run, so a test that passes
+    by matching a stale value is impossible. Asserts:
+      (a) anon list/put/request/export -> 401; list returns metadata only
+          (no canary, no base64/percent-encoded form, no ciphertext, no row
+          id); an upstream that echoes the Authorization header AND leaks
+          the token in plain text returns a body with [redacted] and no
+          canary form — while the upstream really did receive the Bearer
+          header; a wrong-origin request -> 403 AND writes no use row AND
+          never calls the upstream; reveal needs the session cookie AND the
+          console bearer token (session alone -> 401); export needs the
+          broker token; validation (bad name/origin/header, reserved env
+          var, *_PROXY, command via /request -> 400/409);
+      (b) crypto unit checks via the real crypto.js: seal/open round-trip,
+          wrong host/kind/item-id in the AAD -> null (no transplant, no
+          cross-type), tampered ciphertext -> null, overlapping redaction
+          forms merge into one marker, a short raw value is never a form;
+      (c) activity lists uses without values; remove deletes the item and
+          its uses.
+    The redeploy/restart half of property (c) is a live test, run by Muse
+    at deploy time — see features/vault/README.md.
+    Fails 54/55 pre-fix (the short-value expectation was a test bug, not a
+    code bug — fixed in the test); 55/55 after.
+    """
+    return _harness("features/vault/harness-vault.mjs", 55)
+
+
+def t107():
+    """The vault broker: env-var injection + output scrubbing (12 checks).
+
+    Machine-free selftest of features/vault/vault-broker.py (which also
+    tests the shared redact.py). Asserts the per-kind redaction forms
+    (bearer scheme variants, basic decoded user:pass + password alone),
+    that a short raw value is never a form, that redaction replaces every
+    occurrence, and that the streaming redactor hides a value split across
+    chunks. The live broker (Unix-socket/bridge service, /run with a real
+    command, env | sort proving [redacted]) is verified by Muse at deploy
+    time — see features/vault/README.md.
+    """
+    return _py_script_harness(["features/vault/vault-broker.py", "--selftest"], 12)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -1966,6 +2016,8 @@ TESTS = [
     ("T103", "terminal: the browser path — preamble, framing, xterm CSS", "computer", "protocol", t103),
     ("T104", "rail: sidebar reachable + Terminal tab clickable after connect", "computer", "protocol", t104),
     ("T105", "terminal: /vendor served as JS, not the console SPA", "computer", "protocol", t105),
+    ("T106", "vault: the model can USE a key but never SEE it (canary, gate, AAD, redaction)", "vault", "protocol", t106),
+    ("T107", "vault broker: env-var injection + output scrubbing (selftest)", "vault", "protocol", t107),
 ]
 
 SKIP_NOTE = {
