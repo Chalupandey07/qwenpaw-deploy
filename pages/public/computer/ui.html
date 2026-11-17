@@ -894,9 +894,16 @@
       scheduleRenew(session);
     });
 
+    // The "Connecting…" courtesy line (written into xterm at open) must not
+    // sit above the prompt forever. Clear it the moment real shell output
+    // arrives — at that point the terminal holds nothing else, so a clear
+    // cannot erase user input. (Queued UI bug, seen in the B-40 browser
+    // check: the line stayed visible above the prompt after connect.)
+    let firstData = true;
     socket.addEventListener("message", (ev) => {
       const data = ev.data;
       if (!term) return;
+      if (firstData) { firstData = false; term.clear(); }
       if (typeof data === "string") term.write(data);
       else term.write(new Uint8Array(data));
     });
