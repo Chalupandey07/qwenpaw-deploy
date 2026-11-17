@@ -1669,6 +1669,33 @@ def t111():
     return _py_script_harness(["features/reset/reset-broker.py", "--selftest"], 20)
 
 
+def t112():
+    """Screen retry on failure (B-47, 17 checks).
+
+    Machine-free harness (features/computer/harness-screen-retry.mjs) for
+    the fix that makes the `failed` branch of the /computer message handler
+    retry through the bounded scheduleReconnect() instead of only showing
+    the error. The capability URL is minted once and lives 10 minutes; after
+    that a WebSocket drop makes noVNC reconnect with the expired URL, the
+    Worker answers 403, and the shim posts failed. loadScreen() re-mints,
+    so the retry gets a fresh URL. Static checks on the real ui.html: the
+    failed branch calls scheduleReconnect() and still records the specific
+    error first; scheduleReconnect() is single-flight (reconnectTimer) so
+    the three iframes posting one failure cannot burn three budget units;
+    the budget is enforced; the exhausted branch preserves a specific error
+    instead of overwriting it with the generic "closed repeatedly" wording;
+    the connected branch clears the pending timer. Dynamic checks: the real
+    scheduleReconnect is extracted and run in a VM with mocks — three
+    simultaneous calls schedule exactly one retry, firing it calls
+    loadScreen once and frees the slot, a later failure schedules fresh,
+    and at the budget no further retry is scheduled. Fail-first proven:
+    against the unfixed ui.html it fails 9/17. The live half (leave the
+    page open past 10 minutes, trigger a reconnect, confirm the error is
+    gone) is run by Muse in a real browser — see BUGS.md B-47.
+    """
+    return _harness("features/computer/harness-screen-retry.mjs", 17)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2169,6 +2196,7 @@ TESTS = [
     ("T109", "sleep/wake reporter: next native run + agent activity (selftest)", "sleepwake", "protocol", t109),
     ("T110", "reset: the broker's HTTP surface — auth, preview, confirmation, idempotency, partial, concurrency, happy path (harness)", "reset", "protocol", t110),
     ("T111", "reset broker: allowlist guard + category table (selftest)", "reset", "protocol", t111),
+    ("T112", "screen retry on failure (B-47): failed branch retries through bounded single-flight scheduleReconnect (harness)", "computer", "protocol", t112),
 ]
 
 SKIP_NOTE = {
