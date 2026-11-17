@@ -2161,3 +2161,34 @@ at ~21:46 IST on 2026-11-17, so the deploy waits until it returns. Muse
 redeploys `codemode-runner.py` + `mcp.py`, restarts
 `qwenpaw-codemode.service`, and runs the job live. Expected: **8 passed, 1
 skipped (`set_value`), 0 failed**.
+
+## Part 12 — Queued UI bug, fixed in code 2026-11-17 ~23:0x IST (B-44)
+
+### B-44 · P3 · The "Connecting to the computer's terminal…" line sits above the prompt forever — FIXED-CODE, NOT LIVE-VERIFIED
+
+Seen in the B-40 browser check (2026-11-17 ~14:47 IST): after Take control
+and opening the Terminal tab, the prompt `# ` appears — and the courtesy
+line `Connecting to the computer's terminal…` stays visible above it for
+the whole session. Cosmetic, but it reads as a stuck state.
+
+**Root cause.** `openTerminal()` writes the courtesy line into xterm
+(`term.write(...)`) right after `term.open()`, and nothing ever removes
+it. The socket `message` handler appends real shell output below it, so
+the line is permanent scrollback.
+
+**Fix.** A per-session `firstData` flag in `openTerminal()`: on the first
+`message` event, `term.clear()` runs before the data is written. At that
+point the terminal holds nothing but the courtesy line, so the clear
+cannot erase user input. The B-35 diagnostic is preserved — the line
+still appears if xterm runs, and its absence still means xterm never ran.
+
+**Tests — fail-first.** T105 50 -> 51 checks. New assertion: the message
+handler clears on first data (`let firstData = true;` + `if (firstData)
+{ firstData = false; term.clear(); }`). Verified the check fails on the
+pre-fix `ui.html` and passes on the fixed one; T105 51/51 via the runner.
+
+**NOT VERIFIED LIVE:** no browser check yet. The user was actively using
+the console when the fix was written, and a second browser session on the
+same computer corrupts terminal tests (lesson from T106). Deploy to both
+Pages, then open the Terminal tab in a real browser: the prompt must
+appear with no "Connecting…" line above it.
