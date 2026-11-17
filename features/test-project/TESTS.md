@@ -553,6 +553,18 @@ the parent runs them and pastes the outcome into RESULTS.md.
 - Why the machine: the runner VM's egress IP rotates per connection (12 parallel curls → 12 distinct IPv6 / 5 distinct IPv4), so a burst from this VM never accumulates in one per-IP bucket — the same rotating-IP effect is also why the first in-memory limiter never fired. A real user (stable home IP) and the machine are both single-IP, so the cap bites for them. The DO is a singleton per id, so counts are exact regardless of Worker isolates.
 - History: added 2026-11-15 with the KV→D1 board migration; fixes audit bug `board-no-rate-limit-auth`. The first (in-memory) limiter was proven dead live (90 unauth POSTs → 0×429) and replaced by the DO.
 
+### T106 — vault: the model can USE a key but never SEE it (canary, gate, AAD, redaction)
+- Area: `vault` · Method: `protocol`
+- Check: `node features/vault/harness-vault.mjs` (55 checks). Drives the REAL Worker (`_worker.js` → vault router) against a D1 mock backed by real SQLite (the real `schema.sql`), with the upstream fetch stubbed. A fresh canary (random 32-hex) per run. Asserts: (a) anon list/put/request/export → 401; list returns metadata only (no canary, no base64/percent-encoded form, no ciphertext, no row id); an upstream that echoes the Authorization header AND leaks the token in plain text returns a body with `[redacted]` and no canary form — while the upstream really did receive the Bearer header; a wrong-origin request → 403 AND writes no use row AND never calls the upstream; reveal needs the session cookie AND the console bearer token (session alone → 401); export needs the broker token; validation (bad name/origin/header, reserved env var, `*_PROXY`, command via `/request` → 400/409). (b) Crypto unit checks via the real `crypto.js`: seal/open round-trip, wrong host/kind/item-id in the AAD → null (no transplant, no cross-type), tampered ciphertext → null, overlapping redaction forms merge into one marker, a short raw value is never a form. (c) Activity lists uses without values; remove deletes the item and its uses.
+- Expected: 55 passed, 0 failed.
+- History: added 2026-11-17 with the vault build (Phase 1 + harness). The redeploy/restart half of property (c) is a live test, run by Muse at deploy time.
+
+### T107 — vault broker: env-var injection + output scrubbing (selftest)
+- Area: `vault` · Method: `protocol`
+- Check: `python3 features/vault/vault-broker.py --selftest` (12 checks). Machine-free selftest of the broker and the shared `redact.py`. Asserts the per-kind redaction forms (bearer scheme variants, basic decoded user:pass + password alone), that a short raw value is never a form, that redaction replaces every occurrence, and that the streaming redactor hides a value split across chunks.
+- Expected: 12 passed, 0 failed.
+- History: added 2026-11-17 with the vault build (Phase 2). The live broker test (`/run` with a real command, `env | sort` proving `[redacted]`) is run by Muse at deploy time.
+
 ---
 
 ## Out of scope for this catalogue (do not add tests here without a new decision)
