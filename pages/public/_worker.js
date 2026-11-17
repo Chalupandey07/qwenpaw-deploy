@@ -12,6 +12,7 @@
 // and that is the entire responsibility of this file.
 import { handleComputer } from "./computer/router.js";
 import { handleVault } from "./vault/router.js";
+import { handleReset } from "./reset/router.js";
 import { restMachine, sleepMachine, machineState, authenticate } from "./machine-control.js";
 import {
   mintSession, sessionFromRequest, sessionSetCookie, sessionClearCookie, SESSION_TTL_MS,
@@ -885,6 +886,21 @@ export default {
         return await handleVault(request, env, url, ORIGIN);
       } catch (err) {
         return new Response(JSON.stringify({ error: "vault_error", detail: String(err).slice(0, 200) }), {
+          status: 500, headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // Settings Reset (2026-11-18). Everything under /reset is its own
+    // surface; the page itself is exempt from the session gate (B-39 lesson),
+    // every API call is verified live against the console by the reset
+    // router's authenticate() and forwarded to the machine-side reset
+    // broker. See features/reset/README.md.
+    if (path === "/reset" || path.startsWith("/reset/")) {
+      try {
+        return await handleReset(request, env, url, ORIGIN);
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "reset_error", detail: String(err).slice(0, 200) }), {
           status: 500, headers: { "Content-Type": "application/json" },
         });
       }
