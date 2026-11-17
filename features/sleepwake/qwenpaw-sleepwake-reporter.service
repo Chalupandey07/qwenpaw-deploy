@@ -1,0 +1,17 @@
+[Unit]
+Description=QwenPaw sleep/wake reporter (machine facts for the keep-alive Worker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=user
+EnvironmentFile=/data/home/qwenpaw/.env
+WorkingDirectory=/data/home/qwenpaw/sleepwake
+ExecStart=/usr/bin/python3 /data/home/qwenpaw/sleepwake/reporter.py --once
+# The reporter never prints its token. A non-zero exit means the report did
+# not reach the Worker (bad token, Worker down, no network); the timer
+# retries in 2 minutes and the Worker fails closed (holds the machine awake)
+# while the report is stale, so a missed tick is safe, never a wrong sleep.
+StandardOutput=journal
+StandardError=journal
