@@ -279,6 +279,90 @@ function computerPanelScript() {
     btn.addEventListener("click", function () { setOpen(!open); });
     document.getElementById("qwenpawComputerClose").addEventListener("click", function () { setOpen(false); });
     setOpen(open);
+
+    // ---- Vault item in the account menu ----
+    // The account dropdown (Avatar manager, Appearance, Message display,
+    // Settings, ...) is the console's own React dialog (role="dialog",
+    // named "Settings"), rendered as a portal at the end of the document
+    // and rebuilt every time it opens. A one-off insert would vanish on
+    // the next open, so a MutationObserver re-inserts the item on every
+    // open.
+    //
+    // The item is a CLONE of the "Settings" button, not a fresh element:
+    // cloning copies the exact classes, so it looks identical to the other
+    // items without guessing class names. Only the icon (a lock) and the
+    // label ("Vault") change. cloneNode copies attributes, not listeners,
+    // so the click is ours alone. Inserted right after "Settings" in the
+    // first group.
+    function findSettingsDialog() {
+      var d = document.querySelector('[role="dialog"][aria-label="Settings"]');
+      if (d) return d;
+      var dialogs = document.querySelectorAll('[role="dialog"]');
+      for (var i = 0; i < dialogs.length; i++) {
+        var btns = dialogs[i].querySelectorAll("button");
+        for (var j = 0; j < btns.length; j++) {
+          if ((btns[j].textContent || "").trim() === "Settings") return dialogs[i];
+        }
+      }
+      return null;
+    }
+    function addVaultMenuItem() {
+      try {
+        var dialog = findSettingsDialog();
+        if (!dialog) return;
+        if (dialog.querySelector("[data-qwenpaw-vault-menu]")) return;
+        var buttons = dialog.querySelectorAll("button");
+        var settingsBtn = null;
+        for (var i = 0; i < buttons.length; i++) {
+          if ((buttons[i].textContent || "").trim() === "Settings") { settingsBtn = buttons[i]; break; }
+        }
+        if (!settingsBtn) return;
+        var item = settingsBtn.cloneNode(true);
+        item.setAttribute("data-qwenpaw-vault-menu", "1");
+        // Swap the gear for a lock. Keep the svg element (its classes size
+        // it); only the paths change. Line-style icon, 24x24 like the rest.
+        var svg = item.querySelector("svg");
+        if (svg) {
+          svg.setAttribute("viewBox", "0 0 24 24");
+          svg.setAttribute("fill", "none");
+          svg.setAttribute("stroke", "currentColor");
+          svg.innerHTML = '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path>';
+        }
+        // Relabel. Prefer a bare text node reading "Settings"; else a child
+        // element holding the label. If neither is found, do not insert —
+        // a second "Settings" would be worse than no Vault item.
+        var relabeled = false;
+        for (var j = 0; j < item.childNodes.length; j++) {
+          var n = item.childNodes[j];
+          if (n.nodeType === 3 && (n.textContent || "").trim() === "Settings") {
+            n.textContent = "Vault";
+            relabeled = true;
+            break;
+          }
+        }
+        if (!relabeled) {
+          var kids = item.querySelectorAll("*");
+          for (var k = 0; k < kids.length; k++) {
+            if ((kids[k].textContent || "").trim() === "Settings" && !kids[k].querySelector("svg")) {
+              kids[k].textContent = "Vault";
+              relabeled = true;
+              break;
+            }
+          }
+        }
+        if (!relabeled) return;
+        item.addEventListener("click", function () {
+          window.open("/vault", "_blank", "noopener");
+          try { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+        });
+        settingsBtn.parentNode.insertBefore(item, settingsBtn.nextSibling);
+      } catch (e) { /* never break the console */ }
+    }
+    try {
+      var vaultMenuObserver = new MutationObserver(function () { addVaultMenuItem(); });
+      vaultMenuObserver.observe(document.body, { childList: true, subtree: true });
+      addVaultMenuItem();
+    } catch (e) { /* observer unavailable; the floating Vault button still works */ }
   } catch (e) { /* never break the console */ }
 })();
 </script>`;
