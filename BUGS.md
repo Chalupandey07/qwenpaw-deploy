@@ -2192,3 +2192,37 @@ the console when the fix was written, and a second browser session on the
 same computer corrupts terminal tests (lesson from T106). Deploy to both
 Pages, then open the Terminal tab in a real browser: the prompt must
 appear with no "Connecting…" line above it.
+
+## Part 13 — Queued UI bug, fixed in code 2026-11-17 ~23:0x IST (B-45)
+
+### B-45 · P3 · A hidden toast stays in the accessibility tree forever — FIXED-CODE, NOT LIVE-VERIFIED
+
+Seen in the B-40 browser check (2026-11-17 ~14:47 IST): after Release,
+`"You have control."` was still in the accessibility tree. The `ovYou`
+pill was ruled out — `render()` sets `el.ovYou.hidden = !held` and
+`releaseControl()` clears the lease and calls `render()`, so the pill
+leaves the tree. The culprit is the toast.
+
+**Root cause.** The toast hides with `opacity: 0` alone
+(`.toast{opacity:0}` / `.toast[data-show]{opacity:1}`). An element at
+`opacity: 0` is still exposed to assistive technology — only
+`visibility:hidden` or `display:none` removes it from the tree. So
+`toast("You have control.")` on takeover leaves that text in the tree
+forever (until another toast replaces the textContent), long after it
+faded from sight.
+
+**Fix.** `visibility` in the CSS: base `.toast` gets
+`visibility:hidden` with `transition:opacity .2s, visibility 0s linear
+.2s` (fades out, then leaves the tree when the fade finishes);
+`.toast[data-show]` gets `visibility:visible` with no delay (appears
+immediately, fades in). No JS change — the 3.2 s timer is untouched.
+
+**Tests — fail-first.** T105 51 -> 52 checks. New assertion: a hidden
+toast is `visibility:hidden` and a shown one `visibility:visible`.
+Verified the check fails on the pre-fix `ui.html` and passes on the
+fixed one; T105 52/52 via the runner.
+
+**NOT VERIFIED LIVE:** no browser check yet — same reason as B-44 (user
+active on the console). Deploy to both Pages with B-44, then in a real
+browser: take control, release, and confirm "You have control." is gone
+from the accessibility tree.
