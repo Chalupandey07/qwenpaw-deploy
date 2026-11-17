@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reset — QwenPaw</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0f1115; color: #e8eaf0; margin: 0; padding: 24px; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: #9aa3b2; margin: 0 0 20px; }
+  .warn { background: #2a1414; border: 1px solid #7a2e2e; border-radius: 8px; padding: 12px 14px; margin-bottom: 20px; }
+  .cat { border: 1px solid #343945; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .cat label { display: flex; gap: 10px; align-items: baseline; cursor: pointer; }
+  .cat input { width: 18px; height: 18px; }
+  .cat .name { font-weight: 600; }
+  .cat .hint { color: #9aa3b2; font-size: 13px; margin: 4px 0 0 28px; }
+  .cat .size { color: #7fd4a8; font-size: 13px; margin: 4px 0 0 28px; }
+  .cat .paths { color: #9aa3b2; font-size: 12px; margin: 6px 0 0 28px; white-space: pre-wrap; word-break: break-all; }
+  button { background: #2b6cb0; color: #fff; border: 0; border-radius: 8px; padding: 10px 18px; font: 600 14px system-ui, sans-serif; cursor: pointer; }
+  button:disabled { background: #3a3f4a; color: #8a90a0; cursor: not-allowed; }
+  button.danger { background: #b02b2b; }
+  #preview, #report { margin-top: 20px; }
+  #confirmBox { border: 1px solid #7a2e2e; border-radius: 8px; padding: 14px; margin-top: 20px; display: none; }
+  #confirmBox input[type=text] { background: #171a21; color: #e8eaf0; border: 1px solid #343945; border-radius: 6px; padding: 8px 10px; font: 600 14px monospace; width: 140px; }
+  #status { margin-top: 16px; color: #9aa3b2; white-space: pre-wrap; word-break: break-word; }
+  #status .err { color: #ff9a9a; }
+  #status .ok { color: #7fd4a8; }
+  a { color: #7fb3ff; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Reset</h1>
+  <p class="sub">Wipe parts of QwenPaw. Pick categories, preview exactly what will be deleted, then confirm.</p>
+  <div class="warn"><strong>This cannot be undone.</strong> There is no rollback. Deleting chats removes all conversation history. Deleting backups removes your only rollback copies.</div>
+  <div id="signin" style="display:none" class="warn">You are not signed in to the console. <a href="/">Open the console and sign in</a>, then come back here.</div>
+  <div id="cats"></div>
+  <button id="previewBtn" type="button">Preview what will be deleted</button>
+  <div id="preview"></div>
+  <div id="confirmBox">
+    <p><strong>Final confirmation.</strong> This deletes everything listed above, for good.</p>
+    <p>Type <code>DELETE</code> to confirm: <input id="confirmText" type="text" autocomplete="off" placeholder="DELETE"></p>
+    <p><label><input id="confirmAck" type="checkbox"> I understand this cannot be undone.</label></p>
+    <button id="executeBtn" type="button" class="danger" disabled>Delete the selected categories</button>
+  </div>
+  <div id="status"></div>
+</main>
+<script src="/reset/ui.js"></script>
+</body>
+</html>
