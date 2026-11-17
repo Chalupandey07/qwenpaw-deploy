@@ -2226,3 +2226,63 @@ fixed one; T105 52/52 via the runner.
 active on the console). Deploy to both Pages with B-44, then in a real
 browser: take control, release, and confirm "You have control." is gone
 from the accessibility tree.
+
+## Part 14 — Queued UI bug, INVESTIGATED 2026-11-17 ~23:0x IST, mechanism UNKNOWN (B-46)
+
+### B-46 · P2 · The fullscreen noVNC iframe shows "Failed to connect to server" after take/release, while the embedded view works — OPEN, NOT FIXED
+
+Reported in the B-40 browser check (2026-11-17 ~14:47 IST). After a
+take/release cycle, opening the fullscreen overlay shows noVNC's own
+"Failed to connect to server" error inside the `ovFrame` iframe. The
+embedded `stageFrame` beside the rail works. The error is noVNC's own
+connection failure, NOT the parent's veil — `setPhase()` drives both
+veils together, and the embedded veil is not showing failure.
+
+**What the code establishes (read 2026-11-17, no live reproduction yet).**
+
+- `mountFrames()` sets the SAME `screenPage` URL on all three iframes
+  (`previewFrame`, `ovFrame`, `stageFrame`). The URL is
+  `<capability>/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=<capability>/websockify`.
+- The capability is deterministic (`capability.js`): the seal is
+  HMAC-derived from (policy, expiresAt, target, scope), TTL 10 min,
+  and the scope carries the leaseId — so a new lease invalidates old
+  links. `exp` is `Math.floor((Date.now() + TTL) / 1000)` (router.js:276),
+  i.e. whole seconds.
+- `openOverlay()` calls `loadScreen()`, which re-mints and re-mounts all
+  frames — so opening the overlay SHOULD give the overlay a fresh link.
+- The parent's `message` handler accepts screen-state reports from ANY
+  frame; it does not check `event.source`, so it cannot tell which frame
+  failed. (The shim reports `failed` with the noVNC detail.)
+- `ovFrame` lives in `#overlay`, which is `display:none` until opened.
+  `mountFrames()` still sets its `src` while hidden.
+
+**Three candidate mechanisms (not distinguished — needs a live browser).**
+
+1. **Hidden-frame deferral + single-connection race.** The browser
+   defers the `display:none` iframe, so `ovFrame`'s noVNC starts after
+   `stageFrame` has already taken the (possibly single) VNC connection
+   and is refused. Would explain why the embedded view consistently
+   wins and the fullscreen consistently loses.
+2. **Identical-URL no-reload.** If two mints land in the same second
+   with the same lease, the deterministic seal produces the IDENTICAL
+   URL, and setting `iframe.src` to the identical URL is a browser
+   no-op — a failed `ovFrame` never reloads. Narrow (needs sub-second
+   timing), so probably not the common case.
+3. **A per-capability or per-target connection limit** in the Worker's
+   WebSocket proxy or the upstream websockify, so the third simultaneous
+   noVNC client is refused. Would need the proxy code checked against a
+   live three-frame load.
+
+**What a live reproduction must capture.** Open the overlay after a
+take/release, and record for EACH of the three frames: the `src` URL
+it actually loaded, whether its WebSocket opened, and what the Worker
+returned for that capability (200/403/101). That distinguishes (1)
+from (2) from (3) in one run. Also check whether `openOverlay()`'s
+re-mint actually changes `ovFrame.src`.
+
+**No fix attempted.** A speculative change to the screen flow risks
+breaking the embedded view that currently works. Per the repo rule,
+this waits for a real browser session while the user is away — the same
+session that verifies B-44/B-45. A likely shape once the mechanism is
+known: track per-frame state via `event.source`, and force-reload
+`ovFrame` on open only when THAT frame is in a failed state.
