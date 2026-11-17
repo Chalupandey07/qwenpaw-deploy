@@ -1500,7 +1500,7 @@ def t105():
 
 
 def t106():
-    """The vault: the model can USE a key but never SEE it (55 checks).
+    """The vault: the model can USE a key but never SEE it (63 checks).
 
     Rakazo-style vault (2026-11-17). The value is decrypted ONLY inside the
     Worker; the model sends the key NAME + what it wants done; the Worker
@@ -1526,27 +1526,37 @@ def t106():
           forms merge into one marker, a short raw value is never a form;
       (c) activity lists uses without values; remove deletes the item and
           its uses.
+      (d) list-broker (2026-11-18): the agent's list path — broker token
+          only (no token / wrong token -> 401), metadata only (no canary,
+          no ciphertext, no row id), and it writes NO use row.
     The redeploy/restart half of property (c) is a live test, run by Muse
     at deploy time — see features/vault/README.md.
     Fails 54/55 pre-fix (the short-value expectation was a test bug, not a
-    code bug — fixed in the test); 55/55 after.
+    code bug — fixed in the test); 55/55 after. List-broker: 59/63
+    fail-first (the 4 auth/shape checks fail on the missing route), 63/63
+    after.
     """
-    return _harness("features/vault/harness-vault.mjs", 55)
+    return _harness("features/vault/harness-vault.mjs", 63)
 
 
 def t107():
-    """The vault broker: env-var injection + output scrubbing (14 checks).
+    """The vault broker: env-var injection + output scrubbing (19 checks).
 
     Machine-free selftest of features/vault/vault-broker.py (which also
     tests the shared redact.py). Asserts the per-kind redaction forms
     (bearer scheme variants, basic decoded user:pass + password alone),
     that a short raw value is never a form, that redaction replaces every
     occurrence, and that the streaming redactor hides a value split across
-    chunks. The live broker (Unix-socket/bridge service, /run with a real
-    command, env | sort proving [redacted]) is verified by Muse at deploy
-    time — see features/vault/README.md.
+    chunks, and that the broker sends its own User-Agent (not
+    Python-urllib's, which Cloudflare blocks with 1010). Also the GET
+    /list endpoint (2026-11-18): served live on an ephemeral port with a
+    test token — no token / wrong token -> 401, correct token -> 200 with
+    metadata only, and /health still 200. The live broker (Unix-socket/
+    bridge service, /run with a real command, env | sort proving
+    [redacted]) is verified by Muse at deploy time — see
+    features/vault/README.md.
     """
-    return _py_script_harness(["features/vault/vault-broker.py", "--selftest"], 14)
+    return _py_script_harness(["features/vault/vault-broker.py", "--selftest"], 19)
 
 
 def t108():
