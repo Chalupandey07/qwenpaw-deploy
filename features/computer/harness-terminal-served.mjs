@@ -314,6 +314,9 @@ console.log("page: the terminal still writes into a real, attached xterm");
   check("the courtesy line is written before any server data",
     /Connecting to the computer's terminal/.test(js),
     "its absence in the browser was the clue that xterm never ran");
+  check("the courtesy line is cleared on the first real shell output",
+    /let firstData = true;[\s\S]{0,400}if \(firstData\) \{ firstData = false; term\.clear\(\); \}/.test(js),
+    "otherwise it sits above the prompt forever (B-40 browser check)");
   check("the stylesheet is loaded before the socket is built",
     /link\.href = "\/vendor\/xterm\.css"/.test(js)
     && js.indexOf('link.href = "/vendor/xterm.css"') < js.indexOf("new WebSocket(socketUrl"),
