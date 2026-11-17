@@ -61,6 +61,9 @@
 
     <form id="addForm" class="card" autocomplete="off">
       <h3>Add a key</h3>
+      <label>Provider — pick one and the kind, origin and header fill themselves in
+        <select id="fProvider"></select>
+      </label>
       <label>Name (lowercase, letters/digits/dash/underscore)
         <input id="fName" required pattern="[a-z][a-z0-9_-]{0,63}" placeholder="github-api">
       </label>
