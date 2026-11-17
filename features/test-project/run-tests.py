@@ -113,12 +113,28 @@ def http_get_meta(url, timeout=30):
         if rc == 0 and "\n__HTTP_CODE__:" in out:
             head_and_body, _, code = out.rpartition("\n__HTTP_CODE__:")
             # Split the header block from the body at the first blank line.
-            if "\r\n\r\n" in head_and_body:
-                head, _, body = head_and_body.partition("\r\n\r\n")
-            elif "\n\n" in head_and_body:
-                head, _, body = head_and_body.partition("\n\n")
-            else:
-                head, body = head_and_body, ""
+            # This VM's curl goes through a proxy, so -D - emits the proxy's
+            # own "HTTP/1.1 200 Connection Established" block BEFORE the real
+            # headers. Splitting at the first blank line would take the proxy
+            # block as `head` (no Content-Type) and leave the real headers
+            # prepended to `body` — which is exactly how T06 failed on
+            # 2026-11-17 while the live file was fine (reported size 283,836
+            # = 283,404 real bytes + 432 bytes of real header text).
+            # Strip CONNECT blocks first; a real response is never one.
+            rest = head_and_body
+            while True:
+                if "\r\n\r\n" in rest:
+                    head, _, body = rest.partition("\r\n\r\n")
+                elif "\n\n" in rest:
+                    head, _, body = rest.partition("\n\n")
+                else:
+                    head, body = rest, ""
+                    break
+                first_line = head.split("\n", 1)[0]
+                if "connection established" in first_line.lower():
+                    rest = body
+                    continue
+                break
             headers = {}
             for line in head.replace("\r\n", "\n").split("\n"):
                 if ":" in line:
@@ -911,7 +927,7 @@ def t31():
     total, of, enabled, disabled = (int(x) for x in m.groups())
     rows = [l for l in out.splitlines() if "✓" in l or "✗" in l]
     disabled_rows = [l for l in rows if "✗" in l or "disabled" in l]
-    good = total == 19 and of == 19 and enabled == 19 and disabled == 0 \
+    good = total == 20 and of == 20 and enabled == 20 and disabled == 0 \
         and not disabled_rows
     return ("PASS" if good else "FAIL",
             f"{showing.strip()} rows={len(rows)}")
