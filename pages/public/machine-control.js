@@ -267,6 +267,84 @@ export async function restMachine(request, env, origin) {
   });
 }
 
+// --- Intelligent sleep/wake: the suspend executor (2026-11-17) ----------
+// POST /api/machine/sleep — the keep-alive Worker calls this when its
+// decision function says SLEEP. It is NOT console-authenticated (the
+// keep-alive Worker has no console session); it is authenticated by a
+// shared SLEEP_TOKEN secret, set on both the keep-alive Worker and these
+// Pages projects. The token is the ONLY credential that can suspend the
+// machine from the server side, so it is compared constant-time and the
+// endpoint fails closed (503) when the secret is unset on either side.
+//
+// This reuses the exact suspend call restMachine uses (PATCH desiredState
+// "suspended" + INSTABOX_API_KEY, which Pages already holds). The
+// keep-alive Worker holds no InstaBox key and must never invent one —
+// Pages is the single place that can suspend. The keep-alive Worker
+// writes the sleep state in D1 BEFORE calling here and updates it from
+// this response, so this endpoint only suspends and reports; it writes
+// no state itself.
+export async function sleepMachine(request, env) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (!env.SLEEP_TOKEN) {
+    return json({
+      error: "sleep_token_unset",
+      detail: "machine sleep needs SLEEP_TOKEN (a Worker secret on the keep-alive Worker and both Pages projects).",
+    }, 503);
+  }
+  const supplied = request.headers.get("X-Sleep-Token") || "";
+  if (!(await safeEqual(supplied, env.SLEEP_TOKEN))) {
+    return json({ error: "unauthorized" }, 401);
+  }
+  if (!env.INSTABOX_API_KEY) {
+    return json({
+      error: "instabox_api_key_unset",
+      detail: "machine sleep needs INSTABOX_API_KEY (a Worker secret on both Pages projects).",
+    }, 503);
+  }
+  if (!env.INSTABOX_MACHINE_ID) {
+    return json({
+      error: "instabox_machine_unset",
+      detail: "machine sleep needs INSTABOX_MACHINE_ID (a Worker var).",
+    }, 503);
+  }
+  let res;
+  try {
+    res = await fetch(
+      `https://api.instabox.sh/v1/machines/${encodeURIComponent(env.INSTABOX_MACHINE_ID)}`,
+      {
+        method: "PATCH",
+        headers: {
+          "X-API-Key": env.INSTABOX_API_KEY,
+          "Content-Type": "application/json",
+          "Idempotency-Key": crypto.randomUUID(),
+        },
+        body: JSON.stringify({ desiredState: "suspended" }),
+        signal: AbortSignal.timeout(15000),
+      },
+    );
+  } catch (e) {
+    return json({
+      error: "suspend_failed",
+      detail: "The suspend call failed; the machine was NOT suspended.",
+      detail_raw: String(e).slice(0, 200),
+    }, 502);
+  }
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    return json({
+      error: "suspend_failed",
+      status: res.status,
+      detail: "InstaBox refused the suspend; the machine was NOT suspended.",
+      detail_raw: text.slice(0, 300),
+    }, 502);
+  }
+  return json({
+    ok: true,
+    sleeping: true,
+    message: "Machine sleeping — it will wake 5 minutes before the next routine, or when you open the site.",
+  });
+}
+
 /**
  * GET /api/machine/state — what the UI needs to render the Rest button honestly.
  *
