@@ -16,6 +16,23 @@ back to you passes a redactor. You never see the header or the value.
   add the key without leaving the page. Say which name you need. The full
   Vault page (`/vault` on the console) is linked from the popup for
   managing existing keys.
+
+## Provider presets — the agent can prepare
+
+The add-key form (popup and `/vault` page) has a Provider dropdown:
+GitHub, Cloudflare, OpenAI, Google Gemini, DeepSeek, Groq, Mistral, xAI,
+OpenRouter, Hugging Face, Slack, and Custom. Picking a provider fills in
+the kind, the origin and the header name itself, and suggests a name and
+a title when those are empty — so the user only types a name and pastes
+the key. Custom leaves every field for the user to fill in. Pasting an
+API origin that matches a preset picks that provider by itself.
+
+When the user tells you the site — "my GitHub key", "add a key for
+example.com" — prepare it for them: name the provider they should pick
+from the dropdown (or Custom when it is not listed), and the name to use.
+You never need the value, and you never ask for it. If the site is not
+in the list, say Custom and tell them the origin to type (the bare
+`https://` origin of the API they will call).
 - Never print, log, or repeat a value. Never write a value to a file, a
   ticket, a chat message, or a skill.
 - Never guess a key value, and never use a placeholder as if it were real.
