@@ -27,7 +27,7 @@ WHY TCP ON THE DOCKER BRIDGE (not a Unix socket, not 0.0.0.0)
   CAN reach the host via the Docker bridge gateway (172.18.0.1) — that is
   how it reaches the MCP proxy on 172.18.0.1:8898. So the broker binds
   to the bridge gateway (configurable via VAULT_BROKER_BIND, default
-  172.18.0.1) on port 8899 (next to the MCP proxy), and requires the
+  172.18.0.1) on port 8896 (below the MCP proxy range 8897-8898; 8899 is the Camoufox bridge), and requires the
   X-Vault-Broker-Token header on every call. It never binds 0.0.0.0: the
   InstaBox firewall blocks direct public access, but binding the bridge
   IP is the precise scope — only the container's network can reach it.
@@ -68,7 +68,7 @@ Install (Muse, machine side):
   systemctl daemon-reload && systemctl enable --now qwenpaw-vault-broker
 
   # verify (from the machine, as root):
-  curl http://172.18.0.1:8899/health
+  curl http://172.18.0.1:8896/health
 """
 
 import json
@@ -86,7 +86,7 @@ from redact import redaction_forms, redact, StreamRedactor  # noqa: E402
 
 WORKER_URL = os.environ.get("VAULT_WORKER_URL", "https://qwenpawx.pages.dev")
 BIND = os.environ.get("VAULT_BROKER_BIND", "172.18.0.1")
-PORT = int(os.environ.get("VAULT_BROKER_PORT", "8899"))
+PORT = int(os.environ.get("VAULT_BROKER_PORT", "8896"))
 TOKEN = os.environ.get("VAULT_BROKER_TOKEN", "")
 MAX_ARGV = 32
 MAX_ARG_LEN = 4096
