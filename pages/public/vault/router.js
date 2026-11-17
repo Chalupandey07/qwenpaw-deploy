@@ -187,19 +187,23 @@ function publicItem(row) {
  *     VAULT_BROKER_TOKEN, constant-time, fail-closed when unset (the same
  *     pattern as the computer's machine-facing endpoints, which use
  *     COMPUTER_SYNC_TOKEN).
+ *   * POST /vault/list-broker — the same broker-token auth as /vault/export.
+ *     The agent's list path: it has no session cookie, so it cannot call
+ *     the session-gated /vault/list.
  */
 export function requiresSession(path, method = "GET") {
   if (method === "OPTIONS") return false;
   if (path === "/vault" || path === "/vault/") return false;
   if (/^\/vault\/[A-Za-z0-9_.-]+\.(html|css|js|map|svg|png|ico|woff2?)$/.test(path)) return false;
   if (path === "/vault/export" && method === "POST") return false;
+  if (path === "/vault/list-broker" && method === "POST") return false;
   return true;
 }
 
 function limitClass(path, method) {
   if (path === "/vault/reveal") return "vault_reveal";
   if (path === "/vault/request") return "vault_request";
-  if (path === "/vault/export") return "vault_export";
+  if (path === "/vault/export" || path === "/vault/list-broker") return "vault_export";
   if (path === "/vault/put" || path === "/vault/remove") return "vault_mutation";
   if (path === "/vault/list" || path === "/vault/activity") return "vault_read";
   return null;
@@ -276,6 +280,29 @@ export async function handleVault(request, env, url, origin) {
 
   // ---- list ----
   if (path === "/vault/list" && request.method === "GET") {
+    const rows = await d.prepare(
+      `SELECT name, kind, origin, title, note, policy, created_at, updated_at
+       FROM vault_item ORDER BY name ASC`,
+    ).all();
+    // Metadata only. NEVER ciphertext, never a value, never a row id.
+    return json({ items: (rows.results || []).map(publicItem) });
+  }
+
+  // ---- list-broker ----
+  // The agent's list path. The agent inside the container has no session
+  // cookie, so it cannot call the session-gated /vault/list. Same auth as
+  // /vault/export: VAULT_BROKER_TOKEN, constant-time, fail-closed when
+  // unset. Metadata only, and listing writes NO use row. No decryption
+  // happens here, so no master key is needed.
+  if (path === "/vault/list-broker" && request.method === "POST") {
+    const brokerToken = env.VAULT_BROKER_TOKEN;
+    if (!brokerToken) {
+      return json({ error: "vault_broker_unconfigured", detail: "VAULT_BROKER_TOKEN is not set." }, 503);
+    }
+    const supplied = request.headers.get("X-Vault-Broker-Token") || "";
+    if (!supplied || !safeEqual(supplied, brokerToken)) {
+      return json({ error: "auth_required", detail: "Invalid broker token." }, 401);
+    }
     const rows = await d.prepare(
       `SELECT name, kind, origin, title, note, policy, created_at, updated_at
        FROM vault_item ORDER BY name ASC`,
