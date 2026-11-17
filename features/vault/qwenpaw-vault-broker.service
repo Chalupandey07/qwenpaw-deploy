@@ -1,0 +1,58 @@
+# Vault broker — the machine-side command wrapper.
+#
+# WHAT THIS RUNS
+#   features/vault/vault-broker.py, synced to /data/home/qwenpaw/vault/
+#   on the machine. It runs a command with vault items exported into the
+#   child process environment, and scrubs the child's output before
+#   returning it.
+#
+# WHY TCP ON THE DOCKER BRIDGE
+#   The caller is the QwenPaw agent, inside a Docker container. The
+#   container mounts only working/, working.secret/, working.backups/ — a
+#   host Unix socket is not visible inside it, and adding a volume mount
+#   needs a container recreate (drops in-flight work). The container CAN
+#   reach the host via the Docker bridge gateway (172.18.0.1) — that is
+#   how it reaches the MCP proxy on 172.18.0.1:8898. So the broker binds
+#   to the bridge gateway (VAULT_BROKER_BIND, default 172.18.0.1) on port
+#   8899, and requires the X-Vault-Broker-Token header. It never binds
+#   0.0.0.0.
+#
+# TOKEN
+#   VAULT_BROKER_TOKEN must be set in /data/home/qwenpaw/.env (provisioned
+#   in one pass by scripts/provision-vault-master-secret.py, together with
+#   VAULT_MASTER_SECRET). Without it the broker is CLOSED (fail closed)
+#   and /health says so. The agent's copy lives at
+#   /data/home/qwenpaw/working.secret/vault-broker.token (mode 600),
+#   mounted into the container as /app/working.secret/vault-broker.token.
+#
+# Install (Muse, machine side):
+#   install -d -m 0755 /data/home/qwenpaw/vault
+#   cp features/vault/vault-broker.py /data/home/qwenpaw/vault/
+#   cp features/vault/redact.py       /data/home/qwenpaw/vault/
+#   cp features/vault/qwenpaw-vault-broker.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now qwenpaw-vault-broker
+#
+#   # verify (from the machine):
+#   curl http://172.18.0.1:8899/health
+
+[Unit]
+Description=QwenPaw vault broker (machine-side key use, no value dispensing)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/data/home/qwenpaw/.env
+WorkingDirectory=/data/home/qwenpaw/vault
+ExecStart=/usr/bin/python3 /data/home/qwenpaw/vault/vault-broker.py
+Restart=always
+RestartSec=10
+# The broker holds values only in memory, for the duration of one call,
+# and scrubs every byte it returns. 256M is generous for one command's
+# output and small enough that a leak is caught rather than swapped.
+MemoryMax=256M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
