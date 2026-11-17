@@ -2286,3 +2286,48 @@ this waits for a real browser session while the user is away — the same
 session that verifies B-44/B-45. A likely shape once the mechanism is
 known: track per-frame state via `event.source`, and force-reload
 `ovFrame` on open only when THAT frame is in a failed state.
+
+## Part 15 — Queued UI bug, INVESTIGATED 2026-11-18 ~02:0x IST, mechanism FOUND in code, NOT live-verified (B-47)
+
+### B-47 · P3 · The preview iframe intermittently shows "Screen link expired or invalid" — OPEN, NOT FIXED
+
+Reported as an intermittent preview error. The mechanism is in the code,
+not the network.
+
+**Code facts.**
+- `pages/public/computer/router.js` `proxyScreen()` (line ~957): when
+  `openCapability()` fails on the URL, it answers 403 with the exact text
+  "Screen link expired or invalid." A generation mismatch answers 403
+  "Screen link expired." (line ~974).
+- The capability URL (`state.screenUrl`) is minted ONCE — on page load /
+  take control — and `mountFrames()` (`pages/public/computer/ui.html`,
+  line ~650) points all three iframes at it: `screenUrl +
+  "/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=..."`.
+- The capability has a 10-minute TTL (see B-46: one deterministic URL,
+  scope carries leaseId). Nothing in `ui.html` re-mints it.
+- noVNC runs with `reconnect=true`, so it re-fetches the same URL on
+  every WebSocket drop.
+
+**Mechanism.** After 10 minutes on the page, the capability is expired.
+The next noVNC reconnect (a blip, a pause/resume, a take/release) fetches
+the same expired URL and the Worker answers 403 "Screen link expired or
+invalid", which the preview iframe renders as text. That is why it is
+intermittent: it only appears after the page has been open past the TTL
+and something triggers a reconnect. A fresh page load mints a new URL,
+so the error clears on reload — which is why it looks like a flake.
+
+**Why it is not fixed yet.** The fix is a refresh timer (re-mint the
+capability every ~8 minutes and update the iframe srcs while the screen
+is live) or a re-mint on the 403. Either one touches the screen flow,
+and B-46 warns that a speculative screen-flow change risks the working
+embedded view. It also interacts with B-46's candidate #2: the seal is
+deterministic, so a re-mint in the same second produces the IDENTICAL
+URL and setting `iframe.src` to it is a browser no-op — a refresh must
+land in a different second (or force a reload) to take effect.
+
+**What a live session must confirm.** Leave the /computer page open
+past 10 minutes, trigger a reconnect (or wait for a blip), and confirm
+the preview shows the 403 text. Then the fix (refresh timer) can be
+applied and the same 10-minute wait re-run to prove the error is gone.
+Do this in the same session that verifies B-44/B-45, while the user is
+away.
