@@ -203,6 +203,36 @@ point the user at the Vault button when a key is missing, instead of
 sending them to the /vault page. t01 requires the `data-qwenpaw-vault-popup`
 marker in the console HTML (fail-first proven).
 
+## Provider presets (2026-11-18)
+
+User request (2026-11-18 00:25 IST): picking the kind and typing the
+origin by hand is the stupid way — Rakazo's vault lets you pick from a
+dropdown, so ours should too. Both add-key forms (the in-chat popup and
+the /vault page) now start with a Provider dropdown: Cloudflare,
+DeepSeek, GitHub, Google Gemini, Groq, Hugging Face, Mistral, OpenAI,
+OpenRouter, Slack, xAI, and Custom. Picking a provider fills in the kind,
+the origin and the header name itself, and suggests a name and a title
+when those are still empty — the user only types a name and pastes the
+key. Custom is the default and leaves every field alone. Pasting an API
+origin that matches a preset picks that provider by itself (origin
+auto-detect, in both forms). The edit form on /vault sets the dropdown
+from the stored item's origin. The agent skill now tells the agent to
+prepare from a website: when the user names a site, the agent says which
+provider to pick (or Custom) and which name to use.
+
+The preset list lives in two places — `VAULT_PROVIDER_PRESETS` in
+`_worker.js` (popup) and `VAULT_PRESETS` in `vault/vault.js` (/vault
+page) — keep them in sync; they cannot share a module (the popup is
+inline in the Worker bundle, the page is a static asset). Origins are
+bare origins (no path): the router pins the key to exactly that origin.
+Deliberately NOT listed: Anthropic (needs an `anthropic-version` header
+the request endpoint cannot send yet), Notion (needs `Notion-Version`),
+Linear (uses a bare key, not Bearer) — use Custom for those until the
+request endpoint gains per-item extra headers. t01 requires the popup
+provider-select id `qwenpawVaultPopupProvider` in the console HTML and
+the page provider-select id `fProvider` in the /vault page (fail-first
+proven).
+
 ## The skill (Phase 4)
 
 `features/skills/vault/SKILL.md`: tools the agent may call — `vault_list`
