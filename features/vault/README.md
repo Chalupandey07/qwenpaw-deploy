@@ -183,6 +183,26 @@ Edit, Remove (confirm first). All user-facing strings English. Linked from
 the console chrome the same way the Computer button is linked (Rest button
 precedent, Round 15): a "Vault" entry next to "Computer" on console pages.
 
+## The in-chat add-key popup (2026-11-18)
+
+User request (2026-11-17 23:20 IST): the /vault page is good, but adding a
+key should also work from inside the chat — a secure popup right in the
+chat, like the Muse connector popup, instead of navigating away.
+
+The Vault floating button and the Vault account-menu item now open a modal
+in the chat (injected by `computerPanelScript` in `_worker.js`, same
+injection as the buttons). The modal has the same add-key form as the
+/vault page (name, kind, origin, header name / username, value, title,
+note; kind-dependent fields shown/hidden the same way) and posts to the
+same `/vault/put` endpoint with the same session handling
+(`ensureSession()` + 401 retry, token key `qwenpaw_auth_token`). The value
+lives only in the password input and is wiped on close and after a save.
+A link inside the popup ("Open the full Vault page") opens `/vault` in a
+new tab for managing existing keys. The agent skill tells the agent to
+point the user at the Vault button when a key is missing, instead of
+sending them to the /vault page. t01 requires the `data-qwenpaw-vault-popup`
+marker in the console HTML (fail-first proven).
+
 ## The skill (Phase 4)
 
 `features/skills/vault/SKILL.md`: tools the agent may call — `vault_list`
