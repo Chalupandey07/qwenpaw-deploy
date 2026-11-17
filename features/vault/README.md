@@ -236,8 +236,8 @@ proven).
 ## The skill (Phase 4)
 
 `features/skills/vault/SKILL.md`: tools the agent may call — `vault_list`
-(names only), `vault_request` (name + URL + method + body → Worker
-`/vault/request`), `vault_run` (names + command → broker). Rules: use
+(names only), `vault_request` (name + URL + method + body → broker
+`/request`), `vault_run` (names + command → broker `/run`). Rules: use
 names, never placeholders; never ask the user for a key value in chat (send
 them to the Vault page); never print, log, or repeat a value; if a tool
 result ever contains a value-shaped string, do not quote it — report "the
@@ -245,6 +245,29 @@ response contained a credential-shaped string and it was redacted".
 Provider keys stay in `working.secret/providers/` (QwenPaw owns that
 format; do not move them). The vault is for keys the AGENT uses (GitHub,
 Cloudflare, custom). A one-way import is optional phase 5, not v1.
+
+**The agent's list path (2026-11-18).** The agent runs inside the
+container and has NO browser session cookie, so it cannot call the
+session-gated Worker `/vault/list` or `/vault/request` — both answer 401,
+and a 401 there proves nothing about whether a key exists. That is
+exactly what happened on 2026-11-18: the agent checked
+`/app/working.secret/` (QwenPaw's own auth data, the Camoufox bridge
+token, LLM provider keys — a GitHub key is NOT supposed to be there) and
+concluded it had no GitHub access, because the vault skill was never
+installed on the machine and the agent did not know the vault existed.
+The fix: `POST /vault/list-broker` on the Worker (broker-token auth,
+metadata only, writes NO use row) + `GET /list` on the broker, and the
+skill rewritten so all three tools go through the broker
+(`http://172.18.0.1:8896`) with the token from
+`/app/working.secret/vault-broker.token`. The skill now also tells the
+agent how to answer "do you have access to my account": list first, then
+prove it by calling the service's identity endpoint through
+`vault_request` (GitHub: `GET https://api.github.com/user`). The skill
+is installed on the machine at
+`working/workspaces/default/skills/vault/SKILL.md` (a workspace skill,
+like `fxembed` — a dir + SKILL.md; QwenPaw picks it up without a
+restart). Verify with `docker exec qwenpaw qwenpaw skills list` — vault
+must appear (21 skills).
 
 ## The tests (Phase 5) — prove the three properties
 
