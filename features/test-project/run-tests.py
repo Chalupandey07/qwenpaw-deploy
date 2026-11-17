@@ -1508,7 +1508,7 @@ def t106():
 
 
 def t107():
-    """The vault broker: env-var injection + output scrubbing (12 checks).
+    """The vault broker: env-var injection + output scrubbing (14 checks).
 
     Machine-free selftest of features/vault/vault-broker.py (which also
     tests the shared redact.py). Asserts the per-kind redaction forms
@@ -1519,7 +1519,7 @@ def t107():
     command, env | sort proving [redacted]) is verified by Muse at deploy
     time — see features/vault/README.md.
     """
-    return _py_script_harness(["features/vault/vault-broker.py", "--selftest"], 12)
+    return _py_script_harness(["features/vault/vault-broker.py", "--selftest"], 14)
 
 
 def t104():
