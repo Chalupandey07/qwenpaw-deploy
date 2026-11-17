@@ -156,6 +156,34 @@ def _worker_export(names):
     return out
 
 
+def _worker_list():
+    """Fetch item metadata from the Worker. Returns the items list.
+    The Worker verifies VAULT_BROKER_TOKEN constant-time. Metadata only:
+    never a value, never a ciphertext, never a row id."""
+    if not TOKEN:
+        raise RuntimeError("vault_broker_unconfigured")
+    req = urllib.request.Request(
+        WORKER_URL.rstrip("/") + "/vault/list-broker",
+        data=json.dumps({}).encode(),
+        method="POST",
+    )
+    req.add_header("Content-Type", "application/json")
+    req.add_header("X-Vault-Broker-Token", TOKEN)
+    req.add_header("User-Agent", USER_AGENT)
+    try:
+        with urllib.request.build_opener().open(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            payload = json.loads(e.read().decode())
+        except Exception:
+            payload = {"error": "upstream_error"}
+        raise RuntimeError(payload.get("error", "upstream_error"))
+    if "error" in payload:
+        raise RuntimeError(payload.get("error", "upstream_error"))
+    return payload.get("items", [])
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -200,6 +228,19 @@ class Handler(BaseHTTPRequestHandler):
                 "ready": bool(TOKEN),
                 "reason": None if TOKEN else "VAULT_BROKER_TOKEN is not set",
             })
+            return
+        if self.path == "/list":
+            # The agent's way to discover key names. Metadata only, never
+            # a value — the Worker route behind it returns metadata only.
+            if not self._require_token():
+                self._send(401, {"error": "auth_required"})
+                return
+            try:
+                items = _worker_list()
+            except RuntimeError as e:
+                self._send(502, {"error": "upstream_error", "detail": str(e)})
+                return
+            self._send(200, {"items": items})
             return
         self._send(404, {"error": "not_found"})
 
@@ -413,6 +454,56 @@ def _selftest():
     # The broker's own validation: bad names rejected by the regex.
     check("bad name rejected", not re.match(r"^[a-z][a-z0-9_-]{0,63}$", "Bad Name"))
     check("good name accepted", bool(re.match(r"^[a-z][a-z0-9_-]{0,63}$", "github-api")))
+    # The broker's GET /list endpoint (the agent's way to discover key
+    # names): served live on an ephemeral port with a test token and a
+    # stubbed _worker_list, so no Worker or D1 is needed here.
+    import threading as _threading
+    import urllib.request as _urlreq
+    global TOKEN, _worker_list
+    _old_token = TOKEN
+    _old_worker_list = _worker_list
+    TOKEN = "test-broker-token-0123456789"
+
+    def _fake_list():
+        return [{"name": "github-api", "kind": "bearer",
+                 "origin": "https://api.github.com", "title": "GitHub personal access token",
+                 "policy": "allow", "scope": "agent"}]
+    _worker_list = _fake_list
+    _srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    _port = _srv.server_address[1]
+    _th = _threading.Thread(target=_srv.serve_forever, daemon=True)
+    _th.start()
+    try:
+        def _get(path, token=None):
+            req = _urlreq.Request(f"http://127.0.0.1:{_port}{path}", method="GET")
+            if token:
+                req.add_header("X-Vault-Broker-Token", token)
+            try:
+                with _urlreq.build_opener().open(req, timeout=5) as resp:
+                    return resp.status, json.loads(resp.read().decode())
+            except _urlreq.HTTPError as e:
+                try:
+                    return e.code, json.loads(e.read().decode())
+                except Exception:
+                    return e.code, {}
+        s, _ = _get("/list")
+        check("broker /list without token -> 401", s == 401)
+        s, _ = _get("/list", "wrong-token")
+        check("broker /list with wrong token -> 401", s == 401)
+        s, payload = _get("/list", "test-broker-token-0123456789")
+        check("broker /list with token -> 200", s == 200)
+        check("broker /list returns metadata only",
+              isinstance(payload.get("items"), list)
+              and payload["items"] and payload["items"][0].get("name") == "github-api"
+              and "value" not in payload["items"][0]
+              and "ciphertext" not in payload["items"][0])
+        s, _ = _get("/health")
+        check("broker /health still 200 with /list present", s == 200)
+    finally:
+        _srv.shutdown()
+        _srv.server_close()
+        TOKEN = _old_token
+        _worker_list = _old_worker_list
     failed = [n for n, ok in checks if not ok]
     print(f"vault-broker selftest: {len(checks) - len(failed)} passed, {len(failed)} failed")
     for n in failed:
