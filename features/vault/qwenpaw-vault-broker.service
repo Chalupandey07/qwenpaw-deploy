@@ -14,7 +14,7 @@
 #   reach the host via the Docker bridge gateway (172.18.0.1) — that is
 #   how it reaches the MCP proxy on 172.18.0.1:8898. So the broker binds
 #   to the bridge gateway (VAULT_BROKER_BIND, default 172.18.0.1) on port
-#   8899, and requires the X-Vault-Broker-Token header. It never binds
+#   8896, and requires the X-Vault-Broker-Token header. It never binds
 #   0.0.0.0.
 #
 # TOKEN
@@ -33,7 +33,7 @@
 #   systemctl daemon-reload && systemctl enable --now qwenpaw-vault-broker
 #
 #   # verify (from the machine):
-#   curl http://172.18.0.1:8899/health
+#   curl http://172.18.0.1:8896/health
 
 [Unit]
 Description=QwenPaw vault broker (machine-side key use, no value dispensing)
