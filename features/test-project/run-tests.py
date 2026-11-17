@@ -1522,6 +1522,61 @@ def t107():
     return _py_script_harness(["features/vault/vault-broker.py", "--selftest"], 14)
 
 
+def t108():
+    """Intelligent sleep/wake: decide before probing; sleep only when idle (47 checks).
+
+    The keep-alive cron used to probe the public console URL every 5 min,
+    which WAKES a paused machine — so the machine never idle-paused, ran
+    its full 8-hour max run, then took a ~2-hour cooldown. The fix (2026-11-17):
+    the tick DECIDES before it probes, using D1 state; it sleeps only when
+    every guard passes and wakes 5 min before a schedule.
+
+    Drives the REAL keep-alive Worker (worker/src/index.js) with a mock D1
+    + mock fetch. Asserts:
+      (a) nextRun: daily 07:00 IST (same-day + next-day), weekly Monday,
+          every-30-min steps; bad cron / bad timezone THROW (never a silent
+          wrong time);
+      (b) decideSleepWake (pure): idle -> sleep; unknown nextRoutineAt /
+          stale reporter / recent visit / recent agent work / short uptime /
+          manual rest / machine down / in-flight transition / woken <20 min
+          ago -> hold; routine due in 8 min + machine down -> wake; routine
+          due in 8 min + machine up -> hold; routine due in 30 min -> sleep
+          (it will wake in time); overdue routine -> wake (never sleep past
+          a routine);
+      (c) POST /report: valid token -> 200 + stored in D1 meta; wrong/no
+          token -> 401; bad JSON -> 400; REPORTER_TOKEN unset -> 503;
+      (d) GET /sleepwake/state: next routine is the 07:00 daily summary
+          (source d1), reporter fresh, no secret leaks; no routines + no
+          report -> nextRoutineAt null (unknown, not Infinity);
+      (e) the cron tick: idle -> calls Pages /api/machine/sleep exactly
+          once and does NOT probe the console, sleep state 'sleeping';
+          routine due -> probes (wake) and does NOT suspend, state
+          'running'; sleeping + nothing due -> no probe, no suspend; stale
+          reporter -> no suspend, probe (stay awake).
+    The live half (idle -> the machine actually suspends; wake 5 min
+    before the 07:00 daily summary; wake-on-visit shows progress) is
+    verified by Muse at deploy time — see features/sleepwake/README.md.
+    """
+    return _harness("features/sleepwake/harness-sleepwake.mjs", 47)
+
+
+def t109():
+    """The sleep/wake reporter: next native run + agent activity (12 checks).
+
+    Machine-free selftest of features/sleepwake/reporter.py. Asserts the
+    cron next-run (daily 07:00 IST same-day + next-day, weekly Monday,
+    every-30-min steps), that a bad cron raises (never a silent wrong
+    time), ISO parsing, the report shape (all four keys, uptimeSec is null
+    — unknown, not invented), that the report is null for nextNativeRun
+    when jobs.json is empty, and that the reporter sends its own
+    User-Agent (Cloudflare blocks Python-urllib's default with 1010).
+    The live reporter (systemd timer, POST /report, the machine actually
+    reporting agent activity) is verified by Muse at deploy time — see
+    features/sleepwake/README.md.
+    """
+    return _py_script_harness(["features/sleepwake/reporter.py", "--selftest"], 12)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2018,6 +2073,8 @@ TESTS = [
     ("T105", "terminal: /vendor served as JS, not the console SPA", "computer", "protocol", t105),
     ("T106", "vault: the model can USE a key but never SEE it (canary, gate, AAD, redaction)", "vault", "protocol", t106),
     ("T107", "vault broker: env-var injection + output scrubbing (selftest)", "vault", "protocol", t107),
+    ("T108", "sleep/wake: decide before probing; sleep only when idle (harness)", "sleepwake", "protocol", t108),
+    ("T109", "sleep/wake reporter: next native run + agent activity (selftest)", "sleepwake", "protocol", t109),
 ]
 
 SKIP_NOTE = {
