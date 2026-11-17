@@ -1461,7 +1461,7 @@ def t98():
 
 
 def t105():
-    """The SERVED page's terminal path: /vendor must be JS, not the SPA (32).
+    """The SERVED page's terminal path: /vendor must be JS, not the SPA (51).
 
     11th browser check: sidebar fixed, Take control OK, "Open terminal" ->
     Session "connected" green, terminal area COMPLETELY BLACK for 30-50 s,
@@ -1483,9 +1483,12 @@ def t105():
     /vendor paths 404 rather than leaking the SPA, that a missing xterm is
     reported instead of going black, that resource-load failures are trapped,
     and that the terminal still writes to a real attached instance.
-    Fails 6/32 pre-fix; 32/32 after.
+    Also asserts the "Connecting…" courtesy line is cleared on the first real
+    shell output (51st check, 2026-11-17: the line otherwise sits above the
+    prompt forever). Fail-first proven: the new check fails on the pre-fix
+    ui.html and passes on the fixed one.
     """
-    return _harness("features/computer/harness-terminal-served.mjs", 50)
+    return _harness("features/computer/harness-terminal-served.mjs", 51)
 
 
 def t106():
