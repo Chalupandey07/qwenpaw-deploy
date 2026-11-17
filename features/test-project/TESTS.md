@@ -592,6 +592,12 @@ the parent runs them and pastes the outcome into RESULTS.md.
 - Expected: 20 passed, 0 failed.
 - History: added 2026-11-18 with the Settings Reset build. The live half (the broker running under systemd with ProtectSystem=strict, the Pages /reset route, the UI confirmation flow) is run by Muse at deploy time — see `features/reset/README.md`.
 
+### T112 — screen retry on failure (B-47, harness)
+- Area: `computer` · Method: `protocol`
+- Check: `node features/computer/harness-screen-retry.mjs` (17 checks). Static checks on the real `pages/public/computer/ui.html`: the message handler's `failed` branch calls `scheduleReconnect()` and still records the specific error first; `scheduleReconnect()` is single-flight (`reconnectTimer`) so the three iframes posting one failure cannot burn three budget units; the budget is enforced; the exhausted branch preserves a specific error instead of overwriting it with the generic "closed repeatedly" wording; the `connected` branch clears the pending timer. Dynamic checks: the real `scheduleReconnect` is extracted and run in a VM with mocks — three simultaneous calls schedule exactly one retry, firing it calls `loadScreen` once and frees the slot, a later failure schedules fresh, and at the budget no further retry is scheduled. Fail-first proven: against the unfixed `ui.html` it fails 9/17.
+- Expected: 17 passed, 0 failed.
+- History: added 2026-11-18 with the B-47 fix. The live half (leave the page open past 10 minutes, trigger a reconnect, confirm the error is gone) is run by Muse in a real browser — see `BUGS.md` B-47.
+
 ---
 
 ## Out of scope for this catalogue (do not add tests here without a new decision)
