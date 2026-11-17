@@ -2289,7 +2289,7 @@ known: track per-frame state via `event.source`, and force-reload
 
 ## Part 15 — Queued UI bug, INVESTIGATED 2026-11-18 ~02:0x IST, mechanism FOUND in code, NOT live-verified (B-47)
 
-### B-47 · P3 · The preview iframe intermittently shows "Screen link expired or invalid" — OPEN, NOT FIXED
+### B-47 · P3 · The preview iframe intermittently shows "Screen link expired or invalid" — FIXED-CODE, NOT LIVE-VERIFIED
 
 Reported as an intermittent preview error. The mechanism is in the code,
 not the network.
@@ -2316,18 +2316,26 @@ intermittent: it only appears after the page has been open past the TTL
 and something triggers a reconnect. A fresh page load mints a new URL,
 so the error clears on reload — which is why it looks like a flake.
 
-**Why it is not fixed yet.** The fix is a refresh timer (re-mint the
-capability every ~8 minutes and update the iframe srcs while the screen
-is live) or a re-mint on the 403. Either one touches the screen flow,
-and B-46 warns that a speculative screen-flow change risks the working
-embedded view. It also interacts with B-46's candidate #2: the seal is
-deterministic, so a re-mint in the same second produces the IDENTICAL
-URL and setting `iframe.src` to it is a browser no-op — a refresh must
-land in a different second (or force a reload) to take effect.
+**THE FIX (2026-11-18, code only, T112 17/17, fail-first 9/17 against the
+unfixed file).** The message handler's `failed` branch now calls
+`scheduleReconnect()`, the same bounded retry the `disconnected` branch
+already used — `loadScreen()` re-mints the capability, so the retry gets a
+fresh URL. No periodic refresh timer (the repo's quota rule: cost must be
+proportional to user action, never wall-clock). Two guards: (1) single-flight
+via `reconnectTimer` — the three iframes post one failure, so without it a
+single failure burst would schedule three concurrent mints and burn three
+budget units (the same `event.source` gap as B-46); (2) the budget still
+bounds everything (`reconnectAttempts` only resets on `connected`), and the
+exhausted branch now preserves the specific error text instead of
+overwriting it with the generic "closed repeatedly" wording. DeepSeek
+(max output) reviewed the design and caught the single-flight hole before
+the code was written; the first long prompt returned empty (known DeepSeek
+flakiness), the short retry returned the design. The fix does NOT touch
+the screen flow itself — no frame is reloaded except through the existing
+`loadScreen()`/`mountFrames()` path — so the working embedded view is
+untouched.
 
-**What a live session must confirm.** Leave the /computer page open
-past 10 minutes, trigger a reconnect (or wait for a blip), and confirm
-the preview shows the 403 text. Then the fix (refresh timer) can be
-applied and the same 10-minute wait re-run to prove the error is gone.
-Do this in the same session that verifies B-44/B-45, while the user is
-away.
+**NOT VERIFIED LIVE:** leave the /computer page open past 10 minutes,
+trigger a reconnect, and confirm the preview recovers instead of sitting
+on the 403 text. Do this in the same session that verifies B-44/B-45,
+while the user is away.
