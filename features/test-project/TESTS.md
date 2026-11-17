@@ -565,6 +565,18 @@ the parent runs them and pastes the outcome into RESULTS.md.
 - Expected: 12 passed, 0 failed.
 - History: added 2026-11-17 with the vault build (Phase 2). The live broker test (`/run` with a real command, `env | sort` proving `[redacted]`) is run by Muse at deploy time.
 
+### T108 — sleep/wake: decide before probing; sleep only when idle (harness)
+- Area: `sleepwake` · Method: `protocol`
+- Check: `node features/sleepwake/harness-sleepwake.mjs` (47 checks). Drives the REAL keep-alive Worker (`worker/src/index.js`) with a mock D1 + mock fetch. Asserts: (a) nextRun — daily 07:00 IST (same-day + next-day), weekly Monday, every-30-min steps; bad cron / bad timezone throw (never a silent wrong time). (b) decideSleepWake (pure) — idle → sleep; unknown nextRoutineAt / stale reporter / recent visit / recent agent work / short uptime / manual rest / machine down / in-flight transition / woken <20 min ago → hold; routine due in 8 min + machine down → wake; routine due in 8 min + machine up → hold; routine due in 30 min → sleep (it will wake in time); overdue routine → wake (never sleep past a routine). (c) POST /report — valid token → 200 + stored; wrong/no token → 401; bad JSON → 400; REPORTER_TOKEN unset → 503. (d) GET /sleepwake/state — next routine is the 07:00 daily summary (source d1), reporter fresh, no secret leaks; no routines + no report → nextRoutineAt null (unknown, not Infinity). (e) The cron tick — idle → calls Pages /api/machine/sleep exactly once and does NOT probe the console, sleep state 'sleeping'; routine due → probes (wake) and does NOT suspend, state 'running'; sleeping + nothing due → no probe, no suspend; stale reporter → no suspend, probe (stay awake).
+- Expected: 47 passed, 0 failed.
+- History: added 2026-11-17 with the intelligent sleep/wake build. The live half (idle → the machine actually suspends; wake 5 min before the 07:00 daily summary; wake-on-visit shows progress) is run by Muse at deploy time.
+
+### T109 — sleep/wake reporter: next native run + agent activity (selftest)
+- Area: `sleepwake` · Method: `protocol`
+- Check: `python3 features/sleepwake/reporter.py --selftest` (12 checks). Machine-free selftest of the reporter. Asserts the cron next-run (daily 07:00 IST same-day + next-day, weekly Monday, every-30-min steps), that a bad cron raises (never a silent wrong time), ISO parsing, the report shape (all four keys, uptimeSec is null — unknown, not invented), that the report is null for nextNativeRun when jobs.json is empty, and that the reporter sends its own User-Agent (Cloudflare blocks Python-urllib's default with 1010).
+- Expected: 12 passed, 0 failed.
+- History: added 2026-11-17 with the intelligent sleep/wake build. The live reporter (systemd timer, POST /report, the machine actually reporting agent activity) is run by Muse at deploy time.
+
 ---
 
 ## Out of scope for this catalogue (do not add tests here without a new decision)
