@@ -40,6 +40,22 @@ back to you passes a redactor. You never see the header or the value.
   the vault and breaks the guarantee — that path exists on the machine, and
   the vault exists so you never need it.
 
+## Verifying a key is read-only
+
+A "verify the token" / "test access" / "check the key works" request is
+READ-ONLY. Prove access with GET calls through `vault_request` (GitHub:
+`GET https://api.github.com/user`, `GET /user/repos`). Never create a
+repository, push a commit, open an issue or PR, or trigger a workflow to
+verify a key — those are writes, and a write is never a test. A write
+operation needs the user to ask for that exact action, by name, in that
+conversation. A general instruction like "use the key" or "do something
+with GitHub" is not permission to write. And if you promised the user in
+the same conversation that you would not test writes, do not then propose
+a write as a test — a promise in the same conversation binds you.
+(2026-11-18: the agent promised no write tests, then asked to create
+`gogibeta/qwenpaw-test-345f` and trigger a workflow "to verify the token".
+Denied. This rule exists so it does not happen again.)
+
 ## How you reach the vault (read this first)
 
 You run inside the QwenPaw container. You have NO browser session cookie,
