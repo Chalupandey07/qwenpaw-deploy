@@ -1,0 +1,17 @@
+[Unit]
+Description=QwenPaw sleep/wake reporter, every 2 minutes
+
+[Timer]
+# Every 2 minutes, aligned to the wall clock. The keep-alive Worker treats
+# a report older than 10 minutes as stale (fail closed: hold the machine
+# awake), so a 2-minute cadence gives ample margin for a missed tick.
+# Cost: 720 D1 meta writes/day (one row, updated in place) against the
+# 100,000 rows/day free limit — 0.7%. The write is the liveness signal;
+# a report that only wrote on change would go stale while the machine is
+# idle, and the Worker would (correctly) refuse to sleep it.
+OnCalendar=*:0/2
+Persistent=true
+Unit=qwenpaw-sleepwake-reporter.service
+
+[Install]
+WantedBy=timers.target
