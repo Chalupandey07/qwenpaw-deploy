@@ -1,7 +1,8 @@
 // qwenpaw-keepalive — Cloudflare Worker (Free): cron keep-alive + status API
 // for QwenPaw on InstaBox Free. No secrets in this file.
-// Env vars: QWENPAW_URL, INSTABOX_MACHINE_ID
+// Env vars: QWENPAW_URL, INSTABOX_MACHINE_ID, PAGES_URL
 // Secrets (optional): PORT_TOKEN (private port only), INSTABOX_API_KEY (API-wake fallback)
+// Secrets (sleep/wake): REPORTER_TOKEN (POST /report auth), SLEEP_TOKEN (POST /api/machine/sleep on Pages)
 // Secret (required for /wake): WAKE_TOKEN — POST /wake requires header
 // X-Wake-Token to match; when unset, /wake returns 503 (fail closed).
 // GET /ping stays the public wake path: it probes the public console URL,
@@ -317,27 +318,403 @@ async function manualRestInEffect(env) {
   }
 }
 
+// --- Intelligent sleep/wake (2026-11-17) ---------------------------------
+// The keep-alive used to probe the public console URL every 5 minutes,
+// which WAKES a paused machine — so the machine never idle-paused, ran
+// its full 8-hour max run, then took a ~2-hour cooldown. The user asked
+// for: sleep when idle (no schedule, no agent work), wake 5 minutes
+// before a schedule, and keep-alive pings only when the AI is active or
+// before a schedule.
+//
+// The rule that makes this safe: the cron tick DECIDES BEFORE IT PROBES.
+// Probing wakes the machine, so a probe-first tick can never sleep.
+// The decision is a pure function (decideSleepWake, exported for the
+// harness) over D1 state; the tick only probes / suspends based on it.
+//
+// State lives in the D1 `meta` table (generic key/value, same as the
+// rest marker):
+//   sleepwake:report    machine reporter POST /report (next native run,
+//                       agent activity, uptime; REPORTER_TOKEN auth)
+//   sleepwake:state     {mode, since, reason, lastWakeAt, lastSleepAt}
+//   sleepwake:last-visit  epoch ms of the last console visit (Pages writes)
+//   routines:definitions  routine registry (cron + timezone per routine)
+// Fail CLOSED throughout: an unknown next-routine, a stale reporter, or
+// an unreadable store means HOLD (stay awake), never sleep. A machine
+// that is asleep is woken only by a due routine or a real visit — the
+// cron never probes a sleeping machine on its own.
+//
+// Suspend goes through the Pages Worker (POST /api/machine/sleep,
+// SLEEP_TOKEN auth) because Pages already holds INSTABOX_API_KEY and the
+// tested suspend call; the keep-alive Worker does not have that key and
+// must never invent one.
+const SW_MIN = 60_000;
+const SW_WAKE_LOOKAHEAD_MS = 10 * SW_MIN;   // routine due within 10 min -> wake (5 min lead + wake buffer)
+const SW_VISIT_IDLE_MS = 30 * SW_MIN;       // no visitor for 30 min
+const SW_AGENT_IDLE_MS = 10 * SW_MIN;       // no agent activity for 10 min
+const SW_MIN_UPTIME_MS = 15 * SW_MIN;       // machine must have been up 15 min
+const SW_MIN_AWAKE_AFTER_WAKE_MS = 20 * SW_MIN; // deadband > lookahead: kills sleep-wake-sleep flap
+const SW_REPORTER_STALE_MS = 10 * SW_MIN;   // reporter older than this -> unknown
+const SW_LAST_VISIT_WRITE_MS = 5 * SW_MIN;  // Pages throttles last-visit writes to this
+
+// --- cron next-run (no libraries; Asia/Kolkata has no DST, but this
+// never assumes a constant offset — it asks Intl for local fields at
+// each candidate UTC minute, so it stays correct on DST zones too).
+const SW_MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const SW_DOW_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+function swCronToken(s, names, base) {
+  s = String(s).toLowerCase();
+  const i = names ? names.indexOf(s) : -1;
+  return i >= 0 ? i + base : Number(s);
+}
+
+function swParseCronField(expr, min, max, names, base) {
+  const set = new Set();
+  for (const part of String(expr).trim().split(",")) {
+    const [spec, stepStr] = part.split("/");
+    const step = stepStr === undefined ? 1 : Number(stepStr);
+    if (!(step >= 1)) throw new Error("bad step: " + part);
+    let lo, hi;
+    if (spec === "*") { lo = min; hi = max; }
+    else if (spec.includes("-")) {
+      const [a, b] = spec.split("-");
+      lo = swCronToken(a, names, base); hi = swCronToken(b, names, base);
+    } else {
+      lo = swCronToken(spec, names, base);
+      hi = stepStr === undefined ? lo : max;
+    }
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo < min || hi > max || lo > hi) {
+      throw new Error("bad cron field: " + part);
+    }
+    for (let v = lo; v <= hi; v += step) set.add(v);
+  }
+  return set;
+}
+
+function nextRun(cronExpr, timezone, fromMs) {
+  const f = String(cronExpr).trim().split(/\s+/);
+  if (f.length !== 5) throw new Error("5-field cron required");
+  const [minF, hourF, domF, monF, dowF] = f;
+  const minutes = swParseCronField(minF, 0, 59, null, 0);
+  const hours = swParseCronField(hourF, 0, 23, null, 0);
+  const doms = swParseCronField(domF, 1, 31, null, 0);
+  const dows = swParseCronField(dowF, 0, 6, SW_DOW_NAMES, 0);
+  const months = swParseCronField(monF, 1, 12, SW_MONTH_NAMES, 1);
+  if (dows.has(7)) { dows.add(0); dows.delete(7); }
+  // Vixie rule: if either day field starts with '*', AND them; else OR them.
+  const domStar = domF.trim().startsWith("*");
+  const dowStar = dowF.trim().startsWith("*");
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone, hour12: false,
+    month: "2-digit", day: "2-digit", hour: "2-digit",
+    minute: "2-digit", weekday: "short",
+  });
+  const partsOf = (ms) => {
+    const o = {};
+    for (const p of fmt.formatToParts(new Date(ms))) o[p.type] = p.value;
+    return o;
+  };
+  // Next whole minute strictly after fromMs.
+  let t = Math.floor(fromMs / 60000) * 60000 + 60000;
+  const limit = t + 366 * 24 * 60 * 60000; // 1-year safety cap
+  while (t <= limit) {
+    const p = partsOf(t);
+    const minute = Number(p.minute);
+    const hour = Number(p.hour) % 24; // some engines emit "24" at midnight
+    const dom = Number(p.day);
+    const mon = Number(p.month);
+    const dow = SW_DOW_NAMES.indexOf(String(p.weekday).toLowerCase());
+    const domOk = doms.has(dom);
+    const dowOk = dows.has(dow);
+    const dayOk = (domStar || dowStar) ? (domOk && dowOk) : (domOk || dowOk);
+    if (months.has(mon) && dayOk && hours.has(hour) && minutes.has(minute)) return t;
+    t += 60000;
+  }
+  throw new Error("no match within 1 year");
+}
+
+// --- sleep/wake decision (pure; exported for the harness) ----------------
+// nextRoutineAt: epoch ms of the next routine, Infinity when there are
+//   definitively NO routines, null when UNKNOWN (could not compute).
+//   null -> fail-awake (hold). Infinity -> sleep allowed (no routine to miss).
+//   A finite value in the past (overdue) counts as imminent, never sleepable.
+function decideSleepWake(inp, now = Date.now()) {
+  const {
+    nextRoutineAt = null,
+    lastVisitAt = null,
+    lastAgentActivityAt = null,
+    lastWakeAt = null,
+    reporterStale = true,
+    restActive = false,
+    machineUp = false,
+    uptimeMin = 0,
+    sleepState = "unknown",
+  } = inp;
+
+  // Never issue a command while a transition is in flight.
+  if (sleepState === "waking" || sleepState === "suspending") {
+    return { action: "hold", reason: `transition:${sleepState}` };
+  }
+
+  // known = we have a value (finite or Infinity). null = unknown -> fail-awake.
+  const known = nextRoutineAt !== null && nextRoutineAt !== undefined;
+  const untilRoutine = known ? nextRoutineAt - now : Infinity;
+
+  // WAKE wins. "<= lookahead" also catches overdue (negative) routines:
+  // the run already fired but nextRun hasn't advanced yet -> stay up.
+  if (known && untilRoutine <= SW_WAKE_LOOKAHEAD_MS) {
+    const down = !machineUp || sleepState === "suspended";
+    if (down) return { action: "wake", reason: "routine due within lookahead" };
+    return { action: "hold", reason: "routine window, already up" };
+  }
+
+  // FAIL-AWAKE: if we cannot prove no imminent routine, never sleep.
+  if (!known) {
+    return { action: "hold", reason: "nextRoutineAt unknown -> fail-awake" };
+  }
+
+  const sinceWake = lastWakeAt == null ? Infinity : now - lastWakeAt;
+  const guards = {
+    routineBeyondWindow: untilRoutine > SW_WAKE_LOOKAHEAD_MS,
+    noRecentVisit: lastVisitAt == null || now - lastVisitAt >= SW_VISIT_IDLE_MS,
+    noRecentAgent: lastAgentActivityAt == null || now - lastAgentActivityAt >= SW_AGENT_IDLE_MS,
+    uptimeEnough: uptimeMin * SW_MIN >= SW_MIN_UPTIME_MS,
+    noRest: restActive === false,
+    reporterFresh: reporterStale === false,
+    up: machineUp === true,
+    running: sleepState === "running",
+    awakeLongEnough: sinceWake >= SW_MIN_AWAKE_AFTER_WAKE_MS,
+  };
+  if (Object.values(guards).every(Boolean)) {
+    return { action: "sleep", reason: "idle; all guards pass" };
+  }
+  return { action: "hold", reason: "guard failed", guards };
+}
+
+// --- sleep/wake D1 state (meta table; same pattern as machine:rest) -----
+async function swMetaGet(db, key) {
+  try {
+    const row = await db.prepare("SELECT value FROM meta WHERE key = ?").bind(key).first();
+    return row ? row.value : null;
+  } catch { return null; }
+}
+
+async function swMetaPut(db, key, value) {
+  try {
+    await db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .bind(key, value).run();
+    return true;
+  } catch { return false; }
+}
+
+async function readSleepState(db) {
+  const raw = await swMetaGet(db, "sleepwake:state");
+  if (!raw) return { mode: "unknown", since: null, reason: "no_state", lastWakeAt: null, lastSleepAt: null };
+  try {
+    const s = JSON.parse(raw);
+    if (!s || typeof s !== "object" || typeof s.mode !== "string") return { mode: "unknown", since: null, reason: "corrupt_state", lastWakeAt: null, lastSleepAt: null };
+    return s;
+  } catch { return { mode: "unknown", since: null, reason: "corrupt_state", lastWakeAt: null, lastSleepAt: null }; }
+}
+
+async function writeSleepState(db, patch) {
+  const prev = await readSleepState(db);
+  const next = { ...prev, ...patch, since: patch.since ?? Date.now() };
+  return swMetaPut(db, "sleepwake:state", JSON.stringify(next));
+}
+
+async function readReport(db) {
+  const raw = await swMetaGet(db, "sleepwake:report");
+  if (!raw) return null;
+  try {
+    const r = JSON.parse(raw);
+    if (!r || typeof r !== "object") return null;
+    return r;
+  } catch { return null; }
+}
+
+async function readLastVisit(db) {
+  const raw = await swMetaGet(db, "sleepwake:last-visit");
+  const n = raw === null ? null : Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Next routine = earliest of (a) D1 routine definitions with a parseable
+// cron+timezone, (b) the reporter's next native run. Returns:
+//   { at: <ms>, source }  a routine exists
+//   { at: Infinity, source: "none" }  definitively no routines
+//   { at: null, source: "unknown" }  could not determine (fail-awake)
+async function computeNextRoutine(db, report, now = Date.now()) {
+  let best = Infinity;
+  let bestSource = "none";
+  let unknown = false;
+  try {
+    const res = await db.prepare("SELECT id, payload FROM routines_definitions").all();
+    for (const row of (res.results || [])) {
+      let def = null;
+      try { def = JSON.parse(row.payload); } catch { def = null; }
+      if (!def || def.active === false) continue;
+      if (!def.cron || typeof def.cron !== "string") {
+        // A routine with no parseable schedule: we cannot prove when it
+        // fires, so the next run is UNKNOWN (fail-awake), not "none".
+        unknown = true;
+        continue;
+      }
+      try {
+        const at = nextRun(def.cron, def.timezone || "Asia/Kolkata", now);
+        if (at < best) { best = at; bestSource = `d1:${def.id || row.id}`; }
+      } catch { unknown = true; }
+    }
+  } catch { unknown = true; }
+  if (report && Number.isFinite(report.nextNativeRun) && report.nextNativeRun < best) {
+    best = report.nextNativeRun;
+    bestSource = "native";
+  }
+  if (unknown && best === Infinity) return { at: null, source: "unknown" };
+  if (best === Infinity) {
+    // No D1 routines and no native run. That is "none" ONLY if the
+    // reporter has told us there are no native jobs; with no report at
+    // all, native jobs are unknown (jobs.json is unreadable from here),
+    // so the honest answer is null (fail-awake), not Infinity.
+    if (!report) return { at: null, source: "unknown" };
+    return { at: Infinity, source: "none" };
+  }
+  return { at: best, source: bestSource };
+}
+
+// Suspend via the Pages Worker (it holds INSTABOX_API_KEY). The keep-alive
+// Worker never holds that key. SLEEP_TOKEN is a shared secret, set on both
+// sides; when unset on either side this fails closed (no suspend).
+async function suspendViaPages(env) {
+  const pagesUrl = (env.PAGES_URL || "https://qwenpawx.pages.dev").replace(/\/$/, "");
+  const token = env.SLEEP_TOKEN;
+  if (!token) return { ok: false, error: "sleep_token_unset" };
+  try {
+    const res = await fetch(`${pagesUrl}/api/machine/sleep`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Sleep-Token": token },
+      body: JSON.stringify({ via: "keepalive-cron" }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const text = await res.text().catch(() => "");
+    let body = null;
+    try { body = JSON.parse(text); } catch { /* non-JSON */ }
+    if (!res.ok) return { ok: false, error: "pages_sleep_failed", status: res.status, detail: (body && body.error) || text.slice(0, 200) };
+    return { ok: true, status: res.status, body };
+  } catch (e) {
+    return { ok: false, error: "pages_sleep_fetch_failed", detail: String(e).slice(0, 200) };
+  }
+}
+
 async function keepAliveTick(env, source) {
+  const now = Date.now();
+  const db = env.QWENPAW_DB && env.USE_D1 === "1" ? env.QWENPAW_DB : null;
+  // No D1: we cannot read the rest marker, the reporter, or the routines,
+  // so we cannot decide safely. Fall back to the old behaviour (probe):
+  // the machine stays awake, which is the safe default.
+  if (!db) {
+    const result = await probeQwenPaw(env, { allowRetry: true });
+    const saved = await saveStatus(env, { ...result, source });
+    console.log(`[keepalive:${source}]`, result.status, result.httpStatus, result.note || "", "(no D1: legacy probe)");
+    return saved || result;
+  }
+
+  // Read all decision inputs BEFORE probing (the probe itself wakes the machine).
+  const rest = await manualRestInEffect(env);
+  const state = await readSleepState(db);
+  const report = await readReport(db);
+  const lastVisit = await readLastVisit(db);
+  const nextRoutine = await computeNextRoutine(db, report, now);
+  const cached = await loadStatus(env);
+  const machineUp = cached?.status === "up";
+  const reporterStale = !report || !Number.isFinite(report.reportedAt) || (now - report.reportedAt > SW_REPORTER_STALE_MS);
+  // Uptime: reporter (fresh) is authoritative; otherwise the last up-transition
+  // is a lower bound. Neither -> 0, which fails the uptime guard (hold).
+  let uptimeMin = 0;
+  if (report && !reporterStale && Number.isFinite(report.uptimeSec)) uptimeMin = report.uptimeSec / 60;
+  else if (cached?.lastUpAt) uptimeMin = Math.max(0, (now - Date.parse(cached.lastUpAt)) / 60000);
+
+  const decision = decideSleepWake({
+    nextRoutineAt: nextRoutine.at,
+    lastVisitAt: lastVisit,
+    lastAgentActivityAt: report && Number.isFinite(report.agentLastActiveAt) ? report.agentLastActiveAt : null,
+    lastWakeAt: state.lastWakeAt ?? null,
+    reporterStale,
+    restActive: rest.resting,
+    machineUp,
+    uptimeMin,
+    sleepState: state.mode,
+  }, now);
+  console.log(`[keepalive:${source}] decision=${decision.action} reason=${decision.reason} nextRoutine=${nextRoutine.at === Infinity ? "none" : nextRoutine.at === null ? "unknown" : new Date(nextRoutine.at).toISOString()} (${nextRoutine.source}) state=${state.mode} up=${machineUp}`);
+
+  // SLEEP: marker first, then suspend via Pages. A failed suspend reverts
+  // the state to running (fail-awake) and we probe below to keep it up.
+  if (decision.action === "sleep") {
+    await writeSleepState(db, { mode: "suspending", reason: decision.reason, lastSleepAt: now });
+    const susp = await suspendViaPages(env);
+    if (susp.ok) {
+      await writeSleepState(db, { mode: "sleeping", reason: decision.reason, lastSleepAt: now });
+      const saved = await saveStatus(env, { status: "sleeping", httpStatus: 0, note: `Intelligent sleep: ${decision.reason}. Next routine ${nextRoutine.at === Infinity ? "none" : new Date(nextRoutine.at).toISOString()}.`, source });
+      console.log("[keepalive:sleep] suspended via Pages", JSON.stringify(susp.body || {}).slice(0, 200));
+      return saved || { status: "sleeping" };
+    }
+    console.log("[keepalive:sleep] suspend FAILED, staying awake:", susp.error, susp.detail || "");
+    await writeSleepState(db, { mode: "running", reason: `sleep_failed:${susp.error}` });
+    // Fall through to the probe below (keep awake).
+  }
+
+  // WAKE: the machine is down and a routine is due. Probe (wakes a paused
+  // machine) and record the transition.
+  if (decision.action === "wake") {
+    await writeSleepState(db, { mode: "waking", reason: decision.reason, lastWakeAt: now });
+    const result = await probeQwenPaw(env, { allowRetry: true });
+    const saved = await saveStatus(env, { ...result, source });
+    console.log(`[keepalive:${source}]`, result.status, result.httpStatus, result.note || "", "(wake for routine)");
+    if (result.status === "up") {
+      await writeSleepState(db, { mode: "running", reason: "wake_ok", lastWakeAt: now });
+    } else if (result.status === "offline" || result.status === "waking") {
+      // API-wake fallback (only when INSTABOX_API_KEY is set; it is not on
+      // this Worker today, so this is usually skipped) — still respects the
+      // manual rest and the 10-min gap.
+      if (!rest.resting && env.INSTABOX_API_KEY && env.INSTABOX_MACHINE_ID) {
+        const lastWake = saved?.lastWakeAt ? Date.parse(saved.lastWakeAt) : 0;
+        if (now - lastWake >= WAKE_MIN_GAP_MS) {
+          const wake = await callInstaBoxWake(env);
+          await saveStatus(env, { lastWakeAt: new Date().toISOString(), lastWakeResult: wake }, true);
+        }
+      }
+    }
+    return saved || result;
+  }
+
+  // HOLD: if the machine is intentionally sleeping, do NOT probe — probing
+  // would wake it. Just report the cached state. If it is up (or unknown),
+  // probe as before to keep the status fresh and the machine awake.
+  if (state.mode === "sleeping") {
+    console.log(`[keepalive:${source}] holding (machine intentionally asleep)`);
+    return { ...(cached || { status: "sleeping" }), sleepwake: { action: "hold", reason: decision.reason, nextRoutineAt: nextRoutine.at, nextRoutineSource: nextRoutine.source } };
+  }
   const result = await probeQwenPaw(env, { allowRetry: true });
   const saved = await saveStatus(env, { ...result, source });
   console.log(`[keepalive:${source}]`, result.status, result.httpStatus, result.note || "");
   if ((result.status === "offline" || result.status === "waking") && env.INSTABOX_API_KEY && env.INSTABOX_MACHINE_ID) {
-    // Respect a manual rest BEFORE spending a wake. This is the check that
-    // makes the Rest button mean anything.
-    const rest = await manualRestInEffect(env);
-    if (rest.resting) {
-      console.log(`[keepalive:rest] skipping wake (${rest.reason})`);
+    const rest2 = rest;
+    if (rest2.resting) {
+      console.log(`[keepalive:rest] skipping wake (${rest2.reason})`);
       return saved || result;
     }
     const lastWake = saved?.lastWakeAt ? Date.parse(saved.lastWakeAt) : 0;
     if (Date.now() - lastWake >= WAKE_MIN_GAP_MS) {
       const wake = await callInstaBoxWake(env);
       console.log("[keepalive:wake-fallback]", wake);
-      // Essential: the marker is what enforces the 10-min API-wake gap.
-      // If its write were dropped, the next offline tick could re-fire
-      // the API wake immediately.
       await saveStatus(env, { lastWakeAt: new Date().toISOString(), lastWakeResult: wake }, true);
     }
+  }
+  // Keep the sleep state in sync with what the probe found.
+  if (result.status === "up" && state.mode !== "running") {
+    await writeSleepState(db, { mode: "running", reason: "probe_up" });
+  } else if ((result.status === "offline" || result.status === "cooldown") && state.mode === "running") {
+    await writeSleepState(db, { mode: "sleeping", reason: `probe_${result.status}` });
   }
   return saved || result;
 }
@@ -683,7 +1060,74 @@ export default {
       return json({ ...(saved || result), wake });
     }
 
-    return json({ error: "not found", endpoints: ["/status", "/ping", "/wake"] }, 404);
+    // ---- intelligent sleep/wake: machine reporter + state read ----
+    // POST /report: the machine-side reporter (systemd timer, every 2 min)
+    // posts {nextNativeRun, agentActive, agentLastActiveAt, uptimeSec}.
+    // Auth: X-Reporter-Token must match REPORTER_TOKEN; fail closed 503
+    // when the secret is unset. The body is small, validated, and stored
+    // verbatim in D1 meta (sleepwake:report) for the cron decision.
+    if (path === "/report" && request.method === "POST") {
+      if (!env.REPORTER_TOKEN) {
+        return json({ error: "reporter_unconfigured", detail: "REPORTER_TOKEN secret is not set." }, 503);
+      }
+      const supplied = request.headers.get("X-Reporter-Token") || "";
+      // Constant-time compare (the reporter token gates sleep decisions).
+      let ok = supplied.length === env.REPORTER_TOKEN.length;
+      if (ok) {
+        for (let i = 0; i < supplied.length; i++) ok = ok && supplied.charCodeAt(i) === env.REPORTER_TOKEN.charCodeAt(i);
+      }
+      if (!ok) return json({ error: "unauthorized" }, 401);
+      let body = null;
+      try { body = await request.json(); } catch { return json({ error: "bad_json" }, 400); }
+      if (!body || typeof body !== "object") return json({ error: "bad_body" }, 400);
+      const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+      const report = {
+        nextNativeRun: num(body.nextNativeRun),
+        agentActive: body.agentActive === true,
+        agentLastActiveAt: num(body.agentLastActiveAt),
+        uptimeSec: num(body.uptimeSec),
+        reportedAt: Date.now(),
+      };
+      const db = env.QWENPAW_DB && env.USE_D1 === "1" ? env.QWENPAW_DB : null;
+      if (!db) return json({ error: "store_unavailable" }, 503);
+      const wrote = await swMetaPut(db, "sleepwake:report", JSON.stringify(report));
+      if (!wrote) return json({ error: "store_unavailable" }, 503);
+      return json({ ok: true, stored: report });
+    }
+
+    // GET /sleepwake/state: public read of the sleep/wake decision inputs
+    // (mode, next routine, last visit/activity, reporter freshness). No
+    // secrets, no values — safe to expose for the status page / debugging.
+    if (path === "/sleepwake/state" && request.method === "GET") {
+      const db = env.QWENPAW_DB && env.USE_D1 === "1" ? env.QWENPAW_DB : null;
+      if (!db) return json({ error: "store_unavailable" }, 503);
+      const now = Date.now();
+      const state = await readSleepState(db);
+      const report = await readReport(db);
+      const lastVisit = await readLastVisit(db);
+      const nextRoutine = await computeNextRoutine(db, report, now);
+      const rest = await manualRestInEffect(env);
+      const cached = await loadStatus(env);
+      return json({
+        mode: state.mode,
+        since: state.since || null,
+        reason: state.reason || null,
+        lastWakeAt: state.lastWakeAt || null,
+        lastSleepAt: state.lastSleepAt || null,
+        nextRoutineAt: nextRoutine.at,
+        nextRoutineSource: nextRoutine.source,
+        lastVisitAt: lastVisit,
+        lastAgentActivityAt: report?.agentLastActiveAt ?? null,
+        reporterFresh: !!report && Number.isFinite(report.reportedAt) && (now - report.reportedAt <= SW_REPORTER_STALE_MS),
+        reporterLastAt: report?.reportedAt ?? null,
+        restActive: rest.resting,
+        restReason: rest.reason,
+        machineStatus: cached?.status ?? "unknown",
+        checkedAt: new Date(now).toISOString(),
+      });
+    }
+
+    return json({ error: "not found", endpoints: ["/status", "/ping", "/wake", "/report", "/sleepwake/state"] }, 404);
   },
 
   async scheduled(event, env, ctx) {
@@ -691,3 +1135,7 @@ export default {
     ctx.waitUntil(keepAliveTick(env, `cron:${event.cron}`));
   },
 };
+
+// Named exports for the harness (features/sleepwake/harness-sleepwake.mjs).
+// The Worker runtime only uses the default export; these are inert there.
+export { decideSleepWake, nextRun };
