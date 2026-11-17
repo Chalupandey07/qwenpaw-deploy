@@ -198,6 +198,8 @@ function fillForm(it) {
   $("fValue").value = "";
   $("fValue").placeholder = "Leave blank to keep the current value";
   $("fValue").required = false;
+  const preset = findPresetByOrigin(it.origin || "");
+  $("fProvider").value = preset ? preset.key : "custom";
   syncKindFields();
   $("addForm").classList.add("open");
   $("addForm").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -209,6 +211,75 @@ function syncKindFields() {
   $("headerLabel").hidden = kind !== "header";
   $("userLabel").hidden = kind !== "basic";
   $("fOrigin").required = kind !== "command";
+}
+
+// Provider presets. Picking one fills in the kind, the origin and the
+// header name (and suggests a name and a title when those are still
+// empty), so adding a key is just: pick a provider, type a name, paste
+// the key. "Custom" is the default and leaves every field alone.
+// Pasting an origin that matches a preset picks that provider by itself.
+// The same list lives in pages/public/_worker.js (the in-chat popup) —
+// keep them in sync. Origins are bare origins (no path). Providers that
+// need an extra header the request endpoint cannot send yet (Anthropic
+// needs anthropic-version, Notion needs Notion-Version, Linear uses a
+// bare key, not Bearer) are deliberately NOT listed — use Custom for
+// those for now.
+const VAULT_PRESETS = [
+  { key: "custom", label: "Custom — enter the details yourself", kind: "", origin: "", headerName: "", name: "", title: "" },
+  { key: "cloudflare", label: "Cloudflare", kind: "bearer", origin: "https://api.cloudflare.com", headerName: "", name: "cloudflare", title: "Cloudflare API token" },
+  { key: "deepseek", label: "DeepSeek", kind: "bearer", origin: "https://api.deepseek.com", headerName: "", name: "deepseek", title: "DeepSeek API key" },
+  { key: "github", label: "GitHub", kind: "bearer", origin: "https://api.github.com", headerName: "", name: "github", title: "GitHub personal access token" },
+  { key: "gemini", label: "Google Gemini", kind: "header", origin: "https://generativelanguage.googleapis.com", headerName: "x-goog-api-key", name: "gemini", title: "Google Gemini API key" },
+  { key: "groq", label: "Groq", kind: "bearer", origin: "https://api.groq.com", headerName: "", name: "groq", title: "Groq API key" },
+  { key: "huggingface", label: "Hugging Face", kind: "bearer", origin: "https://huggingface.co", headerName: "", name: "huggingface", title: "Hugging Face token" },
+  { key: "mistral", label: "Mistral", kind: "bearer", origin: "https://api.mistral.ai", headerName: "", name: "mistral", title: "Mistral API key" },
+  { key: "openai", label: "OpenAI", kind: "bearer", origin: "https://api.openai.com", headerName: "", name: "openai", title: "OpenAI API key" },
+  { key: "openrouter", label: "OpenRouter", kind: "bearer", origin: "https://openrouter.ai", headerName: "", name: "openrouter", title: "OpenRouter API key" },
+  { key: "slack", label: "Slack", kind: "bearer", origin: "https://slack.com", headerName: "", name: "slack", title: "Slack bot token" },
+  { key: "xai", label: "xAI", kind: "bearer", origin: "https://api.x.ai", headerName: "", name: "xai", title: "xAI API key" },
+];
+
+function findPreset(key) {
+  return VAULT_PRESETS.find((p) => p.key === key) || null;
+}
+
+function findPresetByOrigin(origin) {
+  const o = (origin || "").trim().toLowerCase();
+  if (!o) return null;
+  return VAULT_PRESETS.find((p) => p.origin && p.origin.toLowerCase() === o) || null;
+}
+
+function applyProvider() {
+  const p = findPreset($("fProvider").value);
+  if (!p || p.key === "custom") return;
+  $("fKind").value = p.kind;
+  $("fOrigin").value = p.origin;
+  if (p.kind === "header") $("fHeader").value = p.headerName;
+  if (!$("fName").value.trim() && p.name) $("fName").value = p.name;
+  if (!$("fTitle").value.trim() && p.title) $("fTitle").value = p.title;
+  syncKindFields();
+}
+
+function detectProvider() {
+  const p = findPresetByOrigin($("fOrigin").value);
+  if (p && $("fProvider").value !== p.key) {
+    $("fProvider").value = p.key;
+    applyProvider();
+  } else if (!p && $("fProvider").value !== "custom") {
+    $("fProvider").value = "custom";
+  }
+}
+
+function populateProviderSelect() {
+  const sel = $("fProvider");
+  sel.innerHTML = "";
+  for (const p of VAULT_PRESETS) {
+    const opt = document.createElement("option");
+    opt.value = p.key;
+    opt.textContent = p.label;
+    sel.appendChild(opt);
+  }
+  sel.value = "custom";
 }
 
 async function submitForm(e) {
@@ -258,6 +329,7 @@ async function boot() {
   $("kindFilter").addEventListener("change", render);
   $("addBtn").addEventListener("click", () => {
     $("addForm").reset();
+    $("fProvider").value = "custom";
     $("fValue").required = true;
     $("addErr").textContent = "";
     syncKindFields();
@@ -265,7 +337,10 @@ async function boot() {
   });
   $("cancelAdd").addEventListener("click", () => $("addForm").classList.remove("open"));
   $("fKind").addEventListener("change", syncKindFields);
+  $("fProvider").addEventListener("change", applyProvider);
+  $("fOrigin").addEventListener("input", detectProvider);
   $("addForm").addEventListener("submit", submitForm);
+  populateProviderSelect();
   syncKindFields();
 
   $("list").addEventListener("click", async (e) => {
