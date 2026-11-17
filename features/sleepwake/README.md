@@ -93,9 +93,36 @@ Both are set by the deploy (provision script), never printed.
   in D1 routines_definitions (was free-text scheduleNote only).
 
 ## Live verification (Muse, 2026-11-17)
-- (To be filled in at deploy time: /sleepwake/state, reporter POST,
-  idle -> suspend, wake before 07:00, wake-on-visit progress, /assets/*
-  cache headers.)
+Deploy verified live 2026-11-17 ~22:2x–22:4x IST:
+- Secrets provisioned (REPORTER_TOKEN + SLEEP_TOKEN; keep-alive Worker
+  secret + machine .env + both Pages; all 6 provisioning steps OK).
+- Keep-alive Worker deployed via cf.py put-worker; REPORTER_TOKEN +
+  SLEEP_TOKEN + WAKE_TOKEN survived; cron */5 survived; bindings correct
+  (incl. new PAGES_URL). First /sleepwake/state call returned the old 404
+  (propagation delay); retry returned the full state JSON.
+- Routines Worker deployed; ROUTINE_WEBHOOK_TOKEN survived; both
+  schedules (*/30 * * * *, 30 1 * * *) survived.
+- Both Pages deployed (bundled _worker.js, 116,902 B). POST
+  /api/machine/sleep without a token -> 401 on both (endpoint exists and
+  is gated). /assets/* caching verified live:
+  index-DZrIuh3B.js -> `Cache-Control: public, max-age=31536000,
+  immutable`.
+- D1 backfill verified: daily-summary cron `0 7 * * *` + timezone
+  Asia/Kolkata present (json_extract).
+- Reporter installed on the machine; selftest 12/12 on the machine;
+  --once POST /report -> HTTP 200.
+- /sleepwake/state live (checked 22:47 IST): mode running,
+  nextRoutineAt 2026-11-18T01:30:00Z (07:00 IST), source
+  d1:daily-summary, reporterFresh true, machineStatus up.
+- Harnesses: T108 47/47, T109 12/12; full machine-free suite green
+  except the 4 known NEEDS-REBUILD rows.
+
+NOT YET OBSERVED (do not claim done until these are seen live):
+- A real idle -> suspend (machine idle 30 min, no agent activity 10 min,
+  reporter fresh, uptime >= 15 min, >= 20 min since last wake).
+- The wake ~5-10 min before the 07:00 IST daily summary (2026-11-18).
+- The new waking page's live progress in a real browser during a real
+  wake.
 
 ## Risks (recorded, not hidden)
 - The reporter is the only source of native-run and agent-activity facts.
