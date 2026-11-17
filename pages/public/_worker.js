@@ -12,7 +12,7 @@
 // and that is the entire responsibility of this file.
 import { handleComputer } from "./computer/router.js";
 import { handleVault } from "./vault/router.js";
-import { restMachine, machineState, authenticate } from "./machine-control.js";
+import { restMachine, sleepMachine, machineState, authenticate } from "./machine-control.js";
 import {
   mintSession, sessionFromRequest, sessionSetCookie, sessionClearCookie, SESSION_TTL_MS,
 } from "./session.js";
@@ -268,15 +268,23 @@ function computerPanelScript() {
 }
 
 function wakingPage(retryAfter) {
+  // Live progress, not a blank wait (sleep/wake fix, 2026-11-17): the old
+  // page was static text + a 30 s meta-refresh, so a cold wake looked like
+  // a hung "Loading..." screen. This page shows an elapsed timer, a
+  // progress bar, and a status line, and polls the console every 5 s —
+  // reloading the moment the console answers instead of waiting for the
+  // next 30 s refresh. The meta-refresh stays as a no-JS fallback.
   return new Response(
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
-    `<meta http-equiv="refresh" content="30">` +
+    `<meta http-equiv="refresh" content="60">` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">` +
-    `<title>QwenPaw — Waking up</title></head><body style="font-family:system-ui,sans-serif;background:#0f1115;color:#e8eaf0;padding:2rem">` +
+    `<title>QwenPaw — Waking up</title></head><body style="font-family:system-ui,sans-serif;background:#0f1115;color:#e8eaf0;padding:2rem;max-width:640px;margin:0 auto">` +
     `<h1>QwenPaw is waking up</h1>` +
-    `<p>The InstaBox machine was paused and is starting now. This page refreshes automatically — the console will load on its own in about a minute.</p>` +
-    (retryAfter ? `<p>Retry after about ${retryAfter} seconds.</p>` : ``) +
+    `<p id="status">The InstaBox machine was paused and is starting now.</p>` +
+    `<div style="background:#1e2230;border-radius:8px;height:10px;overflow:hidden;margin:1rem 0"><div id="bar" style="background:#22c55e;height:100%;width:8%;border-radius:8px;transition:width 1s linear"></div></div>` +
+    `<p style="color:#9aa4b2;font-size:13px">Elapsed: <span id="elapsed">0s</span>${retryAfter ? ` &middot; usually ready in about ${retryAfter} seconds` : ` &middot; usually ready in about a minute`}.</p>` +
     `<p><a style="color:#22c55e" href="/status">Status page</a></p>` +
+    `<script>(function(){var t0=Date.now();var el=document.getElementById('elapsed');var bar=document.getElementById('bar');var st=document.getElementById('status');var tries=0;setInterval(function(){var s=Math.floor((Date.now()-t0)/1000);el.textContent=s+'s';bar.style.width=Math.min(8+s*1.2,96)+'%';},1000);async function poll(){tries++;try{var r=await fetch(location.pathname+location.search,{cache:'no-store',headers:{'Accept':'text/html'}});if(r.status===200){var t=await r.text();if(t.indexOf('<div id="root"')!==-1||t.indexOf('id="root"')!==-1){st.textContent='Machine is up — loading the console…';bar.style.width='100%';location.reload();return;}}st.textContent=tries<3?'The InstaBox machine was paused and is starting now.':'Still waking — the machine usually takes about a minute. Keeping watch…';}catch(e){/* network blip while waking; keep polling */}setTimeout(poll,5000);}setTimeout(poll,3000);})();</script>` +
     `</body></html>`,
     { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Retry-After": "30", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "SAMEORIGIN", "Content-Security-Policy": "frame-ancestors 'self'" } },
   );
@@ -323,7 +331,7 @@ function parseRetryAfter(res, bodyText) {
   return null;
 }
 
-async function proxy(request, url) {
+async function proxy(request, url, env, ctx) {
   // --- qwenpaw-query-token-leak mitigation (audit item, fixed 2026-11-15) ---
   // QwenPaw's console accepts the bearer token as `?token=` on EVERY request
   // (`app/auth.py::_extract_token` falls through to the query param; the SPA
@@ -453,6 +461,8 @@ async function proxy(request, url) {
     try {
       const html = await res.text();
       if (html.includes('<div id="root"') && html.includes("</body>")) {
+        // A console page load is a visit (sleep/wake signal). Fire-and-forget.
+        if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(recordLastVisit(env));
         const injected = html.replace("</body>", computerPanelScript() + "</body>");
         headers.set("Cache-Control", "no-store, no-transform");
         headers.delete("ETag");
@@ -470,6 +480,20 @@ async function proxy(request, url) {
     }
   }
 
+  // Hashed-asset caching (sleep/wake + slow-open fix, 2026-11-17): the
+  // console SPA is a 1 MB JS bundle whose filename carries a content hash
+  // (e.g. /assets/index-DZrIuh3B.js). It is re-downloaded fresh on EVERY
+  // load today because the proxy (and/or the origin) marks it no-store —
+  // a big part of the slow open. A content-hashed filename can never go
+  // stale (a rebuild produces a NEW filename, and the HTML references the
+  // new one), so it is safe to cache for a year. HTML and API responses
+  // keep no-store. The hash test is deliberately strict: a bare
+  // /assets/foo.js (no hash) stays no-store.
+  if (/^\/assets\/[^/]*-[A-Za-z0-9_-]{6,}\.[A-Za-z0-9]+$/.test(url.pathname)) {
+    headers.set("Cache-Control", "public, max-age=31536000, immutable");
+    headers.delete("ETag");
+    headers.delete("Last-Modified");
+  }
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
@@ -619,6 +643,19 @@ export default {
         });
       }
     }
+    // Intelligent sleep/wake (2026-11-17): the keep-alive Worker calls this
+    // when its decision function says SLEEP. Auth is the shared SLEEP_TOKEN
+    // (machine-control.js), not a console session — the keep-alive Worker
+    // has no console session. Pages holds INSTABOX_API_KEY and suspends.
+    if (path === "/api/machine/sleep") {
+      try {
+        return await sleepMachine(request, env);
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "machine_sleep_error", detail: String(err).slice(0, 200) }), {
+          status: 500, headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
     if (path === "/api/machine/state") {
       try {
         return await machineState(env);
@@ -629,6 +666,29 @@ export default {
       }
     }
 
-    return proxy(request, url);
+    return proxy(request, url, env, ctx);
   },
 };
+
+// --- Intelligent sleep/wake: last-visit recording (2026-11-17) ----------
+// A console page load is a visit: the user is here, so the keep-alive
+// must keep the machine awake. Recorded in D1 meta (sleepwake:last-visit),
+// throttled to one write per 5 minutes so a page reload storm cannot
+// burn the D1 write budget. Fire-and-forget via ctx.waitUntil so the
+// write never delays the console. Never throws (a failed write must not
+// break the page). Only page loads count — /api/* polling is excluded
+// (the SPA polls constantly; counting it would keep the machine awake
+// forever). The call site is the HTML-injection branch in proxy(), which
+// only fires for the SPA index.
+async function recordLastVisit(env) {
+  const db = env.COMPUTER_DB || env.QWENPAW_DB;
+  if (!db) return;
+  try {
+    const now = Date.now();
+    const row = await db.prepare("SELECT value FROM meta WHERE key = ?").bind("sleepwake:last-visit").first();
+    const prev = row && row.value ? Number(row.value) : NaN;
+    if (Number.isFinite(prev) && now - prev < 5 * 60_000) return;
+    await db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .bind("sleepwake:last-visit", String(now)).run();
+  } catch { /* never break the console */ }
+}
