@@ -269,6 +269,18 @@ like `fxembed` — a dir + SKILL.md; QwenPaw picks it up without a
 restart). Verify with `docker exec qwenpaw qwenpaw skills list` — vault
 must appear (21 skills).
 
+**Read-only verification rule (2026-11-18).** During the prompt-test
+that proved the fix, the agent promised not to test write permissions,
+then asked to create a throwaway repo (`gogibeta/qwenpaw-test-345f`),
+push a commit, and trigger a GitHub Actions workflow "to verify the
+token" — and also asked to grep `/app/working.secret/` for
+token-shaped strings. Both were denied; nothing was created or changed.
+The skill now states: verifying a key is READ-ONLY (GETs through
+`vault_request` only); a write is never a test; a write needs the user
+to ask for that exact action by name; a promise in the same conversation
+binds the agent. Re-verified by a second prompt-test after the rule
+landed (see below).
+
 ## The tests (Phase 5) — prove the three properties
 
 Harness `features/vault/harness-vault.mjs` (machine-free where possible).
