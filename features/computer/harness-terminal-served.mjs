@@ -295,6 +295,16 @@ console.log("page: the SERVED /computer page has no raw-response dump (B-40)");
   check("window.__computerErrors is still collected", /__computerErrors\.push/.test(served),
     "keep the devtools record; drop the visible panel");
   check("…and nothing renders it to the page", !/textContent = "Page error:/.test(served));
+
+  // 6. A hidden toast leaves the accessibility tree (B-45). The toast hid
+  //    with opacity:0 alone, which keeps its text exposed to assistive tech
+  //    forever — "You have control." stayed in the tree after release.
+  //    visibility:hidden removes it; the delayed visibility transition
+  //    keeps the .2s fade.
+  check("a hidden toast is visibility:hidden, not opacity:0 alone",
+    /\.toast\{[^}]*visibility:hidden/.test(served)
+    && /\.toast\[data-show\]\{[^}]*visibility:visible/.test(served),
+    "opacity:0 alone keeps the text exposed to assistive tech");
 }
 
 console.log("page: the terminal still writes into a real, attached xterm");
