@@ -1461,7 +1461,7 @@ def t98():
 
 
 def t105():
-    """The SERVED page's terminal path: /vendor must be JS, not the SPA (51).
+    """The SERVED page's terminal path: /vendor must be JS, not the SPA (52).
 
     11th browser check: sidebar fixed, Take control OK, "Open terminal" ->
     Session "connected" green, terminal area COMPLETELY BLACK for 30-50 s,
@@ -1486,9 +1486,11 @@ def t105():
     Also asserts the "Connecting…" courtesy line is cleared on the first real
     shell output (51st check, 2026-11-17: the line otherwise sits above the
     prompt forever). Fail-first proven: the new check fails on the pre-fix
-    ui.html and passes on the fixed one.
+    ui.html and passes on the fixed one. And the toast leaves the
+    accessibility tree when hidden (52nd check, B-45: visibility:hidden, not
+    opacity:0 alone).
     """
-    return _harness("features/computer/harness-terminal-served.mjs", 51)
+    return _harness("features/computer/harness-terminal-served.mjs", 52)
 
 
 def t106():
