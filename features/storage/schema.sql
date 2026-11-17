@@ -153,3 +153,52 @@ CREATE TABLE IF NOT EXISTS ticket_comment (
 );
 CREATE INDEX IF NOT EXISTS idx_comment_ticket
   ON ticket_comment(ticket_id, created_at);
+
+-- --------------------------------------------------------------------- vault
+-- API-key vault (Rakazo-style, 2026-11-17). The model can USE a key but
+-- never SEE it: the value is AES-256-GCM sealed in `ciphertext` and is
+-- decrypted only inside the Worker, which builds the request itself and
+-- redacts every byte back toward the model. See features/vault/README.md.
+--
+-- DESIGN RULES (each earned by the Rakazo study, ~/workspace/rakazo-vault-study.md):
+--   1. One row per item. `name` is the model's handle; `id` is never
+--      returned to the model (list returns metadata only, no row id).
+--   2. `ciphertext` format is `v1:<base64url(iv|ciphertext|tag)>`; the AAD
+--      binds `vault\0v1\0<itemId>\0<kind>\0<host>\0value\0<key_version>`
+--      (DeepSeek design review, 2026-11-17): `name` is deliberately NOT in
+--      the AAD (mutable display metadata — binding it forces a re-seal on
+--      every rename); `kind` stops cross-type confusion; `host` stops the
+--      key being re-pointed at an attacker server; `key_version` allows
+--      rotation with dual-read. The CHECK on ciphertext is a backstop
+--      against a future code path persisting plaintext.
+--   3. `origin` pins where the key may be sent (bearer/header/basic only);
+--      `command` items have origin '' and are env-only — /vault/request
+--      refuses them.
+--   4. Every use writes a `vault_use` row (tool, site, time — never a
+--      value). Activity reads are capped at the latest 50.
+CREATE TABLE IF NOT EXISTS vault_item (
+  id         TEXT PRIMARY KEY,            -- random 24-hex
+  name       TEXT NOT NULL UNIQUE,        -- lowercase-kebab ^[a-z][a-z0-9_-]{0,63}$
+  kind       TEXT NOT NULL,               -- bearer | header | basic | command
+  origin     TEXT NOT NULL DEFAULT '',    -- https origin the key may be sent to ('' for command)
+  header_name TEXT,                       -- kind=header only
+  username   TEXT,                        -- kind=basic only
+  ciphertext TEXT NOT NULL CHECK (ciphertext LIKE 'v1:%'), -- v1:<base64url(iv|ciphertext|tag)>
+  key_version TEXT NOT NULL DEFAULT '1', -- rotation: dual-read during a master-secret rotation
+  title      TEXT NOT NULL DEFAULT '',
+  note       TEXT NOT NULL DEFAULT '',
+  policy     TEXT NOT NULL DEFAULT 'allow' -- allow | off
+             CHECK (policy IN ('allow', 'off')),
+  scope      TEXT NOT NULL DEFAULT 'agent', -- reserved for later scoping
+  created_at INTEGER NOT NULL,             -- epoch ms
+  updated_at INTEGER NOT NULL              -- epoch ms
+);
+
+CREATE TABLE IF NOT EXISTS vault_use (
+  id         TEXT PRIMARY KEY,            -- random 24-hex
+  item_id    TEXT NOT NULL,               -- vault_item.id (no FK: items are deleted with their uses)
+  tool       TEXT NOT NULL,               -- 'request' | 'reveal' | 'export' | 'run'
+  site       TEXT NOT NULL DEFAULT '',    -- origin the key was sent to ('' for reveal/remove)
+  created_at INTEGER NOT NULL             -- epoch ms
+);
+CREATE INDEX IF NOT EXISTS idx_vault_use_item ON vault_use(item_id, created_at DESC);
