@@ -580,6 +580,18 @@ the parent runs them and pastes the outcome into RESULTS.md.
 - Expected: 12 passed, 0 failed.
 - History: added 2026-11-17 with the intelligent sleep/wake build. The live reporter (systemd timer, POST /report, the machine actually reporting agent activity) is run by Muse at deploy time.
 
+### T110 — reset: the broker's HTTP surface (harness)
+- Area: `reset` · Method: `protocol`
+- Check: `node features/reset/harness-reset.mjs` (43 checks). Starts the REAL reset broker on 127.0.0.1 with `RESET_ROOT=<tmpdir>` over a fake tree (fake chats.json, a REAL sqlite history.db, screenshots, auth.json, .env, kilo.json, an escaping symlink to /etc). Asserts: (a) auth — anon/wrong token → 401 on preview and execute, unknown category → 400; (b) preview — 200, per-category bytes/files, plan_id stable across identical previews, changes after touching a file, zero categories → 200 with zero bytes, models excludes the active provider; (c) confirmation — execute without confirm/ack/plan_id → 400 and nothing deleted, stale plan_id → 409 plan_changed and nothing deleted, lowercase confirm → 400; (d) idempotency — same X-Request-Id returns the cached report and deletes nothing new, a re-run is ok with 0 bytes; (e) partial failure — a history.db that is a directory makes its db_clear fail, the category reports partial, the run is 207, and the other targets in the same category still run; (f) concurrency — two simultaneous executes, one succeeds, one gets 409 busy; (g) happy path — execute all safe categories, bytes_freed equals the preview exactly, and auth.json, .env, kilo.json, active_model.json, audit.db, reset.log and the escaping symlink all survive.
+- Expected: 43 passed, 0 failed.
+- History: added 2026-11-18 with the Settings Reset build. Three real bugs found by this harness, all fixed in the same commit: a keep-alive desync (a 401 returned without reading the body corrupted the next request on the connection, answered 501), a threading.Lock that serialized the flock so the second execute waited instead of getting 409, and a preview double-count of MEMORY.md when both memories and lessons were selected. The live half (preview with zero categories against the real machine, a rehearsal execute on a copy of the real tree, one real category live) is run by Muse at deploy time — see `features/reset/README.md`.
+
+### T111 — reset broker: allowlist guard + category table (selftest)
+- Area: `reset` · Method: `protocol`
+- Check: `python3 features/reset/reset-broker.py --selftest` (20 checks). Machine-free selftest of the broker, the guard (`reset_guard.py`) and the category table (`reset_categories.py`). Asserts the guard rejects auth.json, .env, kilo.json, active_model.json and audit.db, rejects /etc/passwd and ../../etc/passwd escapes, rejects an escaping symlink and a path through it, allows a normal deletable path, and that the tree is byte-identical after all the rejections; and that the category table excludes the active provider from models, never lists active_model.json, excludes MEMORY.md and skill.json from workspaces, maps lessons to a section rewrite (not a delete), raises on an unknown category, and that lessons is superseded by memories.
+- Expected: 20 passed, 0 failed.
+- History: added 2026-11-18 with the Settings Reset build. The live half (the broker running under systemd with ProtectSystem=strict, the Pages /reset route, the UI confirmation flow) is run by Muse at deploy time — see `features/reset/README.md`.
+
 ---
 
 ## Out of scope for this catalogue (do not add tests here without a new decision)
