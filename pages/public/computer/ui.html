@@ -669,6 +669,7 @@
     const phase = d.screen;
     if (phase === "connected") {
       clearTimeout(loadTimer);
+      reconnectTimer = null;
       // The new screen is painting: drop the held predecessor.
       if (state.heldUrl) {
         state.heldUrl = null;
@@ -684,6 +685,13 @@
       clearTimeout(loadTimer);
       state.errors = [d.detail || "The screen reported a failure."];
       setPhase("failed", state.errors[0]);
+      // B-47: a failure is usually an expired capability, not a dead
+      // machine. The capability URL is minted once and lives 10 minutes;
+      // after that a WebSocket drop makes noVNC reconnect with the expired
+      // URL, the Worker answers 403, and the shim posts failed. Retrying
+      // through loadScreen() re-mints the capability, so the retry gets a
+      // fresh URL. Bounded by RECONNECT_BUDGET, same as disconnected.
+      scheduleReconnect();
     } else if (phase === "disconnected") {
       setPhase("disconnected");
       scheduleReconnect();
@@ -693,14 +701,28 @@
     render();
   });
 
+  // One pending retry, not N. The three iframes share one capability URL
+  // and the message handler never checks event.source, so a single failure
+  // is posted by all three at once. Without this guard one failure burst
+  // would schedule three concurrent mints and burn three budget units,
+  // and the second burst would exceed RECONNECT_BUDGET for what was a
+  // single failure. (Same event.source gap as B-46.)
+  let reconnectTimer = null;
+
   function scheduleReconnect() {
+    if (reconnectTimer) return;
     if (state.reconnectAttempts >= RECONNECT_BUDGET) {
-      setPhase("failed", "The screen connection closed repeatedly. Retry.");
+      // Keep the specific failure text when one is set (the failed path
+      // already recorded it); the generic wording only fits the
+      // disconnected path, where there is no specific error.
+      if (!state.errors.length) {
+        setPhase("failed", "The screen connection closed repeatedly. Retry.");
+      }
       return;
     }
     state.reconnectAttempts += 1;
     const delay = Math.min(8000, 500 * 2 ** state.reconnectAttempts);
-    setTimeout(() => { void loadScreen(); }, delay);
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; void loadScreen(); }, delay);
   }
 
   // ------------------------------------------------------------- actions
