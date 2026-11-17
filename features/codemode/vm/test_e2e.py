@@ -51,8 +51,13 @@ def check(name, cond, detail=""):
 # ---------------------------------------------------------------------------
 
 print("e2e: the fixed job against a real MCP server")
+# The mock must enforce the LIVE proxy's required-argument contract (B-42),
+# or a job that omits `app` passes here and fails on the machine — which is
+# exactly what happened between B-41 and its live run.
+REQUIRED = runner.TOOL_REQUIRED
 with MockMcpServer(tools=[{"name": n, "description": d}
-                          for n, d in runner.TOOL_NAMES]) as server:
+                          for n, d in runner.TOOL_NAMES],
+                   required_args=REQUIRED) as server:
     result = runner.run_job({"mcp_url": server.url}, "e2e")
     check("status ok", result["status"] == "ok",
           "%s / %s" % (result["status"], result.get("note")))
@@ -79,9 +84,26 @@ with MockMcpServer(tools=[{"name": n, "description": d}
     check("the handshake happened exactly once",
           methods.count("initialize") == 1, str(methods.count("initialize")))
 
+    # B-42: `app` must have been taken from list_apps and sent on every
+    # interaction step — over the real wire, not just in the runner's books.
+    check("`app` was resolved from the listing",
+          result["resolved"].get("app") == "Chromium",
+          json.dumps(result.get("resolved")))
+    calls_with_app = []
+    for req in server.requests:
+        if req.get("method") != "tools/call":
+            continue
+        params = req.get("params") or {}
+        if params.get("name") == "list_apps":
+            continue
+        calls_with_app.append((params.get("arguments") or {}).get("app"))
+    check("every interaction call carried `app` on the wire",
+          calls_with_app and all(a == "Chromium" for a in calls_with_app),
+          json.dumps(calls_with_app))
+
 print("e2e: a tool that errors mid-job")
 with MockMcpServer(tools=[{"name": n, "description": d} for n, d in runner.TOOL_NAMES],
-                   fail_tools={"press_key"}) as server:
+                   required_args=REQUIRED, fail_tools={"press_key"}) as server:
     result = runner.run_job({"mcp_url": server.url}, "e2e-fail")
     check("status is partial", result["status"] == "partial", result["status"])
     bad = [s for s in result["steps"] if not s.get("ok")]
@@ -96,7 +118,7 @@ with MockMcpServer(tools=[{"name": n, "description": d} for n, d in runner.TOOL_
 
 print("e2e: a transport failure mid-job stops it and says so")
 with MockMcpServer(tools=[{"name": n, "description": d} for n, d in runner.TOOL_NAMES],
-                   http_error_tools={"scroll"}) as server:
+                   required_args=REQUIRED, http_error_tools={"scroll"}) as server:
     result = runner.run_job({"mcp_url": server.url}, "e2e-transport")
     check("status is not ok", result["status"] != "ok", result["status"])
     # Steps run in order, so it stops at the failing step's index.

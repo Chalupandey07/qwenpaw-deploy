@@ -154,6 +154,55 @@ arguments the job actually passes. They are still not the proxy's real
 `inputSchema`; that is only knowable on the machine, which is why every run now
 records it (see `describe_surface()` below).
 
+### Every required argument, from the schema (B-42)
+
+A live run of the B-41 job (`run_1a1e8e3d9f9`, 2026-11-17) scored **1/9**:
+`list_apps` worked, and all eight interaction steps answered
+
+```
+Missing required argument: app
+```
+
+The proxy's real `inputSchema` — captured by `describe_surface()` in that same
+run — requires `app` on every tool except `list_apps`. B-41's "minimal args"
+were minimal for a *wrong guess* at the surface, not for the real one.
+
+The fix is not "add `app` to eight steps":
+
+* `TOOL_REQUIRED` is a table of the arguments each tool **marks as required**,
+  taken from the live schema. It is separate from `TOOL_PARAMS` (which shapes
+  the schema and the token estimate) because the two answer different
+  questions, and a single dict cannot express "in the schema, required at call
+  time".
+* `app` is never hard-coded. Steps carry `APP_FROM_LIST`, and `preflight_step()`
+  substitutes the name resolved from **step 1's own `list_apps` result**
+  (`parse_running_apps()` reads the real `Name -- Name [running, pid=…, window=…]`
+  format; `pick_app()` prefers an app with a real window over
+  `xfce4-panel`/`xfdesktop`/`xfwm4`). Hard-coding "Chromium" would pass today and
+  fail the first time the browser is closed.
+* `preflight_step()` checks the required table **before** spending a call, so a
+  missing argument becomes one named, skipped step instead of eight identical
+  tool errors discovered one round trip at a time.
+* **No running app is an honest shortfall, not a pass.** The run reports
+  `status: partial` with `failed: 0, skipped: 8` and names the missing argument.
+  Only `allow_interaction=False` — a deliberate mode — reports `ok` with skips.
+* `schema_tokens()` now emits `required` too, so the schema the token estimate
+  is built from describes a surface that can actually be called. Before this,
+  the schema said `app` was optional while the proxy refused every call without
+  it — the estimate was of a surface nobody could call.
+
+**The mock now enforces the contract.** `MockMcpServer(required_args=…)` and
+`FakeMcp` both reject a call missing a required argument with the proxy's own
+wording. That is the specific gap that let B-41's suites stay green while the
+live run scored 1/9: a fake that accepts any argument shape cannot reproduce
+the machine's refusal. Verified against an **independent** fake written outside
+the runner, which does not read the runner's tables:
+
+```
+pre-fix job vs live-faithful proxy : 1/9 ok, 8 failed
+fixed job  vs the same proxy       : 9/9 ok, 0 failed
+```
+
 ### Self-diagnosis on every run
 
 `describe_surface()` asks the live proxy what it offers and diffs it against the
@@ -187,13 +236,13 @@ rest as `skipped` (never as `failed`), so the pilot has a safe mode.
 ## Run the tests (no machine, no account, no deploy)
 
 ```bash
-python3 features/codemode/vm/codemode-runner.py --selftest   # 92 checks
-python3 features/codemode/vm/test_mcp.py                     # 27 checks
-python3 features/codemode/vm/test_e2e.py                     # 46 checks
+python3 features/codemode/vm/codemode-runner.py --selftest   # 125 checks
+python3 features/codemode/vm/test_mcp.py                     # 31 checks
+python3 features/codemode/vm/test_e2e.py                     # 48 checks
 node   features/codemode/harness-codemode.mjs                # 68 checks (retired Worker)
 ```
 
-165 checks across the three VM suites. `test_mcp.py` runs a **real** SSE +
+204 checks across the three VM suites. `test_mcp.py` runs a **real** SSE +
 JSON-RPC server in-process; `test_e2e.py` drives the real job through it over
 real HTTP. Neither mocks the wire — the retired version's dead
 `POST {url}?tool=<name>` call is exactly what three layers of agreeing mocks

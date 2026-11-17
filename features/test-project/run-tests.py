@@ -1408,7 +1408,13 @@ def t76():
 
 
 def t94():
-    """Code Mode VM runner: the REAL 9-tool desktop job (92 checks).
+    """Code Mode VM runner: the REAL 9-tool desktop job (125 checks).
+
+    B-42: the job now passes every REQUIRED argument. `app` is resolved from
+    step 1's own list_apps result (never hard-coded), and a preflight table
+    check turns a missing argument into one named skip instead of eight
+    identical tool errors. The mock enforces the live proxy's contract, so a
+    job that omits `app` fails here instead of on the machine.
 
     B-41: this job used to call ten tools of which nine did not exist on the
     machine's MCP proxy, so a live run scored 1/10 with `unsupportedTool` while
@@ -1417,7 +1423,7 @@ def t94():
     on every run (`describe_surface`), and states plainly that desktop work does
     NOT collapse turns. The 99.0% figure is withdrawn, not adjusted.
     """
-    return _py_script_harness(["features/codemode/vm/codemode-runner.py", "--selftest"], 92)
+    return _py_script_harness(["features/codemode/vm/codemode-runner.py", "--selftest"], 125)
 
 
 def t98():
@@ -1625,17 +1631,17 @@ def t95():
     does not exist. It never ran against a real proxy and three layers of mocks
     agreed with each other. This test speaks the actual transport.
     """
-    return _py_harness("features/codemode/vm/test_mcp.py", 27)
+    return _py_harness("features/codemode/vm/test_mcp.py", 31)
 
 
 def t96():
-    """Code Mode end to end: runner -> real MCP -> real HTTP (46 checks).
+    """Code Mode end to end: runner -> real MCP -> real HTTP (48 checks).
 
     Drives the REAL 9-tool desktop job over the actual SSE + JSON-RPC transport
     (B-41). The failing step for the error-path cases is now `press_key` and
     `scroll` — real tools — instead of imaginary board ones.
     """
-    return _py_harness("features/codemode/vm/test_e2e.py", 46)
+    return _py_harness("features/codemode/vm/test_e2e.py", 48)
 
 def t77():
     return _py_script_harness(["features/board/pricing.py", "--selftest"], 20)

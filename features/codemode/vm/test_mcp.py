@@ -55,12 +55,15 @@ class MockMcpServer:
     """Threaded HTTP server implementing the MCP SSE transport."""
 
     def __init__(self, *, tools=None, fail_tools=(), http_error_tools=(),
-                 authorize=None, sse_headers=None):
+                 authorize=None, sse_headers=None, required_args=None):
         self.tools = tools if tools is not None else [
             {"name": "list_apps", "description": "List windows"},
             {"name": "read_file", "description": "Read a file"},
         ]
         self.fail_tools = set(fail_tools)          # isError: true
+        # The live proxy's required-argument contract (B-42). Empty by default
+        # so transport tests are unaffected; the runner's e2e sets it.
+        self.required_args = required_args or {}
         self.http_error_tools = set(http_error_tools)  # transport failure
         self.authorize = authorize                  # callable(header) -> bool
         self.sse_headers = sse_headers or {}
@@ -163,18 +166,45 @@ class MockMcpServer:
                                       "result": {"tools": outer.tools}}))
                 elif method == "tools/call":
                     name = (body.get("params") or {}).get("name")
+                    call_args = (body.get("params") or {}).get("arguments") or {}
                     if name in outer.http_error_tools:
                         self.send_error(503)
                         return
-                    if name in outer.fail_tools:
+                    # ENFORCE the proxy's required-argument contract (B-42).
+                    #
+                    # The live proxy answers "Missing required argument: app"
+                    # for every tool except list_apps. A mock that accepts any
+                    # argument shape cannot reproduce that, which is exactly why
+                    # B-41's suites were green while the live run scored 1/9.
+                    missing = [r for r in outer.required_args.get(name, ())
+                               if call_args.get(r) in (None, "")]
+                    if missing:
+                        q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {
+                            "isError": True,
+                            "content": [{"type": "text",
+                                         "text": "Missing required argument: %s" % missing[0]}],
+                        }}))
+                    elif name in outer.fail_tools:
                         q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {
                             "isError": True,
                             "content": [{"type": "text", "text": "refused"}],
                         }}))
+                    elif name == "list_apps":
+                        # The REAL text shape, so the app parser is exercised.
+                        q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {
+                            "isError": False,
+                            "content": [{"type": "text", "text":
+                                "Chromium -- Chromium [running, pid=104998, window=W]\n"
+                                "xfce4-panel -- xfce4-panel [running, pid=50665, window=untitled]\n"
+                                "xfce4-terminal -- xfce4-terminal [running, pid=51245, window=T]\n"
+                                "xfdesktop -- xfdesktop [running, pid=50676, window=untitled]\n"
+                                "xfwm4 -- xfwm4 [running, pid=50671, window=untitled]"}],
+                        }}))
                     else:
                         q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {
                             "isError": False,
-                            "content": [{"type": "text", "text": "ok:%s" % name}],
+                            "content": [{"type": "text", "text": "ok:%s(%s)" % (
+                                name, ",".join(sorted(call_args))) }],
                         }}))
                 else:
                     q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "error": {
@@ -220,13 +250,30 @@ def main():
         with McpClient(server.url) as client:
             r = client.call("list_apps", {})
             check("the call reports ok", r["ok"] is True, json.dumps(r))
-            check("the content comes back", r["content"] and "ok:list_apps" in r["content"][0]["text"],
-                  json.dumps(r))
+            check("list_apps returns the REAL app-list text shape",
+                  r["content"] and " -- " in r["content"][0]["text"]
+                  and "Chromium" in r["content"][0]["text"], json.dumps(r)[:200])
         sent = [r for r in server.requests if r.get("method") == "tools/call"]
         check("the tool name went over the wire",
               sent and sent[0]["params"]["name"] == "list_apps", json.dumps(sent[:1]))
         check("arguments were sent as an object",
               sent and isinstance(sent[0]["params"]["arguments"], dict), json.dumps(sent[:1]))
+
+    print("mcp: the proxy's REQUIRED arguments are enforced (B-42)")
+    with MockMcpServer(required_args={"get_app_state": ("app",),
+                                      "click": ("app",)}) as server:
+        with McpClient(server.url) as client:
+            # Omitting `app` must come back as a tool ERROR carrying the live
+            # proxy's exact message — not as a transport failure, and not ok.
+            r = client.call("get_app_state", {})
+            check("a missing required argument is an isError result",
+                  r["isError"] is True, json.dumps(r))
+            check("…with the proxy's own wording",
+                  "Missing required argument: app" in r["content"][0]["text"],
+                  r["content"][0]["text"])
+            check("…and it is not reported as ok", r["ok"] is False, json.dumps(r))
+            r2 = client.call("get_app_state", {"app": "Chromium"})
+            check("supplying the argument succeeds", r2["ok"] is True, json.dumps(r2))
 
     print("mcp: a tool-level error is data, not an exception")
     with MockMcpServer(fail_tools={"list_apps"}) as server:

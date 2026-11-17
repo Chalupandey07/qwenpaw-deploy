@@ -172,15 +172,53 @@ DESKTOP_TOOL_NAMES = frozenset(name for name, _ in DESKTOP_TOOLS)
 #: therefore flattered Code Mode).
 TOOL_PARAMS = {
     "list_apps": {},
-    "get_app_state": {},
-    "click": {"x": "int", "y": "int"},
-    "type_text": {"text": "string"},
-    "press_key": {"key": "string"},
-    "scroll": {"dy": "int"},
-    "set_value": {"value": "string"},
-    "drag": {"x1": "int", "y1": "int", "x2": "int", "y2": "int"},
-    "perform_secondary_action": {},
+    "get_app_state": {"app": "string"},
+    "click": {"app": "string", "x": "int", "y": "int"},
+    "type_text": {"app": "string", "text": "string"},
+    "press_key": {"app": "string", "key": "string"},
+    "scroll": {"app": "string", "dy": "int"},
+    "set_value": {"app": "string", "value": "string"},
+    "drag": {"app": "string", "x1": "int", "y1": "int", "x2": "int", "y2": "int"},
+    "perform_secondary_action": {"app": "string"},
 }
+
+#: The arguments each tool MARKS AS REQUIRED. This is the live proxy's actual
+#: requirement, confirmed 2026-11-17 by run_1a1e8e3d9f9 (B-42).
+#:
+#: B-41 shipped args without `app` and the live run answered, for all eight
+#: non-listing tools:
+#:
+#:     Missing required argument: app
+#:
+#: `app` is therefore REQUIRED on every tool except `list_apps`. It is kept in a
+#: separate structure from `TOOL_PARAMS` because the two answer different
+#: questions: `TOOL_PARAMS` shapes the schema (and the token estimate),
+#: `TOOL_REQUIRED` decides whether a call is even attempted. A single dict
+#: could not express "present in the schema, required at call time".
+#:
+#: WHY THIS IS A TABLE RATHER THAN A GUESS AT CALL TIME
+#:
+#: The whole B-41 lesson was that inventing an argument shape produces a run
+#: that fails in a way nobody predicted. So this table is filled from the live
+#: `surface.schemas` the proxy itself reported, and `preflight_step()` checks
+#: every required name BEFORE the call — a missing one becomes a named,
+#: skipped step instead of a tool error eight times in a row.
+TOOL_REQUIRED = {
+    "list_apps": (),
+    "get_app_state": ("app",),
+    "click": ("app",),
+    "type_text": ("app",),
+    "press_key": ("app",),
+    "scroll": ("app",),
+    "set_value": ("app",),
+    "drag": ("app",),
+    "perform_secondary_action": ("app",),
+}
+
+#: Marker for "this argument is not known until the job has run a step".
+#: A step carrying `APP_FROM_LIST` for `app` gets the name resolved from the
+#: `list_apps` result — never a hard-coded app that may not be running.
+APP_FROM_LIST = "__from_list_apps__"
 
 #: ⚠️ THIS JOB DRIVES THE REAL DESKTOP. It is NOT read-only, and it says so.
 #:
@@ -199,22 +237,27 @@ TOOL_PARAMS = {
 BENCH_STEPS = [
     {"tool": "list_apps", "step": "see which applications are on the desktop",
      "args": {}, "mutates": False},
+    # Steps 2-9 all need `app`, and NONE of them hard-codes a name: the marker
+    # is resolved from step 1's real result at run time. Hard-coding "Chromium"
+    # would pass today and fail the first time Chromium is not running, which is
+    # exactly the class of guess this pilot keeps having to remove.
     {"tool": "get_app_state", "step": "read the focused application's accessibility tree",
-     "args": {}, "mutates": False},
-    {"tool": "click", "step": "click a point on the desktop",
-     "args": {"x": 400, "y": 300}, "mutates": True},
+     "args": {"app": APP_FROM_LIST}, "mutates": False},
+    {"tool": "click", "step": "click a point in the application window",
+     "args": {"app": APP_FROM_LIST, "x": 400, "y": 300}, "mutates": True},
     {"tool": "type_text", "step": "type a line of text",
-     "args": {"text": "codemode pilot"}, "mutates": True},
+     "args": {"app": APP_FROM_LIST, "text": "codemode pilot"}, "mutates": True},
     {"tool": "press_key", "step": "press Return",
-     "args": {"key": "Return"}, "mutates": True},
+     "args": {"app": APP_FROM_LIST, "key": "Return"}, "mutates": True},
     {"tool": "scroll", "step": "scroll the focused view down",
-     "args": {"dy": 3}, "mutates": True},
+     "args": {"app": APP_FROM_LIST, "dy": 3}, "mutates": True},
     {"tool": "set_value", "step": "set a value through the accessibility API",
-     "args": {"value": "pilot"}, "mutates": True},
-    {"tool": "drag", "step": "drag across the desktop",
-     "args": {"x1": 400, "y1": 300, "x2": 500, "y2": 380}, "mutates": True},
+     "args": {"app": APP_FROM_LIST, "value": "pilot"}, "mutates": True},
+    {"tool": "drag", "step": "drag across the application window",
+     "args": {"app": APP_FROM_LIST, "x1": 400, "y1": 300, "x2": 500, "y2": 380},
+     "mutates": True},
     {"tool": "perform_secondary_action", "step": "invoke a secondary accessibility action",
-     "args": {}, "mutates": True},
+     "args": {"app": APP_FROM_LIST}, "mutates": True},
 ]
 
 #: Tools that would leave PERSISTENT state behind. None of these is on this
@@ -229,14 +272,21 @@ PERSISTENT_TOOLS = frozenset({
 
 
 def schema_tokens(name: str, description: str) -> str:
-    """One tool schema, shaped from the parameters that tool actually takes."""
+    """One tool schema, shaped from the parameters that tool actually takes.
+
+    `required` is emitted too. A schema that lists `app` as a property but not
+    as required understates the proxy's demand, and the token estimate would be
+    describing a surface nobody can call.
+    """
     params = TOOL_PARAMS.get(name, {})
     props = ",".join(
         '"%s":{"type":"%s"}' % (p, ("integer" if t == "int" else "string"))
         for p, t in params.items()
     )
+    required = ",".join('"%s"' % r for r in TOOL_REQUIRED.get(name, ()))
+    req_json = (',"required":[%s]' % required) if required else ""
     return ('{"name":"%s","description":"%s","parameters":{"type":"object",'
-            '"properties":{%s}}}' % (name, description, props))
+            '"properties":{%s}%s}}' % (name, description, props, req_json))
 
 
 def estimate_tokens(text: str, chars_per_token: float = DEFAULT_CHARS_PER_TOKEN) -> int:
@@ -480,6 +530,104 @@ def _limit_self() -> None:
         pass
 
 
+def _text_of(content) -> str:
+    """Flatten an MCP `content` array to plain text. Never raises."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    parts = []
+    try:
+        for item in content:
+            if isinstance(item, dict):
+                t = item.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+            elif isinstance(item, str):
+                parts.append(item)
+    except TypeError:
+        return str(content)
+    return "\n".join(parts)
+
+
+def parse_running_apps(list_apps_text: str) -> list:
+    """Extract running application names from a `list_apps` result.
+
+    THE REAL SHAPE, captured live (T11/T12 in features/test-project/RESULTS.md):
+
+        Chromium -- Chromium [running, pid=104998, window=Today's Puzzle ...]
+        xfce4-panel -- xfce4-panel [running, pid=50665, window=untitled]
+        xfwm4 -- xfwm4 [running, pid=109672, window=untitled]
+
+    Each line begins with the app name followed by ` -- `. The name before the
+    separator is what the other tools take as `app`.
+
+    WHY PARSE RATHER THAN HARD-CODE. The name has to come from what is actually
+    running. A job that hard-codes "Chromium" reports a fake failure the first
+    time the browser is closed, and a pilot that fails for a reason unrelated to
+    the thing it measures is worse than useless.
+
+    Returns [] when nothing matches — the caller then reports an honest skip
+    rather than inventing a name.
+    """
+    names = []
+    for raw in str(list_apps_text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        # The separator is the contract. A line without it is not an app entry,
+        # and treating free text as a name would make the job target a sentence.
+        if " -- " not in line:
+            continue
+        name = line.split(" -- ", 1)[0].strip()
+        # Drop any bracket decoration left by a variant format.
+        name = name.split("[", 1)[0].strip()
+        if not name or len(name) > 80:
+            continue
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def pick_app(names: list) -> str | None:
+    """Choose which running app the interaction steps should target.
+
+    A REAL window beats a panel/desktop helper, because `get_app_state` and
+    `perform_secondary_action` are only meaningful for an app that owns a
+    window. The live list is e.g. Chromium, xfce4-panel, xfce4-terminal,
+    xfdesktop, xfwm4 — the panel/desktop/wm entries are infrastructure, so they
+    rank last. First real app wins, preserving the proxy's own order otherwise.
+    """
+    if not names:
+        return None
+    infra = ("xfce4-panel", "xfdesktop", "xfwm4", "xfce4-notifyd", "xfsettingsd")
+    for n in names:
+        if n.lower() not in infra:
+            return n
+    return names[0]          # only infrastructure is running: use what we have
+
+
+def preflight_step(step: dict, resolved: dict) -> tuple:
+    """Check a step's required arguments BEFORE calling it.
+
+    Returns `(args, missing)`. `missing` is a list of required names the step
+    cannot supply; empty means the call may proceed.
+
+    WHY THIS EXISTS (B-42). B-41 shipped eight steps with no `app` argument and
+    the live proxy rejected every one with the same message. Eight identical
+    failures, discovered one round trip at a time, told us nothing we could not
+    have known before the first call. Checking the table first turns that into
+    a single named reason per step — and, when the surface changes again, into a
+    message that says WHICH argument is missing instead of eight tool errors.
+    """
+    args = {}
+    for k, v in (step.get("args") or {}).items():
+        args[k] = resolved.get(k, v) if v == APP_FROM_LIST else v
+    missing = [name for name in TOOL_REQUIRED.get(step["tool"], ())
+               if args.get(name) in (None, "", APP_FROM_LIST)]
+    return args, missing
+
+
 def describe_surface(client) -> dict:
     """Ask the LIVE proxy what it actually offers, and diff it against the job.
 
@@ -577,6 +725,11 @@ def run_job(config: dict, job: str = "fixed-bench-job", client=None,
                              "Steps naming them will fail; the rest still run."
                              % (len(surface["missing"]), ", ".join(surface["missing"])))
 
+        # Arguments that are only knowable once an earlier step has run.
+        # Today that is `app`, resolved from step 1's real list_apps result.
+        resolved: dict = {}
+        entry["resolved"] = resolved
+
         for index, step in enumerate(BENCH_STEPS, start=1):
             if time.time() - started > JOB_DEADLINE_S:
                 entry["steps"].append({
@@ -595,10 +748,24 @@ def run_job(config: dict, job: str = "fixed-bench-job", client=None,
                     "error": "skipped: interaction disabled for this run",
                 })
                 continue
+            # B-42: check the required-argument table BEFORE spending a call.
+            # B-41's eight identical `Missing required argument: app` errors each
+            # cost a round trip and taught nothing new after the first.
+            args, missing = preflight_step(step, resolved)
+            if missing:
+                entry["steps"].append({
+                    "n": index, "tool": step["tool"], "purpose": step["step"],
+                    "mutates": bool(step.get("mutates")), "ok": False, "skipped": True,
+                    "missing": missing, "args": args,
+                    "error": ("skipped: required argument(s) not available: %s"
+                              % ", ".join(missing)),
+                })
+                continue
             try:
-                # `args` comes from the STEP, not a hardcoded {"id": ""}. The old
-                # value was invented for a board API and is meaningless here.
-                result = box.call(step["tool"], dict(step.get("args") or {}))
+                # `args` comes from the STEP (with run-time values substituted),
+                # never a hardcoded shape.
+                result = box.call(step["tool"], args)
+                content = result.get("content")
                 entry["steps"].append({
                     "n": index,
                     "tool": step["tool"],
@@ -606,9 +773,20 @@ def run_job(config: dict, job: str = "fixed-bench-job", client=None,
                     "mutates": bool(step.get("mutates")),
                     "ok": bool(result.get("ok")),
                     "isError": bool(result.get("isError")),
-                    "result": truncate(result.get("content")),
+                    "args": args,
+                    "result": truncate(content),
                     "ms": int((time.time() - step_started) * 1000),
                 })
+                # Resolve `app` from the listing step. Doing it on success only
+                # means a failed listing leaves the rest honestly skipped rather
+                # than aimed at a name nothing confirmed.
+                if step["tool"] == "list_apps" and result.get("ok"):
+                    names = parse_running_apps(_text_of(content))
+                    entry["runningApps"] = names
+                    chosen = pick_app(names)
+                    if chosen:
+                        resolved["app"] = chosen
+                        entry["resolved"] = dict(resolved)
             except McpError as exc:
                 # A transport failure is recorded per step and the job STOPS:
                 # continuing would produce ten identical failures and imply
@@ -658,10 +836,23 @@ def run_job(config: dict, job: str = "fixed-bench-job", client=None,
                          "The job is a fixed, auditable program; no model-generated code "
                          "was executed." % attempted)
     elif not failed and skipped:
-        entry["status"] = "ok"
-        entry["note"] = ("%d of %d steps succeeded; %d interaction steps were skipped "
-                         "because interaction was disabled for this run."
-                         % (len(ok_steps), attempted, len(skipped)))
+        # A run that skipped most of its steps is NOT "ok" unless the skip was a
+        # deliberate mode. `allow_interaction=False` is a deliberate mode;
+        # "there was no app to act on" is a real shortfall, and reporting it as
+        # ok would be the fake pass this repo keeps having to remove (B-42).
+        deliberate = not allow_interaction
+        entry["status"] = "partial" if not deliberate else "ok"
+        if deliberate:
+            entry["note"] = ("%d of %d steps succeeded; %d interaction steps were skipped "
+                             "because interaction was disabled for this run."
+                             % (len(ok_steps), attempted, len(skipped)))
+        else:
+            why = sorted({st.get("error", "") for st in skipped if st.get("error")})
+            entry["note"] = ("%d of %d steps succeeded; %d were skipped because a required "
+                             "argument was unavailable (%s). Nothing was reported as "
+                             "successful that did not run."
+                             % (len(ok_steps), attempted, len(skipped),
+                                "; ".join(why) or "no app was listed"))
     else:
         entry["status"] = "partial" if not entry.get("error") else "error"
         entry["note"] = entry["note"] or (
@@ -953,17 +1144,51 @@ class FakeMcp:
         that does not implement the real interface proves nothing.
         """
         return [
-            {"name": n, "description": d, "inputSchema": {"type": "object"}}
+            {
+                "name": n,
+                "description": d,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": dict(TOOL_PARAMS.get(n, {})),
+                    "required": list(TOOL_REQUIRED.get(n, ())),
+                },
+            }
             for n, d in DESKTOP_TOOLS
         ]
 
     def call(self, name, arguments=None):
         self.calls.append(name)
         n = len(self.calls)
+        # ENFORCE the required-argument table, exactly as the live proxy did
+        # (B-42: "Missing required argument: app" for every non-listing tool).
+        #
+        # A fake that accepts anything cannot fail the way the machine failed,
+        # which is precisely why B-41's tests passed while the live run scored
+        # 1/9. The fake has to be as strict as the thing it stands in for.
+        args = arguments or {}
+        for req in TOOL_REQUIRED.get(name, ()):
+            if args.get(req) in (None, ""):
+                return {
+                    "ok": False,
+                    "content": [{"type": "text",
+                                 "text": "Missing required argument: %s" % req}],
+                    "isError": True,
+                }
         if self.hang:
             time.sleep(5)
         if self.raise_at and n == self.raise_at:
             raise McpError("connection reset by proxy")
+        if name == "list_apps":
+            return {"ok": True, "isError": False, "content": [{
+                "type": "text",
+                "text": ("Chromium -- Chromium [running, pid=104998, window=Today's "
+                         "Puzzle Answers (November 15, 2026) - Chromium]\n"
+                         "xfce4-panel -- xfce4-panel [running, pid=50665, window=untitled]\n"
+                         "xfce4-terminal -- xfce4-terminal [running, pid=51245, "
+                         "window=Terminal - qwenpaw]\n"
+                         "xfdesktop -- xfdesktop [running, pid=50676, window=untitled]\n"
+                         "xfwm4 -- xfwm4 [running, pid=50671, window=untitled]"),
+            }]}
         if self.is_error_at and n == self.is_error_at:
             return {"ok": False, "content": [{"type": "text", "text": "tool refused"}], "isError": True}
         if self.fail_at and n == self.fail_at:
@@ -1147,6 +1372,91 @@ def selftest() -> int:
           json.dumps(partial["summary"]))
     check("nothing is reported as successful that was not",
           partial["summary"]["failed"] == 1, json.dumps(partial["summary"]))
+
+    print("args: every REQUIRED argument is passed, and `app` comes from the real list (B-42)")
+    # THE BUG THIS GUARDS. B-41 shipped steps 2-9 with no `app`. A live run
+    # (run_1a1e8e3d9f9, 2026-11-17) answered every one of them with
+    # "Missing required argument: app" and scored 1/9.
+    #
+    # The fake now enforces TOOL_REQUIRED, so these assertions fail on a job
+    # that omits `app` — exactly reproducing the live result.
+    check("list_apps requires nothing", TOOL_REQUIRED["list_apps"] == (),
+          json.dumps(TOOL_REQUIRED["list_apps"]))
+    for _t in ("get_app_state", "click", "type_text", "press_key", "scroll",
+               "set_value", "drag", "perform_secondary_action"):
+        check("%s requires `app`" % _t, TOOL_REQUIRED.get(_t) == ("app",),
+              json.dumps(TOOL_REQUIRED.get(_t)))
+    # The schema the bench estimates from must advertise the same requirement,
+    # or the token model and the call-time check describe different surfaces.
+    for _n, _d in DESKTOP_TOOLS:
+        _schema = json.loads(schema_tokens(_n, _d))
+        _req = set(_schema["parameters"].get("required") or [])
+        check("%s: schema required == call-time required" % _n,
+              _req == set(TOOL_REQUIRED.get(_n, ())),
+              "%s vs %s" % (sorted(_req), sorted(TOOL_REQUIRED.get(_n, ()))))
+
+    fake_args = FakeMcp()
+    args_run = run_job({"mcp_url": "http://mcp.test"}, "j", client=fake_args)
+    check("the whole job passes with `app` supplied", args_run["status"] == "ok",
+          "%s / %s" % (args_run["status"], args_run.get("note")))
+    check("every step succeeded", args_run["summary"]["ok"] == len(BENCH_STEPS),
+          json.dumps(args_run["summary"]))
+    check("no step failed on a missing argument",
+          not any("Missing required argument" in json.dumps(st.get("result") or "")
+                  for st in args_run["steps"]),
+          json.dumps([st.get("tool") for st in args_run["steps"]
+                      if st.get("ok") is False]))
+    # `app` must come from the listing, not from a literal in the job.
+    check("the app was resolved from list_apps",
+          args_run["resolved"].get("app") == "Chromium",
+          json.dumps(args_run.get("resolved")))
+    check("the running apps were parsed from the real text shape",
+          "xfce4-terminal" in (args_run.get("runningApps") or []),
+          json.dumps(args_run.get("runningApps")))
+    check("steps 2-9 all carry the resolved app",
+          all(st.get("args", {}).get("app") == "Chromium"
+              for st in args_run["steps"] if st["tool"] != "list_apps"),
+          json.dumps([(st["tool"], (st.get("args") or {}).get("app"))
+                      for st in args_run["steps"]]))
+
+    print("args: the parser reads the proxy's real list_apps format")
+    sample = ("Chromium -- Chromium [running, pid=104998, window=Today's Puzzle]\n"
+              "xfce4-panel -- xfce4-panel [running, pid=50665, window=untitled]\n"
+              "xfdesktop -- xfdesktop [running, pid=50676, window=untitled]")
+    check("app names are extracted", parse_running_apps(sample) ==
+          ["Chromium", "xfce4-panel", "xfdesktop"], json.dumps(parse_running_apps(sample)))
+    check("a real window beats panel/desktop infrastructure",
+          pick_app(["xfce4-panel", "Chromium", "xfwm4"]) == "Chromium",
+          pick_app(["xfce4-panel", "Chromium", "xfwm4"]))
+    check("infrastructure-only still yields a name",
+          pick_app(["xfce4-panel", "xfdesktop"]) == "xfce4-panel",
+          pick_app(["xfce4-panel", "xfdesktop"]))
+    check("an empty list yields None, never an invented name",
+          pick_app([]) is None, str(pick_app([])))
+    check("garbage text yields no names", parse_running_apps("nonsense") == [],
+          json.dumps(parse_running_apps("nonsense")))
+
+    print("args: no running app -> an honest skip, never a fake pass")
+    class NoAppsMcp(FakeMcp):
+        def call(self, name, arguments=None):
+            if name == "list_apps":
+                self.calls.append(name)
+                return {"ok": True, "isError": False,
+                        "content": [{"type": "text", "text": ""}]}
+            return super().call(name, arguments)
+
+    no_apps = run_job({"mcp_url": "http://mcp.test"}, "j", client=NoAppsMcp())
+    check("nothing is reported as ok when there is no app",
+          no_apps["status"] != "ok", no_apps["status"])
+    check("the interaction steps are SKIPPED, not failed",
+          no_apps["summary"]["failed"] == 0 and no_apps["summary"]["skipped"] == 8,
+          json.dumps(no_apps["summary"]))
+    check("…and the reason names the missing argument",
+          all("app" in (st.get("error") or "") for st in no_apps["steps"]
+              if st.get("skipped")),
+          json.dumps([st.get("error") for st in no_apps["steps"] if st.get("skipped")][:2]))
+    check("only list_apps was actually called",
+          no_apps["summary"]["ok"] == 1, json.dumps(no_apps["summary"]))
 
     print("run: interaction can be disabled, and skipped is not failed")
     fake_obs = FakeMcp()

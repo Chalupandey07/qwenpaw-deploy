@@ -1942,3 +1942,104 @@ for each of the nine tools is **unconfirmed**; a run on the machine now records
 it in `surface.schemas`, so confirming it costs one run rather than a research
 round. Muse deploys `codemode-runner.py` + `mcp.py` to
 `/data/home/qwenpaw/codemode/` and restarts the service.
+
+---
+
+## Part 10 — Found by a LIVE run, 2026-11-17 ~15:13 IST (B-42)
+
+### B-42 · P1 · The 9-tool job passed no `app` argument, so eight of nine steps were refused — FIXED-CODE
+
+**Files:** `features/codemode/vm/codemode-runner.py`,
+`features/codemode/vm/test_mcp.py`, `features/codemode/vm/test_e2e.py`,
+`features/codemode/README.md`.
+
+**Found by the run that B-41 predicted.** Muse deployed B-41 to the machine and
+ran the new job live (`run_1a1e8e3d9f9`, 2026-11-17 ~15:13 IST):
+
+```
+status : partial
+steps  : 1/9
+step 1 list_apps                 OK
+       Chromium, xfce4-panel, xfce4-terminal, xfdesktop, xfwm4
+steps 2-9 get_app_state, click, type_text, press_key, scroll,
+          set_value, drag, perform_secondary_action
+       ALL: Missing required argument: app
+```
+
+That same run captured the proxy's real `inputSchema` into
+`surface.schemas` (which is exactly why B-41 added it): **every tool except
+`list_apps` requires `app`**. This is B-41's own stated gap — "the proxy's real
+`inputSchema` is unconfirmed; a run on the machine now records it, so confirming
+it costs one run" — closing in one run.
+
+**Cause.** B-41 replaced an imagined board API with the real nine desktop tools,
+but kept the argument shapes minimal and guessed. `click` got `{x, y}`,
+`type_text` got `{text}`, and so on — correct-looking and unusable, because the
+proxy refuses any call without `app`. Eight failures with one identical message,
+discovered one round trip at a time.
+
+**A second, quieter defect in the same place:** `schema_tokens()` emitted
+properties but no `required` list, so the bench's schema said `app` was optional
+while the proxy refused every call without it. The token estimate was of a
+surface nobody could call.
+
+**Fix — the argument table, not eight edits.**
+
+* `TOOL_REQUIRED` names the arguments each tool **marks as required**, taken
+  from the live schema. It is deliberately separate from `TOOL_PARAMS` (which
+  shapes the schema and the token estimate): the two answer different questions,
+  and one dict cannot say "in the schema, required at call time".
+* **`app` is never hard-coded.** Steps carry `APP_FROM_LIST`; `preflight_step()`
+  substitutes the name resolved from step 1's own result.
+  `parse_running_apps()` reads the real
+  `Name -- Name [running, pid=…, window=…]` format, and `pick_app()` prefers an
+  app with a real window over `xfce4-panel`/`xfdesktop`/`xfwm4` infrastructure.
+  Hard-coding "Chromium" would pass today and fail the first time the browser is
+  closed — the same class of guess B-41 existed to remove.
+* `preflight_step()` checks the table **before** spending a call, so a missing
+  argument is one named, skipped step instead of eight identical tool errors.
+* **No running app is an honest shortfall.** `status: partial`, `failed: 0`,
+  `skipped: 8`, and the reason names the argument. Only
+  `allow_interaction=False` — a deliberate mode — reports `ok` with skips.
+  (This was wrong on the first attempt: the skip path inherited the
+  "deliberate skips are ok" rule and reported a fake `ok`. The test caught it.)
+* `schema_tokens()` now emits `required`, so the estimated surface is one that
+  can actually be called.
+
+**The mock enforces the contract now — that is the real lesson.**
+`FakeMcp` and `MockMcpServer` both reject a call that omits a required argument,
+with the proxy's own wording. Until this round, both accepted any argument
+shape, which is precisely why B-41's three green suites coexisted with a 1/9
+live run: **a fake derived from the code under test agreed with the code's wrong
+assumption.**
+
+Proven with an **independent** fake, written in a scratch file and reading none
+of the runner's tables:
+
+| Job | Result against a live-faithful proxy |
+|---|---|
+| B-41 as shipped | **1/9 ok, 8 failed** (exactly the live result) |
+| This fix | **9/9 ok, 0 failed**, `app: "Chromium"` on every call |
+
+**Tests — fail-first.**
+
+| Suite | Before | After | Fails on the pre-fix job |
+|---|---|---|---|
+| `--selftest` | 92 | **125** | 5+ (steps skipped, not ok; wrong args on the wire) |
+| `test_mcp.py` | 27 | **31** | new required-args contract block |
+| `test_e2e.py` | 46 | **48** | `app` absent from every interaction call |
+
+New assertions: the schema's `required` list equals the call-time table for all
+nine tools; `app` is resolved from `list_apps` and appears in every interaction
+step's args; the parser handles the real text shape and rejects free text; a
+real window beats panel/desktop infrastructure; an empty list yields `None`
+rather than an invented name; no-running-app produces `skipped` (never `ok`,
+never `failed`); and — over the real wire — every `tools/call` after
+`list_apps` carries `app: "Chromium"`.
+
+**NOT VERIFIED:** no live run against the machine's proxy from here
+(`172.18.0.1:8898` is machine-local). Muse redeploys `codemode-runner.py` +
+`mcp.py` and runs the job live. If the proxy requires an argument that is
+neither `app` nor one of the step args, the preflight will now name it as a
+single skipped step rather than eight tool errors — so the next run either
+passes or says precisely what is missing.
