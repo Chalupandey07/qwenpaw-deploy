@@ -178,8 +178,166 @@ function computerPanelScript() {
     document.body.appendChild(restBtn);
     document.body.appendChild(vaultBtn);
     vaultBtn.addEventListener("click", function () {
-      window.open("/vault", "_blank", "noopener");
+      openVaultPopup();
     });
+
+    // ---- Vault add-key popup (in-chat) ----
+    // The Vault button and the Vault menu item open a secure box right in
+    // the chat — the connector-popup pattern — instead of navigating away
+    // to /vault. The form posts to the same /vault/put endpoint the /vault
+    // page uses, with the same session handling (ensureSession + 401
+    // retry). The value lives only in the password input and is wiped on
+    // close and after a save. The full /vault page stays one click away
+    // (the "Open the full Vault page" link) for managing existing keys.
+    var vaultPopupEl = null;
+    function vaultPopupToken() {
+      try {
+        var v = localStorage.getItem("qwenpaw_auth_token");
+        if (v && v.length > 8) return v;
+      } catch (e) {}
+      return consoleToken();
+    }
+    async function vaultPopupEnsureSession() {
+      try {
+        var already = await fetch("/api/session/state", { cache: "no-store", credentials: "same-origin" });
+        var st = await already.json().catch(function () { return {}; });
+        if (st && st.ok) return true;
+      } catch (e) {}
+      var token = vaultPopupToken();
+      if (!token) return false;
+      try {
+        var res = await fetch("/api/session/mint", {
+          method: "POST",
+          headers: { Authorization: "Bearer " + token },
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+        return res.ok;
+      } catch (e) { return false; }
+    }
+    async function vaultPopupApi(body) {
+      var doFetch = function () {
+        return fetch("/vault/put", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+      };
+      var res = await doFetch();
+      if (res.status === 401) {
+        var ok = await vaultPopupEnsureSession();
+        if (ok) res = await doFetch();
+      }
+      var data = null;
+      try { data = await res.json(); } catch (e) { data = null; }
+      return { ok: res.ok, status: res.status, data: data };
+    }
+    function vaultPopupSyncKind() {
+      var kind = document.getElementById("qwenpawVaultPopupKind").value;
+      document.getElementById("qwenpawVaultPopupOriginRow").style.display = kind === "command" ? "none" : "";
+      document.getElementById("qwenpawVaultPopupHeaderRow").style.display = kind === "header" ? "" : "none";
+      document.getElementById("qwenpawVaultPopupUserRow").style.display = kind === "basic" ? "" : "none";
+      document.getElementById("qwenpawVaultPopupOrigin").required = kind !== "command";
+    }
+    function closeVaultPopup() {
+      if (!vaultPopupEl) return;
+      try {
+        var v = document.getElementById("qwenpawVaultPopupValue");
+        if (v) v.value = "";
+      } catch (e) {}
+      vaultPopupEl.style.display = "none";
+    }
+    async function vaultPopupSave() {
+      var msg = document.getElementById("qwenpawVaultPopupMsg");
+      var name = document.getElementById("qwenpawVaultPopupName").value.trim();
+      var kind = document.getElementById("qwenpawVaultPopupKind").value;
+      var value = document.getElementById("qwenpawVaultPopupValue").value;
+      msg.style.color = "#b91c1c";
+      msg.textContent = "";
+      if (!/^[a-z][a-z0-9_-]{0,63}$/.test(name)) {
+        msg.textContent = "Name must start with a lowercase letter and use only a-z, 0-9, - and _ (up to 64 chars).";
+        return;
+      }
+      if (!value) { msg.textContent = "Paste the key value."; return; }
+      var body = {
+        name: name, kind: kind,
+        origin: kind === "command" ? undefined : document.getElementById("qwenpawVaultPopupOrigin").value.trim(),
+        headerName: kind === "header" ? document.getElementById("qwenpawVaultPopupHeader").value.trim() : undefined,
+        username: kind === "basic" ? document.getElementById("qwenpawVaultPopupUser").value.trim() : undefined,
+        value: value,
+        title: document.getElementById("qwenpawVaultPopupTitle").value.trim(),
+        note: document.getElementById("qwenpawVaultPopupNote").value.trim(),
+      };
+      var saveBtn = document.getElementById("qwenpawVaultPopupSave");
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Saving…";
+      try {
+        var r = await vaultPopupApi(body);
+        if (!r.ok) {
+          var detail = r.data && r.data.error ? r.data.error : "";
+          if (r.data && r.data.detail) detail += " — " + r.data.detail;
+          msg.textContent = "Could not save (" + r.status + (detail ? ": " + detail : "") + ").";
+          return;
+        }
+        msg.style.color = "#15803d";
+        msg.textContent = "Saved " + name + ". The agent can use it now.";
+        document.getElementById("qwenpawVaultPopupValue").value = "";
+        setTimeout(function () { closeVaultPopup(); }, 1200);
+      } catch (e) {
+        msg.textContent = "Could not reach the server — check your connection and retry.";
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = "Save key";
+      }
+    }
+    function openVaultPopup() {
+      try {
+        if (!vaultPopupEl) {
+          var back = document.createElement("div");
+          back.id = "qwenpawVaultPopup";
+          back.setAttribute("data-qwenpaw-vault-popup", "1");
+          back.style.cssText = "position:fixed;inset:0;background:rgba(15,17,21,0.55);z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:16px;";
+          back.innerHTML =
+            '<div style="background:#fff;border-radius:16px;box-shadow:0 12px 48px rgba(0,0,0,0.35);width:min(480px,92vw);max-height:90vh;overflow:auto;padding:24px;font-family:system-ui,sans-serif;color:#1a1d24;">' +
+            '<h2 style="margin:0 0 4px;font-size:18px;">Add a key to the Vault</h2>' +
+            '<p style="margin:0 0 16px;font-size:13px;color:#5b6470;">Keys the agent can use but never see. The value is sealed on the server and never shown again.</p>' +
+            '<label style="display:block;font-size:13px;margin-bottom:10px;">Name<br><input id="qwenpawVaultPopupName" type="text" placeholder="e.g. github-main" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;margin-top:4px;"></label>' +
+            '<label style="display:block;font-size:13px;margin-bottom:10px;">Kind<br><select id="qwenpawVaultPopupKind" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;margin-top:4px;"><option value="bearer">API key (Authorization: Bearer)</option><option value="header">Custom header</option><option value="basic">Username + password</option><option value="command">Command / CLI env var</option></select></label>' +
+            '<label id="qwenpawVaultPopupOriginRow" style="display:block;font-size:13px;margin-bottom:10px;">Origin<br><input id="qwenpawVaultPopupOrigin" type="text" placeholder="https://api.github.com" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;margin-top:4px;"></label>' +
+            '<label id="qwenpawVaultPopupHeaderRow" style="display:none;font-size:13px;margin-bottom:10px;">Header name<br><input id="qwenpawVaultPopupHeader" type="text" placeholder="X-Api-Key" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;margin-top:4px;"></label>' +
+            '<label id="qwenpawVaultPopupUserRow" style="display:none;font-size:13px;margin-bottom:10px;">Username<br><input id="qwenpawVaultPopupUser" type="text" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;margin-top:4px;"></label>' +
+            '<label style="display:block;font-size:13px;margin-bottom:10px;">Value<br><input id="qwenpawVaultPopupValue" type="password" autocomplete="off" placeholder="Paste the key here" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;margin-top:4px;"></label>' +
+            '<label style="display:block;font-size:13px;margin-bottom:10px;">Title (optional)<br><input id="qwenpawVaultPopupTitle" type="text" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;margin-top:4px;"></label>' +
+            '<label style="display:block;font-size:13px;margin-bottom:14px;">Note (optional)<br><input id="qwenpawVaultPopupNote" type="text" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #d5d9e0;border-radius:8px;font-size:14px;margin-top:4px;"></label>' +
+            '<div id="qwenpawVaultPopupMsg" style="font-size:13px;min-height:18px;margin-bottom:10px;"></div>' +
+            '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
+            '<button id="qwenpawVaultPopupSave" type="button" style="background:#f97316;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;">Save key</button>' +
+            '<button id="qwenpawVaultPopupCancel" type="button" style="background:#f1f2f4;color:#1a1d24;border:none;border-radius:8px;padding:10px 16px;font-size:14px;cursor:pointer;">Cancel</button>' +
+            '<a id="qwenpawVaultPopupOpen" href="#" style="font-size:13px;color:#2563eb;">Open the full Vault page</a>' +
+            '</div></div>';
+          document.body.appendChild(back);
+          vaultPopupEl = back;
+          back.addEventListener("click", function (e) { if (e.target === back) closeVaultPopup(); });
+          document.getElementById("qwenpawVaultPopupKind").addEventListener("change", vaultPopupSyncKind);
+          document.getElementById("qwenpawVaultPopupSave").addEventListener("click", vaultPopupSave);
+          document.getElementById("qwenpawVaultPopupCancel").addEventListener("click", closeVaultPopup);
+          document.getElementById("qwenpawVaultPopupOpen").addEventListener("click", function (e) {
+            e.preventDefault();
+            window.open("/vault", "_blank", "noopener");
+          });
+          document.addEventListener("keydown", function (e) {
+            if (e.key === "Escape" && vaultPopupEl && vaultPopupEl.style.display !== "none") closeVaultPopup();
+          });
+        }
+        document.getElementById("qwenpawVaultPopupMsg").textContent = "";
+        document.getElementById("qwenpawVaultPopupMsg").style.color = "#b91c1c";
+        vaultPopupEl.style.display = "flex";
+        vaultPopupSyncKind();
+        document.getElementById("qwenpawVaultPopupName").focus();
+      } catch (e) { /* never break the console */ }
+    }
 
     // ---- rest button behaviour ----
     // The console keeps its session token in localStorage; read it directly
@@ -352,8 +510,8 @@ function computerPanelScript() {
         }
         if (!relabeled) return;
         item.addEventListener("click", function () {
-          window.open("/vault", "_blank", "noopener");
           try { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+          openVaultPopup();
         });
         settingsBtn.parentNode.insertBefore(item, settingsBtn.nextSibling);
       } catch (e) { /* never break the console */ }
