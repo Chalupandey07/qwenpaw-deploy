@@ -1,0 +1,70 @@
+# Reset broker — the machine-side delete service.
+#
+# WHAT THIS RUNS
+#   features/reset/reset-broker.py, synced to /data/home/qwenpaw/reset/
+#   on the machine. It deletes machine files, but ONLY paths from the
+#   allowlist in features/reset/reset_categories.py, and only after the
+#   caller proves a typed DELETE + checkbox + matching plan_id. It never
+#   accepts client-supplied paths.
+#
+# WHY TCP ON THE DOCKER BRIDGE
+#   The caller is the Pages Worker (Cloudflare), which cannot reach the
+#   machine's filesystem. The broker binds to the Docker bridge gateway
+#   (RESET_BIND, default 172.18.0.1) on port 8895, and requires the
+#   X-Reset-Token header. It never binds 0.0.0.0. Port 8895: 8896 is the
+#   vault broker, 8897/8898 are the MCP proxies, 8899 is the Camoufox bridge.
+#
+# WHY ROOT, AND WHY IT IS CONTAINED
+#   The workspace files are root-owned; only root (or sudo) can delete them.
+#   The unit therefore runs as root, but contained: ProtectSystem=strict
+#   mounts the whole filesystem read-only except the three ReadWritePaths
+#   below (the only places Reset may ever delete), PrivateTmp, NoNewPrivileges,
+#   and an empty CapabilityBoundingSet. Even a broker bug cannot write
+#   outside those three trees. The broker's own code (/data/home/qwenpaw/reset/)
+#   is readable but not writable under this unit.
+#
+# TOKEN
+#   RESET_TOKEN must be set in /data/home/qwenpaw/.env (provisioned in one
+#   pass with the Pages secrets). Without it the broker is CLOSED (fail
+#   closed) and /health says ready:false. A copy lives at
+#   /data/home/qwenpaw/working.secret/reset-broker.token (mode 600), for
+#   parity with vault-broker.token. Never touches auth.json.
+#
+# Install (Muse, machine side):
+#   install -d -m 0755 /data/home/qwenpaw/reset
+#   cp features/reset/reset-broker.py     /data/home/qwenpaw/reset/
+#   cp features/reset/reset_categories.py /data/home/qwenpaw/reset/
+#   cp features/reset/reset_guard.py      /data/home/qwenpaw/reset/
+#   cp features/reset/qwenpaw-reset-broker.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now qwenpaw-reset-broker
+#
+#   # verify (from the machine):
+#   curl http://172.18.0.1:8895/health
+
+[Unit]
+Description=QwenPaw settings reset broker (allowlist-only machine deletion)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/data/home/qwenpaw/.env
+WorkingDirectory=/data/home/qwenpaw/reset
+ExecStart=/usr/bin/python3 /data/home/qwenpaw/reset/reset-broker.py
+Restart=always
+RestartSec=10
+MemoryMax=256M
+StandardOutput=journal
+StandardError=journal
+# Containment: the filesystem is read-only except the three trees Reset may
+# ever delete. The broker's own code, the repo, .env, auth.json and the
+# vault are all outside these paths and therefore unwritable by this unit.
+ProtectSystem=strict
+ReadWritePaths=/data/home/qwenpaw/working /data/home/qwenpaw/working.secret/providers/custom /data/home/qwenpaw/working.backups
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
