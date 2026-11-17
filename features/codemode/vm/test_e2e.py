@@ -53,18 +53,27 @@ def check(name, cond, detail=""):
 print("e2e: the fixed job against a real MCP server")
 # The mock must enforce the LIVE proxy's required-argument contract (B-42),
 # or a job that omits `app` passes here and fails on the machine — which is
-# exactly what happened between B-41 and its live run.
+# exactly what happened between B-41 and its live run. B-43: it also
+# enforces the full schema (TOOL_PARAMS) and returns the LIVE frame-only
+# tree, so the honest outcome is 8 passed / 1 skipped (`set_value` — a
+# frame has no AX value), not 9/9.
 REQUIRED = runner.TOOL_REQUIRED
 with MockMcpServer(tools=[{"name": n, "description": d}
                           for n, d in runner.TOOL_NAMES],
-                   required_args=REQUIRED) as server:
+                   required_args=REQUIRED,
+                   tool_params=runner.TOOL_PARAMS) as server:
     result = runner.run_job({"mcp_url": server.url}, "e2e")
-    check("status ok", result["status"] == "ok",
+    check("status partial (one honest skip)", result["status"] == "partial",
           "%s / %s" % (result["status"], result.get("note")))
     check("every step ran", len(result["steps"]) == len(runner.BENCH_STEPS),
           str(len(result["steps"])))
-    check("all succeeded", result["summary"]["ok"] == len(runner.BENCH_STEPS),
+    check("8 succeeded, 1 skipped, 0 failed",
+          result["summary"]["ok"] == 8 and result["summary"]["skipped"] == 1
+          and result["summary"]["failed"] == 0,
           json.dumps(result["summary"]))
+    check("the skipped step is set_value",
+          [s["tool"] for s in result["steps"] if s.get("skipped")] == ["set_value"],
+          json.dumps([s["tool"] for s in result["steps"] if s.get("skipped")]))
     check("each step names its tool",
           [s["tool"] for s in result["steps"]] == [s["tool"] for s in runner.BENCH_STEPS],
           json.dumps([s["tool"] for s in result["steps"]]))
@@ -74,12 +83,12 @@ with MockMcpServer(tools=[{"name": n, "description": d}
                                               for s in result["steps"]))
     check("the MCP server name is recorded",
           result["server"]["name"] == "open-computer-use", str(result.get("server")))
-    check("the note states no generated code ran",
-          "no model-generated code" in result["note"], result.get("note"))
-    # The wire really carried one tool call per step, plus the handshake.
+    check("the note states nothing was reported as successful that did not run",
+          "did not run" in result["note"], result.get("note"))
+    # The wire really carried one tool call per ATTEMPTED step, plus the handshake.
     methods = [r.get("method") for r in server.requests]
-    check("one tools/call request per step went over the wire",
-          methods.count("tools/call") == len(runner.BENCH_STEPS),
+    check("one tools/call request per attempted step went over the wire",
+          methods.count("tools/call") == len(runner.BENCH_STEPS) - 1,
           str(methods.count("tools/call")))
     check("the handshake happened exactly once",
           methods.count("initialize") == 1, str(methods.count("initialize")))
@@ -100,18 +109,42 @@ with MockMcpServer(tools=[{"name": n, "description": d}
     check("every interaction call carried `app` on the wire",
           calls_with_app and all(a == "Chromium" for a in calls_with_app),
           json.dumps(calls_with_app))
+    # B-43: the tree-derived arguments went over the wire too.
+    wire_args = {}
+    for req in server.requests:
+        if req.get("method") != "tools/call":
+            continue
+        params = req.get("params") or {}
+        wire_args[params.get("name")] = params.get("arguments") or {}
+    check("scroll carried the real element and direction on the wire",
+          wire_args.get("scroll") == {"app": "Chromium", "element_index": "0",
+                                      "direction": "down"},
+          json.dumps(wire_args.get("scroll")))
+    check("drag carried frame-derived coordinates on the wire",
+          wire_args.get("drag") == {"app": "Chromium", "from_x": 880,
+                                    "from_y": 422, "to_x": 1040, "to_y": 582},
+          json.dumps(wire_args.get("drag")))
+    check("perform_secondary_action carried the real action on the wire",
+          wire_args.get("perform_secondary_action") == {
+              "app": "Chromium", "element_index": "0", "action": "doDefault"},
+          json.dumps(wire_args.get("perform_secondary_action")))
+    check("set_value never went over the wire",
+          "set_value" not in wire_args, json.dumps(sorted(wire_args)))
 
 print("e2e: a tool that errors mid-job")
 with MockMcpServer(tools=[{"name": n, "description": d} for n, d in runner.TOOL_NAMES],
-                   required_args=REQUIRED, fail_tools={"press_key"}) as server:
+                   required_args=REQUIRED, tool_params=runner.TOOL_PARAMS,
+                   fail_tools={"press_key"}) as server:
     result = runner.run_job({"mcp_url": server.url}, "e2e-fail")
     check("status is partial", result["status"] == "partial", result["status"])
-    bad = [s for s in result["steps"] if not s.get("ok")]
+    bad = [s for s in result["steps"] if not s.get("ok") and not s.get("skipped")]
     check("exactly one step failed", len(bad) == 1, json.dumps(bad)[:200])
     check("the failed step is the one that errored",
           bad[0]["tool"] == "press_key", bad[0]["tool"])
+    # 9 steps: 1 failed (press_key), 1 skipped (set_value, frame-only
+    # tree), 7 ok.
     check("the other steps still succeeded",
-          result["summary"]["ok"] == len(runner.BENCH_STEPS) - 1,
+          result["summary"]["ok"] == len(runner.BENCH_STEPS) - 2,
           json.dumps(result["summary"]))
     check("the job continued past a tool-level error",
           len(result["steps"]) == len(runner.BENCH_STEPS), str(len(result["steps"])))
@@ -228,8 +261,12 @@ srv.shutdown()
 srv.server_close()
 
 print("e2e: a fully configured runner actually executes over HTTP")
+# The rich tree fixture here so the run is 9/9 over HTTP: this section
+# tests the HTTP plumbing, not the live frame-only outcome (the first
+# section already proves 8/1/0 on the live tree).
 with MockMcpServer(tools=[{"name": n, "description": d}
-                          for n, d in runner.TOOL_NAMES]) as mcp:
+                          for n, d in runner.TOOL_NAMES],
+                   tree=runner.TREE_RICH) as mcp:
     cfg = {"mcp_url": mcp.url, "mcp_token": "", "token": "e2e-token-value"}
     h = runner.make_handler(cfg)
     s2 = ThreadingHTTPServer(("127.0.0.1", 0), h)
