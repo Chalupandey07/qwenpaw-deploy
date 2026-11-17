@@ -57,7 +57,7 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 ### T01 — Pages root serves the console SPA (+ side-panel injection)
 - Area: `console` · Method: `protocol`
 - Check: `curl -s -o /tmp/t01.html -w "%{http_code}" --max-time 60 https://qwenpawx.pages.dev/` then `grep -c "QwenPaw Console" /tmp/t01.html` and `grep -o "qwenpawComputerBtn\|qwenpawComputerPanel" /tmp/t01.html | sort -u`
-- Expected: HTTP 200, HTML contains `<title>QwenPaw Console</title>` (SPA) AND the injected markers `qwenpawComputerBtn` + `qwenpawComputerPanel` (side-panel script, `pages/public/_worker.js` `consolePanelScript()`, 316px panel).
+- Expected: HTTP 200, HTML contains `<title>QwenPaw Console</title>` (SPA) AND the injected markers `qwenpawComputerBtn` + `qwenpawComputerPanel` (side-panel script, `pages/public/_worker.js` `consolePanelScript()`, 316px panel), the Vault button marker `qwenpawVaultBtn`, the Vault menu marker `data-qwenpaw-vault-menu`, the in-chat popup marker `data-qwenpaw-vault-popup`, the popup provider-select id `qwenpawVaultPopupProvider`, AND the /vault page (HTTP 200) contains the provider-select id `fProvider`.
 - Evidence: HTTP code, byte size, marker list. (Verified live 2026-11-15: 200, 40,447 B, both markers present.)
 - Notes: a 503 here means the machine is waking (auto-refresh page) or in cooldown — see the header note, not a console bug.
 
