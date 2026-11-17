@@ -10,9 +10,12 @@ stored. The vault lets you USE a key without ever SEEING its value.
 server builds the request with the real key itself, and every byte coming
 back to you passes a redactor. You never see the header or the value.
 
-- Never ask the user for a key value in chat. If a key is missing, send
-  them to the Vault page (`/vault` on the console) and say which name you
-  need.
+- Never ask the user for a key value in chat. If a key is missing, tell
+  them to click the Vault button (bottom-right of the console, or Vault in
+  the account menu) — a secure popup opens right in the chat where they can
+  add the key without leaving the page. Say which name you need. The full
+  Vault page (`/vault` on the console) is linked from the popup for
+  managing existing keys.
 - Never print, log, or repeat a value. Never write a value to a file, a
   ticket, a chat message, or a skill.
 - Never guess a key value, and never use a placeholder as if it were real.
