@@ -443,9 +443,10 @@ def skills_list():
 
 def t01():
     code, body = http_get(PAGES + "/", timeout=120)
-    markers = sorted(set(re.findall(r"qwenpawComputer(?:Btn|Panel)", body)))
+    markers = sorted(set(re.findall(r"qwenpaw(?:Computer(?:Btn|Panel)|VaultBtn)", body)))
     ok = code == 200 and "<title>QwenPaw Console</title>" in body \
-        and "qwenpawComputerBtn" in markers and "qwenpawComputerPanel" in markers
+        and "qwenpawComputerBtn" in markers and "qwenpawComputerPanel" in markers \
+        and "qwenpawVaultBtn" in markers
     return ("PASS" if ok else "FAIL",
             f"HTTP {code} size={len(body)} markers={markers}")
 
