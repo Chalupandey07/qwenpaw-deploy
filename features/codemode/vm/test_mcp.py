@@ -47,6 +47,70 @@ def check(name, cond, detail=""):
 
 
 # ---------------------------------------------------------------------------
+# The live tree from run_1a1e8f3fd71 (2026-11-17), copied by hand from the
+# recorded output — the mock's fixture, not the runner's constant. The mock
+# IS the live proxy: one frame, no settable element, so the honest e2e
+# outcome is 8 passed / 1 skipped (`set_value`).
+LIVE_TREE = (
+    "App=Chromium (pid 104998)\n"
+    "Window: \"Today's Puzzle Answers (November 16, 2026) - Chromium\", App: Chromium.\n"
+    "\t0 frame Today's Puzzle Answers (November 16, 2026) - Chromium "
+    "Secondary Actions: doDefault, showContextMenu "
+    "Frame: {x: 0, y: 0, width: 1920, height: 1004}"
+)
+
+# Roles that accept a value through the accessibility API (B-43). A frame
+# has no AX value, so it is NOT settable.
+_SETTABLE_ROLES = frozenset({
+    "text field", "text box", "edit", "combo box", "spin button",
+    "slider", "check box", "radio button",
+})
+
+
+def _parse_tree(tree_text):
+    """Minimal tree parser for the mock — independent of the runner's.
+
+    Returns {index: {"role": str, "actions": [str], "frame": {x,y,w,h}|None}}.
+    Parses right-to-left (Frame, then Secondary Actions) so names may
+    contain commas and the word "Frame:".
+    """
+    import re as _re
+    frame_re = _re.compile(r"Frame:\s*\{\s*x:\s*(-?\d+),\s*y:\s*(-?\d+),"
+                           r"\s*width:\s*(\d+),\s*height:\s*(\d+)\s*\}")
+    sa_re = _re.compile(r"Secondary Actions:\s*(.*)$")
+    out = {}
+    for raw in str(tree_text or "").splitlines():
+        body = raw.strip()
+        m = _re.match(r"^(\d+)\s+(.*)$", body)
+        if not m:
+            continue
+        idx, rest = int(m.group(1)), m.group(2)
+        frame = None
+        fm = frame_re.search(rest)
+        if fm:
+            frame = {"x": int(fm.group(1)), "y": int(fm.group(2)),
+                     "w": int(fm.group(3)), "h": int(fm.group(4))}
+            rest = rest[:fm.start()].rstrip()
+        actions = []
+        am = sa_re.search(rest)
+        if am:
+            actions = [a.strip() for a in am.group(1).split(",") if a.strip()]
+            rest = rest[:am.start()].rstrip()
+        # Role is the first word(s) before the name; the mock only needs the
+        # role for the settable check, so a longest-first match over the
+        # settable roles plus a "frame" fallback is enough.
+        low = rest.lower()
+        role = "frame" if low.startswith("frame") else None
+        if role is None:
+            for r in sorted(_SETTABLE_ROLES, key=len, reverse=True):
+                if low == r or low.startswith(r + " "):
+                    role = r
+                    break
+        out[idx] = {"role": role or low.split(" ", 1)[0],
+                    "actions": actions, "frame": frame}
+    return out
+
+
 # A REAL MCP server: SSE discovery + JSON-RPC over POST, responses on the
 # stream. Deliberately faithful, including the parts that are awkward.
 # ---------------------------------------------------------------------------
@@ -55,7 +119,8 @@ class MockMcpServer:
     """Threaded HTTP server implementing the MCP SSE transport."""
 
     def __init__(self, *, tools=None, fail_tools=(), http_error_tools=(),
-                 authorize=None, sse_headers=None, required_args=None):
+                 authorize=None, sse_headers=None, required_args=None,
+                 tree=None, tool_params=None, direction_enum=None):
         self.tools = tools if tools is not None else [
             {"name": "list_apps", "description": "List windows"},
             {"name": "read_file", "description": "Read a file"},
@@ -64,6 +129,15 @@ class MockMcpServer:
         # The live proxy's required-argument contract (B-42). Empty by default
         # so transport tests are unaffected; the runner's e2e sets it.
         self.required_args = required_args or {}
+        # The live proxy's declared props (B-43). Empty by default; the e2e
+        # passes the runner's TOOL_PARAMS so unknown args are rejected.
+        self.tool_params = tool_params or {}
+        # The tree `get_app_state` returns (B-43). Default is the LIVE
+        # frame-only tree — the mock IS the live proxy, so the e2e full run
+        # honestly reports 8 passed / 1 skipped (`set_value`).
+        self.tree = tree if tree is not None else LIVE_TREE
+        self.elements = _parse_tree(self.tree)
+        self.direction_enum = tuple(direction_enum or ("up", "down", "left", "right"))
         self.http_error_tools = set(http_error_tools)  # transport failure
         self.authorize = authorize                  # callable(header) -> bool
         self.sse_headers = sse_headers or {}
@@ -170,42 +244,108 @@ class MockMcpServer:
                     if name in outer.http_error_tools:
                         self.send_error(503)
                         return
+                    # The success path, shared by every branch that passed
+                    # enforcement: fail_tools refuse, list_apps returns the
+                    # real listing, get_app_state returns the tree fixture,
+                    # everything else returns a generic ok.
+                    def _ok_or_fail():
+                        if name in outer.fail_tools:
+                            q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {
+                                "isError": True,
+                                "content": [{"type": "text", "text": "refused"}],
+                            }}))
+                        elif name == "list_apps":
+                            q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {
+                                "isError": False,
+                                "content": [{"type": "text", "text":
+                                    "Chromium -- Chromium [running, pid=104998, window=W]\n"
+                                    "xfce4-panel -- xfce4-panel [running, pid=50665, window=untitled]\n"
+                                    "xfce4-terminal -- xfce4-terminal [running, pid=51245, window=T]\n"
+                                    "xfdesktop -- xfdesktop [running, pid=50676, window=untitled]\n"
+                                    "xfwm4 -- xfwm4 [running, pid=50671, window=untitled]"}],
+                            }}))
+                        elif name == "get_app_state":
+                            q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {
+                                "isError": False,
+                                "content": [{"type": "text", "text": outer.tree}],
+                            }}))
+                        else:
+                            q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {
+                                "isError": False,
+                                "content": [{"type": "text", "text": "ok:%s(%s)" % (
+                                    name, ",".join(sorted(call_args))) }],
+                            }}))
+
                     # ENFORCE the proxy's required-argument contract (B-42).
                     #
                     # The live proxy answers "Missing required argument: app"
                     # for every tool except list_apps. A mock that accepts any
                     # argument shape cannot reproduce that, which is exactly why
                     # B-41's suites were green while the live run scored 1/9.
-                    missing = [r for r in outer.required_args.get(name, ())
-                               if call_args.get(r) in (None, "")]
-                    if missing:
+                    #
+                    # B-43: the mock also enforces the FULL schema — unknown
+                    # arguments are rejected, and the semantic checks the
+                    # live proxy applies (element in the tree, direction in
+                    # the enum, settable role, valid action, coords in
+                    # bounds) run against the mock's own tree fixture.
+                    def _err(text):
                         q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {
                             "isError": True,
-                            "content": [{"type": "text",
-                                         "text": "Missing required argument: %s" % missing[0]}],
+                            "content": [{"type": "text", "text": text}],
                         }}))
-                    elif name in outer.fail_tools:
-                        q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {
-                            "isError": True,
-                            "content": [{"type": "text", "text": "refused"}],
-                        }}))
-                    elif name == "list_apps":
-                        # The REAL text shape, so the app parser is exercised.
-                        q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {
-                            "isError": False,
-                            "content": [{"type": "text", "text":
-                                "Chromium -- Chromium [running, pid=104998, window=W]\n"
-                                "xfce4-panel -- xfce4-panel [running, pid=50665, window=untitled]\n"
-                                "xfce4-terminal -- xfce4-terminal [running, pid=51245, window=T]\n"
-                                "xfdesktop -- xfdesktop [running, pid=50676, window=untitled]\n"
-                                "xfwm4 -- xfwm4 [running, pid=50671, window=untitled]"}],
-                        }}))
+
+                    unknown = [k for k in sorted(call_args)
+                               if outer.tool_params.get(name) is not None
+                               and k not in outer.tool_params.get(name, {})]
+                    if unknown:
+                        _err("Unexpected argument: %s" % unknown[0])
                     else:
-                        q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "result": {
-                            "isError": False,
-                            "content": [{"type": "text", "text": "ok:%s(%s)" % (
-                                name, ",".join(sorted(call_args))) }],
-                        }}))
+                        missing = [r for r in outer.required_args.get(name, ())
+                                   if call_args.get(r) in (None, "")]
+                        if missing:
+                            _err("Missing required argument: %s" % missing[0])
+                        elif name in ("scroll", "set_value",
+                                      "perform_secondary_action", "click"):
+                            ei = call_args.get("element_index")
+                            el = outer.elements.get(int(ei)) if (
+                                ei is not None and str(ei).lstrip("-").isdigit()
+                            ) else None
+                            if ei is not None and el is None:
+                                _err("Invalid element_index: %s" % ei)
+                            elif (name == "set_value" and el is not None
+                                  and el["role"] not in _SETTABLE_ROLES):
+                                _err("Element %s (%s) is not settable"
+                                     % (ei, el["role"]))
+                            elif (name == "perform_secondary_action"
+                                  and el is not None
+                                  and call_args.get("action") not in el["actions"]):
+                                _err("Unknown action: %s for element %s"
+                                     % (call_args.get("action"), ei))
+                            elif (name == "scroll"
+                                  and call_args.get("direction")
+                                  not in outer.direction_enum):
+                                _err("Invalid direction: %s. Must be one of: %s"
+                                     % (call_args.get("direction"),
+                                        ", ".join(outer.direction_enum)))
+                            else:
+                                _ok_or_fail()
+                        elif name == "drag":
+                            root = outer.elements.get(0)
+                            frame = root.get("frame") if root else None
+                            ok_coords = (
+                                frame is not None
+                                and all(isinstance(call_args.get(k), (int, float))
+                                        for k in ("from_x", "from_y", "to_x", "to_y"))
+                                and frame["x"] <= call_args["from_x"] <= frame["x"] + frame["w"]
+                                and frame["x"] <= call_args["to_x"] <= frame["x"] + frame["w"]
+                                and frame["y"] <= call_args["from_y"] <= frame["y"] + frame["h"]
+                                and frame["y"] <= call_args["to_y"] <= frame["y"] + frame["h"])
+                            if not ok_coords:
+                                _err("Coordinates out of bounds")
+                            else:
+                                _ok_or_fail()
+                        else:
+                            _ok_or_fail()
                 else:
                     q.put(json.dumps({"jsonrpc": "2.0", "id": mid, "error": {
                         "code": -32601, "message": "Method not found"}}))
