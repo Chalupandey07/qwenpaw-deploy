@@ -87,6 +87,12 @@ from redact import redaction_forms, redact, StreamRedactor  # noqa: E402
 WORKER_URL = os.environ.get("VAULT_WORKER_URL", "https://qwenpawx.pages.dev")
 BIND = os.environ.get("VAULT_BROKER_BIND", "172.18.0.1")
 PORT = int(os.environ.get("VAULT_BROKER_PORT", "8896"))
+# Cloudflare (and some upstreams) block Python-urllib's default User-Agent
+# with error 1010. The broker must identify itself explicitly on every
+# outbound call, or _worker_export fails with a 403 and the whole broker
+# reports upstream_error. Found live 2026-11-17: default UA -> 403/1010,
+# curl UA -> 401 (the real vault gate).
+USER_AGENT = "QwenPaw-Vault-Broker/1.0"
 TOKEN = os.environ.get("VAULT_BROKER_TOKEN", "")
 MAX_ARGV = 32
 MAX_ARG_LEN = 4096
@@ -129,6 +135,7 @@ def _worker_export(names):
     )
     req.add_header("Content-Type", "application/json")
     req.add_header("X-Vault-Broker-Token", TOKEN)
+    req.add_header("User-Agent", USER_AGENT)
     try:
         with urllib.request.build_opener().open(req, timeout=30) as resp:
             payload = json.loads(resp.read().decode())
@@ -340,6 +347,7 @@ class Handler(BaseHTTPRequestHandler):
         if content_type:
             headers["Content-Type"] = content_type
         headers["Accept"] = "application/json, */*;q=0.8"
+        headers["User-Agent"] = USER_AGENT
         try:
             req = urllib.request.Request(url, data=req_body.encode() if req_body else None,
                                          headers=headers, method=method)
@@ -398,6 +406,10 @@ def _selftest():
     tail = sr.flush()
     joined = part1 + part2 + tail
     check("stream split value hidden", "ghp_abc123XYZ" not in joined and "[redacted]" in joined)
+    # Cloudflare blocks Python-urllib's default UA with 1010 (found live
+    # 2026-11-17); the broker must send its own User-Agent on every call.
+    check("broker sends its own User-Agent", bool(USER_AGENT) and "urllib" not in USER_AGENT.lower())
+    check("broker User-Agent is not the Python default", USER_AGENT != "Python-urllib/3.13")
     # The broker's own validation: bad names rejected by the regex.
     check("bad name rejected", not re.match(r"^[a-z][a-z0-9_-]{0,63}$", "Bad Name"))
     check("good name accepted", bool(re.match(r"^[a-z][a-z0-9_-]{0,63}$", "github-api")))
