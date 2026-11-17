@@ -203,6 +203,58 @@ pre-fix job vs live-faithful proxy : 1/9 ok, 8 failed
 fixed job  vs the same proxy       : 9/9 ok, 0 failed
 ```
 
+### The next layer: element, action, and coordinates, from the tree (B-43)
+
+A live run of the B-42 job (`run_1a1e8f3fd71`, 2026-11-17) scored **5/9**:
+steps 1–5 passed, and steps 6–9 answered
+
+```
+scroll                    Missing required argument: element_index
+set_value                 Missing required argument: element_index
+drag                      Missing required argument: from_x
+perform_secondary_action  Missing required argument: element_index
+```
+
+The proxy reports only the FIRST missing argument per call, so the four
+failures hid more: the recorded `surface.schemas` (same run) requires
+`element_index` + `direction` on `scroll`, `element_index` on `set_value`,
+all four coordinates on `drag`, and `element_index` + `action` on
+`perform_secondary_action`. B-42's table under-counted `scroll` by 2, `drag`
+by 4, `perform_secondary_action` by 2, `set_value` by 1, and `type_text` /
+`press_key` by 1 each.
+
+Those values only exist inside step 2's accessibility tree, so the job now
+reads it:
+
+* `parse_tree()` parses the `get_app_state` text. Lines are `TAB, index,
+  role, name, [Secondary Actions: ...], [Frame: {...}]`; the parse goes
+  right-to-left (Frame, then Secondary Actions) so a name may contain commas
+  and the word "Frame:". Roles match longest-first.
+* One parser, four selectors: `scroll` takes the largest scrollable container
+  (the tree carries no focus marker, so "the focused view" is the largest
+  scrollable); `set_value` takes the first settable element (a frame has no AX
+  value); `perform_secondary_action` takes the first element with Secondary
+  Actions and uses its first action verbatim; `drag` takes the largest
+  draggable element and derives coordinates from its frame (centre ± offset).
+* Steps carry tree markers (`ELEMENT_FROM_TREE`, `ACTION_FROM_TREE`,
+  `DRAG_FROM_TREE`); `preflight_step()` resolves them from the parsed tree
+  and reports ALL missing arguments with named reasons, not just the first.
+  An argument name outside the tool's declared props is a skip
+  (`undeclared_arg:dy`) — the guard that kills the old `dy` / `x1` shapes.
+* One enum retry: when a tool error names the enum it wants, `scroll` retries
+  once with the matching member; otherwise the verbatim error is recorded.
+
+Two facts the schema itself supplied: `direction` is documented as "up,
+down, left, or right", so `"down"` is a documented value, not a guess. And
+`element_index` is a STRING ("Element identifier"), not an integer.
+
+**The honest outcome on the live app is 8 passed / 1 skipped / 0 failed.**
+The live tree is a single frame — no settable element exists — so `set_value`
+skips with `underivable:element_index:no_settable_element` and is never
+called. Against a richer tree fixture the same job scores 9/9 with no edit.
+The fakes enforce the full schema now (unknown args, first-missing ordering,
+and the semantic checks) against their own hand-written tree fixtures.
+
 ### Self-diagnosis on every run
 
 `describe_surface()` asks the live proxy what it offers and diffs it against the
