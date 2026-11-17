@@ -112,10 +112,12 @@ These are not test failures — they are what the first round must
 confirm or clear. They are also recorded in `TESTS.md` at the tests
 they affect.
 
-1. **Skills count is 19, not 18.** The brief said 18 enabled; the
-   live `qwenpaw skills list` on 2026-11-15 07:03 IST shows `19 of 19
+1. **Skills count is 20, not 18 or 19.** The brief said 18 enabled; the
+   live `qwenpaw skills list` on 2026-11-15 07:03 IST showed `19 of 19
    skills, 19 enabled, 0 disabled` (the 19th is builtin
-   `QA_source_index`). T31 expects 19.
+   `QA_source_index`). The 20th is workspace skill `fxembed` (added
+   2026-11-16 10:10, not in the shared `skill_pool/`); the live list on
+   2026-11-17 is `20 of 20, 20 enabled, 0 disabled`. T31 expects 20.
 2. **QA DriverCard may fail to parse.** The live `qwenpaw.log` tail
    (lines ~2546–2577 of 2580) contains `yaml.scanner.ScannerError:
    mapping values are not allowed here` and `DriverCardError: Failed
