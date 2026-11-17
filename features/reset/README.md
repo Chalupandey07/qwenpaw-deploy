@@ -31,6 +31,41 @@ Three real bugs found by the harness, all fixed in the build commit:
    the actual bytes the rewrite frees (not the whole file), so preview
    bytes == execute bytes_freed exactly.
 
+## Live verification (2026-11-18, deploy)
+
+- **Provisioned:** `RESET_TOKEN` generated once and set on both Pages
+  projects + machine `.env` + `working.secret/reset-broker.token` (0600);
+  `RESET_BROKER_URL` set on both Pages. Script:
+  `scripts/provision-reset-token.py`.
+- **Broker installed:** `features/reset/*` synced to
+  `/data/home/qwenpaw/reset/`; `qwenpaw-reset-broker.service` enabled +
+  active on port 8895. Selftest on the machine: 20/20. `/health` from the
+  host AND from inside the container: `{"ok": true, "ready": true}`.
+  Anon preview/execute → 401 (broker and Pages route).
+- **Pages deployed:** both projects (qwenpawx b8743a3f, frontend
+  2c3dd01f). `/reset` and `/reset/ui.js` → 200 on both; anon
+  `/reset/api/preview` → 401 on both.
+- **Rehearsal (the real proof):** a byte-identical copy of the real tree
+  (72M) at `/tmp/reset-rehearsal`, a second broker on 127.0.0.1:8898,
+  preview + execute of ALL 9 categories. Result: status ok, 846 files,
+  59,933,506 bytes freed. Protected files all survived (auth.json, .env,
+  kilo.json, active_model.json, audit.db, reset.log); active provider
+  mosicn.json kept, xingchiapi removed; history.db 0 rows, chats.json
+  `{}`; MEMORY.md gone; media/ present. The REAL tree's protected-set
+  hash is byte-identical before and after. Rehearsal cleaned up.
+- **Preview-bytes note:** the rehearsal preview said 60,048,194 bytes,
+  the execute freed 59,933,506 (0.19% less). The gap is the Chats
+  category: the preview counts history.db's full file size, but the
+  execute's logical clear keeps the (now empty) SQLite file structure,
+  so the actual disk reclaim is slightly less. The preview is an
+  estimate; the execute reports the actual. Not a bug.
+- **NOT done live:** no real category has been deleted from the real
+  tree. The rehearsal proved the execute path on real-shaped data; a
+  real delete is the user's call, via the /reset page, when they want
+  to actually reset something. The full Pages-UI → broker path (a real
+  console Bearer token through the router) can only be exercised from
+  the user's signed-in browser.
+
 ## The one rule
 
 **Deletion is allowlist-only.** Every category is a literal list of absolute
