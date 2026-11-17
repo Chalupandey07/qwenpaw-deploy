@@ -447,9 +447,10 @@ def t01():
     ok = code == 200 and "<title>QwenPaw Console</title>" in body \
         and "qwenpawComputerBtn" in markers and "qwenpawComputerPanel" in markers \
         and "qwenpawVaultBtn" in markers \
-        and "data-qwenpaw-vault-menu" in body
+        and "data-qwenpaw-vault-menu" in body \
+        and "data-qwenpaw-vault-popup" in body
     return ("PASS" if ok else "FAIL",
-            f"HTTP {code} size={len(body)} markers={markers} vaultmenu={'data-qwenpaw-vault-menu' in body}")
+            f"HTTP {code} size={len(body)} markers={markers} vaultmenu={'data-qwenpaw-vault-menu' in body} vaultpopup={'data-qwenpaw-vault-popup' in body}")
 
 
 def t02():
