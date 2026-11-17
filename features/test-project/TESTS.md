@@ -73,23 +73,26 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 - Expected: HTTP 200, body exactly `{"enabled":true,"has_users":true}`.
 - Evidence: full body. (Verified live 2026-11-15: exact match, 33 B.)
 
-### T04 — /desktop without a cookie serves the gate page
+### T04 — /computer/state refuses an anonymous caller (P0)
 - Area: `console` · Method: `protocol`
-- Check: `curl -s -o /dev/null -w "%{http_code} %{size_download}\n" --max-time 60 https://qwenpawx.pages.dev/desktop`
-- Expected: HTTP 200, gate page (`Opening the desktop…`, "Checking your QwenPaw login…", posts to `/desktop/__verify`); NOT a redirect to `/chat`, NOT the console SPA. Gate page source: `_worker.js` `gatePage()`.
-- Evidence: HTTP code + size + first 200 chars. (Verified live: 200, 1,884 B.)
+- Check: `curl -s --max-time 60 "https://qwenpawx.pages.dev/computer/state?computer=default"`
+- Expected: HTTP 401, body contains `auth_required`, and no state leaks (`"leaseId"`, `"generation"`, `"preview"` all absent). Before the 2026-11-16 P0 fix this answered 200 with the live mode, generation, lease holder and preview hash to anyone on the internet. HTTP 503 instead means the session secret is unset — a deploy error, not a pass.
+- Evidence: HTTP code + body. (Verified live 2026-11-17: 401 auth_required, no leaked state.)
+- Was `/desktop` gate page (deleted surface); rewritten in commit 1e30568.
 
-### T05 — /desktop/__lease is public read, per computer, holder agent when free
+### T05 — /computer/takeover and /computer/session refuse an anonymous caller
 - Area: `console` · Method: `protocol`
-- Check: `curl -s --max-time 30 "https://qwenpawx.pages.dev/desktop/__lease"` and `curl -s --max-time 30 "https://qwenpawx.pages.dev/desktop/__lease?computer=qa"`
-- Expected: HTTP 200 both; default `{"holder":"agent","leaseId":null,"expiresAt":null,"fence":<n>,"generation":<n>}`, qa the same shape with its own `generation`. (`_worker.js` `desktopLeaseRead`, per-computer keys `lease:default` / `lease:qa`.)
-- Evidence: both JSON bodies. (Verified live: default generation 19, qa generation 2, both holder agent.)
+- Check: `curl -s -X POST -H "Content-Type: application/json" -d '{"computer":"default"}' --max-time 30 https://qwenpawx.pages.dev/computer/takeover` and `curl -s --max-time 30 "https://qwenpawx.pages.dev/computer/session?computer=default"`
+- Expected: takeover 401/405 with no `leaseId` (a 200 would be a stranger seizing the desktop); session 401/405 with no `"policy"` (a 200 would be a screen capability). Neither assertion touches the store when the gate works.
+- Evidence: both HTTP codes + bodies. (Verified live 2026-11-17: both 401.)
+- Was `/desktop/__lease` (deleted surface); rewritten in commit 1e30568.
 
-### T06 — /desktop/vendor/xterm.js serves the vendored terminal client
+### T06 — /vendor/xterm.js serves the vendored terminal client as JavaScript
 - Area: `console` · Method: `protocol`
-- Check: `curl -s -o /dev/null -w "%{http_code} %{size_download} %{content_type}\n" --max-time 60 https://qwenpawx.pages.dev/desktop/vendor/xterm.js`
-- Expected: HTTP 200, `text/javascript`, ~283 KB (xterm.js 5.3.0, `pages/public/vendor/xterm.js`, served from the ASSETS binding — `_worker.js` intercepts `/desktop/vendor/*` because the desktop router owns all of `/desktop/*`).
-- Evidence: HTTP code + size + content-type. (Verified live: 200, 283,404 B.)
+- Check: `curl -s -D - --max-time 60 https://qwenpawx.pages.dev/vendor/xterm.js`
+- Expected: HTTP 200, Content-Type `application/javascript`, >100,000 bytes, contains `xterm`, and NOT the console SPA (no `<!doctype html>` at the start). The defect this guards (B-35) is specific and silent: an unrouted path fell through to the console proxy, which answered 200 `text/html` with 45,989 bytes of the SPA — a `<script src>` answered with HTML fails silently, so `window.Terminal` stayed undefined and the terminal pane was black while the session showed "connected".
+- Evidence: HTTP code + content-type + size. (Verified live 2026-11-17: 200, application/javascript, 283,404 B.)
+- Was `/desktop/vendor/xterm.js` (deleted surface); rewritten in commit 1e30568. Harness note: `http_get_meta` strips proxy CONNECT header blocks before parsing — without that, the Content-Type read is empty and T06 fails while the live file is fine (found 2026-11-17: reported size 283,836 = 283,404 real bytes + 432 bytes of real header text).
 
 ---
 
@@ -316,8 +319,8 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 ### T31 — all skills enabled (qwenpaw skills list)
 - Area: `skills` · Method: `protocol`
 - Check (via `ib.py exec`): `docker exec qwenpaw qwenpaw skills list`
-- Expected: output ends `Showing: 19 of 19 skills, 19 enabled, 0 disabled` and every row shows `✓ enabled`. **Count correction:** the task brief said 18; the live list on 2026-11-15 07:03 IST is **19** (the 19th is builtin `QA_source_index`). The expected value in this catalogue is the live one (19); if a round shows 18, record which skill is missing/disabled rather than assuming the brief was right.
-- Evidence: the `Showing:` line + full row list. (Verified live 2026-11-15.)
+- Expected: output ends `Showing: 20 of 20 skills, 20 enabled, 0 disabled` and every row shows `✓ enabled`. **Count correction:** the task brief said 18; the live list on 2026-11-15 07:03 IST was **19** (the 19th is builtin `QA_source_index`). The 20th is workspace skill `fxembed` (added 2026-11-16 10:10, not in the shared `skill_pool/`). The expected value in this catalogue is the live one (20); if a round shows a different count, record which skill is missing/disabled/added rather than assuming the brief was right.
+- Evidence: the `Showing:` line + full row list. (Verified live 2026-11-17: 20 of 20, all enabled.)
 - Notes: the list reads the workspace registry (`working/workspaces/default/skills/`); a skill installed only to the pool (`skill_pool/`) is invisible until also installed to the workspace dir — see the teach-skill bug in `features/desktop/README.md` (removed 2026-11-15 → features/computer/README.md).
 
 ### T32 — delegate, github, build-page skills present and enabled
