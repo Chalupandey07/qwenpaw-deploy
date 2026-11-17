@@ -241,6 +241,27 @@ console.log("vault (a): the model cannot read a key value");
     expBody.items && expBody.items[0] && expBody.items[0].varName === "GITHUB_API");
   check("export returns the origin pin",
     expBody.items && expBody.items[0] && expBody.items[0].origin === "https://api.github.com");
+
+  // List-broker: the agent's way to discover key names (broker token only).
+  // The agent inside the container has no session cookie, so it cannot
+  // call the session-gated /vault/list — this is its list path.
+  const lbNoToken = await post("/vault/list-broker", {});
+  check("list-broker without broker token -> 401", lbNoToken.status === 401, String(lbNoToken.status));
+  const lbWrong = await post("/vault/list-broker", {},
+    { "X-Vault-Broker-Token": "wrong-token" });
+  check("list-broker with wrong broker token -> 401", lbWrong.status === 401, String(lbWrong.status));
+  const usesBeforeLb = db.prepare("SELECT COUNT(*) AS n FROM vault_use").get().n;
+  const lb = await post("/vault/list-broker", {},
+    { "X-Vault-Broker-Token": BROKER_TOKEN });
+  const lbText = await lb.text();
+  check("list-broker with broker token -> 200", lb.status === 200, String(lb.status));
+  check("list-broker has the name", lbText.includes("github-api"));
+  check("list-broker has NO canary", !lbText.includes(CANARY), "the value leaked into list-broker");
+  check("list-broker has NO ciphertext", !lbText.includes("v1:"));
+  check("list-broker has NO row id", !lbText.includes('"id"'));
+  const usesAfterLb = db.prepare("SELECT COUNT(*) AS n FROM vault_use").get().n;
+  check("list-broker writes NO use row", usesAfterLb === usesBeforeLb,
+    `${usesBeforeLb} -> ${usesAfterLb}`);
 }
 
 console.log("vault (a): validation");
