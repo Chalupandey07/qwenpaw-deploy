@@ -68,6 +68,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import resource
 import signal
 import socket
@@ -164,26 +165,41 @@ TOOL_NAMES = DESKTOP_TOOLS
 #: is in it.
 DESKTOP_TOOL_NAMES = frozenset(name for name, _ in DESKTOP_TOOLS)
 
-#: Parameter names the job actually passes, per tool. Used to build a schema
-#: that is at least the RIGHT SHAPE.
+#: Parameter names and types the proxy ACTUALLY declares, per tool. Used to
+#: build a schema that is the RIGHT SHAPE.
 #:
-#: The previous version gave EVERY tool `id` and `body` fields — wrong for a
-#: `click`, and inflating every schema (which inflated the classic column and
-#: therefore flattered Code Mode).
+#: Recorded live from the proxy's own `inputSchema` (run_1a1e8f3fd71,
+#: 2026-11-17, surface.schemas) — this table is no longer "the arguments the
+#: job passes" but the surface the proxy declares. Two corrections B-43 made
+#: here: (1) `scroll` had `dy` and `drag` had `x1/y1/x2/y2` — neither is a
+#: proxy argument, so the bench was estimating a schema nobody can call;
+#: (2) `element_index` is a STRING in the proxy's schema ("Element
+#: identifier"), not an integer — the job passes it as one.
+#: Types use the runner's short names: "string", "int", "number", "bool".
+#: `text_limit` is anyOf integer | "max" on the proxy; "string" is the
+#: representative here (the estimator only needs a type label).
 TOOL_PARAMS = {
     "list_apps": {},
-    "get_app_state": {"app": "string"},
-    "click": {"app": "string", "x": "int", "y": "int"},
-    "type_text": {"app": "string", "text": "string"},
-    "press_key": {"app": "string", "key": "string"},
-    "scroll": {"app": "string", "dy": "int"},
-    "set_value": {"app": "string", "value": "string"},
-    "drag": {"app": "string", "x1": "int", "y1": "int", "x2": "int", "y2": "int"},
-    "perform_secondary_action": {"app": "string"},
+    "get_app_state": {"app": "string", "include_ax": "bool",
+                      "include_screenshot": "bool", "max_tree_depth": "int",
+                      "max_tree_nodes": "int", "text_limit": "string"},
+    "click": {"app": "string", "click_count": "int", "click_method": "string",
+              "element_index": "string", "mouse_button": "string",
+              "x": "number", "y": "number"},
+    "type_text": {"app": "string", "key_method": "string", "text": "string"},
+    "press_key": {"app": "string", "key": "string", "key_method": "string"},
+    "scroll": {"app": "string", "direction": "string",
+               "element_index": "string", "pages": "number"},
+    "set_value": {"app": "string", "element_index": "string", "value": "string"},
+    "drag": {"app": "string", "from_x": "number", "from_y": "number",
+             "to_x": "number", "to_y": "number"},
+    "perform_secondary_action": {"action": "string", "app": "string",
+                                 "element_index": "string"},
 }
 
 #: The arguments each tool MARKS AS REQUIRED. This is the live proxy's actual
-#: requirement, confirmed 2026-11-17 by run_1a1e8e3d9f9 (B-42).
+#: requirement, confirmed 2026-11-17 by run_1a1e8f3fd71 (B-42) and re-read
+#: from the recorded `surface.schemas` (B-43).
 #:
 #: B-41 shipped args without `app` and the live run answered, for all eight
 #: non-listing tools:
@@ -203,22 +219,61 @@ TOOL_PARAMS = {
 #: `surface.schemas` the proxy itself reported, and `preflight_step()` checks
 #: every required name BEFORE the call — a missing one becomes a named,
 #: skipped step instead of a tool error eight times in a row.
+#: B-43: the table is the FULL live requirement, not just `app`. B-42's
+#: run (run_1a1e8f3fd71) got 5/9 and the next layer was four more missing
+#: arguments the proxy reports one at a time: scroll/set_value/psa need
+#: `element_index`, drag needs all four coordinates, scroll needs
+#: `direction`, psa needs `action`, type_text needs `text`, press_key needs
+#: `key`. The recorded `surface.schemas` (same run) is the source; the
+#: selftest asserts this table equals it.
 TOOL_REQUIRED = {
     "list_apps": (),
     "get_app_state": ("app",),
     "click": ("app",),
-    "type_text": ("app",),
-    "press_key": ("app",),
-    "scroll": ("app",),
-    "set_value": ("app",),
-    "drag": ("app",),
-    "perform_secondary_action": ("app",),
+    "type_text": ("app", "text"),
+    "press_key": ("app", "key"),
+    "scroll": ("app", "element_index", "direction"),
+    "set_value": ("app", "element_index", "value"),
+    "drag": ("app", "from_x", "from_y", "to_x", "to_y"),
+    "perform_secondary_action": ("app", "element_index", "action"),
 }
 
 #: Marker for "this argument is not known until the job has run a step".
 #: A step carrying `APP_FROM_LIST` for `app` gets the name resolved from the
 #: `list_apps` result — never a hard-coded app that may not be running.
 APP_FROM_LIST = "__from_list_apps__"
+
+#: Markers for arguments derived from step 2's `get_app_state` tree (B-43).
+#: A step carrying one of these gets the value resolved from the parsed
+#: accessibility tree at run time — never a hard-coded index, action, or
+#: coordinate that the live surface may not have.
+#:   `ELEMENT_FROM_TREE` — `element_index`, resolved by the step's selector
+#:     (scroll: largest scrollable; set_value: first settable;
+#:     perform_secondary_action: first element with Secondary Actions).
+#:   `ACTION_FROM_TREE` — `action`, the first Secondary Action listed on the
+#:     chosen element, verbatim as printed.
+#:   `DRAG_FROM_TREE` — `from_x`/`from_y`/`to_x`/`to_y`, derived from the
+#:     chosen element's Frame bounds (centre +/- offset).
+ELEMENT_FROM_TREE = "__from_app_state_tree__"
+ACTION_FROM_TREE = "__from_app_state_tree_action__"
+DRAG_FROM_TREE = "__from_app_state_tree_drag__"
+
+#: Scroll direction for the fixed job. The proxy's own schema description
+#: says "Scroll direction: up, down, left, or right", so "down" is a
+#: documented value, not a guess. `pages` is deliberately NOT sent: it is
+#: optional, defaults to 1, and its units are unverified.
+SCROLL_DIRECTION = "down"
+
+#: The value `set_value` assigns. A bench payload, not surface data: it must
+#: not be derived from the element's role or name (inventing a value from the
+#: tree is a guess and makes the step untestable).
+SET_VALUE_TEXT = "pilot"
+
+#: Coordinate space for drag derivation. `Frame:` values are window-relative;
+#: the live root frame is (0,0), so window == screen here. If the proxy ever
+#: turns out to want screen coordinates, the fix is one line — add the root
+#: frame's x/y to each derived coordinate — carried behind this constant.
+DRAG_ORIGIN_OFFSET = "root"
 
 #: ⚠️ THIS JOB DRIVES THE REAL DESKTOP. It is NOT read-only, and it says so.
 #:
@@ -250,14 +305,19 @@ BENCH_STEPS = [
     {"tool": "press_key", "step": "press Return",
      "args": {"app": APP_FROM_LIST, "key": "Return"}, "mutates": True},
     {"tool": "scroll", "step": "scroll the focused view down",
-     "args": {"app": APP_FROM_LIST, "dy": 3}, "mutates": True},
+     "args": {"app": APP_FROM_LIST, "direction": SCROLL_DIRECTION,
+              "element_index": ELEMENT_FROM_TREE}, "mutates": True},
     {"tool": "set_value", "step": "set a value through the accessibility API",
-     "args": {"app": APP_FROM_LIST, "value": "pilot"}, "mutates": True},
+     "args": {"app": APP_FROM_LIST, "value": SET_VALUE_TEXT,
+              "element_index": ELEMENT_FROM_TREE}, "mutates": True},
     {"tool": "drag", "step": "drag across the application window",
-     "args": {"app": APP_FROM_LIST, "x1": 400, "y1": 300, "x2": 500, "y2": 380},
+     "args": {"app": APP_FROM_LIST, "from_x": DRAG_FROM_TREE,
+              "from_y": DRAG_FROM_TREE, "to_x": DRAG_FROM_TREE,
+              "to_y": DRAG_FROM_TREE},
      "mutates": True},
     {"tool": "perform_secondary_action", "step": "invoke a secondary accessibility action",
-     "args": {"app": APP_FROM_LIST}, "mutates": True},
+     "args": {"app": APP_FROM_LIST, "element_index": ELEMENT_FROM_TREE,
+              "action": ACTION_FROM_TREE}, "mutates": True},
 ]
 
 #: Tools that would leave PERSISTENT state behind. None of these is on this
@@ -280,7 +340,8 @@ def schema_tokens(name: str, description: str) -> str:
     """
     params = TOOL_PARAMS.get(name, {})
     props = ",".join(
-        '"%s":{"type":"%s"}' % (p, ("integer" if t == "int" else "string"))
+        '"%s":{"type":"%s"}' % (p, {"int": "integer", "number": "number",
+                                    "bool": "boolean"}.get(t, "string"))
         for p, t in params.items()
     )
     required = ",".join('"%s"' % r for r in TOOL_REQUIRED.get(name, ()))
@@ -607,11 +668,306 @@ def pick_app(names: list) -> str | None:
     return names[0]          # only infrastructure is running: use what we have
 
 
+# ---------------------------------------------------------------------------
+# The accessibility tree (B-43)
+#
+# Step 2's `get_app_state` returns the tree as text. Steps 6-9 need values
+# that only exist inside that tree — an element index, a secondary action,
+# a frame to drag across. Those values are DERIVED here, from the text the
+# proxy actually returned, never invented.
+#
+# THE REAL SHAPE, captured live (run_1a1e8f3fd71, 2026-11-17):
+#
+#     App=Chromium (pid 104998)
+#     Window: "Today's Puzzle Answers (November 16, 2026) - Chromium", App: Chromium.
+#     	0 frame Today's Puzzle Answers (November 16, 2026) - Chromium
+#     	    Secondary Actions: doDefault, showContextMenu
+#     	    Frame: {x: 0, y: 0, width: 1920, height: 1004}
+#
+# A tree line is: TAB-indented, an index, a role, a name, optionally
+# "Secondary Actions: <comma list>", optionally "Frame: {x, y, width,
+# height}". Header lines ("App=...", "Window: ...") carry no index and are
+# skipped. The parse goes right-to-left — Frame first, then Secondary
+# Actions — so a name may contain commas, parentheses, quotes, and even the
+# words "Frame:" without corrupting the parse. Only the Secondary Actions
+# payload is ever split on commas.
+# ---------------------------------------------------------------------------
+
+#: AX roles, longest first. Roles are multi-word ("push button", "text
+#: field", "web area"), so the lexicon must match longest-first or "push
+#: button" parses as role "push" with name "button ...".
+ROLE_LEXICON = (
+    "generic container", "push button", "radio button", "text field",
+    "combo box", "check box", "scroll bar", "spin button", "list item",
+    "tree item", "tab panel", "menu item", "tool bar", "menu bar",
+    "list box", "web area", "static text", "document", "heading",
+    "paragraph", "window", "dialog", "slider", "button", "image",
+    "group", "table", "cell", "row", "link", "list", "tree", "menu",
+    "frame", "tab", "generic", "panel", "canvas", "text", "edit",
+)
+
+#: Roles a scroll can meaningfully target. The tree carries no focus marker,
+#: so "the focused view" is approximated by the LARGEST scrollable
+#: container — a deterministic, surface-derived proxy, not a guess.
+SCROLLABLE_ROLES = frozenset({
+    "frame", "document", "web area", "list", "list box", "table", "tree",
+    "group", "scroll bar", "canvas",
+})
+
+#: Roles that accept a value through the accessibility API. A frame has no
+#: AX value, so it is NOT settable — sending `set_value` at a frame is a
+#: guaranteed-futile call, and the job skips it honestly instead.
+SETTABLE_ROLES = frozenset({
+    "text field", "text box", "edit", "combo box", "spin button",
+    "slider", "check box", "radio button",
+})
+
+#: Roles a drag can meaningfully cross (must have frame bounds).
+DRAGGABLE_ROLES = frozenset({
+    "frame", "document", "web area", "list", "table", "canvas", "image",
+    "group",
+})
+
+_FRAME_RE = re.compile(r"Frame:\s*\{\s*x:\s*(-?\d+),\s*y:\s*(-?\d+),"
+                       r"\s*width:\s*(\d+),\s*height:\s*(\d+)\s*\}")
+_SA_RE = re.compile(r"Secondary Actions:\s*(.*)$")
+_INDEX_RE = re.compile(r"^(\d+)\s+(.*)$")
+_ENUM_RES = (
+    re.compile(r"must be one of\s*[\[\(]\s*([^\]\)]+)[\]\)]", re.IGNORECASE),
+    re.compile(r"one of:?\s*(.+)$", re.IGNORECASE),
+    re.compile(r"[Aa]llowed values:?\s*(.+)$"),
+)
+
+
+def split_role_name(rest: str) -> tuple:
+    """Split a tree-line body into (role, name). Longest-first lexicon."""
+    low = rest.lower()
+    for role in ROLE_LEXICON:
+        if low == role or low.startswith(role + " "):
+            return role, rest[len(role):].strip().strip('"')
+    # Unknown role: first token is the role, the rest is the name.
+    tok, _, tail = rest.partition(" ")
+    return tok.lower(), tail.strip().strip('"')
+
+
+def parse_tree(tree_text) -> list:
+    """Parse `get_app_state` tree text into element dicts.
+
+    Each element: {index, role, name, actions, frame, depth}. `frame` is
+    {x, y, w, h} or None; `actions` is the Secondary Actions list (possibly
+    empty). Header lines and blank lines are skipped. Never raises for a
+    shape surprise — an unparsable line is skipped, not fatal.
+    """
+    out = []
+    try:
+        lines = str(tree_text or "").splitlines()
+    except Exception:  # noqa: BLE001 - a non-string tree is no tree
+        return out
+    for raw in lines:
+        if not raw.strip():
+            continue
+        # Indentation is depth; normalise 2 spaces to 1 tab first so a
+        # space-indented variant parses the same way.
+        depth = len(raw) - len(raw.lstrip("\t"))
+        if depth == 0 and raw.startswith("  "):
+            depth = (len(raw) - len(raw.lstrip(" "))) // 2
+        body = raw.strip()
+        m = _INDEX_RE.match(body)
+        if not m:
+            continue  # header line: "App=... (pid N)", "Window: ..."
+        idx, rest = int(m.group(1)), m.group(2)
+
+        frame = None
+        fm = _FRAME_RE.search(rest)
+        if fm:
+            frame = {"x": int(fm.group(1)), "y": int(fm.group(2)),
+                     "w": int(fm.group(3)), "h": int(fm.group(4))}
+            rest = rest[:fm.start()].rstrip()
+
+        actions = []
+        am = _SA_RE.search(rest)
+        if am:
+            actions = [a.strip() for a in am.group(1).split(",") if a.strip()]
+            rest = rest[:am.start()].rstrip()
+
+        role, name = split_role_name(rest)
+        out.append({"index": idx, "role": role, "name": name,
+                    "actions": actions, "frame": frame, "depth": depth})
+    return out
+
+
+def _frame_area(elem: dict) -> int:
+    f = elem.get("frame")
+    return (f["w"] * f["h"]) if f else 0
+
+
+def select_scroll(tree: list):
+    """The element `scroll` should target: the largest scrollable container.
+
+    Tie-break: lowest index. If two candidates are within 20% of each other
+    in area, prefer the deeper one (a nested web area over its frame).
+    Returns the element dict or None.
+    """
+    cands = [e for e in (tree or []) if e.get("role") in SCROLLABLE_ROLES]
+    if not cands:
+        return None
+    best = max(cands, key=lambda e: (_frame_area(e), -e["index"]))
+    for e in cands:
+        if e is best:
+            continue
+        area = _frame_area(e)
+        if area and _frame_area(best) and abs(area - _frame_area(best)) <= 0.2 * _frame_area(best):
+            if e["depth"] > best["depth"]:
+                best = e
+    return best
+
+
+def select_settable(tree: list):
+    """The element `set_value` should target: the first settable element.
+
+    Lowest index wins. A frame is never settable — see SETTABLE_ROLES.
+    Returns the element dict or None.
+    """
+    for e in sorted(tree or [], key=lambda x: x["index"]):
+        if e.get("role") in SETTABLE_ROLES:
+            return e
+    return None
+
+
+def select_action(tree: list):
+    """The element `perform_secondary_action` should target: the first
+    element that lists Secondary Actions. Lowest index wins. Returns the
+    element dict or None."""
+    for e in sorted(tree or [], key=lambda x: x["index"]):
+        if e.get("actions"):
+            return e
+    return None
+
+
+def select_drag(tree: list):
+    """The element `drag` should cross: the largest draggable element with
+    frame bounds. Falls back to the index-0 root frame when it has bounds.
+    Returns the element dict or None."""
+    cands = [e for e in (tree or [])
+             if e.get("role") in DRAGGABLE_ROLES and e.get("frame")]
+    if not cands:
+        return None
+    return max(cands, key=lambda e: (_frame_area(e), -e["index"]))
+
+
+def derive_drag_coords(elem: dict, root: dict = None):
+    """Derive drag coordinates from an element's frame bounds.
+
+    Centre +/- offset: maximally interior (immune to toolbar/decoration
+    edges), symmetric, and it re-derives for any window size. `off` is the
+    smaller of 80px and an eighth of each dimension, so the drag stays
+    inside the frame. Returns (from_x, from_y, to_x, to_y) or None when the
+    element is too small to drag across. Never clamps silently — a
+    coordinate outside the bounds is a skip, not an invented point.
+    """
+    if not elem or not elem.get("frame"):
+        return None
+    f = elem["frame"]
+    if root and root.get("frame"):
+        rf = root["frame"]
+        x0 = max(f["x"], rf["x"])
+        y0 = max(f["y"], rf["y"])
+        x1 = min(f["x"] + f["w"], rf["x"] + rf["w"])
+        y1 = min(f["y"] + f["h"], rf["y"] + rf["h"])
+        if x1 <= x0 or y1 <= y0:
+            return None
+        f = {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
+    off = min(80, f["w"] // 8, f["h"] // 8)
+    if off < 8:
+        return None
+    cx, cy = f["x"] + f["w"] // 2, f["y"] + f["h"] // 2
+    coords = (cx - off, cy - off, cx + off, cy + off)
+    if not (f["x"] <= coords[0] and coords[2] <= f["x"] + f["w"]
+            and f["y"] <= coords[1] and coords[3] <= f["y"] + f["h"]):
+        return None
+    return coords
+
+
+def extract_enum(error_text: str) -> list:
+    """Pull a value list out of an error message, if the error names one.
+
+    Matches "must be one of [...]", "one of: ...", "Allowed values: ...".
+    Returns the list of bare values, or [] when the error names no enum.
+    """
+    for rx in _ENUM_RES:
+        m = rx.search(str(error_text or ""))
+        if m:
+            return [v.strip().strip("'\"") for v in
+                    re.split(r"[,|]", m.group(1)) if v.strip()]
+    return []
+
+
+def enum_retry_args(tool: str, args: dict, error_text: str):
+    """One retry, only when the proxy's error names the enum it wants.
+
+    `scroll` with a rejected `direction`: retry with the enum member that
+    case-insensitively maps to "down". `perform_secondary_action` with a
+    rejected `action`: retry with the enum member matching the derived
+    action. Anything else: None (no retry — the verbatim error is recorded
+    so the next run can pin the real value). Returns new args or None.
+    """
+    values = extract_enum(error_text)
+    if not values:
+        return None
+    if tool == "scroll" and args.get("direction"):
+        want = str(args["direction"]).lower()
+        for v in values:
+            if v.lower() == want:
+                return dict(args, direction=v)
+        return None
+    if tool == "perform_secondary_action" and args.get("action"):
+        want = str(args["action"])
+        for v in values:
+            if v == want or v.lower() == want.lower():
+                return dict(args, action=v)
+        return None
+    return None
+
+
+#: The live tree from run_1a1e8f3fd71 (2026-11-17) — the surface the job
+#: actually runs against. The selftest's FakeMcp returns this text, so the
+#: job's honest outcome on the live app is 8 passed / 1 skipped
+#: (`set_value`: a frame has no AX value).
+TREE_LIVE_FRAME_ONLY = (
+    "App=Chromium (pid 104998)\n"
+    "Window: \"Today's Puzzle Answers (November 16, 2026) - Chromium\", App: Chromium.\n"
+    "\t0 frame Today's Puzzle Answers (November 16, 2026) - Chromium "
+    "Secondary Actions: doDefault, showContextMenu "
+    "Frame: {x: 0, y: 0, width: 1920, height: 1004}"
+)
+
+#: A richer tree fixture (hand-written, same format) for the full-success
+#: path: a web area to scroll, a text field to set, a list to drag across,
+#: a button with a secondary action. The selftest proves 9/9 against it;
+#: the live app does not have these elements, so this is a fixture, not a
+#: claim about the machine.
+TREE_RICH = (
+    "App=Chromium (pid 104998)\n"
+    "Window: \"Example - Chromium\", App: Chromium.\n"
+    "\t0 frame Example - Chromium Secondary Actions: doDefault, showContextMenu "
+    "Frame: {x: 0, y: 0, width: 1920, height: 1004}\n"
+    "\t\t1 web area Example Secondary Actions: doDefault "
+    "Frame: {x: 0, y: 0, width: 1920, height: 900}\n"
+    "\t\t3 text field Search Frame: {x: 100, y: 100, width: 400, height: 30}\n"
+    "\t\t5 list Results Frame: {x: 100, y: 200, width: 800, height: 600}\n"
+    "\t\t7 push button Go Secondary Actions: press "
+    "Frame: {x: 520, y: 100, width: 80, height: 30}"
+)
+
+
 def preflight_step(step: dict, resolved: dict) -> tuple:
     """Check a step's required arguments BEFORE calling it.
 
-    Returns `(args, missing)`. `missing` is a list of required names the step
-    cannot supply; empty means the call may proceed.
+    Returns `(args, missing)`. `missing` is a list of reason strings of the
+    form `<arg>:<reason>`; empty means the call may proceed. The reasons name
+    WHAT is missing and WHY, so a skip is diagnosable without a round trip.
+    The proxy reports only the FIRST missing argument; the preflight reports
+    ALL of them, so the job does not mirror that weakness.
 
     WHY THIS EXISTS (B-42). B-41 shipped eight steps with no `app` argument and
     the live proxy rejected every one with the same message. Eight identical
@@ -619,12 +975,83 @@ def preflight_step(step: dict, resolved: dict) -> tuple:
     have known before the first call. Checking the table first turns that into
     a single named reason per step — and, when the surface changes again, into a
     message that says WHICH argument is missing instead of eight tool errors.
+
+    B-43: the same check now also resolves the tree-derived arguments
+    (`element_index`, `action`, drag coordinates) from `resolved["tree"]` —
+    the parsed `get_app_state` result. A value that cannot be derived is a
+    named skip, never an invented argument.
     """
+    tool = step["tool"]
     args = {}
     for k, v in (step.get("args") or {}).items():
         args[k] = resolved.get(k, v) if v == APP_FROM_LIST else v
-    missing = [name for name in TOOL_REQUIRED.get(step["tool"], ())
-               if args.get(name) in (None, "", APP_FROM_LIST)]
+    missing = []
+    covered = set()  # argument names already explained by a specific reason
+
+    # Tree-derived arguments (B-43). The tree is the parsed get_app_state
+    # result, stored in resolved["tree"] by run_job after step 2.
+    tree = resolved.get("tree")
+    if tool == "scroll" and args.get("element_index") == ELEMENT_FROM_TREE:
+        el = select_scroll(tree) if tree is not None else None
+        if tree is None:
+            missing.append("element_index:no_app_state_tree")
+        elif el is None:
+            missing.append("element_index:no_scrollable_element")
+        else:
+            args["element_index"] = str(el["index"])
+        covered.add("element_index")
+    elif tool == "set_value" and args.get("element_index") == ELEMENT_FROM_TREE:
+        el = select_settable(tree) if tree is not None else None
+        if tree is None:
+            missing.append("element_index:no_app_state_tree")
+        elif el is None:
+            missing.append("element_index:no_settable_element")
+        else:
+            args["element_index"] = str(el["index"])
+        covered.add("element_index")
+    elif tool == "drag" and args.get("from_x") == DRAG_FROM_TREE:
+        el = select_drag(tree) if tree is not None else None
+        root = next((e for e in (tree or []) if e["index"] == 0), None)
+        coords = derive_drag_coords(el, root) if el else None
+        if tree is None:
+            missing.append("from_x:no_app_state_tree")
+        elif coords is None:
+            missing.append("from_x:no_frame_bounds")
+        else:
+            args["from_x"], args["from_y"], args["to_x"], args["to_y"] = coords
+        covered.update(("from_x", "from_y", "to_x", "to_y"))
+    elif tool == "perform_secondary_action":
+        if args.get("element_index") == ELEMENT_FROM_TREE:
+            el = select_action(tree) if tree is not None else None
+            if tree is None:
+                missing.append("element_index:no_app_state_tree")
+            elif el is None:
+                missing.append("element_index:no_secondary_actions")
+            else:
+                args["element_index"] = str(el["index"])
+                if args.get("action") == ACTION_FROM_TREE:
+                    acts = el.get("actions") or []
+                    if not acts:
+                        missing.append("action:no_secondary_actions")
+                    else:
+                        args["action"] = acts[0]
+            covered.add("element_index")
+            covered.add("action")
+
+    # An argument name outside the tool's declared props is a bug in the
+    # job, not a missing capability — the B-42 guard against `dy`/`x1`.
+    for k in sorted(args):
+        if k not in TOOL_PARAMS.get(tool, {}):
+            missing.append("undeclared_arg:%s" % k)
+
+    # Every required argument, all at once. Names already explained by a
+    # specific reason above are not repeated as bare "missing".
+    for name in TOOL_REQUIRED.get(tool, ()):
+        if name in covered:
+            continue
+        if args.get(name) in (None, "", APP_FROM_LIST, ELEMENT_FROM_TREE,
+                              ACTION_FROM_TREE, DRAG_FROM_TREE):
+            missing.append("%s:missing" % name)
     return args, missing
 
 
@@ -746,6 +1173,7 @@ def run_job(config: dict, job: str = "fixed-bench-job", client=None,
                     "n": index, "tool": step["tool"], "purpose": step["step"],
                     "mutates": bool(step.get("mutates")), "ok": False, "skipped": True,
                     "error": "skipped: interaction disabled for this run",
+                    "ms": int((time.time() - step_started) * 1000),
                 })
                 continue
             # B-42: check the required-argument table BEFORE spending a call.
@@ -759,14 +1187,29 @@ def run_job(config: dict, job: str = "fixed-bench-job", client=None,
                     "missing": missing, "args": args,
                     "error": ("skipped: required argument(s) not available: %s"
                               % ", ".join(missing)),
+                    "ms": int((time.time() - step_started) * 1000),
                 })
                 continue
             try:
                 # `args` comes from the STEP (with run-time values substituted),
                 # never a hardcoded shape.
                 result = box.call(step["tool"], args)
+                retry = None
+                # B-43: ONE retry when the proxy's error names the enum it
+                # wants (e.g. direction "down" rejected with "Must be one
+                # of: UP, DOWN"). The retry reuses the same element_index
+                # and the same derived coordinates; a second rejection is
+                # recorded verbatim, not retried — a loop here would be a
+                # guess wearing a retry's clothes.
+                if not result.get("ok") and result.get("isError"):
+                    retry_args = enum_retry_args(
+                        step["tool"], args, _text_of(result.get("content")))
+                    if retry_args is not None:
+                        retry = {"from": dict(args), "to": dict(retry_args)}
+                        args = retry_args
+                        result = box.call(step["tool"], args)
                 content = result.get("content")
-                entry["steps"].append({
+                step_record = {
                     "n": index,
                     "tool": step["tool"],
                     "purpose": step["step"],
@@ -776,7 +1219,10 @@ def run_job(config: dict, job: str = "fixed-bench-job", client=None,
                     "args": args,
                     "result": truncate(content),
                     "ms": int((time.time() - step_started) * 1000),
-                })
+                }
+                if retry is not None:
+                    step_record["retry"] = retry
+                entry["steps"].append(step_record)
                 # Resolve `app` from the listing step. Doing it on success only
                 # means a failed listing leaves the rest honestly skipped rather
                 # than aimed at a name nothing confirmed.
@@ -787,6 +1233,15 @@ def run_job(config: dict, job: str = "fixed-bench-job", client=None,
                     if chosen:
                         resolved["app"] = chosen
                         entry["resolved"] = dict(resolved)
+                # B-43: parse the accessibility tree from step 2, so steps
+                # 6-9 derive element_index / action / drag coordinates from
+                # the surface instead of inventing them. Only the element
+                # COUNT is recorded; the tree itself stays in the runtime
+                # `resolved` dict, not in the run record.
+                if step["tool"] == "get_app_state" and result.get("ok"):
+                    tree = parse_tree(_text_of(content))
+                    resolved["tree"] = tree
+                    entry["treeElements"] = len(tree)
             except McpError as exc:
                 # A transport failure is recorded per step and the job STOPS:
                 # continuing would produce ten identical failures and imply
@@ -1119,15 +1574,29 @@ class FakeMcp:
 
     The point of the harness is to test THIS file's job logic and reporting,
     so the transport is faked here and tested for real in test_mcp.py.
+
+    LIVE-FAITHFUL (B-43). The fake reimplements ONLY the recorded behaviour
+    of the real proxy — the nine schemas from run_1a1e8f3fd71, first-missing-
+    argument ordering, and the tree text format — and its fixtures are
+    hand-written tree strings copied from the live output. It must NOT
+    import anything from the job's derivation tables: a fake derived from
+    the code under test agrees with the code's wrong assumption (B-42's
+    lesson). `tree` is the get_app_state text; `direction_enum` is the set
+    of directions the fake accepts (the job does not know it).
     """
 
-    def __init__(self, fail_at=None, raise_at=None, is_error_at=None, hang=False):
+    def __init__(self, fail_at=None, raise_at=None, is_error_at=None, hang=False,
+                 tree=None, direction_enum=("up", "down", "left", "right")):
         self.server_info = {"name": "fake-mcp", "version": "1.0"}
         self.calls = []
         self.fail_at = fail_at
         self.raise_at = raise_at
         self.is_error_at = is_error_at
         self.hang = hang
+        self.tree = TREE_LIVE_FRAME_ONLY if tree is None else tree
+        self.direction_enum = tuple(direction_enum)
+        self.elements = parse_tree(self.tree)
+        self.journal = []  # (tool, args) in call order — lets tests assert absence/count
 
     def open(self):
         return {"result": {"serverInfo": self.server_info}}
@@ -1156,24 +1625,59 @@ class FakeMcp:
             for n, d in DESKTOP_TOOLS
         ]
 
+    def _error(self, text):
+        return {"ok": False, "content": [{"type": "text", "text": text}],
+                "isError": True}
+
     def call(self, name, arguments=None):
         self.calls.append(name)
         n = len(self.calls)
-        # ENFORCE the required-argument table, exactly as the live proxy did
-        # (B-42: "Missing required argument: app" for every non-listing tool).
-        #
-        # A fake that accepts anything cannot fail the way the machine failed,
-        # which is precisely why B-41's tests passed while the live run scored
-        # 1/9. The fake has to be as strict as the thing it stands in for.
         args = arguments or {}
+        self.journal.append((name, dict(args)))
+        # 1. Unknown arguments are rejected first — this is what kills the
+        # old `dy` / `x1` shapes (B-43 T10).
+        for k in sorted(args):
+            if k not in TOOL_PARAMS.get(name, {}):
+                return self._error("Unexpected argument: %s" % k)
+        # 2. Required arguments, FIRST missing only, exactly as the live
+        # proxy reports (B-42: "Missing required argument: app").
         for req in TOOL_REQUIRED.get(name, ()):
             if args.get(req) in (None, ""):
-                return {
-                    "ok": False,
-                    "content": [{"type": "text",
-                                 "text": "Missing required argument: %s" % req}],
-                    "isError": True,
-                }
+                return self._error("Missing required argument: %s" % req)
+        # 3. Semantic checks, from the fake's own fixtures — the job does
+        # not know these values, so a wrong derivation fails here.
+        if name in ("scroll", "set_value", "perform_secondary_action", "click"):
+            ei = args.get("element_index")
+            if ei is not None:
+                el = next((e for e in self.elements if str(e["index"]) == str(ei)), None)
+                if el is None:
+                    return self._error("Invalid element_index: %s" % ei)
+                if name == "set_value" and el["role"] not in SETTABLE_ROLES:
+                    return self._error("Element %s (%s) is not settable"
+                                       % (ei, el["role"]))
+                if name == "perform_secondary_action":
+                    if args.get("action") not in (el.get("actions") or []):
+                        return self._error("Unknown action: %s for element %s"
+                                           % (args.get("action"), ei))
+        if name == "scroll":
+            if args.get("direction") not in self.direction_enum:
+                return self._error(
+                    "Invalid direction: %s. Must be one of: %s"
+                    % (args.get("direction"), ", ".join(self.direction_enum)))
+        if name == "drag":
+            root = next((e for e in self.elements if e["index"] == 0), None)
+            frame = root.get("frame") if root else None
+            if frame is None:
+                return self._error("Coordinates out of bounds")
+            for k in ("from_x", "from_y", "to_x", "to_y"):
+                v = args.get(k)
+                if not isinstance(v, (int, float)):
+                    return self._error("Coordinates out of bounds")
+            if not (frame["x"] <= args["from_x"] <= frame["x"] + frame["w"]
+                    and frame["x"] <= args["to_x"] <= frame["x"] + frame["w"]
+                    and frame["y"] <= args["from_y"] <= frame["y"] + frame["h"]
+                    and frame["y"] <= args["to_y"] <= frame["y"] + frame["h"]):
+                return self._error("Coordinates out of bounds")
         if self.hang:
             time.sleep(5)
         if self.raise_at and n == self.raise_at:
@@ -1188,6 +1692,10 @@ class FakeMcp:
                          "window=Terminal - qwenpaw]\n"
                          "xfdesktop -- xfdesktop [running, pid=50676, window=untitled]\n"
                          "xfwm4 -- xfwm4 [running, pid=50671, window=untitled]"),
+            }]}
+        if name == "get_app_state":
+            return {"ok": True, "isError": False, "content": [{
+                "type": "text", "text": self.tree,
             }]}
         if self.is_error_at and n == self.is_error_at:
             return {"ok": False, "content": [{"type": "text", "text": "tool refused"}], "isError": True}
@@ -1345,21 +1853,79 @@ def selftest() -> int:
     check("never claims a run happened", "Nothing was executed" in (blocked["note"] or ""))
     check("no steps recorded", blocked["steps"] == [])
 
-    print("run: a full success")
+    print("run: a full success — on the LIVE frame-only tree (B-43)")
+    # THE LIVE OUTCOME. The fake returns the tree the proxy actually
+    # returned (run_1a1e8f3fd71): a single frame, no settable element. So
+    # the honest result is 8 passed / 1 skipped / 0 failed — `set_value`
+    # skips because a frame has no AX value, and the run is "partial", not
+    # "ok". A suite that demands 9/9 against this tree would be demanding
+    # a call the surface cannot honour.
     fake = FakeMcp()
     ok = run_job({"mcp_url": "http://mcp.test"}, "j", client=fake)
-    check("status ok", ok["status"] == "ok", ok["status"] + " / " + str(ok.get("note")))
+    check("status partial (one honest skip)", ok["status"] == "partial",
+          ok["status"] + " / " + str(ok.get("note")))
     check("every step recorded", len(ok["steps"]) == len(BENCH_STEPS),
           str(len(ok["steps"])))
-    check("summary counts every step ok", ok["summary"]["ok"] == len(BENCH_STEPS),
+    check("8 steps ok, 1 skipped", ok["summary"]["ok"] == 8
+          and ok["summary"]["skipped"] == 1 and ok["summary"]["failed"] == 0,
           json.dumps(ok["summary"]))
-    check("every step is ok", all(s["ok"] for s in ok["steps"]))
+    check("the skipped step is set_value",
+          [s["tool"] for s in ok["steps"] if s.get("skipped")] == ["set_value"],
+          json.dumps([s["tool"] for s in ok["steps"] if s.get("skipped")]))
+    check("…and the reason names the missing settable element",
+          "no_settable_element" in (ok["steps"][6].get("error") or ""),
+          ok["steps"][6].get("error"))
+    check("set_value was never called",
+          "set_value" not in [t for t, _ in fake.journal],
+          json.dumps([t for t, _ in fake.journal]))
+    check("scroll called with the real element and direction",
+          dict(fake.journal)["scroll"] == {"app": "Chromium", "element_index": "0",
+                                           "direction": "down"},
+          json.dumps(dict(fake.journal).get("scroll")))
+    check("drag called with frame-derived coordinates",
+          dict(fake.journal)["drag"] == {"app": "Chromium", "from_x": 880,
+                                         "from_y": 422, "to_x": 1040, "to_y": 582},
+          json.dumps(dict(fake.journal).get("drag")))
+    check("perform_secondary_action called with the real action",
+          dict(fake.journal)["perform_secondary_action"] == {
+              "app": "Chromium", "element_index": "0", "action": "doDefault"},
+          json.dumps(dict(fake.journal).get("perform_secondary_action")))
     check("steps carry the tool name", ok["steps"][0]["tool"] == BENCH_STEPS[0]["tool"])
     check("steps carry a duration", isinstance(ok["steps"][0]["ms"], int))
     check("the server name is recorded", ok["server"]["name"] == "fake-mcp")
-    check("calls were made in order", fake.calls == tools_used, json.dumps(fake.calls))
+    check("calls were made in order (skipped set_value aside)",
+          fake.calls == [t for t in tools_used if t != "set_value"],
+          json.dumps(fake.calls))
+    check("the note says nothing was reported as successful that did not run",
+          "did not run" in (ok["note"] or ""), ok["note"])
+
+    print("run: a full success — on the RICH tree fixture (B-43)")
+    # The same job against a tree that HAS a settable element: 9/9. This
+    # proves the derivation works when the surface provides one; the live
+    # app does not, so this is a fixture result, not a claim about the
+    # machine.
+    fake_rich = FakeMcp(tree=TREE_RICH)
+    rich = run_job({"mcp_url": "http://mcp.test"}, "j", client=fake_rich)
+    check("status ok", rich["status"] == "ok",
+          rich["status"] + " / " + str(rich.get("note")))
+    check("summary counts every step ok", rich["summary"]["ok"] == len(BENCH_STEPS),
+          json.dumps(rich["summary"]))
+    check("every step is ok", all(s["ok"] for s in rich["steps"]))
+    check("calls were made in order", fake_rich.calls == tools_used,
+          json.dumps(fake_rich.calls))
     check("the note says no generated code ran",
-          "no model-generated code" in (ok["note"] or ""), ok["note"])
+          "no model-generated code" in (rich["note"] or ""), rich["note"])
+    check("set_value targeted the text field",
+          dict(fake_rich.journal)["set_value"] == {
+              "app": "Chromium", "element_index": "3", "value": "pilot"},
+          json.dumps(dict(fake_rich.journal).get("set_value")))
+    check("scroll targeted the web area",
+          dict(fake_rich.journal)["scroll"]["element_index"] == "1",
+          json.dumps(dict(fake_rich.journal).get("scroll")))
+    check("perform_secondary_action uses the first element with actions",
+          dict(fake_rich.journal)["perform_secondary_action"] == {
+              "app": "Chromium", "element_index": "0", "action": "doDefault"},
+          json.dumps(dict(fake_rich.journal).get("perform_secondary_action")))
 
     print("run: a tool that reports an error is not a success")
     fake = FakeMcp(is_error_at=3)
@@ -1367,8 +1933,10 @@ def selftest() -> int:
     check("status is partial", partial["status"] == "partial", partial["status"])
     check("the failing step says ok:false", partial["steps"][2]["ok"] is False)
     check("the failing step is flagged isError", partial["steps"][2]["isError"] is True)
+    # 9 steps: 1 failed (click), 1 skipped (set_value, live frame-only
+    # tree), 7 ok. The skip is not a failure.
     check("the other steps still ran",
-          partial["summary"]["ok"] == len(BENCH_STEPS) - 1,
+          partial["summary"]["ok"] == len(BENCH_STEPS) - 2,
           json.dumps(partial["summary"]))
     check("nothing is reported as successful that was not",
           partial["summary"]["failed"] == 1, json.dumps(partial["summary"]))
@@ -1380,11 +1948,25 @@ def selftest() -> int:
     #
     # The fake now enforces TOOL_REQUIRED, so these assertions fail on a job
     # that omits `app` — exactly reproducing the live result.
+    # B-43: the full live requirement, read from the recorded
+    # `surface.schemas` (run_1a1e8f3fd71). B-42's table under-counted
+    # scroll by 2, set_value by 1, drag by 4, perform_secondary_action by
+    # 2, type_text by 1, press_key by 1.
     check("list_apps requires nothing", TOOL_REQUIRED["list_apps"] == (),
           json.dumps(TOOL_REQUIRED["list_apps"]))
-    for _t in ("get_app_state", "click", "type_text", "press_key", "scroll",
-               "set_value", "drag", "perform_secondary_action"):
-        check("%s requires `app`" % _t, TOOL_REQUIRED.get(_t) == ("app",),
+    _expected_required = {
+        "get_app_state": ("app",),
+        "click": ("app",),
+        "type_text": ("app", "text"),
+        "press_key": ("app", "key"),
+        "scroll": ("app", "element_index", "direction"),
+        "set_value": ("app", "element_index", "value"),
+        "drag": ("app", "from_x", "from_y", "to_x", "to_y"),
+        "perform_secondary_action": ("app", "element_index", "action"),
+    }
+    for _t, _req in _expected_required.items():
+        check("%s requires %s" % (_t, ",".join(_req)),
+              TOOL_REQUIRED.get(_t) == _req,
               json.dumps(TOOL_REQUIRED.get(_t)))
     # The schema the bench estimates from must advertise the same requirement,
     # or the token model and the call-time check describe different surfaces.
@@ -1397,9 +1979,15 @@ def selftest() -> int:
 
     fake_args = FakeMcp()
     args_run = run_job({"mcp_url": "http://mcp.test"}, "j", client=fake_args)
-    check("the whole job passes with `app` supplied", args_run["status"] == "ok",
+    # Live frame-only tree: 8 pass, set_value honestly skipped.
+    check("the job passes with `app` supplied (8/1/0 on the live tree)",
+          args_run["status"] == "partial"
+          and args_run["summary"]["ok"] == 8
+          and args_run["summary"]["skipped"] == 1
+          and args_run["summary"]["failed"] == 0,
           "%s / %s" % (args_run["status"], args_run.get("note")))
-    check("every step succeeded", args_run["summary"]["ok"] == len(BENCH_STEPS),
+    check("every attempted step succeeded",
+          all(s["ok"] for s in args_run["steps"] if not s.get("skipped")),
           json.dumps(args_run["summary"]))
     check("no step failed on a missing argument",
           not any("Missing required argument" in json.dumps(st.get("result") or "")
@@ -1457,6 +2045,212 @@ def selftest() -> int:
           json.dumps([st.get("error") for st in no_apps["steps"] if st.get("skipped")][:2]))
     check("only list_apps was actually called",
           no_apps["summary"]["ok"] == 1, json.dumps(no_apps["summary"]))
+
+    print("tree: the parser reads the proxy's real get_app_state format (B-43)")
+    live = parse_tree(TREE_LIVE_FRAME_ONLY)
+    check("the live tree parses to one element", len(live) == 1,
+          json.dumps(live))
+    check("the element index is 0", live[0]["index"] == 0, json.dumps(live))
+    check("the role is frame", live[0]["role"] == "frame", json.dumps(live))
+    check("the name keeps its commas and parentheses",
+          live[0]["name"] == "Today's Puzzle Answers (November 16, 2026) - Chromium",
+          live[0]["name"])
+    check("Secondary Actions parse to a list",
+          live[0]["actions"] == ["doDefault", "showContextMenu"],
+          json.dumps(live[0]["actions"]))
+    check("the Frame parses to bounds",
+          live[0]["frame"] == {"x": 0, "y": 0, "w": 1920, "h": 1004},
+          json.dumps(live[0]["frame"]))
+    # Multi-word roles, longest-first: "push button" is one role, not "push".
+    rich = parse_tree(TREE_RICH)
+    check("the rich tree parses to five elements", len(rich) == 5,
+          json.dumps([e["index"] for e in rich]))
+    check("a multi-word role parses whole",
+          next(e for e in rich if e["index"] == 7)["role"] == "push button",
+          json.dumps(next(e for e in rich if e["index"] == 7)))
+    check("a name containing 'Frame:' and a comma survives",
+          parse_tree('\t4 text field "From: A, to: B Frame: n/a" '
+                     'Frame: {x: 10, y: 10, width: 200, height: 20}')[0]["name"]
+          == "From: A, to: B Frame: n/a",
+          json.dumps(parse_tree('\t4 text field "From: A, to: B Frame: n/a" '
+                                'Frame: {x: 10, y: 10, width: 200, height: 20}')[0]))
+    check("header lines carry no index and are skipped",
+          parse_tree("App=Chromium (pid 1)\nWindow: \"x\", App: Chromium.\n") == [],
+          "header lines produced elements")
+    check("garbage text yields no elements", parse_tree("nonsense") == [],
+          json.dumps(parse_tree("nonsense")))
+
+    print("tree: the selectors derive from the surface, never a guess (B-43)")
+    check("scroll picks the frame on the live tree",
+          select_scroll(live)["index"] == 0, json.dumps(select_scroll(live)))
+    check("scroll prefers the deeper web area when areas are within 20%",
+          select_scroll(rich)["index"] == 1, json.dumps(select_scroll(rich)))
+    check("set_value finds nothing on the live tree (a frame is not settable)",
+          select_settable(live) is None, json.dumps(select_settable(live)))
+    check("set_value finds the text field on the rich tree",
+          select_settable(rich)["index"] == 3, json.dumps(select_settable(rich)))
+    check("perform_secondary_action picks the frame on the live tree",
+          select_action(live)["index"] == 0, json.dumps(select_action(live)))
+    check("drag picks the largest draggable element",
+          select_drag(rich)["index"] == 0, json.dumps(select_drag(rich)))
+    check("drag coordinates are centre +/- offset, inside the frame",
+          derive_drag_coords(select_drag(live), live[0])
+          == (880, 422, 1040, 582),
+          json.dumps(derive_drag_coords(select_drag(live), live[0])))
+    check("a too-small element yields no drag coordinates",
+          derive_drag_coords({"frame": {"x": 0, "y": 0, "w": 10, "h": 10}},
+                           live[0]) is None,
+          "a 10x10 frame produced coordinates")
+    check("the direction is the documented value",
+          SCROLL_DIRECTION == "down", SCROLL_DIRECTION)
+
+    print("tree: the preflight reports every missing argument, not just the first (B-43)")
+    _args, _miss = preflight_step(
+        {"tool": "drag", "args": {"app": APP_FROM_LIST, "from_x": DRAG_FROM_TREE,
+                                  "from_y": DRAG_FROM_TREE, "to_x": DRAG_FROM_TREE,
+                                  "to_y": DRAG_FROM_TREE}},
+        {"app": "Chromium"})
+    check("drag without a tree names the coordinate derivation",
+          _miss == ["from_x:no_app_state_tree"], json.dumps(_miss))
+    _args, _miss = preflight_step(
+        {"tool": "set_value",
+         "args": {"app": APP_FROM_LIST, "value": "pilot",
+                  "element_index": ELEMENT_FROM_TREE}},
+        {"app": "Chromium", "tree": live})
+    check("set_value on the live tree names the missing settable element",
+          _miss == ["element_index:no_settable_element"], json.dumps(_miss))
+    _args, _miss = preflight_step(
+        {"tool": "scroll",
+         "args": {"app": APP_FROM_LIST, "direction": "down",
+                  "element_index": ELEMENT_FROM_TREE}},
+        {"app": "Chromium", "tree": live})
+    check("scroll on the live tree resolves element 0",
+          _miss == [] and _args["element_index"] == "0",
+          json.dumps((_args, _miss)))
+    _args, _miss = preflight_step(
+        {"tool": "perform_secondary_action",
+         "args": {"app": APP_FROM_LIST, "element_index": ELEMENT_FROM_TREE,
+                  "action": ACTION_FROM_TREE}},
+        {"app": "Chromium", "tree": live})
+    check("perform_secondary_action resolves element 0 + doDefault",
+          _miss == [] and _args == {"app": "Chromium", "element_index": "0",
+                                    "action": "doDefault"},
+          json.dumps((_args, _miss)))
+    _args, _miss = preflight_step(
+        {"tool": "scroll", "args": {"app": APP_FROM_LIST, "dy": 3,
+                                    "element_index": ELEMENT_FROM_TREE}},
+        {"app": "Chromium", "tree": live})
+    check("an undeclared argument (dy) is named, not silently passed",
+          "undeclared_arg:dy" in _miss, json.dumps(_miss))
+
+    print("tree: an empty tree skips steps 6-9 honestly (B-43)")
+    fake_empty = FakeMcp(tree="App=Chromium (pid 1)\nWindow: \"x\", App: Chromium.\n")
+    empty = run_job({"mcp_url": "http://mcp.test"}, "j", client=fake_empty)
+    check("steps 6-9 are skipped, not failed",
+          empty["summary"]["failed"] == 0 and empty["summary"]["skipped"] == 4,
+          json.dumps(empty["summary"]))
+    check("get_app_state ran exactly once",
+          fake_empty.calls.count("get_app_state") == 1,
+          json.dumps(fake_empty.calls))
+    check("no interaction call went out for steps 6-9",
+          set(fake_empty.calls) == {"list_apps", "get_app_state", "click",
+                                    "type_text", "press_key"},
+          json.dumps(fake_empty.calls))
+
+    print("tree: a tree with no Secondary Actions skips only that step (B-43)")
+    fake_noact = FakeMcp(tree=(
+        "App=Chromium (pid 1)\n"
+        "Window: \"x\", App: Chromium.\n"
+        "\t0 frame x Frame: {x: 0, y: 0, width: 1920, height: 1004}"))
+    noact = run_job({"mcp_url": "http://mcp.test"}, "j", client=fake_noact)
+    check("only perform_secondary_action is skipped (plus set_value, frame-only)",
+          [s["tool"] for s in noact["steps"] if s.get("skipped")]
+          == ["set_value", "perform_secondary_action"],
+          json.dumps([s["tool"] for s in noact["steps"] if s.get("skipped")]))
+    check("the reason names the missing actions",
+          "no_secondary_actions" in (noact["steps"][8].get("error") or ""),
+          noact["steps"][8].get("error"))
+
+    print("tree: the fake rejects the OLD argument shapes (B-43 T10)")
+    fake_old = FakeMcp()
+    check("drag with x1/y1/x2/y2 is rejected",
+          "Unexpected argument: x1" in
+          fake_old.call("drag", {"app": "Chromium", "x1": 400, "y1": 300,
+                                 "x2": 500, "y2": 380})["content"][0]["text"],
+          "the old drag shape was accepted")
+    check("scroll with dy is rejected",
+          "Unexpected argument: dy" in
+          fake_old.call("scroll", {"app": "Chromium", "dy": 3})["content"][0]["text"],
+          "the old scroll shape was accepted")
+    check("the preflight never lets those shapes reach the proxy",
+          not any("Unexpected argument" in json.dumps(st.get("result") or "")
+                  for st in args_run["steps"]),
+          "a step sent an undeclared argument")
+
+    print("tree: the direction enum is recovered once, then stops (B-43)")
+    # The fake accepts only UPPERCASE directions and names its enum in the
+    # error — the job must retry exactly once with "DOWN".
+    fake_enum = FakeMcp(direction_enum=("UP", "DOWN", "LEFT", "RIGHT"))
+    enum_run = run_job({"mcp_url": "http://mcp.test"}, "j", client=fake_enum)
+    scroll_calls = [a for t, a in fake_enum.journal if t == "scroll"]
+    check("scroll was called exactly twice (one retry)",
+          len(scroll_calls) == 2, json.dumps(scroll_calls))
+    check("the retry used the enum's own spelling",
+          scroll_calls[1].get("direction") == "DOWN", json.dumps(scroll_calls))
+    check("the step passed after the retry",
+          enum_run["steps"][5]["ok"] is True,
+          json.dumps(enum_run["steps"][5]))
+    check("the retry is recorded on the step",
+          enum_run["steps"][5].get("retry", {}).get("from", {}).get("direction")
+          == "down", json.dumps(enum_run["steps"][5].get("retry")))
+    # The same rejection WITHOUT a named enum: no retry, verbatim failure.
+    class NoEnumMcp(FakeMcp):
+        def call(self, name, arguments=None):
+            if name == "scroll":
+                self.calls.append(name)
+                self.journal.append((name, dict(arguments or {})))
+                return {"ok": False, "content": [{"type": "text",
+                                                  "text": "Invalid direction"}],
+                        "isError": True}
+            return super().call(name, arguments)
+
+    fake_noenum = NoEnumMcp()
+    noenum = run_job({"mcp_url": "http://mcp.test"}, "j", client=fake_noenum)
+    check("no retry when the error names no enum",
+          len([a for t, a in fake_noenum.journal if t == "scroll"]) == 1,
+          json.dumps([a for t, a in fake_noenum.journal if t == "scroll"]))
+    check("the verbatim error is recorded",
+          "Invalid direction" in json.dumps(noenum["steps"][5].get("result") or ""),
+          json.dumps(noenum["steps"][5].get("result")))
+
+    print("tree: the tables match the proxy's recorded schema (B-43 drift test)")
+    # The recorded `surface.schemas` from run_1a1e8f3fd71 (2026-11-17) — the
+    # live truth. If the proxy's schema drifts, this fails loudly instead of
+    # silently mis-estimating.
+    _recorded_required = {
+        "list_apps": (),
+        "get_app_state": ("app",),
+        "click": ("app",),
+        "type_text": ("app", "text"),
+        "press_key": ("app", "key"),
+        "scroll": ("app", "element_index", "direction"),
+        "set_value": ("app", "element_index", "value"),
+        "drag": ("app", "from_x", "from_y", "to_x", "to_y"),
+        "perform_secondary_action": ("app", "element_index", "action"),
+    }
+    for _n, _req in _recorded_required.items():
+        check("%s: TOOL_REQUIRED == recorded live schema" % _n,
+              TOOL_REQUIRED.get(_n) == _req,
+              json.dumps(TOOL_REQUIRED.get(_n)))
+        _schema = json.loads(schema_tokens(_n, dict(DESKTOP_TOOLS)[_n]))
+        check("%s: schema_tokens required == recorded live schema" % _n,
+              tuple(_schema["parameters"].get("required") or []) == _req,
+              json.dumps(_schema["parameters"].get("required")))
+    check("no step emits an argument outside the tool's declared props",
+          all(set(s.get("args", {}).keys()) <= set(TOOL_PARAMS.get(s["tool"], {}))
+              for s in BENCH_STEPS),
+          json.dumps([(s["tool"], sorted(s.get("args", {}).keys()))
+                      for s in BENCH_STEPS]))
 
     print("run: interaction can be disabled, and skipped is not failed")
     fake_obs = FakeMcp()
