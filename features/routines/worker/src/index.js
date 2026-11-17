@@ -5,6 +5,12 @@
 //    InstaBox Free machine by probing the public QwenPaw URL, so QwenPaw's
 //    NATIVE scheduler (APScheduler cron jobs in jobs.json + heartbeat) can
 //    actually fire despite the 30-min idle pause. Records each wake in KV.
+//    SLEEP-AWARE (2026-11-17): the tick now checks the next routine BEFORE
+//    probing, and only probes when a routine is due within 15 minutes (a
+//    backup wake for the keep-alive Worker, which owns waking). A blind
+//    probe every 30 minutes would wake the machine around the clock and
+//    defeat intelligent sleep. When no routine is due, the tick records a
+//    "skipped" history entry and does NOT probe.
 //  - GET / : status + run-history HTML page (routines registry, recent
 //    wake/run log, pending manual triggers).
 //  - POST /trigger : manual trigger. It ONLY wakes QwenPaw and records the
@@ -17,6 +23,9 @@
 //  - The scheduler of record is QwenPaw's native cron system:
 //    POST /api/cron/jobs (see ../native-cron-jobs.example.json). This
 //    Worker is the wake + history layer around it, not a second scheduler.
+//    Routine definitions carry a structured `cron` + `timezone` (5-field
+//    cron, IANA zone) so the next run is computable; a definition without
+//    a parseable cron is treated as "due any time" (fail-awake: probe).
 //
 // Env vars: QWENPAW_URL (public console URL, no trailing path needed)
 // KV binding: STATUS (shared with qwenpaw-keepalive; all keys here are
@@ -233,12 +242,144 @@ async function probeQwenPaw(env) {
   return { status: "unexpected", httpStatus, note: `unexpected HTTP ${httpStatus}` };
 }
 
+// --- cron next-run (sleep/wake, 2026-11-17) ------------------------------
+// Inlined copy of the keep-alive Worker's nextRun (worker/src/index.js is
+// the canonical copy; this Worker is also a single-file API upload with no
+// bundler, so the logic is duplicated, not imported). Same contract:
+// 5-field cron, IANA timezone, next run strictly after fromMs. Never
+// assumes a constant offset — it asks Intl for local fields at each
+// candidate minute, so it stays correct on DST zones too.
+const RT_MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const RT_DOW_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+function rtCronToken(s, names, base) {
+  s = String(s).toLowerCase();
+  const i = names ? names.indexOf(s) : -1;
+  return i >= 0 ? i + base : Number(s);
+}
+
+function rtParseCronField(expr, min, max, names, base) {
+  const set = new Set();
+  for (const part of String(expr).trim().split(",")) {
+    const [spec, stepStr] = part.split("/");
+    const step = stepStr === undefined ? 1 : Number(stepStr);
+    if (!(step >= 1)) throw new Error("bad step: " + part);
+    let lo, hi;
+    if (spec === "*") { lo = min; hi = max; }
+    else if (spec.includes("-")) {
+      const [a, b] = spec.split("-");
+      lo = rtCronToken(a, names, base); hi = rtCronToken(b, names, base);
+    } else {
+      lo = rtCronToken(spec, names, base);
+      hi = stepStr === undefined ? lo : max;
+    }
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo < min || hi > max || lo > hi) {
+      throw new Error("bad cron field: " + part);
+    }
+    for (let v = lo; v <= hi; v += step) set.add(v);
+  }
+  return set;
+}
+
+function rtNextRun(cronExpr, timezone, fromMs) {
+  const f = String(cronExpr).trim().split(/\s+/);
+  if (f.length !== 5) throw new Error("5-field cron required");
+  const [minF, hourF, domF, monF, dowF] = f;
+  const minutes = rtParseCronField(minF, 0, 59, null, 0);
+  const hours = rtParseCronField(hourF, 0, 23, null, 0);
+  const doms = rtParseCronField(domF, 1, 31, null, 0);
+  const dows = rtParseCronField(dowF, 0, 6, RT_DOW_NAMES, 0);
+  const months = rtParseCronField(monF, 1, 12, RT_MONTH_NAMES, 1);
+  if (dows.has(7)) { dows.add(0); dows.delete(7); }
+  const domStar = domF.trim().startsWith("*");
+  const dowStar = dowF.trim().startsWith("*");
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone, hour12: false,
+    month: "2-digit", day: "2-digit", hour: "2-digit",
+    minute: "2-digit", weekday: "short",
+  });
+  const partsOf = (ms) => {
+    const o = {};
+    for (const p of fmt.formatToParts(new Date(ms))) o[p.type] = p.value;
+    return o;
+  };
+  let t = Math.floor(fromMs / 60000) * 60000 + 60000;
+  const limit = t + 366 * 24 * 60 * 60000;
+  while (t <= limit) {
+    const p = partsOf(t);
+    const minute = Number(p.minute);
+    const hour = Number(p.hour) % 24;
+    const dom = Number(p.day);
+    const mon = Number(p.month);
+    const dow = RT_DOW_NAMES.indexOf(String(p.weekday).toLowerCase());
+    const domOk = doms.has(dom);
+    const dowOk = dows.has(dow);
+    const dayOk = (domStar || dowStar) ? (domOk && dowOk) : (domOk || dowOk);
+    if (months.has(mon) && dayOk && hours.has(hour) && minutes.has(minute)) return t;
+    t += 60000;
+  }
+  throw new Error("no match within 1 year");
+}
+
+// Earliest next run across active definitions, or null when it cannot be
+// determined (a definition without a parseable cron). Infinity when there
+// are definitively no active routines.
+function rtNextRoutine(defs, now = Date.now()) {
+  let best = Infinity;
+  for (const def of (defs || [])) {
+    if (!def || def.active === false) continue;
+    if (!def.cron || typeof def.cron !== "string") return null; // unknown -> fail-awake
+    try {
+      const at = rtNextRun(def.cron, def.timezone || "Asia/Kolkata", now);
+      if (at < best) best = at;
+    } catch { return null; }
+  }
+  return best;
+}
+
 // One scheduled tick: wake + log. `cron` is the trigger expression, so the
 // daily 01:30 UTC slot is distinguishable from the 30-min ticks.
 async function scheduledTick(env, ctx, cron) {
-  const probe = await probeQwenPaw(env);
   const defs = await readJson(env, DEFINITIONS_KEY, []);
   const active = defs.filter((r) => r && r.active);
+  const now = Date.now();
+  // SLEEP-AWARE (2026-11-17): do NOT probe blindly. The keep-alive Worker
+  // owns waking (it wakes 5 min before a routine); this tick is only a
+  // backup wake. Probe only when a routine is due within 15 minutes, or
+  // when the next run is UNKNOWN (a definition without a parseable cron —
+  // fail-awake, the old behaviour). Otherwise record a skip and stay quiet
+  // so the machine can sleep.
+  const next = rtNextRoutine(active, now);
+  const WAKE_WINDOW_MS = 15 * 60_000;
+  if (next !== null && next !== Infinity && next - now > WAKE_WINDOW_MS) {
+    const entry = {
+      at: new Date().toISOString(),
+      kind: cron === "30 1 * * *" ? "daily-summary-slot" : "wake-tick",
+      cron: cron || null,
+      qwenpaw: "skipped",
+      httpStatus: 0,
+      note: `No routine due within 15 min (next ${new Date(next).toISOString()}); skipped the probe so the machine can sleep.`,
+      activeRoutines: active.map((r) => r.id),
+      deliveredBy: "none — skipped (sleep-aware)",
+    };
+    ctx.waitUntil(pushHistory(env, entry));
+    return entry;
+  }
+  if (next === Infinity) {
+    const entry = {
+      at: new Date().toISOString(),
+      kind: cron === "30 1 * * *" ? "daily-summary-slot" : "wake-tick",
+      cron: cron || null,
+      qwenpaw: "skipped",
+      httpStatus: 0,
+      note: "No active routines; skipped the probe so the machine can sleep.",
+      activeRoutines: [],
+      deliveredBy: "none — skipped (sleep-aware)",
+    };
+    ctx.waitUntil(pushHistory(env, entry));
+    return entry;
+  }
+  const probe = await probeQwenPaw(env);
   const entry = {
     at: new Date().toISOString(),
     kind: cron === "30 1 * * *" ? "daily-summary-slot" : "wake-tick",
@@ -665,7 +806,24 @@ export default {
       }
       const defs = await readJson(env, DEFINITIONS_KEY, []);
       const next = defs.filter((r) => r.id !== body.id);
-      next.push({ id: body.id, name: body.name || body.id, prompt: body.prompt.slice(0, MAX_PROMPT_CHARS), scheduleNote: body.scheduleNote || "", active: body.active !== false, updatedAt: new Date().toISOString() });
+      // Structured schedule (sleep/wake, 2026-11-17): a routine carries a
+      // 5-field cron + IANA timezone so the next run is computable by the
+      // keep-alive Worker (wake 5 min before) and by this Worker's tick
+      // (backup wake). Both are validated here — an unparseable cron is a
+      // 400, not a silent "unknown" that would force fail-awake probing.
+      let cron = null;
+      let timezone = "Asia/Kolkata";
+      if (body.cron !== undefined && body.cron !== null && String(body.cron).trim() !== "") {
+        cron = String(body.cron).trim();
+        try { rtNextRun(cron, typeof body.timezone === "string" && body.timezone.trim() ? body.timezone.trim() : timezone, Date.now()); }
+        catch (e) { return json({ error: "invalid cron", detail: String(e).slice(0, 200) }, 400); }
+      }
+      if (typeof body.timezone === "string" && body.timezone.trim()) {
+        timezone = body.timezone.trim();
+        try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }); }
+        catch { return json({ error: "invalid timezone", detail: timezone.slice(0, 100) }, 400); }
+      }
+      next.push({ id: body.id, name: body.name || body.id, prompt: body.prompt.slice(0, MAX_PROMPT_CHARS), scheduleNote: body.scheduleNote || "", cron, timezone, active: body.active !== false, updatedAt: new Date().toISOString() });
       // Essential (token-gated user action, rare) but counted; a refused
       // write is reported, not silently swallowed.
       if (!(await budgetGuardedPut(env, DEFINITIONS_KEY, JSON.stringify(next), true))) {
