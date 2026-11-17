@@ -54,6 +54,15 @@ export const LIMITS = {
   renew: 40,
   // Teach record start/stop/save.
   teach: 30,
+  // Vault: reveal is the tightest — it is the only route that ever returns
+  // a value (10/min is ~20x the real rate: a human reveals one key at a
+  // time). Request/export are human-paced API calls; mutation/read are UI
+  // actions. All are per-minute, per-IP buckets in the same in-memory map.
+  vault_reveal: 10,
+  vault_request: 60,
+  vault_export: 30,
+  vault_mutation: 30,
+  vault_read: 120,
 };
 
 /** Bucket refill window. One minute, matching the per-minute limits. */
