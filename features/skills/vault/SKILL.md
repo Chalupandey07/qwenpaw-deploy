@@ -1,3 +1,14 @@
+---
+name: vault
+description: "Use the vault when you need to call an external API or run a command that needs an API key — GitHub, Cloudflare, or any custom key the user has stored. The vault lets you USE a key without ever SEEING its value. Use whenever you need a key and for questions about whether you have access to an account."
+version: "1.0"
+metadata:
+  qwenpaw:
+    emoji: "🔑"
+    requires:
+      bins: ["curl"]
+---
+
 # Vault skill
 
 Use the vault when you need to call an external API or run a command that
