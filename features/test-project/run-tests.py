@@ -1423,7 +1423,7 @@ def t94():
     on every run (`describe_surface`), and states plainly that desktop work does
     NOT collapse turns. The 99.0% figure is withdrawn, not adjusted.
     """
-    return _py_script_harness(["features/codemode/vm/codemode-runner.py", "--selftest"], 125)
+    return _py_script_harness(["features/codemode/vm/codemode-runner.py", "--selftest"], 196)
 
 
 def t98():
@@ -1641,7 +1641,7 @@ def t96():
     (B-41). The failing step for the error-path cases is now `press_key` and
     `scroll` — real tools — instead of imaginary board ones.
     """
-    return _py_harness("features/codemode/vm/test_e2e.py", 48)
+    return _py_harness("features/codemode/vm/test_e2e.py", 53)
 
 def t77():
     return _py_script_harness(["features/board/pricing.py", "--selftest"], 20)
