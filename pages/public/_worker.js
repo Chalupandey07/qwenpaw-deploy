@@ -11,6 +11,7 @@
 // What remains is exactly the console proxy plus the wake/cooldown handling,
 // and that is the entire responsibility of this file.
 import { handleComputer } from "./computer/router.js";
+import { handleVault } from "./vault/router.js";
 import { restMachine, machineState, authenticate } from "./machine-control.js";
 import {
   mintSession, sessionFromRequest, sessionSetCookie, sessionClearCookie, SESSION_TTL_MS,
@@ -505,6 +506,23 @@ export default {
         return await handleComputer(request, env, url);
       } catch (err) {
         return new Response(JSON.stringify({ error: "computer_error", detail: String(err).slice(0, 200) }), {
+          status: 500, headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // Vault (Rakazo-style API-key vault, 2026-11-17). Everything under /vault
+    // is its own surface; the console proxy below is untouched. The page
+    // itself is exempt from the session gate (B-39 lesson — the page is
+    // static bytes, the way in); every endpoint it calls is gated by the
+    // vault router's own requiresSession(). ORIGIN is passed through so
+    // /vault/reveal can verify the console bearer token against
+    // /api/cron/jobs (the same probe /api/session/mint uses).
+    if (path === "/vault" || path.startsWith("/vault/")) {
+      try {
+        return await handleVault(request, env, url, ORIGIN);
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "vault_error", detail: String(err).slice(0, 200) }), {
           status: 500, headers: { "Content-Type": "application/json" },
         });
       }
