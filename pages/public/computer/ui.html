@@ -150,7 +150,6 @@
 </style>
 </head>
 <body>
-<div id="jsErrorBar" hidden style="background:#7f1d1d;color:#fecaca;padding:8px 12px;font:12px/1.5 monospace;white-space:pre-wrap;word-break:break-word"></div>
 <div id="rail">
   <header>
     <span class="title" id="railTitle">Computer</span>
@@ -315,23 +314,32 @@
 </div>
 
 <script>
-  // Visible error trap (2026-11-16): the page's JavaScript was failing silently
-  // in the browser — blank status, dead tabs, screen 403 — with no console
-  // access to see why. Any uncaught error or failed import now writes itself
-  // into a banner on the page, so the next browser pass can read it.
+  // Error collection (2026-11-17). The page's JavaScript used to fail silently
+  // in the browser — blank status, dead tabs, screen 403 — with no console to
+  // read. That diagnostic need is real, so the collection stays; what goes is
+  // the VISIBLE red bar that rendered it.
+  //
+  // B-40: that bar occupied the left ~26% of the viewport permanently, in white
+  // monospace, because it was also fed by a screen PROBE that printed the first
+  // 120 characters of a SUCCESSFUL vnc.html response ("Screen probe: fetch
+  // vnc.html -> HTTP 200 : <!DOCTYPE html>..."). A successful request is not an
+  // error, so the panel was red at rest on a healthy page. It has served its
+  // purpose; failures the USER can act on are reported in the rail's own
+  // user-facing states ("Sign in to the QwenPaw console first", "The shell
+  // closed. Take control again to reopen it.", the stage veil), not here.
+  //
+  // `window.__computerErrors` is kept deliberately: it is the cheap, devtools-
+  // accessible record that made the B-33/B-35 classes diagnosable, and it costs
+  // nothing when nothing fails.
   window.__computerErrors = [];
   window.addEventListener("error", (e) => {
     const msg = (e && e.message) || "unknown error";
     const src = (e && e.filename) ? (" @ " + e.filename + ":" + (e.lineno || "?")) : "";
     window.__computerErrors.push(msg + src);
-    const bar = document.getElementById("jsErrorBar");
-    if (bar) { bar.hidden = false; bar.textContent = "Page error: " + window.__computerErrors.join(" | "); }
   });
   window.addEventListener("unhandledrejection", (e) => {
     const msg = (e && e.reason && (e.reason.message || e.reason)) || "unhandled rejection";
     window.__computerErrors.push(String(msg));
-    const bar = document.getElementById("jsErrorBar");
-    if (bar) { bar.hidden = false; bar.textContent = "Page error: " + window.__computerErrors.join(" | "); }
   });
   // RESOURCE failures do not surface as `error` events on window, and a
   // <script> answered with HTML fires onload rather than onerror — so the
@@ -343,10 +351,7 @@
     const tag = String(t.tagName).toLowerCase();
     if (tag !== "script" && tag !== "link" && tag !== "img" && tag !== "iframe") return;
     const url = t.src || t.href || "(no url)";
-    const msg = `Resource failed: <${tag}> ${url}`;
-    window.__computerErrors.push(msg);
-    const bar = document.getElementById("jsErrorBar");
-    if (bar) { bar.hidden = false; bar.textContent = "Page error: " + window.__computerErrors.join(" | "); }
+    window.__computerErrors.push(`Resource failed: <${tag}> ${url}`);
   }, true);   // CAPTURE phase: resource errors do not bubble
 (() => {
   "use strict";
@@ -610,25 +615,26 @@
       el.ovHeld.hidden = false;
     }
     state.screenUrl = s.data.url;
-    // DIAGNOSTIC (2026-11-16): the iframe reports 403 "Screen link expired or
-    // invalid." while the same URL returns 200 from curl. Fetch the vnc.html
-    // screen page from the page itself and show the real status, so we know
-    // whether the browser's request differs from curl's. Remove once diagnosed.
-    const screenPage = state.screenUrl + "/vnc.html?autoconnect=true&resize=scale&reconnect=true&path=" + encodeURIComponent(state.screenUrl + "/websockify");
-    try {
-      const probe = await fetch(screenPage, { cache: "no-store" });
-      const probeText = (await probe.text()).slice(0, 120);
-      const bar = document.getElementById("jsErrorBar");
-      if (bar) {
-        bar.hidden = false;
-        bar.textContent = "Screen probe: fetch vnc.html -> HTTP " + probe.status + " : " + probeText;
-      }
-      if (!probe.ok) { setPhase("failed", "Screen probe HTTP " + probe.status + ": " + probeText); return; }
-    } catch (e) {
-      const bar = document.getElementById("jsErrorBar");
-      if (bar) { bar.hidden = false; bar.textContent = "Screen probe: fetch threw " + (e && e.message); }
-      setPhase("failed", "Screen probe threw: " + (e && e.message)); return;
-    }
+    // The vnc.html probe that used to run here is GONE (B-40).
+    //
+    // It fetched the screen page, printed the first 120 characters of the
+    // response into the visible red bar, and then decided whether to mount the
+    // frames. Two problems, one of them the reported bug:
+    //
+    //   1. It wrote a SUCCESS payload into an error panel. "Screen probe: fetch
+    //      vnc.html -> HTTP 200 : <!DOCTYPE html><html lang="en" class=
+    //      "noVNC_loading">..." is a healthy result rendered as a red alarm, so
+    //      the panel was permanently visible, red, and eating ~26% of the
+    //      viewport on a page that was working.
+    //   2. It gated mounting on a `fetch`. That fetch is a same-origin GET of a
+    //      capability URL with no credentials: it can fail for reasons that do
+    //      not affect an iframe at all (and it doubled the capability's request
+    //      count on every take/release). The iframe is the real client, and its
+    //      own load/`postMessage` state already drives setPhase — mountFrames()
+    //      arms a FRAME_LOAD_TIMEOUT_MS timer for exactly that.
+    //
+    // So the frames mount directly, and failures are reported by the mechanism
+    // that can actually observe them.
     mountFrames();
   }
 

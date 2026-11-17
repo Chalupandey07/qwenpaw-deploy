@@ -1741,3 +1741,94 @@ silently exempt its children.
 `pages/public/computer/router.js` and `pages/public/computer/ui.html` to both
 Pages projects. No machine sync and no secret change is needed — the session
 secret and every data-endpoint rule are untouched.
+
+---
+
+## Part 8 — Found live in a BROWSER, 2026-11-17 ~12:07 IST (B-40)
+
+### B-40 · P2 · A red diagnostics panel permanently covered ~26% of `/computer`, because a SUCCESSFUL probe was written into it as an error — FIXED-CODE
+
+**File:** `pages/public/computer/ui.html` (`#jsErrorBar`, the three window
+error listeners, and the `loadScreen()` probe).
+
+**Found live** by the user at 2026-11-17 ~12:07 IST, on a page that was
+otherwise working (T106 had just passed). A large red panel sat on the left
+~26% of the viewport, white monospace, three lines:
+
+```
+Screen probe: fetch vnc.html -> HTTP 200 : <!DOCTYPE html>
+<html lang="en" class="noVNC_loading">
+<head><style>#noVNC_status{display:none!important}</style><script
+```
+
+**It was not reporting an error — it was reporting HTTP 200.** That is the
+whole defect, and it is the second time this class has appeared in this
+register: *a healthy result rendered as an alarm*. The first was B-35, where a
+`<script src>` answered with HTML parsed as nothing and nothing anywhere said
+so. The fix for B-35 added a probe; the probe then leaked its success payload
+into the error panel.
+
+**Cause.** `loadScreen()` fetched the vnc.html screen page, took
+`.text().slice(0, 120)`, and wrote it into the visible bar *unconditionally* —
+before checking `probe.ok`. So every successful load painted 120 characters of
+markup into a red box, and then mounted the frames. Two further problems in the
+same block:
+
+* It **gated mounting on that fetch**. A same-origin `fetch` of a capability
+  URL can fail for reasons that never affect an iframe, and it doubled the
+  capability's request count on every take/release — while the iframe's own
+  load/`postMessage` state already drives `setPhase` with a
+  `FRAME_LOAD_TIMEOUT_MS` timer.
+* The panel was a **body child above `#rail`**, so it consumed layout width
+  rather than overlaying.
+
+**Fix.**
+
+* The bar element is gone, and so is every write to it — the three window
+  listeners now only *collect*.
+* The probe is gone: `loadScreen()` sets `state.screenUrl` and calls
+  `mountFrames()` directly. Failures are reported by the mechanism that can
+  actually observe them (`setPhase` + the stage/overlay veil + the iframe's
+  `postMessage` states).
+* **Every user-facing message is kept**, and the test asserts each one:
+  "Sign in to the QwenPaw console first", "Your console session expired",
+  "The shell closed. Take control again to reopen it.", "The screen did not
+  respond", "Take control to connect.", and the veil text. Only the raw-markup
+  dump went.
+* `window.__computerErrors` is **kept**. It is the devtools-accessible record
+  that made the B-33/B-35 classes diagnosable and it costs nothing when nothing
+  fails. It is simply no longer rendered.
+
+**Test — T105 32 → 50 checks, fail-first 6/50** on the pre-fix tree. Asserted
+through the REAL router (`GET /computer`), because the defect is about what a
+browser receives:
+
+| Assertion | Pre-fix |
+|---|---|
+| no `jsErrorBar` element in the served page | present |
+| no inline red bar styling (`background:#7f1d1d`) | present |
+| no probe result assigned to visible text | present |
+| the screen page is not fetched just to print its body | `fetch(screenPage` |
+| nothing renders `__computerErrors` | rendered |
+| "nothing is written into a visible error bar" (source check) | written |
+
+The five must-keep message checks and the four structural checks (rail, tabs,
+`termHost`, `previewFrame`) were verified to pass on **both** the old and the
+new file — so this test cannot be satisfied by deleting the page.
+
+Two notes from writing it, both worth keeping:
+
+* The first version of "no probe result is rendered" matched the phrase
+  `Screen probe` anywhere in the document and **failed on the fixed file**,
+  because the fix's own comment quotes it. A comment cannot put anything on
+  screen. It now matches `textContent = "Screen probe...`, i.e. the rendering.
+* For the record, since it looks like a contradiction: a direct
+  `GET /computer/ui.html` answers **404 by design** (verified). `ui.html` is an
+  asset that `serveUi` reads from the ASSETS binding and returns at `/computer`;
+  it is not a route. B-39's statement that "`ui.html` itself was exempt
+  (`*.html`)" refers to the gate's exemption list, not to a working URL — the
+  page was only ever reachable at `/computer`, which is what was locked.
+
+**NOT VERIFIED:** no browser has run this. Muse deploys
+`pages/public/computer/ui.html` to both Pages projects. No machine sync, no
+secret change, and no change to the session gate or any data endpoint.

@@ -1452,7 +1452,7 @@ def t105():
     and that the terminal still writes to a real attached instance.
     Fails 6/32 pre-fix; 32/32 after.
     """
-    return _harness("features/computer/harness-terminal-served.mjs", 32)
+    return _harness("features/computer/harness-terminal-served.mjs", 50)
 
 
 def t104():

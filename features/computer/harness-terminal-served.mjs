@@ -222,10 +222,79 @@ console.log("page: resource-load failures are trapped (the trap that finds this 
     /tag !== "script" && tag !== "link"/.test(js));
   check("it records the failing URL",
     /Resource failed: <\$\{tag\}> \$\{url\}/.test(js));
-  check("it writes to the on-page banner",
-    /jsErrorBar/.test(js) && /bar\.hidden = false/.test(js));
   check("window.__computerErrors still collects everything",
-    /window\.__computerErrors\.push/.test(js));
+    /window\.__computerErrors\.push/.test(js),
+    "the devtools-accessible record is what made B-33/B-35 diagnosable");
+  // B-40: the collection stopped being RENDERED. It used to write every entry
+  // into a visible red bar, which then sat on screen permanently because a
+  // successful screen probe was also written there.
+  check("nothing is written into a visible error bar",
+    !/jsErrorBar/.test(js),
+    "B-40: the red diagnostics panel must not come back");
+}
+
+console.log("page: the SERVED /computer page has no raw-response dump (B-40)");
+{
+  // The bug is about what a browser RECEIVES, so this asserts on the response
+  // through the real router, not on the file on disk. Reading ui.html would
+  // still catch it today (serveUi passes the asset through unchanged), but the
+  // served document is the thing the user actually looked at.
+  const res = await call("/computer");
+  const served = await res.text();
+  check("the page is served at all", res.status === 200, String(res.status));
+
+  // 1. No element exists to render a dump. The id is the cheap, stable handle;
+  //    asserting on the red styling instead would break on a restyle.
+  check("no jsErrorBar element in the served page", !/jsErrorBar/.test(served),
+    "B-40: the red panel occupied ~26% of the viewport permanently");
+  check("no inline red error-bar styling", !/background:#7f1d1d/.test(served),
+    "the panel was red at rest on a healthy page");
+
+  // 2. No code prints a FETCHED RESPONSE BODY as visible text. This is the
+  //    specific defect: a successful probe's `<!DOCTYPE html>...` prefix was
+  //    written into the panel. Matching the probe by name AND by the
+  //    `.slice(...)`/`textContent` pairing that made it visible.
+  // Match the RENDERING (a string literal being assigned to visible text), not
+  // the phrase itself: the fix's own explanatory comment quotes the string, and
+  // a comment cannot put anything on screen. My first version of this check
+  // failed against the FIXED file for exactly that reason.
+  check("no probe result is rendered into visible text",
+    !/textContent\s*=\s*["'`]Screen probe/.test(served),
+    "the probe printed a SUCCESS payload as an alarm");
+  check("the screen page is not fetched just to print its body",
+    !/fetch\(screenPage/.test(served),
+    "mounting the frames must not depend on a probe fetch");
+  check("the frames still mount", /function mountFrames\(\)/.test(served) &&
+    /el\.previewFrame\.src = screenPage/.test(served),
+    "removing the probe must not remove the mount");
+
+  // 3. The removal must not have taken the real user-facing states with it.
+  //    These are the messages a person acts on; only the raw dump was meant
+  //    to go.
+  const mustKeep = [
+    ["the sign-in prompt", /Sign in to the QwenPaw console first/],
+    ["the session-expired prompt", /Your console session expired/],
+    ["the terminal-closed message", /The shell closed\. Take control again to reopen it\./],
+    ["the screen-timeout message", /The screen did not respond/],
+    ["the take-control-to-connect message", /Take control to connect\./],
+    ["the stage/overlay veil text", /Loading the screen|Connecting…/],
+  ];
+  for (const [label, re] of mustKeep) {
+    check(`${label} survives`, re.test(served), "a real error message was removed");
+  }
+
+  // 4. The rail must be intact — the panel used to be a body child ABOVE the
+  //    rail, so a sloppy removal could take the header with it.
+  check("the rail still exists", /id="rail"/.test(served));
+  check("the tabs still exist", /data-tab="terminal"/.test(served) && /data-tab="teach"/.test(served));
+  check("the terminal host still exists", /id="termHost"/.test(served));
+  check("the preview frame still exists", /id="previewFrame"/.test(served));
+
+  // 5. The error COLLECTION stays: it is what made B-33/B-35 diagnosable, and
+  //    it costs nothing. Only its rendering was removed.
+  check("window.__computerErrors is still collected", /__computerErrors\.push/.test(served),
+    "keep the devtools record; drop the visible panel");
+  check("…and nothing renders it to the page", !/textContent = "Page error:/.test(served));
 }
 
 console.log("page: the terminal still writes into a real, attached xterm");
