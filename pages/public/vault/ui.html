@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vault — QwenPaw</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; background: #0f1115; color: #e5e7eb; }
+  header { padding: 16px 20px; border-bottom: 1px solid #262b33; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header p { margin: 0; color: #9ca3af; font-size: 13px; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px 20px 40px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input, select, textarea { background: #171a21; color: #e5e7eb; border: 1px solid #2b303a; border-radius: 6px; padding: 8px 10px; font: inherit; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid #3b82f6; border-color: #3b82f6; }
+  button { background: #2563eb; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer; }
+  button.secondary { background: #262b33; color: #e5e7eb; }
+  button.danger { background: #b91c1c; }
+  button:disabled { opacity: .5; cursor: default; }
+  .card { border: 1px solid #262b33; border-radius: 8px; padding: 12px 14px; margin: 10px 0; background: #14171d; }
+  .card h3 { margin: 0 0 4px; font-size: 15px; }
+  .meta { color: #9ca3af; font-size: 13px; }
+  .tag { display: inline-block; background: #1f2937; border-radius: 4px; padding: 1px 7px; font-size: 12px; margin-right: 6px; }
+  .tag.off { background: #7f1d1d; }
+  .err { color: #fca5a5; }
+  .ok { color: #86efac; }
+  #addForm { display: none; }
+  #addForm.open { display: block; }
+  label { display: block; font-size: 13px; color: #9ca3af; margin: 10px 0 4px; }
+  label input, label select, label textarea { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; }
+  #revealDialog { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; }
+  #revealDialog.open { display: flex; }
+  #revealBox { background: #171a21; border: 1px solid #2b303a; border-radius: 8px; padding: 20px; max-width: 520px; width: 90%; }
+  #revealValue { font-family: ui-monospace, monospace; word-break: break-all; background: #0f1115; padding: 10px; border-radius: 6px; margin: 10px 0; }
+  .hint { color: #9ca3af; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Vault</h1>
+  <p>Keys the agent can use but never see. Values are decrypted only inside the server; the list below shows metadata only.</p>
+</header>
+<main>
+  <div id="sessionNote" class="card" hidden>
+    <p>Sign in to the QwenPaw console first, then reload this page.</p>
+    <p class="hint">Open the console, sign in as usual, and come back here.</p>
+  </div>
+  <div id="app" hidden>
+    <div class="row">
+      <input id="search" type="search" placeholder="Search by name or title" aria-label="Search vault items">
+      <select id="kindFilter" aria-label="Filter by kind">
+        <option value="">All kinds</option>
+        <option value="bearer">Bearer</option>
+        <option value="header">Header</option>
+        <option value="basic">Basic</option>
+        <option value="command">Variable (command)</option>
+      </select>
+      <button id="addBtn" type="button">Add key</button>
+      <span id="status" class="meta" role="status"></span>
+    </div>
+
+    <form id="addForm" class="card" autocomplete="off">
+      <h3>Add a key</h3>
+      <label>Name (lowercase, letters/digits/dash/underscore)
+        <input id="fName" required pattern="[a-z][a-z0-9_-]{0,63}" placeholder="github-api">
+      </label>
+      <label>Kind
+        <select id="fKind">
+          <option value="bearer">Bearer — Authorization: Bearer &lt;key&gt;</option>
+          <option value="header">Header — a custom header name</option>
+          <option value="basic">Basic — Authorization: Basic base64(user:key)</option>
+          <option value="command">Variable — exported as $VAR into shell commands</option>
+        </select>
+      </label>
+      <label id="originLabel">Origin (the only site this key may be sent to)
+        <input id="fOrigin" type="url" placeholder="https://api.github.com">
+      </label>
+      <label id="headerLabel" hidden>Header name
+        <input id="fHeader" placeholder="X-Api-Key">
+      </label>
+      <label id="userLabel" hidden>Username (for Basic)
+        <input id="fUser" placeholder="user">
+      </label>
+      <label>Value
+        <input id="fValue" type="password" required autocomplete="new-password" placeholder="Paste the key here — it is sealed on the server, never shown again">
+      </label>
+      <label>Title (optional)
+        <input id="fTitle" placeholder="GitHub personal access token">
+      </label>
+      <label>Note (optional)
+        <textarea id="fNote" rows="2" placeholder="What is this key for?"></textarea>
+      </label>
+      <div class="row">
+        <button type="submit">Save key</button>
+        <button type="button" class="secondary" id="cancelAdd">Cancel</button>
+        <span id="addErr" class="err" role="alert"></span>
+      </div>
+    </form>
+
+    <div id="list"></div>
+  </div>
+</main>
+
+<div id="revealDialog" role="dialog" aria-modal="true" aria-label="Revealed key value">
+  <div id="revealBox">
+    <h3 id="revealTitle">Key value</h3>
+    <div id="revealValue"></div>
+    <p class="hint">This value is shown once and is not stored on this page. It disappears when this dialog closes.</p>
+    <div class="row">
+      <button type="button" id="revealCopy">Copy</button>
+      <button type="button" class="secondary" id="revealClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<script src="/vault/vault.js" type="module"></script>
+</body>
+</html>
