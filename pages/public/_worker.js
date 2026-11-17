@@ -140,6 +140,19 @@ function computerPanelScript() {
     restBtn.title = "Send the machine to rest when you are done — opening the site wakes it again";
     restBtn.style.cssText = "position:fixed;right:16px;bottom:64px;z-index:2147483647;padding:10px 16px;border-radius:999px;border:1px solid #34404f;background:#171a21;color:#c8d1dc;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
 
+    // ---- Vault button ----
+    // The vault (an API-key store the agent can use but never see) lives at
+    // /vault, but nothing in the console linked to it — the user could not
+    // find it. A visible button next to Computer/Rest, same pattern, opens
+    // the vault page in a new tab. No token needed here: /vault mints its
+    // own session from the console's sign-in, like /computer does.
+    var vaultBtn = document.createElement("button");
+    vaultBtn.id = "qwenpawVaultBtn";
+    vaultBtn.type = "button";
+    vaultBtn.textContent = "Vault";
+    vaultBtn.title = "API-key vault — keys the agent can use but never see";
+    vaultBtn.style.cssText = "position:fixed;right:16px;bottom:112px;z-index:2147483647;padding:10px 16px;border-radius:999px;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
+
     var panel = document.createElement("div");
     panel.id = "qwenpawComputerPanel";
     panel.style.cssText = "position:fixed;top:0;right:0;bottom:0;width:316px;max-width:100vw;z-index:2147483646;background:#0f1115;border-left:1px solid #262a33;display:none;flex-direction:column;box-shadow:-12px 0 32px rgba(0,0,0,.4);";
@@ -163,6 +176,10 @@ function computerPanelScript() {
     document.body.appendChild(panel);
     document.body.appendChild(btn);
     document.body.appendChild(restBtn);
+    document.body.appendChild(vaultBtn);
+    vaultBtn.addEventListener("click", function () {
+      window.open("/vault", "_blank", "noopener");
+    });
 
     // ---- rest button behaviour ----
     // The console keeps its session token in localStorage; read it directly
