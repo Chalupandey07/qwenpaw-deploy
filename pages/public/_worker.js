@@ -1364,6 +1364,26 @@ function computerPanelScript(rebrandEnabled) {
         // clipped by an overflow-hidden parent; the text is simply not
         // rendered. Inject a small visible percentage label into the
         // button next to the ring, and let the button grow to fit it.
+        // ALSO (2026-11-18 QA round 19): put the gap on the BANNER
+        // itself. Find the element holding "This tab queues only" and
+        // give it marginBottom — if the banner is a sibling of a higher
+        // composer wrapper, input marginTop alone never separates them.
+        // No early-skip: React re-renders reset inline styles while
+        // attributes survive, so re-apply on every run (same root cause
+        // as the sidebar, round 12).
+        try {
+          var allEls = document.querySelectorAll ? document.querySelectorAll("*") : [];
+          for (var bi = 0; bi < allEls.length; bi++) {
+            try {
+              var be = allEls[bi];
+              var bt = be.textContent || "";
+              if (bt.indexOf("This tab queues only") !== -1 && be.children && be.children.length <= 3) {
+                be.style.marginBottom = "8px";
+                break;
+              }
+            } catch (e) {}
+          }
+        } catch (e) {}
         try {
           var inputs = document.querySelectorAll("[placeholder]");
           for (var i = 0; i < inputs.length; i++) {
@@ -1376,9 +1396,7 @@ function computerPanelScript(rebrandEnabled) {
               // "message navigation", which is NOT the chat input — so
               // the margin never landed on the real textbox and the
               // banner stayed flush on it (rounds 16–18 FAIL).
-              if (ph.indexOf("Ask anything") === -1) continue;
-              if (inp.getAttribute && inp.getAttribute("data-agentx-banner-gap")) continue;
-              if (inp.setAttribute) inp.setAttribute("data-agentx-banner-gap", "1");
+              if (ph.indexOf("message navigation") === -1 && ph.indexOf("Ask anything") === -1) continue;
               inp.style.marginTop = "8px";
               var parent = inp.parentElement;
               if (parent && parent.tagName && /^(DIV|FORM)$/i.test(parent.tagName)) {
