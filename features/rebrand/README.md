@@ -9,25 +9,28 @@ verification, 2026-11-18). Approach B (DOM injection) was chosen over A
 
 ## Build status (2026-11-18)
 
-**Code complete, machine-free tests green, NOT yet deployed, NOT yet
-live-verified.** Built by Muse (code) from the DeepSeek research report.
-Files: `pages/public/_worker.js` (shim + rebrand rules + our strings),
+**Code complete, machine-free tests green, this commit NOT yet deployed.**
+Built by Muse (code) from the DeepSeek research report. Files:
+`pages/public/_worker.js` (shim + rebrand rules + our strings),
 `features/board/worker/src/index.js`, `features/routines/worker/src/index.js`,
 `worker/src/index.js` (keep-alive probe note),
 `features/infra/workers/activity-feed/index.js` (probe note + title/h1),
 `pages/public/{reset/index.html, vault/ui.html, status-page.html,
 computer/router.js, computer/ui.html, vault/router.js, reset/ui.js}`,
 `features/rebrand/` (this README + harness). Tests: T114
-(harness-rebrand.mjs, 86 checks), PASS; fail-first proven (against the
+(harness-rebrand.mjs, 93 checks), PASS; fail-first proven (against the
 unmodified `_worker.js` it fails 49/51 — the 2 that pass check for the
 ABSENCE of a rebrand section, which is vacuously true on the original
 file; after the browser-verification fixes below, the extended harness
 fails 22/69 against the pre-fix code and passes 69/69 after; after the
 China-card fix below, the extended harness fails 13/86 against the
-pre-fix code and passes 86/86 after). Full machine-free suite 21 PASS /
-4 known NEEDS-REBUILD. Secret-scan clean. NOT deployed — the parent
-deploys after the model-loop browser test finishes, so the Pages proxy
-is untouched by this commit.
+pre-fix code and passes 86/86 after; after the XiaoYi/Yuanbao channel
+fix below, the extended harness fails 7/93 against the pre-fix code
+and passes 93/93 after). Full machine-free suite 21 PASS /
+4 known NEEDS-REBUILD. Secret-scan clean. The rebrand v1 + the first two
+fix rounds ARE deployed and live-verified (see below); only THIS commit
+(the XiaoYi/Yuanbao channel fix) is not deployed yet — the parent
+deploys it and re-verifies in a real browser.
 
 What changed, in order:
 1. **Freeze upstream.** The machine's `/data/home/qwenpaw/docker-compose.yml`
@@ -74,7 +77,8 @@ What changed, in order:
    Codex/Qoder profile rows, the voice/Whisper section; hides the China
    provider cards (DashScope, SiliconFlow, ModelScope, Alibaba, Alibaba
    Cloud, Aliyun) and China channel cards (WeCom, DingTalk, Feishu, QQ,
-   WeChat, Xiaoyi) by accessible name as whole cards; a delegated click
+   WeChat, XiaoYi, Yuanbao) by accessible name as whole cards, with
+   case-insensitive matching (see the XiaoYi fix below); a delegated click
    listener neutralises any `<a>` to the upstream hosts (covers the
    "View guide"/"Documentation" links in settings). Each rule in its own
    try/catch with a `console.debug` naming the rule. The pass is
@@ -194,23 +198,102 @@ harness now simulates it (empty list on the first pass, cards appended,
 re-run after the throttle window). T114 grew 69 → 86 checks; fail-first
 proven 13/86 against the pre-fix code, 86/86 after.
 
-## Live verification (NOT yet done — parent deploys)
+## China-channel fix (2026-11-18, after third live verification)
 
-- **NOT deployed.** The Pages proxy and both Workers are untouched by
-  this commit on purpose: a browser test for the model-loop fix is using
-  the live console right now, and deploying `_worker.js` mid-test would
-  interfere. The parent deploys after that test finishes.
-- **After deploy, verify live in a real browser:** console title is
-  "AgentX Console"; no "Update Available" badge after ~2 h; the header
-  menu has no Tutorial / Feature Demos / Changelog / FAQ / GitHub /
-  Documentation items; "About AgentX" opens /status; no menu item opens
-  qwenpaw.agentscope.io or github.com/agentscope-ai/QwenPaw; the
-  China provider/channel cards are hidden AND the non-China cards and
-  the provider list itself are still visible (the last fix hid the
-  whole list — check the list is present, not just that the China names
-  are gone); the waking page says AgentX.
-  The harness (T114) proves the mechanism against mocks; only a real
-  browser proves it against the live console.
+A third live browser re-verification (satwik, qwenpawx.pages.dev,
+11:47–11:50 IST, commit 83c3003 deployed) passed the provider hiding
+(the settled Models list shows 14 healthy non-China cards — OpenAI,
+DeepSeek, Anthropic present — and SiliconFlow / ModelScope / Aliyun /
+DashScope are all 0, by list and by search), passed the /status note
+("AgentX console answered"), and passed the logo + test message — but
+found ONE China channel card still visible: **XiaoYi** ("xiaoyi XiaoYi
+Configure", second row, first card in Settings > Channels > Available).
+DingTalk, Feishu, QQ, WeChat and WeCom are all absent. The same check
+also surfaced **Yuanbao** (Tencent's AI assistant) as an available
+channel card — the original research listed only six China channels and
+missed it, although the machine's docker-compose.yml already disables it
+via `QWENPAW_DISABLED_CHANNELS`.
+
+Diagnosis, proven against the LIVE main bundle
+(`/assets/index-DZrIuh3B.js`, fetched 2026-11-18, 1,011,949 bytes):
+
+- The channel-name map in the bundle is
+  `xiaoyi:"XiaoYi", yuanbao:"Yuanbao"` (id → display name). The label
+  list spelled it **"Xiaoyi" — which occurs ZERO times in the bundle**,
+  while the console renders "XiaoYi" (display name, once) and "xiaoyi"
+  (channel id, three times). `agentxHideByName` compared
+  case-sensitively, so it could never match either path. The other five
+  China channels hide because their display names match the labels
+  exactly ("DingTalk", "Feishu", "QQ", "WeChat", "WeCom"); only XiaoYi
+  differs in case. That is why five of six hid and one survived.
+- The available-channel button carries the name on TWO paths, and the
+  second one is also case-mismatched: the button is
+  `<button class="availableItem">` (no aria-label) with the icon
+  component rendering `<img alt={channelKey}>` — the alt is the
+  LOWERCASE channel id ("xiaoyi") — plus `span.availableItemName`
+  ("XiaoYi") and a Configure action. The button's own textContent is
+  "XiaoYiConfigure", which matches nothing. The name span is the path
+  that works once the spelling is fixed; the img alt is the path that
+  only case-insensitive matching covers.
+- The XiaoYi setup guide in the bundle confirms it is Huawei's channel
+  ("Please create an agent on Huawei Developer Platform and get AK/SK
+  and Agent ID"), and its icon is an alicdn.com URL (already covered by
+  the CSP-Report-Only img-src rule).
+
+Fix: `agentxHideByName` now compares case-insensitively (name and label
+both lowercased, for the exact, word, and multi-word-substring matches);
+the label list spells the channel "XiaoYi" (the real display name) and
+adds "Yuanbao". iMessage is also in the compose disabled list but is
+Apple's, not a China channel — it is NOT hidden (harness checks it
+stays visible). T114 grew 86 → 93 checks: the 6 new dynamic checks use
+the REAL channel DOM (including the img alt = lowercase id, as the live
+icon component renders it) — a XiaoYi / Yuanbao available button and
+configured card, a XiaoYi channel matched ONLY by its img alt
+(this check fails with only the spelling fix, so it proves the
+case-insensitive match does real work), and iMessage NOT hidden — plus a
+static check for the case-insensitive comparison. Fail-first proven
+7/93 against the pre-fix code (the 2 static checks and the 5
+XiaoYi/Yuanbao hides; the iMessage negative passes on both, as it
+should), 93/93 after.
+
+Tab-count oddity, assessed and LEFT ALONE: while searching for a hidden
+provider, the "Cloud Providers" group heading shows a count (2 for
+SiliconFlow, 1 for ModelScope, 5 for Aliyun, 5 for DashScope) even
+though zero cards render. The count is computed by the app from the
+search-filtered list before our hiding. Rewriting it would mean finding
+the group heading's count element and recomputing it from the visible
+cards after every hide pass — but the heading's render site is in a lazy
+chunk and the i18n key (`cloudGroup`) is referenced dynamically, so the
+heading's DOM structure cannot be grounded in the bundle, and a blind
+rewrite risks corrupting the heading. Cosmetic only (it only disagrees
+while searching for a hidden provider); the cards themselves are
+correctly hidden. Not chased.
+
+## Live verification (deployed 83c3003; this commit NOT yet deployed)
+
+- **Deployed: v1 + fix rounds 1–2 (commit 83c3003, both Pages).**
+  Live-verified three times in a real browser (satwik):
+  #1 (11:13–11:18 IST) partly live — titles/About/no-update-prompt pass,
+  menu buttons and China cards only blanked, About click dead, logo
+  still QwenPaw, /status note still QwenPaw; #2 (11:30–11:34 IST) 5 of 7
+  pass — no icon buttons, About opens /status, logo AgentX, title no
+  flash, test message replied; the /status note read "QwenPaw" only
+  because the check ran ~2 min after the worker deploy, before the next
+  5-min probe wrote the fresh note (verified "AgentX console answered"
+  by direct query right after); SiliconFlow / ModelScope / Aliyun still
+  present because the old climb hid the whole list. #3 (11:47–11:50 IST)
+  — provider hiding PASS (settled list 14 healthy non-China cards,
+  SiliconFlow / ModelScope / Aliyun / DashScope all 0, by list and by
+  search), /status note PASS ("AgentX console answered"), logo + test
+  message PASS, no "QwenPaw" text anywhere in the visible UI — but the
+  XiaoYi channel card still visible and Yuanbao present (this fix).
+- **This commit NOT yet deployed.** After deploy, verify live in a
+  real browser (check #4): Settings > Channels shows NO XiaoYi and NO
+  Yuanbao card, the other five China channels still absent, and
+  Telegram / Slack / iMessage still visible; Settings > Models still
+  shows the 14 non-China provider cards with SiliconFlow / ModelScope /
+  Aliyun / DashScope at 0. The harness (T114) proves the mechanism
+  against mocks; only a real browser proves it against the live console.
 
 ## Never-rename allowlist — do not touch these
 
