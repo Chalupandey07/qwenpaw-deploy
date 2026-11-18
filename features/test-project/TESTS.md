@@ -604,6 +604,12 @@ the parent runs them and pastes the outcome into RESULTS.md.
 - Expected: 9 passed, 0 failed.
 - History: added 2026-11-18 with the daily-summary slot fix (B-47 follow-up). The live half (tomorrow's 07:00 slot must show the daily-summary slot probing, not "skipped") is verified by Muse from /api/history after deploy.
 
+### T114 — AgentX rebrand (DOM injection, harness)
+- Area: `rebrand` · Method: `protocol`
+- Check: `node features/rebrand/harness-rebrand.mjs` (51 checks). Static checks on the real `pages/public/_worker.js`: the fetch patch targets exactly the PyPI update-check URL (and only it) and returns the pinned version 2.3.0; the window.open patch swallows exactly the two upstream hosts (qwenpaw.agentscope.io, github.com/agentscope-ai/QwenPaw); the kill switch exists at both layers (worker env AGENTX_REBRAND=0 and ?rebrand=0 at runtime); the rule table has 12 rules and each runs in its own try/catch with a console.debug naming the rule; the CSP-Report-Only + Referrer-Policy headers are set on the console HTML and the `<title>` is rewritten; the shim is injected before the panel script and the observer calls the rebrand pass. Dynamic checks in a VM with mocks: the real shim (extracted from the file, run with the file's own constants) stubs the PyPI fetch while other fetches pass through, swallows upstream window.open while other opens pass through, and stays unpatched under ?rebrand=0; the real rebrand rules (extracted between the AGENTX-REBRAND markers, run against a mock DOM) rename the title and a visible text node, hide a Tutorial and a GitHub menu item (but not Settings), leave a load-bearing instruction alone, rename an aria-label, hide a DashScope card, make About open /status, and block an upstream link click while letting a same-origin link through. Fail-first proven: against the unmodified `_worker.js` it fails 49/51 (the 2 that pass check for the absence of a rebrand section, vacuously true on the original file).
+- Expected: 51 passed, 0 failed.
+- History: added 2026-11-18 with the AgentX rebrand (approach B, DOM injection). The live half (a real browser on the deployed console: title "AgentX Console", no update badge, no upstream menu items, no upstream navigation, China cards hidden) is verified by Muse after deploy.
+
 ---
 
 ## Out of scope for this catalogue (do not add tests here without a new decision)
