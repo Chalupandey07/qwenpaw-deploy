@@ -1,0 +1,1403 @@
+# -*- coding: utf-8 -*-
+"""Built-in resource limit gates for custom loop modes."""
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .base import StopAction, StopHandlerResult
+from .loop_gate import LoopGate
+
+
+def _bypass() -> StopHandlerResult:
+    """Return a gate bypass result."""
+    return StopHandlerResult(action=StopAction.BYPASS)
+
+
+# --- Workflow / batch-runner counting -------------------------------------
+# The "Run workflow" tool (run_tool_batch) executes up to 50 sub-calls
+# internally. Those sub-calls never appear as top-level tool-call blocks,
+# so a gate that only counts top-level calls is blind to them: the model
+# can run the batch runner 4 times and execute 200 shell calls while the
+# gate sees only 4 top-level calls. The gate therefore expands a batch
+# call into its sub-calls (from the call arguments, before it executes)
+# and, as a fallback, counts a completed batch from its result JSON.
+# Control-flow steps are not real tool calls and are excluded.
+_BATCH_TOOL_NAME = "run_tool_batch"
+_BATCH_CONTROL_TOOLS = frozenset({"set_var", "goto", "run_tool_batch"})
+# Batch files are tiny (50 steps is a few KB). Refuse to read anything
+# larger so a pathological file_path cannot stall the loop.
+_MAX_BATCH_FILE_BYTES = 1_048_576
+
+
+@dataclass
+class _TokenBudgetState:
+    """Per-turn accumulated model usage."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    last_iteration: int = -1
+
+
+class TokenBudgetGate(LoopGate):
+    """Stop a loop when configured token limits are reached."""
+
+    def __init__(
+        self,
+        *,
+        max_total_tokens: int | None = None,
+        max_prompt_tokens: int | None = None,
+        max_completion_tokens: int | None = None,
+    ) -> None:
+        super().__init__()
+        self._max_total = max_total_tokens
+        self._max_prompt = max_prompt_tokens
+        self._max_completion = max_completion_tokens
+
+    @property
+    def name(self) -> str:
+        return "token-budget"
+
+    @property
+    def priority(self) -> int:
+        return 20
+
+    def reset_turn(self) -> None:
+        """Reset the cached snapshot without resetting recorded usage."""
+        self.activate(_TokenBudgetState())
+
+    async def check(self, ctx: Any) -> StopHandlerResult:
+        """Record the latest model usage and enforce every limit."""
+        state = self._state()
+        if state is None:
+            state = _TokenBudgetState()
+            self.activate(state)
+
+        iteration = int(ctx.get("iteration", 0))
+        if state.last_iteration != iteration:
+            usage = self._current_usage()
+            # Usage accumulates for the entire user turn, including rubric
+            # continuations, and is cleared by the channel at turn boundaries.
+            state.prompt_tokens = int(usage.get("prompt_tokens", 0))
+            state.completion_tokens = int(
+                usage.get("completion_tokens", 0),
+            )
+            state.last_iteration = iteration
+
+        total = state.prompt_tokens + state.completion_tokens
+        exceeded = (
+            self._reached(total, self._max_total)
+            or self._reached(state.prompt_tokens, self._max_prompt)
+            or self._reached(
+                state.completion_tokens,
+                self._max_completion,
+            )
+        )
+        if not exceeded:
+            return _bypass()
+        return StopHandlerResult(
+            action=StopAction.TERMINATE,
+            reason=f"Token budget reached ({total} tokens used)",
+        )
+
+    @staticmethod
+    def _reached(value: int, limit: int | None) -> bool:
+        return limit is not None and value >= limit
+
+    @staticmethod
+    def _current_usage() -> dict[str, Any]:
+        """Read usage recorded for the current session."""
+        from ...app.agent_context import get_current_session_id
+        from ...token_usage.model_wrapper import TokenRecordingModelWrapper
+
+        session_id = get_current_session_id()
+        if not session_id:
+            return {}
+        # pylint: disable=protected-access
+        return TokenRecordingModelWrapper._usage_by_session.get(
+            session_id,
+            {},
+        )
+
+
+@dataclass
+class _TimeoutState:
+    """Monotonic start time for one turn."""
+
+    started_at: float = field(default_factory=time.monotonic)
+
+
+class TimeoutGate(LoopGate):
+    """Stop at a loop boundary after a monotonic timeout."""
+
+    def __init__(self, max_seconds: float) -> None:
+        super().__init__()
+        self._max_seconds = max_seconds
+
+    @property
+    def name(self) -> str:
+        return "timeout"
+
+    @property
+    def priority(self) -> int:
+        return 30
+
+    def reset_turn(self) -> None:
+        """Reset elapsed time for a new user turn."""
+        self.activate(_TimeoutState())
+
+    async def check(self, ctx: Any) -> StopHandlerResult:  # noqa: ARG002
+        """Terminate after the configured elapsed duration."""
+        state = self._state()
+        if state is None:
+            state = _TimeoutState()
+            self.activate(state)
+        elapsed = time.monotonic() - state.started_at
+        if elapsed < self._max_seconds:
+            return _bypass()
+        return StopHandlerResult(
+            action=StopAction.TERMINATE,
+            reason=f"Loop time limit reached ({self._max_seconds:g}s)",
+        )
+
+
+@dataclass
+class _ToolCallBudgetState:
+    """Tool call counts observed during one turn."""
+
+    total: int = 0
+    by_tool: Counter[str] = field(default_factory=Counter)
+    last_iteration: int = -1
+
+
+# --- Execution-time enforcement -----------------------------------------
+# The gate checks AFTER a model response and a TERMINATE on a tool-call
+# iteration is DEFERRED (runner.apply_stop_result sets
+# agent._gate_pending_stop; the batch still executes; the stop applies
+# at the next _reasoning via check_pending_gates). When the model emits
+# all 200 calls in a SINGLE response, the gate counts 200 and fires,
+# but every call still executes before the stop can apply. The gate
+# alone cannot stop a single-response burst -- it only stops
+# multi-response runaways, where it can fire between responses.
+#
+# The enforcer below is checked BEFORE each tool call executes, from
+# ReactAgent._execute_tool_call -- the single funnel for both the
+# sequential and the concurrent paths. The gate installs the enforcement
+# state from its check() (which runs after every model response and
+# before the acting phase); the reserve is a plain synchronous counter
+# increment, so concurrent workers reserve in call order on the
+# single-threaded event loop (each worker runs up to its first await
+# before the next starts). A call past the budget is refused without
+# executing, as a DENIED tool result the model can read.
+#
+# A run_tool_batch call is expanded into the sub-calls it will execute
+# (the same expansion the gate uses) and reserves all of them; when
+# the batch would exceed the budget the WHOLE batch is refused, so the
+# batch path is bounded at execution time too. When a batch cannot be
+# expanded (unreadable file) only the batch call itself is reserved,
+# and the gate's result-JSON fallback bounds that case to one batch.
+_EXEC_ATTR = "_tool_call_budget_exec"
+
+
+@dataclass
+class _ToolCallBudgetExec:
+    """Per-turn execution counter (reserved slots, not context counts)."""
+
+    reply_id: str = ""
+    total: int = 0
+    by_tool: Counter[str] = field(default_factory=Counter)
+    max_calls: int | None = None
+    per_tool: dict[str, int] = field(default_factory=dict)
+
+
+def install_execution_budget(
+    agent: Any,
+    reply_id: str | None,
+    max_calls: int | None,
+    per_tool: dict[str, int] | None,
+) -> Any:
+    """Install (or refresh) the per-turn execution counter on the agent.
+
+    Counters reset only when the reply_id changes (a new turn). Within
+    a turn they accumulate across rounds, so a multi-round runaway is
+    bounded by the same budget as a single-response burst. The limits
+    are refreshed on every call so a config change takes effect without
+    a restart. No-op when the agent or reply_id is missing.
+    """
+    if agent is None or reply_id is None:
+        return None
+    current = getattr(agent, _EXEC_ATTR, None)
+    if current is None or getattr(current, "reply_id", None) != reply_id:
+        current = _ToolCallBudgetExec(
+            reply_id=reply_id,
+            max_calls=max_calls,
+            per_tool=dict(per_tool or {}),
+        )
+        setattr(agent, _EXEC_ATTR, current)
+    else:
+        current.max_calls = max_calls
+        current.per_tool = dict(per_tool or {})
+    return current
+
+
+def _exec_state(agent: Any, reply_id: str | None) -> Any:
+    """The installed execution counter for this turn, or None."""
+    if agent is None or reply_id is None:
+        return None
+    current = getattr(agent, _EXEC_ATTR, None)
+    if current is None:
+        return None
+    if getattr(current, "reply_id", None) != reply_id:
+        return None
+    return current
+
+
+def try_reserve_execution(agent: Any, tool_call: Any) -> str | None:
+    """Reserve budget for one tool call before it executes, or refuse it.
+
+    Returns None when the call may execute (the slot is reserved), or
+    a refusal reason string when the total cap or a per-tool cap would
+    be exceeded. The reserve is synchronous, so concurrent workers
+    reserve in call order. Fail-open: when no enforcement state is
+    installed for this turn (gate inactive, reply_id missing) the call
+    is allowed, so a missing enforcer can never break normal execution.
+    A call with no name is allowed (nothing to count).
+    """
+    name = ToolCallBudgetGate._block_name(tool_call)
+    if not name:
+        return None
+    state = getattr(agent, "state", None)
+    reply_id = getattr(state, "reply_id", None)
+    exec_state = _exec_state(agent, reply_id)
+    if exec_state is None:
+        return None
+    # Names to reserve: the call itself, plus its sub-calls when it is
+    # a batch call (expanded from its arguments, as the gate does).
+    names = [name]
+    if name == _BATCH_TOOL_NAME:
+        sub = ToolCallBudgetGate._expand_batch_call(tool_call)
+        if sub is not None:
+            names.extend(sub)
+    # Per-task cap, checked BEFORE the per-turn cap: it is the stricter
+    # cross-turn bound. The task limits are derived here as 2x the
+    # per-turn limits; when the gate's check() already ran this turn
+    # the task exists with its frozen limits and these values are
+    # ignored (limits freeze at task creation). A capped task refuses
+    # every further call for that task, and a reserve that reaches the
+    # cap finalises the task (see the increment below). Order:
+    # finalised -> task per-tool cap -> task total cap -> per-turn.
+    task = None
+    try:
+        task_max = (
+            _TASK_MULTIPLE * exec_state.max_calls
+            if exec_state.max_calls is not None
+            else None
+        )
+        task_per_tool = {
+            tool_name: _TASK_MULTIPLE * limit
+            for tool_name, limit in exec_state.per_tool.items()
+        }
+        task = _ensure_task(
+            agent, None, reply_id, task_max, task_per_tool,
+        )
+    except Exception:
+        task = None
+    if task is not None and task.finalized:
+        reason = (
+            "Task finished by tool call budget "
+            f"({task.total} calls in this task, limit "
+            f"{task.max_calls}); start a new task with a new "
+            "instruction to continue; this call was not executed."
+        )
+        _record_stop(agent, "task_finalized", reason, task, reply_id,
+                     exec_state.total, exec_state.total)
+        return reason
+    if task is not None:
+        counts = Counter(names)
+        for tool_name, n in counts.items():
+            limit = task.per_tool.get(tool_name)
+            if (
+                limit is not None
+                and task.by_tool[tool_name] + n > limit
+            ):
+                reason = (
+                    f"Task tool '{tool_name}' call budget reached: "
+                    "this task already used "
+                    f"{task.by_tool[tool_name]} '{tool_name}' calls "
+                    f"(limit {limit}); this turn already used "
+                    f"{exec_state.total} calls; this call was not "
+                    "executed."
+                )
+                task.finalized = True
+                task.finalized_reason = reason
+                _record_stop(agent, "per-task cap", reason, task,
+                             reply_id, exec_state.total,
+                             exec_state.total,
+                             finalized_by_this_stop=True)
+                return reason
+        if (
+            task.max_calls is not None
+            and task.total + len(names) > task.max_calls
+        ):
+            reason = (
+                "Task tool call budget reached: this task already "
+                f"used {task.total} tool calls (limit "
+                f"{task.max_calls}); this turn already used "
+                f"{exec_state.total} calls; this call was not "
+                "executed."
+            )
+            task.finalized = True
+            task.finalized_reason = reason
+            _record_stop(agent, "per-task cap", reason, task, reply_id,
+                         exec_state.total, exec_state.total,
+                         finalized_by_this_stop=True)
+            return reason
+    # Would this exceed the total cap? The gate fires at total >=
+    # max_calls, so a call is allowed while total + len(names) is at
+    # most max_calls (exactly max_calls calls execute).
+    if (
+        exec_state.max_calls is not None
+        and exec_state.total + len(names) > exec_state.max_calls
+    ):
+        reason = (
+            "Tool call budget reached: this turn already used "
+            f"{exec_state.total} tool calls (limit "
+            f"{exec_state.max_calls}); this call was not executed."
+        )
+        if task is not None:
+            reason += f" Task total {task.total}/{task.max_calls}."
+        _record_stop(agent, "fuse", reason, task, reply_id,
+                     exec_state.total, exec_state.total)
+        return reason
+    # Would this exceed a per-tool cap? Same boundary as the gate:
+    # exactly `limit` calls of that tool execute.
+    counts = Counter(names)
+    for tool_name, n in counts.items():
+        limit = exec_state.per_tool.get(tool_name)
+        if (
+            limit is not None
+            and exec_state.by_tool[tool_name] + n > limit
+        ):
+            reason = (
+                f"Tool '{tool_name}' call budget reached: this turn "
+                f"already used {exec_state.by_tool[tool_name]} "
+                f"'{tool_name}' calls (limit {limit}); this call was "
+                "not executed."
+            )
+            if task is not None:
+                reason += f" Task total {task.total}/{task.max_calls}."
+            _record_stop(agent, "fuse", reason, task, reply_id,
+                         exec_state.total, exec_state.total)
+            return reason
+    exec_state.total += len(names)
+    exec_state.by_tool.update(names)
+    if task is not None:
+        # Charge the executed call(s) to the task as well, and
+        # finalise the WHOLE task when either task cap is reached
+        # (a per-tool cap finalises the task, not just that tool).
+        task.total += len(names)
+        task.by_tool.update(names)
+        reached_reason = None
+        if (
+            task.max_calls is not None
+            and task.total >= task.max_calls
+        ):
+            reached_reason = (
+                "Task tool call budget reached "
+                f"({task.total} calls in this task, limit "
+                f"{task.max_calls})"
+            )
+        else:
+            for tool_name, limit in task.per_tool.items():
+                if task.by_tool[tool_name] >= limit:
+                    reached_reason = (
+                        f"Task tool '{tool_name}' call budget reached "
+                        f"({task.by_tool[tool_name]} '{tool_name}' "
+                        f"calls in this task, limit {limit})"
+                    )
+                    break
+        if reached_reason is not None:
+            task.finalized = True
+            task.finalized_reason = reached_reason
+            _record_stop(agent, "per-task cap", reached_reason, task,
+                         reply_id, exec_state.total, exec_state.total,
+                         finalized_by_this_stop=True, refused_delta=0)
+    return None
+
+
+# --- Per-task cap + structured stop audit ---------------------------------
+# The per-turn cap resets on every new reply_id, so a task can creep
+# forward across turns: the gatefix3 live test executed 20 shell calls
+# in turn 1, then resumed the same echo-1-to-200 task on the follow-up
+# "hello" and did 21-40. The per-task cap below bounds the WHOLE task:
+# 2x the per-turn cap (60 total / 40 shell by default), cumulative
+# across every turn of the task. A task that spends its budget is
+# finalised: a resumed turn sees the flag and is refused, and only a
+# new explicit user instruction starts a new task with a fresh budget.
+#
+# Task identity. An explicit task id wins when present (ctx["task_id"]
+# or agent.state.task_id -- the client-side "new task" action, when one
+# exists). Otherwise the task is derived from the latest user message
+# in the context: a continuation-only message (empty, greeting,
+# "continue" / "go on" / "yes" / "ok" / "thanks") resumes the current
+# task; a different substantive message starts a new task (the old one
+# is abandoned); any substantive message after finalisation starts a
+# new task. The continuation rule is a small English-only heuristic
+# (this deploy is English-only); it is the fallback, not the primary
+# signal -- an explicit task id always wins.
+#
+# Repeat guard (DeepSeek review). A task that was finalised BY CAP
+# leaves its fingerprint in the session's prior-task record. Re-issuing
+# the same instruction starts a task that INHERITS the spent total, so
+# replaying the same prompt N times cannot mint N fresh budgets. A
+# task that ended normally (abandoned, never capped) does not poison
+# repeats: a repeat of it gets a fresh budget.
+#
+# Lifetime. Task state lives ON the agent object, next to the per-turn
+# exec counter -- the same lifetime the per-turn counter already
+# relies on (it is keyed by reply_id, which would be redundant if a
+# fresh agent object were built per turn). Limits are FROZEN at task
+# creation, so a config reload cannot move the goalposts mid-task.
+# The audit is in-memory for the chat session (agent object lifetime);
+# there is no disk persistence in this change.
+#
+# Atomicity. Every reserve (per-turn + per-task check and increment)
+# is one synchronous function with no await between check and
+# increment, so concurrent workers reserving in call order cannot
+# interleave a read and a write and overshoot the cap.
+_TASK_ATTR = "_tool_call_task_budget"
+_AUDIT_ATTR = "_tool_call_stop_audit"
+_AUDIT_KEYS_ATTR = "_tool_call_stop_audit_keys"
+_PRIOR_ATTR = "_tool_call_prior_tasks"
+_TASK_MULTIPLE = 2
+
+_CONTINUATION_TEXTS = frozenset({
+    "",
+    "hello",
+    "hi",
+    "hey",
+    "continue",
+    "go on",
+    "go ahead",
+    "proceed",
+    "carry on",
+    "please continue",
+    "yes",
+    "yeah",
+    "yep",
+    "ok",
+    "okay",
+    "sure",
+    "thanks",
+    "thank you",
+})
+
+
+@dataclass
+class _TaskBudget:
+    """Per-task execution totals (EXECUTED calls, across turns)."""
+
+    task_id: str = ""
+    instruction: str = ""
+    fingerprint: str = ""
+    total: int = 0
+    by_tool: Counter[str] = field(default_factory=Counter)
+    max_calls: int | None = None
+    per_tool: dict[str, int] = field(default_factory=dict)
+    finalized: bool = False
+    finalized_reason: str = ""
+    reply_ids: set[str] = field(default_factory=set)
+    charged_batch_results: set[str] = field(default_factory=set)
+
+
+def _normalize_instruction(text: str) -> str:
+    """Lowercase, de-punctuated, whitespace-collapsed instruction text."""
+    cleaned = "".join(
+        ch for ch in text.lower() if ch.isalnum() or ch.isspace()
+    )
+    return " ".join(cleaned.split())[:500]
+
+
+def _fingerprint(text: str) -> str:
+    """Short hash of the normalised instruction ("" for no instruction)."""
+    normalized = _normalize_instruction(text)
+    if not normalized:
+        return ""
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _is_continuation(text: str | None) -> bool:
+    """True when a user message is a bare greeting / nudge, not a task."""
+    if text is None:
+        return True
+    return _normalize_instruction(text) in _CONTINUATION_TEXTS
+
+
+def _user_text_of(message: Any) -> str:
+    """Text of a user message (plain string or text blocks)."""
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text" and block.get("text"):
+                    parts.append(str(block["text"]))
+            elif getattr(block, "type", None) == "text":
+                text = getattr(block, "text", "")
+                if text:
+                    parts.append(str(text))
+        return " ".join(parts)
+    return ""
+
+
+def _latest_user_text(agent: Any) -> str | None:
+    """Text of the latest user message in the context, or None."""
+    context = getattr(getattr(agent, "state", None), "context", [])
+    for message in reversed(context):
+        if getattr(message, "role", None) != "user":
+            continue
+        return _user_text_of(message)
+    return None
+
+
+def _current_session_id() -> str:
+    """Current session id for the default task id, or "default"."""
+    try:
+        from ...app.agent_context import get_current_session_id
+
+        return str(get_current_session_id() or "default")
+    except Exception:
+        return "default"
+
+
+def _new_task_id(instruction: str) -> str:
+    """Task id for a new task: fingerprint, or session-based default."""
+    fingerprint = _fingerprint(instruction)
+    if fingerprint:
+        return f"task-{fingerprint}"
+    return f"task-default-{_current_session_id()}"
+
+
+def _start_task(
+    agent: Any,
+    task_id: str,
+    instruction: str,
+    max_calls: int | None,
+    per_tool: dict[str, int] | None,
+    reply_id: str | None,
+) -> _TaskBudget:
+    """Start a task, archiving the current one and applying the guard.
+
+    A repeat of an instruction whose earlier task was finalised by cap
+    inherits that task's spent totals (and finalisation when the totals
+    already reach the cap), so the same prompt cannot mint a fresh
+    budget. Limits are frozen here and never refreshed mid-task.
+    """
+    current = getattr(agent, _TASK_ATTR, None)
+    prior = getattr(agent, _PRIOR_ATTR, None)
+    if prior is None:
+        prior = {}
+        setattr(agent, _PRIOR_ATTR, prior)
+    if current is not None and current.fingerprint:
+        prior[current.fingerprint] = {
+            "total": current.total,
+            "by_tool": dict(current.by_tool),
+            "capped": bool(current.finalized),
+        }
+    fingerprint = _fingerprint(instruction)
+    total = 0
+    by_tool: Counter[str] = Counter()
+    finalized = False
+    finalized_reason = ""
+    spent = prior.get(fingerprint) if fingerprint else None
+    if spent is not None and spent.get("capped"):
+        total = int(spent.get("total") or 0)
+        by_tool = Counter(spent.get("by_tool") or {})
+        if max_calls is not None and total >= max_calls:
+            finalized = True
+            finalized_reason = (
+                "Task tool call budget reached "
+                f"({total} calls in this task, limit {max_calls}); "
+                "this instruction already spent its budget."
+            )
+        else:
+            for tool_name, limit in (per_tool or {}).items():
+                if by_tool[tool_name] >= limit:
+                    finalized = True
+                    finalized_reason = (
+                        f"Task tool '{tool_name}' call budget reached "
+                        f"({by_tool[tool_name]} '{tool_name}' calls in "
+                        f"this task, limit {limit}); this instruction "
+                        "already spent its budget."
+                    )
+                    break
+    task = _TaskBudget(
+        task_id=task_id,
+        instruction=(instruction or "")[:120],
+        fingerprint=fingerprint,
+        total=total,
+        by_tool=by_tool,
+        max_calls=max_calls,
+        per_tool=dict(per_tool or {}),
+        finalized=finalized,
+        finalized_reason=finalized_reason,
+        reply_ids={reply_id} if reply_id else set(),
+    )
+    setattr(agent, _TASK_ATTR, task)
+    return task
+
+
+def _ensure_task(
+    agent: Any,
+    ctx: Any,
+    reply_id: str | None,
+    max_calls: int | None,
+    per_tool: dict[str, int] | None,
+) -> _TaskBudget | None:
+    """Resolve the current task for this turn, starting one if needed.
+
+    Fail-open: any error returns None and the caller runs the per-turn
+    behaviour exactly as before (the task cap simply does not apply).
+    """
+    try:
+        if agent is None:
+            return None
+        explicit = None
+        if isinstance(ctx, dict):
+            explicit = ctx.get("task_id")
+        if not explicit:
+            explicit = getattr(
+                getattr(agent, "state", None), "task_id", None,
+            )
+        current = getattr(agent, _TASK_ATTR, None)
+        latest = _latest_user_text(agent)
+        if explicit:
+            task_id = str(explicit)
+            if current is None or current.task_id != task_id:
+                return _start_task(
+                    agent, task_id, latest or "", max_calls, per_tool,
+                    reply_id,
+                )
+            if reply_id:
+                current.reply_ids.add(reply_id)
+            return current
+        if current is None:
+            return _start_task(
+                agent, _new_task_id(latest or ""), latest or "",
+                max_calls, per_tool, reply_id,
+            )
+        if reply_id:
+            current.reply_ids.add(reply_id)
+        if current.finalized:
+            # Only a substantive message starts a new task after
+            # finalisation; a greeting / nudge stays on the old task
+            # and is refused. A repeat of the capped instruction is
+            # caught by the guard in _start_task (inherits the spend).
+            if latest and not _is_continuation(latest):
+                return _start_task(
+                    agent, _new_task_id(latest), latest,
+                    max_calls, per_tool, reply_id,
+                )
+            return current
+        if latest is None or _is_continuation(latest):
+            return current
+        if _fingerprint(latest) == current.fingerprint:
+            return current
+        return _start_task(
+            agent, _new_task_id(latest), latest,
+            max_calls, per_tool, reply_id,
+        )
+    except Exception:
+        return None
+
+
+def _record_stop(
+    agent: Any,
+    kind: str,
+    reason: str,
+    task: _TaskBudget | None,
+    turn_id: str | None,
+    turn_total: int,
+    turn_executed: int,
+    finalized_by_this_stop: bool = False,
+    refused_delta: int = 1,
+) -> dict[str, Any] | None:
+    """Append one stop-audit record (deduped per task / turn / kind).
+
+    Totals are as of the record's last update. A repeat stop of the
+    same kind in the same turn does not append a second record; it
+    adds ``refused_delta`` to ``refused`` (how many calls this stop
+    refused) and refreshes the totals, so the audit keeps the
+    magnitude without one record per refused call. The gate refuses
+    no calls itself, so gate records pass refused_delta=0; the
+    enforcer passes 1 per refused call. Never raises: the audit must
+    not break a turn.
+    """
+    try:
+        if agent is None:
+            return None
+        audit = getattr(agent, _AUDIT_ATTR, None)
+        if audit is None:
+            audit = []
+            setattr(agent, _AUDIT_ATTR, audit)
+        keys = getattr(agent, _AUDIT_KEYS_ATTR, None)
+        if keys is None:
+            keys = set()
+            setattr(agent, _AUDIT_KEYS_ATTR, keys)
+        task_id = task.task_id if task is not None else ""
+        key = (task_id, turn_id or "", kind)
+        if key in keys:
+            for record in audit:
+                if record.get("_key") == key:
+                    record["refused"] = (
+                        record.get("refused", 0) + refused_delta
+                    )
+                    record["turn_total"] = turn_total
+                    record["turn_executed"] = turn_executed
+                    record["task_total"] = (
+                        task.total if task is not None else 0
+                    )
+                    record["finalized"] = (
+                        task.finalized if task is not None else False
+                    )
+                    return record
+        record: dict[str, Any] = {
+            "_key": key,
+            "seq": len(audit) + 1,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "kind": kind,
+            "reason": reason,
+            "task_id": task_id,
+            "instruction": task.instruction if task is not None else "",
+            "turn_id": turn_id or "",
+            # turn_total: the gate's emitted turn total for gate
+            # records; the executed-so-far turn total for enforcer
+            # (fuse / task-cap) records, written before the refused
+            # call would have executed.
+            "turn_total": turn_total,
+            "turn_executed": turn_executed,
+            "task_total": task.total if task is not None else 0,
+            "task_by_tool": (
+                dict(task.by_tool) if task is not None else {}
+            ),
+            "refused": refused_delta,
+            "finalized": task.finalized if task is not None else False,
+            "finalized_by_this_stop": finalized_by_this_stop,
+        }
+        audit.append(record)
+        keys.add(key)
+        return record
+    except Exception:
+        return None
+
+
+def get_stop_audit(agent: Any) -> list[dict[str, Any]]:
+    """Copies of the stop-audit records for this agent (oldest first)."""
+    audit = getattr(agent, _AUDIT_ATTR, None) or []
+    records = []
+    for record in audit:
+        copy = {k: v for k, v in record.items() if k != "_key"}
+        copy["task_by_tool"] = dict(copy.get("task_by_tool") or {})
+        records.append(copy)
+    return records
+
+
+def get_task_state(agent: Any) -> dict[str, Any] | None:
+    """The current task's totals and finalisation, or None."""
+    task = getattr(agent, _TASK_ATTR, None)
+    if task is None:
+        return None
+    return {
+        "task_id": task.task_id,
+        "instruction": task.instruction,
+        "total": task.total,
+        "by_tool": dict(task.by_tool),
+        "max_calls": task.max_calls,
+        "per_tool": dict(task.per_tool),
+        "finalized": task.finalized,
+        "finalized_reason": task.finalized_reason,
+    }
+
+
+class ToolCallBudgetGate(LoopGate):
+    """Limit total and per-tool calls in one agent turn."""
+
+    def __init__(
+        self,
+        *,
+        max_calls: int | None = None,
+        per_tool: dict[str, int] | None = None,
+        task_max_calls: int | None = None,
+        task_per_tool: dict[str, int] | None = None,
+    ) -> None:
+        super().__init__()
+        self._max_calls = max_calls
+        self._per_tool = per_tool or {}
+        # The per-task cap defaults to twice the per-turn cap (60
+        # total / 40 shell when the turn cap is 30 / 20): one full
+        # turn plus one genuine resume turn. An explicit value wins.
+        self._task_max_calls = (
+            task_max_calls
+            if task_max_calls is not None
+            else (
+                _TASK_MULTIPLE * max_calls
+                if max_calls is not None
+                else None
+            )
+        )
+        if task_per_tool:
+            self._task_per_tool = dict(task_per_tool)
+        else:
+            self._task_per_tool = {
+                tool_name: _TASK_MULTIPLE * limit
+                for tool_name, limit in self._per_tool.items()
+            }
+
+    @property
+    def name(self) -> str:
+        return "tool-call-budget"
+
+    @property
+    def priority(self) -> int:
+        return 40
+
+    def reset_turn(self) -> None:
+        """Reset tool call counters for a new turn."""
+        self.activate(_ToolCallBudgetState())
+
+    async def check(self, ctx: Any) -> StopHandlerResult:
+        """Recompute this turn's tool-call total and enforce limits.
+
+        The total is recomputed from the context on every check, scoped
+        to the current reply (``agent.state.reply_id``). The parent
+        accumulates all of a turn's tool-call blocks into the assistant
+        message(s) carrying the current ``reply_id``; adding the latest
+        message's (cumulative) names to the running total once per round
+        inflated the count (50, then 150, then 300, ...) and fired with
+        a wrong total. Recomputing from the reply-scoped blocks counts
+        every call exactly once and does not depend on the iteration
+        counter, so a stale ``last_iteration`` cannot skip a count.
+        When ``reply_id`` is unavailable, fall back to the previous
+        incremental counting.
+
+        Workflow batches are expanded, not just counted as one call:
+        a ``run_tool_batch`` call is replaced by the sub-call tool
+        names it will execute (read from its arguments -- inline
+        ``actions`` or the JSON batch ``file_path``), and a completed
+        batch whose steps could not be expanded from its call is
+        counted from its result JSON instead. A batch is never counted
+        twice: a result is skipped when its call was already expanded.
+        """
+        state = self._state()
+        if state is None:
+            state = _ToolCallBudgetState()
+            self.activate(state)
+        agent = ctx.get("agent")
+        reply_id = getattr(getattr(agent, "state", None), "reply_id", None)
+        task: _TaskBudget | None = None
+        if reply_id is not None:
+            # Install the execution-time enforcer for this turn. The
+            # check runs after every model response and before the
+            # acting phase, so the counter is in place before any call
+            # of the round executes. Counters reset only on a new
+            # reply_id (install_execution_budget handles that).
+            install_execution_budget(
+                agent, reply_id, self._max_calls, self._per_tool,
+            )
+            names = self._turn_tool_names(agent, reply_id)
+            state.total = len(names)
+            state.by_tool = Counter(names)
+            # Resolve the task (never in the fallback path: without a
+            # reply_id there is no turn to attach it to). Fail-open:
+            # _ensure_task returns None on any error and the per-turn
+            # behaviour below runs exactly as before.
+            task = _ensure_task(
+                agent, ctx, reply_id,
+                self._task_max_calls, self._task_per_tool,
+            )
+        else:
+            iteration = int(ctx.get("iteration", 0))
+            if iteration != state.last_iteration:
+                names = self._latest_tool_names(agent)
+                state.total += len(names)
+                state.by_tool.update(names)
+                state.last_iteration = iteration
+
+        if task is not None:
+            # Charge batch sub-calls the enforcer never saw: a batch
+            # whose steps could not be read from its arguments reserves
+            # only 1 slot, but its sub-calls execute inside the batch
+            # runner and the gate counts them from the result JSON at
+            # the next check. Charge those (once per result id) to the
+            # task total here, so the task cap is not blind to them.
+            # (DeepSeek review: without this the unreadable-batch edge
+            # is a ~50-call hole in a 60-call task budget.)
+            extra, new_ids = self._uncharged_batch_result_names(
+                agent, task,
+            )
+            if extra:
+                task.total += len(extra)
+                task.by_tool.update(extra)
+                task.charged_batch_results.update(new_ids)
+            exec_state = _exec_state(agent, reply_id)
+            turn_executed = (
+                exec_state.total if exec_state is not None else 0
+            )
+            # Order: finalised -> task per-tool cap -> task total cap
+            # -> per-turn (below). A per-turn TERMINATE deliberately
+            # does NOT finalise the task: the task may legitimately
+            # continue next turn within its task budget. Only the
+            # task cap finalises.
+            if task.finalized:
+                reason = (
+                    "Task finished by tool call budget "
+                    f"({task.total} calls in this task, limit "
+                    f"{task.max_calls}); start a new task with a new "
+                    "instruction to continue."
+                )
+                _record_stop(agent, "task_finalized", reason, task,
+                             reply_id, state.total, turn_executed,
+                             refused_delta=0)
+                return StopHandlerResult(
+                    action=StopAction.TERMINATE,
+                    reason=reason,
+                )
+            for tool_name, limit in task.per_tool.items():
+                if task.by_tool[tool_name] >= limit:
+                    reason = (
+                        f"Task tool '{tool_name}' call budget reached "
+                        f"({task.by_tool[tool_name]} '{tool_name}' "
+                        f"calls in this task, limit {limit}; this "
+                        f"turn {state.total} calls)"
+                    )
+                    task.finalized = True
+                    task.finalized_reason = reason
+                    _record_stop(agent, "per-task cap", reason, task,
+                                 reply_id, state.total, turn_executed,
+                                 finalized_by_this_stop=True,
+                                 refused_delta=0)
+                    return StopHandlerResult(
+                        action=StopAction.TERMINATE,
+                        reason=reason,
+                    )
+            if (
+                task.max_calls is not None
+                and task.total >= task.max_calls
+            ):
+                reason = (
+                    "Task tool call budget reached "
+                    f"({task.total} calls in this task, limit "
+                    f"{task.max_calls}; this turn {state.total} "
+                    "calls)"
+                )
+                task.finalized = True
+                task.finalized_reason = reason
+                _record_stop(agent, "per-task cap", reason, task,
+                             reply_id, state.total, turn_executed,
+                             finalized_by_this_stop=True,
+                             refused_delta=0)
+                return StopHandlerResult(
+                    action=StopAction.TERMINATE,
+                    reason=reason,
+                )
+
+        if self._max_calls is not None and state.total >= self._max_calls:
+            reason = f"Tool call budget reached ({state.total} calls)"
+            if task is not None:
+                exec_state = _exec_state(agent, reply_id)
+                _record_stop(
+                    agent, "per-turn gate", reason, task, reply_id,
+                    state.total,
+                    exec_state.total if exec_state is not None else 0,
+                    refused_delta=0,
+                )
+            return StopHandlerResult(
+                action=StopAction.TERMINATE,
+                reason=reason,
+            )
+        for name, limit in self._per_tool.items():
+            if state.by_tool[name] >= limit:
+                reason = f"Tool '{name}' call budget reached ({limit})"
+                if task is not None:
+                    exec_state = _exec_state(agent, reply_id)
+                    _record_stop(
+                        agent, "per-turn gate", reason, task, reply_id,
+                        state.total,
+                        exec_state.total
+                        if exec_state is not None else 0,
+                        refused_delta=0,
+                    )
+                return StopHandlerResult(
+                    action=StopAction.TERMINATE,
+                    reason=reason,
+                )
+        return _bypass()
+
+    @staticmethod
+    def _turn_tool_names(agent: Any, reply_id: str) -> list[str]:
+        """Tool names issued in the current turn (messages with reply_id).
+
+        All of this turn's tool-call blocks live in messages carrying
+        the current ``reply_id`` -- one message if the parent merges a
+        turn's blocks, one per round otherwise. Counting every block in
+        every such message gives the true turn total.
+
+        A ``run_tool_batch`` call is expanded into the sub-calls it
+        will execute (from its arguments), and a completed batch whose
+        call could not be expanded is counted from its result JSON.
+        The parent appends tool results (``tool_result`` blocks) to the
+        same reply-scoped messages, so both passes read the same
+        messages. A batch is counted once: a result whose call id was
+        already expanded is skipped.
+        """
+        context = getattr(getattr(agent, "state", None), "context", [])
+        names: list[str] = []
+        expanded_ids: set[str] = set()
+        # Pass 1: tool-call blocks. Expand batch calls into sub-calls.
+        for message in context:
+            if getattr(message, "id", None) != reply_id:
+                continue
+            for block in ToolCallBudgetGate._blocks_of(message):
+                if ToolCallBudgetGate._block_type(block) not in (
+                    "tool_call",
+                    "tool_use",
+                ):
+                    continue
+                name = ToolCallBudgetGate._block_name(block)
+                if not name:
+                    continue
+                # The batch call itself is a tool call (count it), plus
+                # the sub-calls it will execute.
+                names.append(name)
+                if name == _BATCH_TOOL_NAME:
+                    sub = ToolCallBudgetGate._expand_batch_call(block)
+                    if sub is not None:
+                        names.extend(sub)
+                        call_id = ToolCallBudgetGate._block_id(block)
+                        if call_id:
+                            expanded_ids.add(call_id)
+        # Pass 2: tool-result blocks. Count completed batches whose
+        # call was NOT already expanded in pass 1.
+        for message in context:
+            if getattr(message, "id", None) != reply_id:
+                continue
+            for block in ToolCallBudgetGate._blocks_of(message):
+                if ToolCallBudgetGate._block_type(block) != "tool_result":
+                    continue
+                if ToolCallBudgetGate._block_name(block) != _BATCH_TOOL_NAME:
+                    continue
+                if ToolCallBudgetGate._block_id(block) in expanded_ids:
+                    continue
+                sub = ToolCallBudgetGate._parse_batch_result(block)
+                if sub is not None:
+                    names.extend(sub)
+        return names
+
+    @staticmethod
+    def _batch_call_expanded(agent: Any, task: _TaskBudget,
+                             call_id: str) -> bool:
+        """True when the batch call was expanded from its arguments.
+
+        A batch counted from its result JSON was NOT expanded (the
+        call could not be read), so its sub-calls were never reserved
+        and must be charged to the task from the result. A batch whose
+        call WAS expanded already had its sub-calls reserved, so
+        charging its result again would double-count.
+        """
+        context = getattr(getattr(agent, "state", None), "context", [])
+        for message in context:
+            if getattr(message, "id", None) not in task.reply_ids:
+                continue
+            for block in ToolCallBudgetGate._blocks_of(message):
+                if ToolCallBudgetGate._block_type(block) not in (
+                    "tool_call",
+                    "tool_use",
+                ):
+                    continue
+                if ToolCallBudgetGate._block_name(block) != (
+                    _BATCH_TOOL_NAME
+                ):
+                    continue
+                if ToolCallBudgetGate._block_id(block) != call_id:
+                    continue
+                return (
+                    ToolCallBudgetGate._expand_batch_call(block)
+                    is not None
+                )
+        return False
+
+    @staticmethod
+    def _uncharged_batch_result_names(
+        agent: Any, task: _TaskBudget,
+    ) -> tuple[list[str], set[str]]:
+        """Sub-call names from uncharged batch results of this task.
+
+        Scans the context for completed-batch result blocks in this
+        task's turns (message ids in ``task.reply_ids``) whose call
+        was not expanded and whose result has not been charged yet.
+        Returns the sub-call names and the newly charged result ids.
+        """
+        context = getattr(getattr(agent, "state", None), "context", [])
+        names: list[str] = []
+        new_ids: set[str] = set()
+        for message in context:
+            if getattr(message, "id", None) not in task.reply_ids:
+                continue
+            for block in ToolCallBudgetGate._blocks_of(message):
+                if ToolCallBudgetGate._block_type(block) != "tool_result":
+                    continue
+                if ToolCallBudgetGate._block_name(block) != (
+                    _BATCH_TOOL_NAME
+                ):
+                    continue
+                call_id = ToolCallBudgetGate._block_id(block)
+                if not call_id or call_id in task.charged_batch_results:
+                    continue
+                if call_id in new_ids:
+                    continue
+                if ToolCallBudgetGate._batch_call_expanded(
+                    agent, task, call_id,
+                ):
+                    continue
+                sub = ToolCallBudgetGate._parse_batch_result(block)
+                if sub is None:
+                    continue
+                names.extend(sub)
+                new_ids.add(call_id)
+        return names, new_ids
+
+    @staticmethod
+    def _blocks_of(message: Any) -> list[Any]:
+        """Content blocks of one message (empty when not a list)."""
+        content = getattr(message, "content", None)
+        if not isinstance(content, list):
+            return []
+        return content
+
+    @staticmethod
+    def _block_type(block: Any) -> str:
+        """The type of a content block (dict or object)."""
+        value = (
+            block.get("type")
+            if isinstance(block, dict)
+            else getattr(block, "type", None)
+        )
+        return str(value or "")
+
+    @staticmethod
+    def _block_name(block: Any) -> str:
+        """The tool name of a tool-call / tool-result block."""
+        value = (
+            block.get("name", "")
+            if isinstance(block, dict)
+            else getattr(block, "name", "")
+        )
+        return str(value or "")
+
+    @staticmethod
+    def _block_id(block: Any) -> str:
+        """The id linking a tool result to its tool call."""
+        value = (
+            block.get("id", "")
+            if isinstance(block, dict)
+            else getattr(block, "id", "")
+        )
+        return str(value or "")
+
+    @staticmethod
+    def _block_input(block: Any) -> Any:
+        """The arguments of a tool-call block (usually a dict)."""
+        if isinstance(block, dict):
+            return block.get("input")
+        return getattr(block, "input", None)
+
+    @staticmethod
+    def _expand_batch_call(block: Any) -> list[str] | None:
+        """Sub-call tool names a batch call will execute, or None.
+
+        Reads the steps from the call arguments: inline ``actions``
+        (a list, or a JSON string) or a JSON batch ``file_path``
+        (absolute; either a list of steps or an object with an
+        ``actions`` key). Control-flow steps (``set_var``, ``goto``,
+        recursive ``run_tool_batch``) are not real tool calls and are
+        excluded. Returns None when the steps cannot be determined
+        (unreadable file, invalid JSON, unexpected shape) so the
+        caller falls back to counting the completed batch result.
+        """
+        args = ToolCallBudgetGate._block_input(block)
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        if not isinstance(args, dict):
+            return None
+        steps: Any = None
+        if "actions" in args and args.get("actions") is not None:
+            steps = args.get("actions")
+            if isinstance(steps, str):
+                try:
+                    steps = json.loads(steps)
+                except (json.JSONDecodeError, TypeError):
+                    return None
+        elif args.get("file_path"):
+            steps = ToolCallBudgetGate._load_batch_steps(
+                args.get("file_path"),
+            )
+            if steps is None:
+                return None
+        else:
+            return None
+        if not isinstance(steps, list):
+            return None
+        return ToolCallBudgetGate._step_tool_names(steps)
+
+    @staticmethod
+    def _load_batch_steps(file_path: Any) -> list[Any] | None:
+        """Steps from a JSON batch file, or None when unreadable.
+
+        Only ``.json`` files are read, and only up to the size guard.
+        The file is the same one the batch runner itself reads, so
+        reading it here adds no new access. Any failure returns None
+        (the caller falls back to the completed batch result).
+        """
+        if not isinstance(file_path, str):
+            return None
+        path_text = file_path.strip()
+        if not path_text or not path_text.lower().endswith(".json"):
+            return None
+        try:
+            path = Path(path_text).expanduser()
+            if not path.is_file():
+                return None
+            if path.stat().st_size > _MAX_BATCH_FILE_BYTES:
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            return None
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and isinstance(data.get("actions"), list):
+            return data["actions"]
+        return None
+
+    @staticmethod
+    def _step_tool_names(steps: list[Any]) -> list[str]:
+        """Tool names of real (non-control-flow) batch steps."""
+        names: list[str] = []
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            tool_name = str(
+                step.get("tool_name") or step.get("tool") or "",
+            ).strip()
+            if not tool_name or tool_name in _BATCH_CONTROL_TOOLS:
+                continue
+            names.append(tool_name)
+        return names
+
+    @staticmethod
+    def _parse_batch_result(block: Any) -> list[str] | None:
+        """Sub-call tool names from a completed batch result, or None.
+
+        The result is a JSON summary (``{"ok": ..., "total": ...,
+        "completed": ..., "results": [{"tool_name": ..., ...}]}``).
+        With ``results`` present, each entry's ``tool_name`` is used
+        (entries without one still count as an executed step, under
+        the batch tool's name, so the total stays accurate). With
+        ``last_only`` there is no ``results`` list, so ``total`` is
+        used as the sub-call count without per-tool attribution.
+        Returns None when the output is not a batch summary.
+        """
+        output = (
+            block.get("output")
+            if isinstance(block, dict)
+            else getattr(block, "output", None)
+        )
+        text = ToolCallBudgetGate._result_text(output)
+        if not text:
+            return None
+        try:
+            payload = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        results = payload.get("results")
+        if isinstance(results, list):
+            names: list[str] = []
+            for entry in results:
+                if not isinstance(entry, dict):
+                    names.append(_BATCH_TOOL_NAME)
+                    continue
+                tool_name = str(
+                    entry.get("tool_name") or "",
+                ).strip()
+                names.append(tool_name or _BATCH_TOOL_NAME)
+            return names
+        total = payload.get("total")
+        if isinstance(total, int) and total > 0:
+            return [_BATCH_TOOL_NAME] * total
+        return None
+
+    @staticmethod
+    def _result_text(output: Any) -> str:
+        """The JSON text of a tool result (string or block list)."""
+        if isinstance(output, str):
+            return output
+        if isinstance(output, list):
+            for item in output:
+                if ToolCallBudgetGate._block_type(item) != "text":
+                    continue
+                text = (
+                    item.get("text", "")
+                    if isinstance(item, dict)
+                    else getattr(item, "text", "")
+                )
+                if isinstance(text, str) and text.strip():
+                    return text
+        return ""
+
+    @staticmethod
+    def _tool_names_in(message: Any) -> list[str]:
+        """Tool names from the tool_call/tool_use blocks of one message."""
+        names: list[str] = []
+        for block in ToolCallBudgetGate._blocks_of(message):
+            if ToolCallBudgetGate._block_type(block) not in (
+                "tool_call",
+                "tool_use",
+            ):
+                continue
+            name = ToolCallBudgetGate._block_name(block)
+            if name:
+                names.append(name)
+        return names
+
+    @staticmethod
+    def _latest_tool_names(agent: Any) -> list[str]:
+        """Extract tool names from the latest context message with calls."""
+        context = getattr(getattr(agent, "state", None), "context", [])
+        for message in reversed(context):
+            names = ToolCallBudgetGate._tool_names_in(message)
+            if names:
+                return names
+        return []
+
+
+__all__ = [
+    "TimeoutGate",
+    "TokenBudgetGate",
+    "ToolCallBudgetGate",
+    "install_execution_budget",
+    "try_reserve_execution",
+    "get_stop_audit",
+    "get_task_state",
+]
