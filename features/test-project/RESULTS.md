@@ -3225,3 +3225,11 @@ Protocol run by the runner; browser / needs-token rows were recorded as skipped,
 | Test | Area | Method | Result | Evidence |
 |---|---|---|---|---|
 | T116 | tinyfish | protocol | PASS | skill selftest: features/tinyfish/test_tinyfish.py --selftest: exit=0 tally=108 passed, 0 failed \| search UI: features/tinyfish/test_search_settings_ui.mjs: exit=0 tally=38 passed, 0 failed tail=38 passed, 0 failed |
+
+## Round 108 — 2026-11-18T16:42:45Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: PASS=1.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T116 | tinyfish | protocol | PASS | skill selftest: features/tinyfish/test_tinyfish.py --selftest: exit=0 tally=108 passed, 0 failed \| search UI: features/tinyfish/test_search_settings_ui.mjs: exit=0 tally=39 passed, 0 failed tail=39 passed, 0 failed |
