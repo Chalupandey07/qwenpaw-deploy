@@ -1934,6 +1934,30 @@ def t120():
         ["features/memory/test_facts_v2.py"], 40)
 
 
+def t121():
+    """Mechanical checks: no China endpoints, no secrets, AGENTS.md budget, no polling (14).
+
+    Machine-free test (features/test-project/test_checks.py) for the
+    mechanical checks in scripts/checks/ (run-checks.sh). Proves, for
+    each check, that it PASSES on the current repo and FAILS on a file
+    that violates the rule (fail-first, using a temporary directory as
+    the check's ROOT so the real repo is never touched): a ModelScope
+    endpoint URL and a Function Compute host fail the China-endpoints check
+    while bare provider names pass; a ghp_ + 36-char key and an AKIA +
+    16-char key fail the secrets check while a short ghp_ fragment
+    passes; the AGENTS.md budget check fails at a 100-char cap and
+    passes at 20000; a setInterval in _worker.js fails the polling
+    check while the waking-page elapsed timer (the documented
+    allowlist entry) passes. The checks enforce AGENTS.md §3
+    mechanically: a convention that lives only in prose gets violated
+    within a week; a rule + a check survives. The live half (the
+    checks run on PR + before a push) is a repo discipline, not a
+    machine state — nothing to verify live.
+    """
+    return _py_script_harness(
+        ["features/test-project/test_checks.py"], 14)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2443,6 +2467,7 @@ TESTS = [
     ("T118", "bloat win-win: Alibaba telemetry phone-home removed — telemetry.py + daily_telemetry.py are no-op stubs, no endpoint, no httpx, no thread, no disk writes (harness)", "bloat-winwin", "protocol", t118),
     ("T119", "bloat win-win data layer: history/audit DB VACUUM + WAL checkpoint preserve every row, journal_size_limit is per-connection, PNG recompression lossless, log rotation verifies the archive before truncating (harness)", "bloat-winwin", "protocol", t119),
     ("T120", "memory facts v2: multi-signal retrieval (BM25 + entity overlap + importance, weighted RRF), rule-based entity extraction, temporal validity windows + search --as-of, v1 -> v2 migration preserves every fact (selftest)", "memory", "protocol", t120),
+    ("T121", "mechanical checks: no China endpoint host/URL in code, no secret-shaped string outside the allowlist, AGENTS.md under its 20000-char cap, no setInterval in server code (selftest)", "checks", "protocol", t121),
 ]
 
 SKIP_NOTE = {
