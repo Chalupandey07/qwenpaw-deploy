@@ -387,3 +387,58 @@ leading backslash the template literal can eat) inside the rebrand
 template literal — prefer a plain string check. Every `_worker.js`
 change must pass `check-rebrand-syntax.sh`, which syntax-checks the
 EVALUATED injected script, not just the file.
+
+## 2026-11-18 — Workers 1027: Pages 404 was a spent daily quota, not a deploy failure
+
+**Symptom:** at ~23:26 IST both Pages sites (`qwenpawx`, `qwenpaw-frontend`)
+started returning empty-body 404 on every worker-only route (`/`, `/chat`,
+`/status`, `/api/session/state`), while static files still served
+(`/search-settings-ui.js` 200, `/reset/` 200). QA round 20 was blocked.
+Two redeploys of the same code changed nothing, and older preview URLs
+that had worked hours earlier 404'd too.
+
+**Misdiagnosis path (what was tried first):** the breakage coincided with
+the round-19 `_worker.js` deploy, so the first theory was a broken worker
+— but the bundle imports cleanly in Node (`default.fetch` is a function),
+the working tree is byte-identical to `origin/main`, and a trivial
+468-byte worker on a brand-new test project also never ran. The code was
+never the problem.
+
+**Root cause:** the Cloudflare account hit the Workers free-tier daily
+limit — 100,000 requests/day, error code 1027. Every Worker on the
+account returned 429 `error code: 1027`, including the long-running
+`qwenpaw-keepalive` cron and a freshly deployed standalone worker. Pages
+Functions are Workers: when the quota is spent they cannot execute, so
+Pages falls back to static-asset serving, and since there is no
+`index.html` (the console is proxied), every route 404s. Standalone
+Workers had only 1,593 invocations that day — the burn is in Pages
+Functions (the console proxy serves every Pages request; the likely
+driver is the console SPA's own API polling across long open sessions
+and multiple tabs, plus the QA rounds). The limit resets 00:00 UTC.
+
+**Fix (workaround, not a cure):** deployed the same proxy as a standalone
+Worker `qwenpaw-console`
+(`https://qwenpaw-console.qwenpaw-rohan.workers.dev/`), built by
+`scripts/build-console-fallback-worker.py`, which bundles
+`pages/public/_worker.js` and replaces `env.ASSETS` with a shim that
+fetches static files from the Pages static server. D1/KV are bound so
+sleep/wake signals keep flowing. It is 429 until the reset, then it
+works. Deliberately degraded: `/computer` mint + desktop, `/vault`
+reveal, `/reset`, Rest — the Pages secrets are not readable via the API
+and are never invented. The direct origin
+(`https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech/`) is the only
+console access during the outage. Test project `qwenpaw-test-worker` was
+deleted after the experiment.
+
+**Verification:** direct origin 200 (38,125 B) and machine `running`
+during the outage; fallback worker uploaded (startup 2 ms, subdomain
+enabled) but 429/1027 until the reset — its live proof is due after
+00:00 UTC, with a QA round-20 re-run.
+
+**Rule:** when Pages returns empty-body 404s on worker-only routes while
+static files serve, check the Workers quota FIRST (a fresh standalone
+Worker returning 429/1027 proves it in one curl) — do not redeploy the
+same code repeatedly. And: a Pages Function runs on every request to the
+site, so its invocation count is the account's burn rate; consider a
+`_routes.json` exclude for `/assets/*` (hashed, immutable — the Function
+only adds cache headers there) to cut it.
