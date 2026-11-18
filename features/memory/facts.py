@@ -263,7 +263,12 @@ def extract_entities(text: str) -> list[str]:
     for m in re.finditer(r'"([^"]{2,40})"|\'([^\']{2,40})\'', text):
         _add(m.group(1) or m.group(2) or "")
     # Known project / product names (case-insensitive word boundary).
-    lowered = text.lower()
+    # Hyphens are word separators here: "loop-gate" must match the
+    # "loop gate" term (T137, 2026-11-19: the hyphenated target missed
+    # the entity signal and ranked below its space-spelled distractor,
+    # hit@1 0.833; normalising hyphens to spaces before matching makes
+    # it 1.0). Scoring weights are unchanged — only the match text.
+    lowered = re.sub(r"-", " ", text.lower())
     for term, canonical in _ENTITY_LEXICON.items():
         if re.search(r"\b" + re.escape(term) + r"\b", lowered):
             _add(canonical)
