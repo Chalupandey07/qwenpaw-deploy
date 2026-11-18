@@ -1430,7 +1430,7 @@ def t76():
 
 
 def t94():
-    """Code Mode VM runner: the REAL 9-tool desktop job (125 checks).
+    """Code Mode VM runner: the REAL 9-tool desktop job (218 checks).
 
     B-42: the job now passes every REQUIRED argument. `app` is resolved from
     step 1's own list_apps result (never hard-coded), and a preflight table
@@ -1444,8 +1444,16 @@ def t94():
     tools. It now runs one step per real desktop tool, reports the whole surface
     on every run (`describe_surface`), and states plainly that desktop work does
     NOT collapse turns. The 99.0% figure is withdrawn, not adjusted.
+
+    T139 (2026-11-19): the runner also wires generated-code jobs to the
+    sandbox (`run_sandbox_job`: route -> resolve workspace symlinks ->
+    mint scoped token -> build/validate profile -> `docker run` from
+    `docker_run_argv`; refusals surface the reason, never fall back to
+    main). The AST rule changed with it: subprocess is used only via
+    run() (TimeoutExpired raised by the deadline fixture), only from
+    the sandbox runner and its docker-kill helper.
     """
-    return _py_script_harness(["features/codemode/vm/codemode-runner.py", "--selftest"], 196)
+    return _py_script_harness(["features/codemode/vm/codemode-runner.py", "--selftest"], 218)
 
 
 def t98():
@@ -1540,7 +1548,7 @@ def t106():
 
 
 def t107():
-    """The vault broker: env-var injection + output scrubbing (19 checks).
+    """The vault broker: env-var injection + output scrubbing (29 checks).
 
     Machine-free selftest of features/vault/vault-broker.py (which also
     tests the shared redact.py). Asserts the per-kind redaction forms
@@ -1551,12 +1559,18 @@ def t107():
     Python-urllib's, which Cloudflare blocks with 1010). Also the GET
     /list endpoint (2026-11-18): served live on an ephemeral port with a
     test token — no token / wrong token -> 401, correct token -> 200 with
-    metadata only, and /health still 200. The live broker (Unix-socket/
+    metadata only, and /health still 200. Also POST /sandbox/inject
+    (T139, 2026-11-19): served live on the same port with a stubbed
+    Worker export and a test SANDBOX key — valid token -> 200 with the
+    value scrubbed and the child env free of the broker token, replay /
+    bad token / wrong-item token -> 401, broker token alone -> 400,
+    no token -> 400, no key configured -> 503 (fail closed), GET -> 405.
+    The live broker (Unix-socket/
     bridge service, /run with a real command, env | sort proving
     [redacted]) is verified by Muse at deploy time — see
     features/vault/README.md.
     """
-    return _py_script_harness(["features/vault/vault-broker.py", "--selftest"], 19)
+    return _py_script_harness(["features/vault/vault-broker.py", "--selftest"], 29)
 
 
 def t108():
@@ -2536,12 +2550,25 @@ def t139():
     """Real sandbox profile for generated code (50).
 
     Machine-free test (features/sandbox/test_sandbox.py) for the
-    all-20 gap #6 — code-complete, PARTIAL as a deployed sandbox. The
-    profile, token API, proxy, and dispatcher are built, tested, and
-    pushed; the sandbox itself is not live (no container has run, and
-    two pieces — the broker-side token endpoint, the gateway firewall
-    rule — remain). sandbox.py is the profile builder + validator +
-    renderers: one bind mount (job workspace -> /workspace), isolated
+    all-20 gap #6 — wired up 2026-11-19 (T139 deploy pass): the
+    broker-side POST /sandbox/inject endpoint exists (token-gated,
+    single-use jti, value scrubbed; T107 covers it live on an
+    ephemeral port, 29 checks), the gateway firewall rule and the
+    runner wiring are implemented and machine-free tested (the runner
+    wires dispatch: route -> resolve workspace symlinks -> mint scoped
+    token -> build/validate profile -> docker run; T94 covers it, 218
+    checks), and the token is delivered on a host-tmpfs bind at
+    /run/sandbox-token (second bind, pinned to /run/sandbox-tokens).
+    The profile, token API, proxy, and dispatcher are built, tested,
+    and pushed. What remains is the machine deploy (key provisioning,
+    bridge + rule, service restarts, proxy start, live probes) and the
+    sandbox image itself (qwenpaw-sandbox:2.3.0 — NOT built: the
+    machine is at the 5-image cap and a T132 build is in flight) and
+    the live proof with that image: gateway-unreachable probe,
+    proxy allow/deny from inside a container, workspace write-back,
+    browser check. sandbox.py is the profile builder + validator +
+    renderers: one workspace bind mount (job workspace -> /workspace)
+    plus the token-dir bind above, isolated
     bridge qwenpaw-sandbox-net, read-only rootfs, non-root user 10001,
     caps dropped ALL, no-new-privileges, no docker.sock / privileged /
     host network / host PID / IPC / devices, no credential in env.
@@ -2573,13 +2600,14 @@ def t139():
     route-everything-to-main) -> 7 passed, 43 failed. Two real bugs
     caught by the test before shipping: the forbidden-mount check
     flagged the legitimate workspace path, and compose_service dropped
-    the token tmpfs mount. T123 still 35/35. The live half (the
-    broker-side POST /sandbox/inject endpoint, the DOCKER-USER iptables
-    rule denying the sandbox bridge -> 172.18.0.1:8896/:8898, runner
-    wiring, symlink resolution, and live proof: Dockerfile build,
-    gateway-unreachable probe, proxy allow/deny from inside a
-    container, workspace write-back, browser check) is the parent's job
-    when the machine unlocks.
+    the token tmpfs mount. T123 still 35/35. The live half that remains
+    (the machine deploy — key provisioning, bridge + gateway rule,
+    service restarts, proxy start, live probes — then the sandbox
+    image build and the proof with the real image: gateway-unreachable
+    probe, proxy allow/deny from inside a container, workspace
+    write-back, browser check) is the deploy pass that follows the
+    code push — the image build waits on the 5-image cap (a T132 build
+    is in flight).
     """
     return _py_script_harness(
         ["features/sandbox/test_sandbox.py"], 50)
