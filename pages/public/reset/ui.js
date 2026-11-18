@@ -17,7 +17,7 @@
     { id: "skills", label: "Skills", hint: "Removes all workspace skills and the shared skill pool. Built-in skills are unaffected." },
     { id: "lessons", label: "Lessons", hint: "Clears the 'Important decisions and lessons' section of MEMORY.md." },
     { id: "models", label: "Models", hint: "Removes custom providers except the active one. The active model is never changed." },
-    { id: "logs", label: "Logs", hint: "Deletes the QwenPaw log. The reset audit trail is never deleted." },
+    { id: "logs", label: "Logs", hint: "Deletes the AgentX log. The reset audit trail is never deleted." },
     { id: "sessions", label: "Sessions", hint: "Removes saved agent sessions and channel state." },
     { id: "chats", label: "Chats", hint: "Deletes ALL conversation history. Irreversible." },
     { id: "workspaces", label: "Workspaces", hint: "Removes workspace shell files (config, docs, screenshots). Does NOT touch memory, skills, chats or sessions." },
