@@ -29,12 +29,14 @@
  *     - the window.open patch swallows exactly the two upstream hosts;
  *     - the kill switch exists (worker env AGENTX_REBRAND=0 and
  *       ?rebrand=0 at runtime);
- *     - the rule table exists (12 rules) and each rule runs in its own
+ *     - the rule table exists (13 rules) and each rule runs in its own
  *       try/catch with a console.debug naming the rule;
  *     - the CSP-Report-Only + Referrer-Policy headers are set on the
  *       console HTML response, and the <title> is rewritten;
  *     - the shim is injected before the panel script, and the observer
- *       calls the rebrand pass.
+ *       calls the rebrand pass;
+ *     - the keep-alive Worker and the activity-feed Worker report the
+ *       note "AgentX console answered" (the /status page shows it).
  *   Dynamic, in a VM with mocks:
  *     - the real shim (extracted from the file, run with the file's own
  *       constants): PyPI fetch is stubbed, other fetches pass through;
@@ -42,11 +44,19 @@
  *       through for others; ?rebrand=0 leaves fetch/open unpatched.
  *     - the real rebrand rules (extracted between the AGENTX-REBRAND
  *       markers, run against a mock DOM): the title is renamed, a
- *       "Tutorial" menu item is hidden (and "Settings" is not), a
- *       "QwenPaw" text node is renamed while a load-bearing node is left
- *       alone, an aria-label is renamed, a DashScope card is hidden, the
- *       About item opens /status, and an upstream link click is blocked
- *       while a normal link is not.
+ *       "Tutorial" menu item is hidden (and "Settings" is not), an
+ *       icon-only button matched by its accessible name ("GitHub",
+ *       "Documentation") is hidden as a whole button, a "QwenPaw" text
+ *       node is renamed while a load-bearing node is left alone, an
+ *       aria-label is renamed, a DashScope card is hidden, a DashScope
+ *       card matched only by its aria-label is hidden as a whole card,
+ *       an Aliyun card and a SiliconFlow card (name in an img alt) are
+ *       hidden as whole cards, the About item ("About QwenPaw v2.3.0")
+ *       is renamed to "About AgentX v2.3.0" and clicking it opens our
+ *       /status page, the sidebar logo img (alt "QwenPaw") is replaced
+ *       by an "AgentX" text label, a title change is renamed
+ *       immediately by the title observer, and an upstream link click is
+ *       blocked while a normal link is not.
  *
  * The live half (a real browser on the deployed console: title is
  * "AgentX Console", no update badge, no upstream menu items, no upstream
@@ -168,10 +178,10 @@ console.log("static: the kill switch exists at both layers");
 console.log("static: the rule table is data-driven and guarded");
 {
   const ruleIds = [...rebrandSrc.matchAll(/\{ id: "([^"]+)", run: function/g)].map((m) => m[1]);
-  check("the rule table exists with 12 rules",
-    ruleIds.length === 12, `got ${ruleIds.length}: ${ruleIds.join(", ")}`);
+  check("the rule table exists with 13 rules",
+    ruleIds.length === 13, `got ${ruleIds.length}: ${ruleIds.join(", ")}`);
   check("the expected rules are all present",
-    ["rename-title", "rename-attrs", "rename-text", "hide-menu", "hide-about",
+    ["rename-title", "rename-attrs", "rename-text", "rename-logo", "hide-menu", "hide-about",
      "hide-language", "hide-desktop-prompt", "hide-codex-qoder", "hide-voice",
      "hide-import-text", "hide-china", "block-links"].every((id) => ruleIds.includes(id)));
   check("each rule runs in its own try/catch",
@@ -184,8 +194,8 @@ console.log("static: the rule table is data-driven and guarded");
     "an interpolation would make the extracted section unevaluable");
   check("the menu-hide list covers the upstream items",
     /"Tutorial", "Feature Demos", "Changelog", "FAQ", "GitHub", "Documentation", "Import"/.test(rebrandSrc));
-  check("the China-hide list covers the providers and channels",
-    /"DashScope", "SiliconFlow", "ModelScope", "Alibaba", "WeCom", "DingTalk", "Feishu", "QQ", "WeChat", "Xiaoyi"/.test(rebrandSrc));
+  check("the China-hide list covers the providers and channels, including Aliyun",
+    /"DashScope", "SiliconFlow", "ModelScope", "Alibaba", "Alibaba Cloud", "Aliyun", "WeCom", "DingTalk", "Feishu", "QQ", "WeChat", "Xiaoyi"/.test(rebrandSrc));
   check("the load-bearing allowlist is enforced by the text pass",
     /"qwenpaw\[codex\]", "qwenpaw\[whisper\]", "QWENPAW_AUTH_ENABLED", "~\/\.qwenpaw"/.test(rebrandSrc) &&
     /agentxIsLoadBearing\(t\)/.test(rebrandSrc) &&
@@ -194,6 +204,48 @@ console.log("static: the rule table is data-driven and guarded");
     !/Close QwenPaw\?/.test(rebrandSrc.split("hide-")[0]) &&
     !rebrandSrc.includes('"Close QwenPaw?"'),
     "hiding them would suppress real safety prompts");
+  check("the menu/China rules hide by accessible name, not just visible text",
+    /function agentxHideByName\(labels, itemSelector, containerSelector\)/.test(rebrandSrc) &&
+    /aria-label/.test(rebrandSrc) &&
+    /agentxHideByName\(AGENTX_MENU_LABELS/.test(rebrandSrc) &&
+    /agentxHideByName\(AGENTX_CHINA_LABELS/.test(rebrandSrc),
+    "icon-only buttons and cards carry the name only as an aria-label/title/alt");
+  check("the hide-by-name helper climbs to the whole container (button/card)",
+    /function agentxClimbToContainer\(el, containerSelector\)/.test(rebrandSrc) &&
+    /el\.closest\(containerSelector\)/.test(rebrandSrc),
+    "hiding only the name leaf leaves an unnamed icon-only shell");
+  check("the About click is a delegated capture listener with a prefix match",
+    /agentxAboutInstalled/.test(rebrandSrc) &&
+    /document\.addEventListener\("click", function \(ev\)/.test(rebrandSrc) &&
+    /t\.indexOf\("About QwenPaw"\) === 0 \|\| t\.indexOf\("About AgentX"\) === 0/.test(rebrandSrc) &&
+    /window\.open\("\/status", "_blank"\)/.test(rebrandSrc),
+    "the old exact-match rule never fired: the real label carries ' v2.3.0'");
+  check("the title is watched by its own observer (no seconds-long flash)",
+    /function agentxWatchTitle\(\)/.test(rebrandSrc) &&
+    /document\.querySelector\("title"\)/.test(rebrandSrc) &&
+    /new MutationObserver\(function \(\)/.test(rebrandSrc) &&
+    /agentxWatchTitle\(\);/.test(worker),
+    "a title change does not mutate the body, so the body observer never sees it");
+  check("the logo rule replaces the QwenPaw img with an AgentX text label",
+    /img\[alt\*="QwenPaw"\]/.test(rebrandSrc) &&
+    /replaceChild\(label, img\)/.test(rebrandSrc) &&
+    /label\.textContent = "AgentX"/.test(rebrandSrc));
+}
+
+console.log("static: the /status note is AgentX (keep-alive + activity-feed workers)");
+{
+  const keepalive = readFileSync(resolve(REPO, "worker/src/index.js"), "utf8");
+  const activity = readFileSync(resolve(REPO, "features/infra/workers/activity-feed/index.js"), "utf8");
+  check("the keep-alive probe note is AgentX",
+    /note: "AgentX console answered"/.test(keepalive) &&
+    !/note: "QwenPaw console answered"/.test(keepalive),
+    "the /status page renders this note");
+  check("the activity-feed probe note is AgentX",
+    /note: "AgentX console answered"/.test(activity) &&
+    !/note: "QwenPaw console answered"/.test(activity));
+  check("the activity-feed page title and heading are AgentX",
+    /<title>AgentX — Live activity<\/title>/.test(activity) &&
+    /<h1>AgentX — live activity<\/h1>/.test(activity));
 }
 
 console.log("static: the proxy wires the shim, the title, and the headers");
@@ -239,6 +291,16 @@ function makeEl(tag, attrs, children) {
     setAttribute(name, value) { this._attrs[name] = String(value); },
     addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); },
     dispatch(type, ev) { for (const fn of this._listeners[type] || []) fn(ev); },
+    replaceChild(newChild, oldChild) {
+      const idx = this.childNodes.indexOf(oldChild);
+      if (idx === -1) throw new Error("NotFoundError: replaceChild of a non-child");
+      oldChild.parentNode = null;
+      newChild.parentNode = this;
+      this.childNodes[idx] = newChild;
+      const ci = this.children.indexOf(oldChild);
+      if (ci !== -1) this.children[ci] = newChild;
+      return oldChild;
+    },
     closest(selector) {
       let cur = this;
       while (cur) {
@@ -313,15 +375,24 @@ function collectAll(root, out) {
 }
 function makeDocument(rootEl) {
   const listeners = {};
+  const titleText = makeText("QwenPaw Console");
+  const titleEl = makeEl("title", {}, [titleText]);
   const doc = {
-    title: "QwenPaw Console",
     body: rootEl,
     _listeners: listeners,
+    _titleEl: titleEl,
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     dispatch(type, ev) { for (const fn of listeners[type] || []) fn(ev); },
+    dispatchEvent(ev) { return true; },
+    querySelector(selector) {
+      if (selector === "title") return titleEl;
+      const all = this.querySelectorAll(selector);
+      return all.length ? all[0] : null;
+    },
     querySelectorAll(selector) {
       return collectAll(rootEl, []).filter((el) => matchesSelector(el, selector));
     },
+    createElement(tag) { return makeEl(tag, {}, []); },
     createTreeWalker(root, whatToShow) {
       const texts = [];
       (function walk(node) {
@@ -334,8 +405,25 @@ function makeDocument(rootEl) {
       return { nextNode() { return i < texts.length ? texts[i++] : null; } };
     },
   };
+  // document.title is kept in sync with the <title> element's text, as in
+  // a real browser: setting it changes the element, which is what the
+  // title observer watches.
+  Object.defineProperty(doc, "title", {
+    get() { return titleText.nodeValue; },
+    set(v) { titleText.nodeValue = String(v); },
+    configurable: true,
+  });
   return doc;
 }
+// Minimal MutationObserver: records the callback and the observed target so
+// the test can fire the callback itself (there is no real mutation engine
+// in the mock).
+class MockMutationObserver {
+  constructor(cb) { this.cb = cb; MockMutationObserver.instances.push(this); }
+  observe(target, options) { this.target = target; this.options = options; }
+  disconnect() {}
+}
+MockMutationObserver.instances = [];
 
 console.log("dynamic: the real shim stubs PyPI and swallows upstream opens");
 if (!shimSrc) {
@@ -450,25 +538,46 @@ if (!rebrandSrc) {
     "the document title is renamed to AgentX",
     "a 'Tutorial' menu item is hidden",
     "a 'GitHub' menu item is hidden",
+    "an icon-only 'GitHub' header button (accessible name only) is hidden as a whole button",
+    "an icon-only 'Documentation' header button (accessible name only) is hidden as a whole button",
+    "an icon-only 'Documentation' Settings-menu button is hidden as a whole button",
     "a 'Settings' menu item is NOT hidden",
     "a visible 'QwenPaw' text node is renamed to AgentX",
     "a load-bearing instruction is left alone (truthful, not renamed)",
     "an aria-label with QwenPaw is renamed",
     "a DashScope provider card is hidden",
-    "the About item is renamed to AgentX",
+    "a DashScope card matched only by its aria-label is hidden as a whole card",
+    "an Aliyun provider card is hidden as a whole card",
+    "a SiliconFlow card (name in an img alt) is hidden as a whole card",
+    "the About item is renamed to AgentX (version kept)",
     "clicking About opens our /status page, not the upstream site",
+    "the sidebar logo img is replaced by an 'AgentX' text label",
+    "the logo img alt is renamed to AgentX",
+    "a title observer is registered on the <title> element",
+    "a title change is renamed immediately by the title observer",
     "a click on an upstream docs link is blocked",
     "a click on a same-origin link is NOT blocked",
   ]) check(name, false, "AGENTX-REBRAND markers not found in _worker.js");
 } else {
-  // A small console-like DOM: a header menu, a settings row, a provider
-  // card, an About item, a load-bearing instruction, and an aria-label.
+  // A small console-like DOM: a header menu, icon-only header buttons,
+  // a settings menu, provider cards (one named in text, one only by
+  // aria-label, one only by an img alt), an About item carrying the
+  // version, a sidebar logo img, a load-bearing instruction, and an
+  // aria-label.
   const menu = makeEl("ul", { class: "qwenpaw-menu" }, [
     makeEl("li", { class: "qwenpaw-menu-item" }, [makeEl("span", {}, [makeText("Tutorial")])]),
     makeEl("li", { class: "qwenpaw-menu-item" }, [makeEl("span", {}, [makeText("GitHub")])]),
     makeEl("li", { class: "qwenpaw-menu-item" }, [makeEl("span", {}, [makeText("Settings")])]),
   ]);
-  const aboutBtn = makeEl("button", {}, [makeText("About QwenPaw")]);
+  const githubIconBtn = makeEl("button", { "aria-label": "GitHub" }, [makeEl("svg", {}, [])]);
+  const docsIconBtn = makeEl("button", { "aria-label": "Documentation" }, [makeEl("svg", {}, [])]);
+  const header = makeEl("div", { class: "header" }, [githubIconBtn, docsIconBtn]);
+  const settingsDocsBtn = makeEl("button", { "aria-label": "Documentation" }, [makeEl("svg", {}, [])]);
+  const settingsMenu = makeEl("div", { class: "settings-menu" }, [settingsDocsBtn]);
+  const aboutSpan = makeEl("span", {}, [makeText("About QwenPaw v2.3.0")]);
+  const aboutLi = makeEl("li", { class: "qwenpaw-menu-item" }, [aboutSpan]);
+  const logoImg = makeEl("img", { alt: "QwenPaw" }, []);
+  const brandDiv = makeEl("div", { class: "sidebar-brand" }, [logoImg, makeText(" v2.3.0")]);
   const greeting = makeEl("p", {}, [makeText("Hello! I'm QwenPaw. How can I help you?")]);
   const loadBearing = makeEl("p", {}, [makeText("Set QWENPAW_AUTH_ENABLED=true to use the QwenPaw terminal.")]);
   const ariaBtn = makeEl("button", { "aria-label": "QwenPaw menu" }, [makeText("Menu")]);
@@ -476,10 +585,23 @@ if (!rebrandSrc) {
     makeEl("h3", {}, [makeText("DashScope")]),
     makeEl("p", {}, [makeText("Alibaba Cloud model provider.")]),
   ]);
+  const cardAria = makeEl("div", { class: "provider-card", "aria-label": "DashScope" }, [
+    makeEl("svg", {}, []),
+    makeEl("button", {}, [makeText("Configure")]),
+  ]);
+  const cardAliyun = makeEl("div", { class: "provider-card" }, [
+    makeEl("h3", {}, [makeText("Aliyun")]),
+    makeEl("button", {}, [makeText("Configure")]),
+  ]);
+  const cardImg = makeEl("div", { class: "provider-card" }, [
+    makeEl("img", { alt: "SiliconFlow" }, []),
+    makeEl("button", {}, [makeText("Configure")]),
+  ]);
   const upstreamLink = makeEl("a", { href: "https://qwenpaw.agentscope.io/docs/intro?lang=en" }, [makeText("View guide")]);
   const normalLink = makeEl("a", { href: "/status" }, [makeText("Status")]);
   const root = makeEl("div", { id: "root" }, [
-    menu, aboutBtn, greeting, loadBearing, ariaBtn, card, upstreamLink, normalLink,
+    menu, header, settingsMenu, aboutLi, brandDiv, greeting, loadBearing, ariaBtn,
+    card, cardAria, cardAliyun, cardImg, upstreamLink, normalLink,
   ]);
   const doc = makeDocument(root);
   const opened = [];
@@ -488,6 +610,7 @@ if (!rebrandSrc) {
     location: { search: "" },
     window: { open: (url) => { opened.push(url); return { closed: false }; } },
     NodeFilter: { SHOW_TEXT: 4 },
+    MutationObserver: MockMutationObserver,
     setTimeout: (fn) => 0,
     clearTimeout: () => {},
     Date,
@@ -508,6 +631,12 @@ if (!rebrandSrc) {
   const githubLi = menu.children[1];
   check("a 'GitHub' menu item is hidden",
     githubLi.style.display === "none", `display=${githubLi.style.display}`);
+  check("an icon-only 'GitHub' header button (accessible name only) is hidden as a whole button",
+    githubIconBtn.style.display === "none", `display=${githubIconBtn.style.display}`);
+  check("an icon-only 'Documentation' header button (accessible name only) is hidden as a whole button",
+    docsIconBtn.style.display === "none", `display=${docsIconBtn.style.display}`);
+  check("an icon-only 'Documentation' Settings-menu button is hidden as a whole button",
+    settingsDocsBtn.style.display === "none", `display=${settingsDocsBtn.style.display}`);
   const settingsLi = menu.children[2];
   check("a 'Settings' menu item is NOT hidden",
     settingsLi.style.display !== "none", `display=${settingsLi.style.display}`);
@@ -522,12 +651,51 @@ if (!rebrandSrc) {
     `got ${ariaBtn.getAttribute("aria-label")}`);
   check("a DashScope provider card is hidden",
     card.style.display === "none", `display=${card.style.display}`);
-  check("the About item is renamed to AgentX",
-    aboutBtn.textContent === "About AgentX", `got ${aboutBtn.textContent}`);
-  aboutBtn.dispatch("click", { preventDefault() {}, stopPropagation() {} });
+  check("a DashScope card matched only by its aria-label is hidden as a whole card",
+    cardAria.style.display === "none", `display=${cardAria.style.display}`);
+  check("an Aliyun provider card is hidden as a whole card",
+    cardAliyun.style.display === "none", `display=${cardAliyun.style.display}`);
+  check("a SiliconFlow card (name in an img alt) is hidden as a whole card",
+    cardImg.style.display === "none", `display=${cardImg.style.display}`);
+  check("the About item is renamed to AgentX (version kept)",
+    aboutLi.textContent === "About AgentX v2.3.0", `got ${aboutLi.textContent}`);
+  // The About listener is delegated on document (capture): dispatch the
+  // click on the document with the inner span as the target, as a real
+  // browser would.
+  doc.dispatch("click", {
+    target: aboutSpan,
+    preventDefault() {},
+    stopPropagation() {},
+  });
   check("clicking About opens our /status page, not the upstream site",
     opened.includes("/status") && !opened.some((u) => u.includes("qwenpaw.agentscope.io")),
     `opened ${opened.join(", ")}`);
+  check("the sidebar logo img is replaced by an 'AgentX' text label",
+    logoImg.parentNode === null && brandDiv.textContent === "AgentX v2.3.0",
+    `parentNode=${logoImg.parentNode ? "still attached" : "null"}, brand=${brandDiv.textContent}`);
+  check("the logo img alt is renamed to AgentX",
+    logoImg.getAttribute("alt") === "AgentX", `got ${logoImg.getAttribute("alt")}`);
+  // The title observer is installed by agentxWatchTitle() (called at load
+  // in the real page, outside the extracted markers). Fire its callback
+  // directly: a title change must be renamed immediately, not on the next
+  // body mutation. On the unfixed file the function does not exist, so
+  // record both checks as failures instead of crashing (fail-first path).
+  MockMutationObserver.instances = [];
+  let titleWatcherRan = false;
+  try {
+    vm.runInContext("agentxWatchTitle()", sandbox);
+    titleWatcherRan = true;
+  } catch (e) { /* agentxWatchTitle not defined in the unfixed file */ }
+  check("a title observer is registered on the <title> element",
+    titleWatcherRan && MockMutationObserver.instances.length === 1 &&
+    MockMutationObserver.instances[0].target === doc._titleEl,
+    titleWatcherRan ? `instances=${MockMutationObserver.instances.length}` : "agentxWatchTitle not defined");
+  if (titleWatcherRan) {
+    doc.title = "Settings · QwenPaw";
+    MockMutationObserver.instances[0].cb();
+  }
+  check("a title change is renamed immediately by the title observer",
+    titleWatcherRan && doc.title === "Settings · AgentX", `got ${doc.title}`);
   let blocked = null;
   let normalBlocked = null;
   doc.dispatch("click", {
