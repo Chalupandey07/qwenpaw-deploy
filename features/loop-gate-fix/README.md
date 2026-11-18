@@ -450,6 +450,90 @@ ids already charged). The audit is deliberately NOT persisted: it is a
 diagnostics signal, not control flow; the cap lives in the task budget
 (total / max_calls / finalized), which is persisted.
 
+## The bug (round 6: the exact-match continuation heuristic)
+
+The round-5 fix (image `qwenpaw-agentx:2.3.0-gatefix5`) was deployed
+and live-tested in a fresh ordinary chat (echo 1–200, browser task
+d0f77cb7, 2026-11-18, chat 0b220b4f, Default, nex-n2.6, Smart Mode).
+**The per-turn cap held (20 executed per turn) BUT the per-task cap
+did NOT hold across turns, with the same signature as gatefix4.**
+Turn 1 executed 20 (1–20), refused 30. Two "hello" turns executed 0
+shell calls each (the agent treated them as standalone questions).
+Resume "Yes, continue from 21" executed echo 21–40 (20 calls, 0
+refused; cumulative 40, exactly at the per-task cap, but did NOT
+finalise). Follow-up "continue" executed echo 41–60 (20 more, 0
+refused; cumulative 60), blowing straight past the 40-shell
+per-task cap. The agent never finalised and never mentioned any
+per-task cap — every turn it only cited the per-turn limit of 20.
+
+## Root cause, round 6 (proven from the LIVE session file, not the code)
+
+Gatefix5's persistence WORKS. The live session file for the test
+chat (`sessions/console/default_1795013148807-a8611wt.json`, 14:52
+UTC = 20:22 IST, the test window) shows the "Yes, continue from 21"
+task persisted across two turns and finalised at 40 shell:
+
+- Current task: `task-38614882e0416ed2`, instruction "Yes, continue
+  from 21", total 40 shell, `finalized: true`, reason "Task tool
+  'execute_shell_command' call budget reached (40 calls, limit 40)",
+  two `reply_ids` (the resume turn + the "continue" turn).
+- Prior map: the echo task `4dcdfa4e0c3f8e06` (total 20 shell,
+  capped False) and the "hello" task `f62fb6a70f3aad16` (total 0,
+  capped False).
+
+So the budget was saved, restored, and enforced — but for the WRONG
+task. The failure is in the **task identity heuristic**:
+`_is_continuation` required an EXACT match of the whole normalised
+message against a fixed set of bare words (`_CONTINUATION_TEXTS`).
+Real resume messages do not match:
+
+- "hello, are you working?" normalises to "hello are you working" —
+  not in the set (the set has "hello", not "hello are you working").
+  It minted a fresh task (`f62fb6a70f3aad16`) and abandoned the echo
+  task (20 shell).
+- "Yes, continue from 21" normalises to "yes continue from 21" —
+  not in the set (the set has "yes" and "continue" separately).
+  It minted another fresh task (`38614882e0416ed2`) that ran 40
+  shell (21–60) before finalising. Total across the chat: 20 + 40
+  = 60 shell, past the cap.
+
+The machine-free test had a blind spot: section P used bare "hello"
+turns, which DO match exactly, so P passed while live failed. The
+reconstructed gatefix5 `limits.py` (from `src/patched` with the
+gatefix6 change reverted) is byte-identical to the live container's
+`limits.py` (md5 `18a374c2b847737ca33ccf96962b348f`, both
+site-packages and `/app/src`), and section Q fails 11/30 against it
+with byte-identical task ids to the live session file — the test now
+reproduces the live failure.
+
+## The fix (round 6, image `qwenpaw-agentx:2.3.0-gatefix6`)
+
+One function changes in `limits.py` (the `mode.py` / `config.py`
+wiring and the `react_agent.py` persistence hook are unchanged from
+round 5):
+
+- `src/qwenpaw/loop/gates/limits.py` — `_is_continuation` now
+  matches a continuation phrase at the START of the message at a
+  word boundary, not just an exact match. A message resumes the
+  current task when it IS a continuation phrase, or when its
+  normalised form starts with one followed by a space. So "hello,
+  are you working?" (starts with "hello") and "Yes, continue from
+  21" (starts with "yes") resume the current task, while a
+  genuinely new instruction that does not start with a continuation
+  word still mints a fresh task. The word boundary keeps
+  "yesterday" / "history" / "surely" / "thanksgiving" from matching
+  "yes" / "hi" / "sure" (the character after the phrase must be a
+  space, not a letter). A message that starts with a greeting but
+  is really a new instruction ("hello, what is 2+2?") is charged
+  to the old task — the same documented wart as "ok now do X"
+  (see `_ensure_task`); a genuinely new instruction that does not
+  start with a continuation word still mints a fresh task.
+
+No DeepSeek call was needed for this round: the root cause came
+from the live session file, and the fix is a 10-line matcher
+change. The cap numbers, check order, enforcer, and persistence
+are unchanged.
+
 ## Test
 
 `test_gate.py` is a machine-free unit test for the counting fix and
@@ -511,11 +595,11 @@ identical in `/app/src` and site-packages because gatefix2 did not
 touch it).
 
 `test_task_cap.py` is the machine-free unit test for round 4
-(T126, 87 checks) and round 5 (T140, 26 checks — section P), same
-harness style, same fake package. The same fake agent object is reused
+(T126, 87 checks), round 5 (T140, 26 checks — section P), and round 6
+(T141, 30 checks — section Q), same harness style, same fake package. The same fake agent object is reused
 across turns (its context grows, its `reply_id` changes) because that
-is the lifetime the task budget relies on — EXCEPT section P, which
-rebuilds a fresh agent object per turn to reproduce the real runtime
+is the lifetime the task budget relies on — EXCEPT sections P and Q, which
+rebuild a fresh agent object per turn to reproduce the real runtime
 (see round 5). Discriminating tests: **J** (the live cross-turn shape:
 turn 1 spends 20 shell, turn 2 "hello" gets 20 more — task shell 40
 = cap — and finalises, turn 3 "hello" executes 0, a new instruction
@@ -533,21 +617,36 @@ refused whole); **P** (T140, gatefix5 — the per-turn agent rebuild:
 turn 1 spends 20 shell, turn 2 "hello" on a FRESH agent object gets
 20 more to task shell 40 = cap and finalises, turns 3 and 4 on fresh
 agent objects execute 0; P2 snapshot round-trip; P3 loader fails open
-on bad data). Regression: **N1** (a 5-call run executes fully, is
+on bad data); **Q** (T141, gatefix6 — realistic resume messages:
+turn 1 spends 20 shell, turn 2 "hello, are you working?" on a FRESH
+agent object resumes the SAME task (0 calls, total still 20), turn 3
+"Yes, continue from 21" on a FRESH agent object resumes the same
+task and spends 20 more to task shell 40 = cap and finalises, turn 4
+"continue" on a FRESH agent object executes 0; Q2 unit-checks the
+matcher (prefix + word boundary); Q3 checks a genuinely new
+instruction after finalisation still mints a fresh task). Regression: **N1** (a 5-call run executes fully, is
 not finalised, writes no stops).
 
 ```bash
 # Fail-first: the gatefix3 gate must FAIL (it reproduces the live bug:
 # turn 2 resumes with a fresh budget, turn 3 executes 20 more)
-python3 test_task_cap.py --limits src/gatefix3/limits.py  # 35/87
-# The gatefix4 gate must FAIL only the P section (no persistence)
-python3 test_task_cap.py --limits src/gatefix4/limits.py  # 73/87
+python3 test_task_cap.py --limits src/gatefix3/limits.py  # 45/117
+# The gatefix4 gate must FAIL the P section (no persistence) and the
+# Q section (exact-match continuation heuristic)
+python3 test_task_cap.py --limits src/gatefix4/limits.py  # 92/117
+# The gatefix5 gate must FAIL only the Q section (exact-match
+# continuation heuristic; the realistic resume messages mint fresh
+# tasks) -- 19/30 in Q, 106/117 overall
+python3 test_task_cap.py --limits src/gatefix5/limits.py  # 106/117
 # The patched gate must PASS
-python3 test_task_cap.py --limits src/patched/limits.py   # 87/87
+python3 test_task_cap.py --limits src/patched/limits.py   # 117/117
 python3 test_task_cap.py                                  # defaults to patched
 # T140 alone (section P)
 python3 test_task_cap.py --section P                       # 26/26
 python3 test_task_cap.py --limits src/gatefix4/limits.py --section P  # 12/26
+# T141 alone (section Q)
+python3 test_task_cap.py --section Q                       # 30/30
+python3 test_task_cap.py --limits src/gatefix5/limits.py --section Q  # 19/30
 ```
 
 A DeepSeek design review (2026-11-18, deepseek-v4.1-flash-free,
@@ -588,18 +687,18 @@ one more image layer), then:
 
 ```bash
 cd /data/home/qwenpaw/loop-gate-fix   # or wherever the files were synced
-docker build -t qwenpaw-agentx:2.3.0-gatefix5 -f Dockerfile.gatefix5 .
-docker images qwenpaw-agentx:2.3.0-gatefix5   # record the digest
+docker build -t qwenpaw-agentx:2.3.0-gatefix6 -f Dockerfile.gatefix6 .
+docker images qwenpaw-agentx:2.3.0-gatefix6   # record the digest
 ```
 
-Gatefix5 builds FROM the live image (`qwenpaw-agentx:2.3.0-deploy1`,
-which already layers gatefix4 + bloat-winwin + cost-ledger + Telegram)
-and applies only the gatefix5 delta (`qwenpaw-loop-gate-fix5.patch`,
-via `Dockerfile.gatefix5`) — the full patch (`qwenpaw-loop-gate-fix.patch`,
-`Dockerfile`) builds from pinned upstream and would LOSE the
-bloat-winwin / cost-ledger / Telegram layers, so do NOT use it for a
-gatefix5 deploy. The Dockerfile fails the build if the patch does not
-apply cleanly.
+Gatefix6 builds FROM the live image (`qwenpaw-agentx:2.3.0-gatefix5`,
+which already layers gatefix4 + bloat-winwin + cost-ledger + Telegram
++ gatefix5 persistence) and applies only the gatefix6 delta
+(`qwenpaw-loop-gate-fix6.patch`, via `Dockerfile.gatefix6`) — the
+full patch (`qwenpaw-loop-gate-fix.patch`, `Dockerfile`) builds from
+pinned upstream and would LOSE the bloat-winwin / cost-ledger /
+Telegram layers, so do NOT use it for a gatefix6 deploy. The
+Dockerfile fails the build if the patch does not apply cleanly.
 
 **Gotcha (caught by the image verification, 2026-11-18): the package
 is installed in site-packages, not run from `/app/src`.** Python
@@ -621,7 +720,7 @@ actually runs.
 
 ```bash
 # The patched modules import and the gate is in the default chain
-docker run --rm qwenpaw-agentx:2.3.0-gatefix5 python3 -c "
+docker run --rm qwenpaw-agentx:2.3.0-gatefix6 python3 -c "
 from qwenpaw.loop.gates.limits import ToolCallBudgetGate
 from qwenpaw.modes.default.mode import DefaultMode
 print('gate imports OK')
@@ -629,7 +728,7 @@ print('gate imports OK')
 # The enforcer refuses past the budget (machine-side, no browser):
 # install it for a fake turn, reserve 200 shell calls, expect 20
 # allowed and 180 refused, and a fresh turn to allow 20 again.
-docker run --rm qwenpaw-agentx:2.3.0-gatefix5 python3 -c "
+docker run --rm qwenpaw-agentx:2.3.0-gatefix6 python3 -c "
 from qwenpaw.loop.gates.limits import (
     install_execution_budget, try_reserve_execution)
 class S:
@@ -648,7 +747,7 @@ print('executed:', ok, '(expect 20)')
 # agent, two turns with a "hello" between them. Turn 1 executes 20,
 # turn 2 executes 20 more (task shell 40 = cap, task finalised), and
 # get_stop_audit shows the per-task cap record with task_total 40.
-docker run --rm qwenpaw-agentx:2.3.0-gatefix5 python3 -c "
+docker run --rm qwenpaw-agentx:2.3.0-gatefix6 python3 -c "
 from qwenpaw.loop.gates.limits import (
     install_execution_budget, try_reserve_execution,
     get_task_state, get_stop_audit)
@@ -677,7 +776,7 @@ print('audit kinds:', [r['kind'] for r in get_stop_audit(a)])
 # task state, load it onto a fresh agent B with the same context, and
 # confirm B's task already totals 20 -- so its next 20 shell calls hit
 # the 40 cap and finalise, and a further fresh agent C executes 0.
-docker run --rm qwenpaw-agentx:2.3.0-gatefix5 python3 -c "
+docker run --rm qwenpaw-agentx:2.3.0-gatefix6 python3 -c "
 from qwenpaw.loop.gates.limits import (
     install_execution_budget, try_reserve_execution,
     get_task_state, task_budget_state_dict,
@@ -711,11 +810,24 @@ c = A('r3', ctx)
 load_task_budget_state_dict(c, task_budget_state_dict(b))
 print('C turn3 executed:', run(c, 200), '(expect 0)')
 "
+# Gatefix6: realistic resume messages are continuations (the fix).
+# "hello, are you working?" and "Yes, continue from 21" must resume
+# the current task (True); "yesterday" / "history" must NOT (the word
+# boundary). Run inside the gatefix6 image.
+docker run --rm qwenpaw-agentx:2.3.0-gatefix6 python3 -c "
+from qwenpaw.loop.gates.limits import _is_continuation
+print('hello, are you working?:', _is_continuation('hello, are you working?'), '(expect True)')
+print('Yes, continue from 21:', _is_continuation('Yes, continue from 21'), '(expect True)')
+print('continue:', _is_continuation('continue'), '(expect True)')
+print('yesterday:', _is_continuation('yesterday I was working'), '(expect False)')
+print('history:', _is_continuation('history of the loop gate'), '(expect False)')
+print('new instruction:', _is_continuation('What is 2 + 2? Please use a shell echo.'), '(expect False)')
+"
 # Start it briefly on a scratch port and confirm the console serves
 # (do NOT point it at the live data dir for this check). The server
 # listens on 8088 inside the container (compose maps 127.0.0.1:8088).
 docker run -d --name gatefix-smoke -p 18099:8088 \
-  qwenpaw-agentx:2.3.0-gatefix5
+  qwenpaw-agentx:2.3.0-gatefix6
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:18099/
 docker rm -f gatefix-smoke
 ```
@@ -737,7 +849,7 @@ these checks.
 #    snapshot first per Rohan's standing delegation. Never delete
 #    qwenpaw-phase0-verified.
 # 2. Edit /data/home/qwenpaw/docker-compose.yml: change only the image
-#    line to qwenpaw-agentx:2.3.0-gatefix5. Keep every mount, env var,
+#    line to qwenpaw-agentx:2.3.0-gatefix6. Keep every mount, env var,
 #    and port. Keep the pinned upstream image available for rollback.
 # 3. Restart and confirm the console comes back:
 docker compose -f /data/home/qwenpaw/docker-compose.yml up -d
@@ -793,20 +905,15 @@ and gets a fresh budget.
 
 ## What is NOT verified live (parent's job after deploy)
 
-- The derived image `qwenpaw-agentx:2.3.0-gatefix5` has NOT been
-  built. The patch was verified to apply to the pristine
+- The derived image `qwenpaw-agentx:2.3.0-gatefix6` has NOT been
+  built. The patch was verified to apply to the gatefix5
   `limits.py` and reproduce `src/patched/limits.py` byte-for-byte
-  locally, and the `mode.py` / `config.py` hunks have identical
-  context to the gatefix3 patch that applied cleanly to the real
-  image — but the image build, the in-image import + gate-chain
+  locally — but the image build, the in-image import + gate-chain
   checks, and the container switch are all the parent's job.
-- No live-browser check has run for round 4 (the single-turn echo
-  test, the cross-turn "hello" test, or the new-instruction test
-  above). The machine-free tests are evidence, not proof.
-- The agent-object lifetime assumption (one agent object per chat
-  session, so task state survives across turns) is inferred from the
-  code's structure, not measured live: log `id(agent)` across two
-  turns after deploy and confirm it is the same object.
-- The stop audit is in-memory only; it has not been read from a
-  live session (there is no console surface for it yet — it is
-  reachable only through `get_stop_audit(agent)` in code).
+- No live-browser check has run for round 6 (the single-turn echo
+  test, the cross-turn test with the realistic messages "hello, are
+  you working?" and "Yes, continue from 21", or the new-instruction
+  test above). The machine-free tests are evidence, not proof. The
+  decisive live shape: turn 1 ~20 executed + DENIED refusals;
+  "hello, are you working?" 0 calls; "Yes, continue from 21" 20
+  more to 40 and finalise; "continue" 0 calls.
