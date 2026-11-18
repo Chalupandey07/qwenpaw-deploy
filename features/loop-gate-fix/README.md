@@ -364,6 +364,92 @@ Fail-open throughout: any error in task resolution or audit
 recording falls through to the existing per-turn behaviour, and the
 per-turn gate reasons stay byte-identical.
 
+## The bug (round 5: the per-turn agent rebuild)
+
+The round-4 fix (image `qwenpaw-agentx:2.3.0-gatefix4`) was deployed and
+live-tested in a fresh ordinary chat (echo 1–200, browser task b6180034,
+2026-11-18, chat 40b3a04a, Default, nex-n2.6, Smart Mode). **The per-turn
+cap held (20 executed per turn) BUT the per-task cap did NOT hold across
+turns.** Turn 1 executed 20 (1–20), refused 30 (denial cited "Task total
+20/60"); turn 2 "hello" executed 20 more (21–40), refused 0, did NOT
+finalise; turn 3 "hello" executed 20 more (41–60), refused 0 — the
+40-shell per-task cap EXCEEDED; turn 4 "hello" executed 20 more (61–80).
+No "hello" in the test chat ever got a plain prose reply.
+
+## Root cause, round 5 (read from the source)
+
+The task budget was stored as a plain Python attribute on the agent
+object (`_tool_call_task_budget`), and the agent object does not survive
+a turn. `runtime/runtime.py` builds a **fresh `QwenPawAgent` for every
+user turn** (`ctx.agent = await builder.build(ctx)` per request, not per
+session); the builder restores the session via
+`agent.load_state_dict(ctx.session_state)`. `load_state_dict`
+(`agents/react_agent.py`) restores ONLY `self.state` (the AgentState
+pydantic model) + scroll-manager bookkeeping — it does NOT restore plain
+Python attributes on the agent object. So every turn started with a
+fresh task (total=0). The per-turn counter still worked (it resets per
+`reply_id` anyway), but the per-task cap never accumulated. The round-4
+README's own warning was prescient: "log `id(agent)` across two turns
+and confirm it is the same object; if the agent object were ever
+recreated per turn, the task budget would reset with it" — and it is
+recreated per turn.
+
+## The fix (round 5, image `qwenpaw-agentx:2.3.0-gatefix5`)
+
+Persist the task budget through the session-state round-trip, following
+the existing "scroll" pattern in `ReactAgent.state_dict()` /
+`load_state_dict()`. Two files change (the `mode.py` / `config.py`
+wiring is unchanged from round 1):
+
+- `src/qwenpaw/loop/gates/limits.py` — two new functions.
+  `task_budget_state_dict(agent)` returns a JSON-safe dict of the
+  current task + prior-task record, or None (no task and no priors).
+  `load_task_budget_state_dict(agent, data)` restores them and returns
+  True, or False when there is nothing to restore (None / missing /
+  wrong version / bad payload). The dict is `{"version": 1, "task":
+  {task_id, instruction, fingerprint, total, by_tool, max_calls,
+  per_tool, finalized, finalized_reason, reply_ids[],
+  charged_batch_results[]} | None, "prior": {fingerprint: {total,
+  by_tool, capped}}}`. The snapshot is a COPY (by_tool / reply_ids /
+  charged_batch_results are copied), so a later mutation during
+  serialization cannot tear it. The prior map is capped at 32 entries
+  (bounded growth in long sessions). The loader validates BEFORE
+  mutating anything on the agent and fails open (returns False, agent
+  untouched) on any bad data — an old session file simply has no key
+  and the task starts fresh. Limits are persisted frozen (round 4
+  froze them at task creation); restoring them preserves the freeze,
+  so a config reload cannot move the goalposts mid-task.
+- `src/qwenpaw/agents/react_agent.py` — `state_dict()` writes the key
+  unconditionally (`out["tool_call_task_budget"] =
+  task_budget_state_dict(self)`, None = no budget) so a stale key can
+  never be resurrected by a merge; wrapped in try/except so a snapshot
+  failure never breaks the session save. `load_state_dict()` restores
+  it in the 2.0 path, after the scroll restore, also try/except
+  fail-open. Both imports are lazy (the same pattern as the enforcer's
+  `try_reserve_execution` import in `_execute_tool_call`), so there is
+  no import cycle. The hook is inside `state_dict()` itself, so it runs
+  on every save path: normal end-of-turn, cancellation
+  (`_try_save_on_cancel`), and the session hook.
+- The cap numbers, check order, and enforcer are unchanged. The task
+  budget is ~500 bytes; the session file is ~9 MB, so the size cost is
+  nil.
+
+A DeepSeek design review (2026-11-18, deepseek-v4.1-flash-free, 1,122
+prompt + 5,644 completion tokens) confirmed the state_dict hook as the
+right persistence point and flagged five points, all addressed: the
+cancel-path save (the hook is inside state_dict, which all save paths
+call); the stale-key resurrection (the key is written unconditionally);
+snapshot copying; the prior-map cap (32); and the frozen-limits
+semantics (persisted, consistent with round 4). Two of its findings
+were checked out as non-issues against the real code: the restored task
+is NOT reset by `_start_task` (the loader sets the attribute directly;
+`_ensure_task` resumes it for a continuation and only starts a new
+task for a new substantive instruction), and `charged_batch_results`
+IS consulted before charging (`_uncharged_batch_result_names` skips
+ids already charged). The audit is deliberately NOT persisted: it is a
+diagnostics signal, not control flow; the cap lives in the task budget
+(total / max_calls / finalized), which is persisted.
+
 ## Test
 
 `test_gate.py` is a machine-free unit test for the counting fix and
@@ -425,10 +511,12 @@ identical in `/app/src` and site-packages because gatefix2 did not
 touch it).
 
 `test_task_cap.py` is the machine-free unit test for round 4
-(T126, 61 checks), same harness style, same fake package. The same
-fake agent object is reused across turns (its context grows, its
-`reply_id` changes) because that is the lifetime the task budget
-relies on. Discriminating tests: **J** (the live cross-turn shape:
+(T126, 87 checks) and round 5 (T140, 26 checks — section P), same
+harness style, same fake package. The same fake agent object is reused
+across turns (its context grows, its `reply_id` changes) because that
+is the lifetime the task budget relies on — EXCEPT section P, which
+rebuilds a fresh agent object per turn to reproduce the real runtime
+(see round 5). Discriminating tests: **J** (the live cross-turn shape:
 turn 1 spends 20 shell, turn 2 "hello" gets 20 more — task shell 40
 = cap — and finalises, turn 3 "hello" executes 0, a new instruction
 gets a fresh budget); **K** (sub-cap creep: 25 web_search per turn
@@ -441,16 +529,25 @@ and executes 0); **N** (an unreadable batch's 50 sub-calls are
 charged to the task from the result JSON — task total 51 — and the
 resume is refused because 50 shell already exceeds the 40 shell
 cap); **O** (a batch that would jump the task cap from 55 to 66 is
-refused whole). Regression: **N1** (a 5-call run executes fully, is
+refused whole); **P** (T140, gatefix5 — the per-turn agent rebuild:
+turn 1 spends 20 shell, turn 2 "hello" on a FRESH agent object gets
+20 more to task shell 40 = cap and finalises, turns 3 and 4 on fresh
+agent objects execute 0; P2 snapshot round-trip; P3 loader fails open
+on bad data). Regression: **N1** (a 5-call run executes fully, is
 not finalised, writes no stops).
 
 ```bash
 # Fail-first: the gatefix3 gate must FAIL (it reproduces the live bug:
 # turn 2 resumes with a fresh budget, turn 3 executes 20 more)
-python3 test_task_cap.py --limits src/gatefix3/limits.py  # 24/61
+python3 test_task_cap.py --limits src/gatefix3/limits.py  # 35/87
+# The gatefix4 gate must FAIL only the P section (no persistence)
+python3 test_task_cap.py --limits src/gatefix4/limits.py  # 73/87
 # The patched gate must PASS
-python3 test_task_cap.py --limits src/patched/limits.py   # 61/61
+python3 test_task_cap.py --limits src/patched/limits.py   # 87/87
 python3 test_task_cap.py                                  # defaults to patched
+# T140 alone (section P)
+python3 test_task_cap.py --section P                       # 26/26
+python3 test_task_cap.py --limits src/gatefix4/limits.py --section P  # 12/26
 ```
 
 A DeepSeek design review (2026-11-18, deepseek-v4.1-flash-free,
@@ -491,11 +588,18 @@ one more image layer), then:
 
 ```bash
 cd /data/home/qwenpaw/loop-gate-fix   # or wherever the files were synced
-docker build -t qwenpaw-agentx:2.3.0-gatefix4 .
-docker images qwenpaw-agentx:2.3.0-gatefix4   # record the digest
+docker build -t qwenpaw-agentx:2.3.0-gatefix5 -f Dockerfile.gatefix5 .
+docker images qwenpaw-agentx:2.3.0-gatefix5   # record the digest
 ```
 
-The Dockerfile fails the build if the patch does not apply cleanly.
+Gatefix5 builds FROM the live image (`qwenpaw-agentx:2.3.0-deploy1`,
+which already layers gatefix4 + bloat-winwin + cost-ledger + Telegram)
+and applies only the gatefix5 delta (`qwenpaw-loop-gate-fix5.patch`,
+via `Dockerfile.gatefix5`) — the full patch (`qwenpaw-loop-gate-fix.patch`,
+`Dockerfile`) builds from pinned upstream and would LOSE the
+bloat-winwin / cost-ledger / Telegram layers, so do NOT use it for a
+gatefix5 deploy. The Dockerfile fails the build if the patch does not
+apply cleanly.
 
 **Gotcha (caught by the image verification, 2026-11-18): the package
 is installed in site-packages, not run from `/app/src`.** Python
@@ -517,7 +621,7 @@ actually runs.
 
 ```bash
 # The patched modules import and the gate is in the default chain
-docker run --rm qwenpaw-agentx:2.3.0-gatefix4 python3 -c "
+docker run --rm qwenpaw-agentx:2.3.0-gatefix5 python3 -c "
 from qwenpaw.loop.gates.limits import ToolCallBudgetGate
 from qwenpaw.modes.default.mode import DefaultMode
 print('gate imports OK')
@@ -525,7 +629,7 @@ print('gate imports OK')
 # The enforcer refuses past the budget (machine-side, no browser):
 # install it for a fake turn, reserve 200 shell calls, expect 20
 # allowed and 180 refused, and a fresh turn to allow 20 again.
-docker run --rm qwenpaw-agentx:2.3.0-gatefix4 python3 -c "
+docker run --rm qwenpaw-agentx:2.3.0-gatefix5 python3 -c "
 from qwenpaw.loop.gates.limits import (
     install_execution_budget, try_reserve_execution)
 class S:
@@ -544,7 +648,7 @@ print('executed:', ok, '(expect 20)')
 # agent, two turns with a "hello" between them. Turn 1 executes 20,
 # turn 2 executes 20 more (task shell 40 = cap, task finalised), and
 # get_stop_audit shows the per-task cap record with task_total 40.
-docker run --rm qwenpaw-agentx:2.3.0-gatefix4 python3 -c "
+docker run --rm qwenpaw-agentx:2.3.0-gatefix5 python3 -c "
 from qwenpaw.loop.gates.limits import (
     install_execution_budget, try_reserve_execution,
     get_task_state, get_stop_audit)
@@ -568,11 +672,50 @@ print('turn2 executed:', run(200), '(expect 20; task hits its 40 cap)')
 print('task:', get_task_state(a))
 print('audit kinds:', [r['kind'] for r in get_stop_audit(a)])
 "
+# Gatefix5: the task budget survives a FRESH agent object (the rebuild
+# the runtime does every turn). Spend 20 shell on agent A, snapshot the
+# task state, load it onto a fresh agent B with the same context, and
+# confirm B's task already totals 20 -- so its next 20 shell calls hit
+# the 40 cap and finalise, and a further fresh agent C executes 0.
+docker run --rm qwenpaw-agentx:2.3.0-gatefix5 python3 -c "
+from qwenpaw.loop.gates.limits import (
+    install_execution_budget, try_reserve_execution,
+    get_task_state, task_budget_state_dict,
+    load_task_budget_state_dict)
+class S:
+    def __init__(self, reply_id, context):
+        self.reply_id = reply_id
+        self.context = context
+class A:
+    def __init__(self, reply_id, context):
+        self.state = S(reply_id, context)
+def run(a, n):
+    install_execution_budget(a, a.state.reply_id, 30,
+                             {'execute_shell_command': 20})
+    return sum(1 for _ in range(n)
+               if try_reserve_execution(
+                   a, {'type': 'tool_call',
+                       'name': 'execute_shell_command',
+                       'input': {}}) is None)
+ctx = []
+a = A('r1', ctx)
+print('A turn1 executed:', run(a, 200), '(expect 20)')
+snap = task_budget_state_dict(a)
+print('snapshot task total:', snap['task']['total'], '(expect 20)')
+b = A('r2', ctx)
+print('B restored:', load_task_budget_state_dict(b, snap), '(expect True)')
+print('B task total:', get_task_state(b)['total'], '(expect 20)')
+print('B turn2 executed:', run(b, 200), '(expect 20; task hits 40 cap)')
+print('B finalised:', get_task_state(b)['finalized'], '(expect True)')
+c = A('r3', ctx)
+load_task_budget_state_dict(c, task_budget_state_dict(b))
+print('C turn3 executed:', run(c, 200), '(expect 0)')
+"
 # Start it briefly on a scratch port and confirm the console serves
 # (do NOT point it at the live data dir for this check). The server
 # listens on 8088 inside the container (compose maps 127.0.0.1:8088).
 docker run -d --name gatefix-smoke -p 18099:8088 \
-  qwenpaw-agentx:2.3.0-gatefix4
+  qwenpaw-agentx:2.3.0-gatefix5
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:18099/
 docker rm -f gatefix-smoke
 ```
@@ -594,7 +737,7 @@ these checks.
 #    snapshot first per Rohan's standing delegation. Never delete
 #    qwenpaw-phase0-verified.
 # 2. Edit /data/home/qwenpaw/docker-compose.yml: change only the image
-#    line to qwenpaw-agentx:2.3.0-gatefix4. Keep every mount, env var,
+#    line to qwenpaw-agentx:2.3.0-gatefix5. Keep every mount, env var,
 #    and port. Keep the pinned upstream image available for rollback.
 # 3. Restart and confirm the console comes back:
 docker compose -f /data/home/qwenpaw/docker-compose.yml up -d
@@ -650,7 +793,7 @@ and gets a fresh budget.
 
 ## What is NOT verified live (parent's job after deploy)
 
-- The derived image `qwenpaw-agentx:2.3.0-gatefix4` has NOT been
+- The derived image `qwenpaw-agentx:2.3.0-gatefix5` has NOT been
   built. The patch was verified to apply to the pristine
   `limits.py` and reproduce `src/patched/limits.py` byte-for-byte
   locally, and the `mode.py` / `config.py` hunks have identical
