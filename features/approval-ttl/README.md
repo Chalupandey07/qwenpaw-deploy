@@ -1,9 +1,11 @@
 # Approval TTL — expire pending approvals + secret requests (gap #18, T132)
 
-Date: 2026-11-18. Port of gogibeta/rakazo PR #50 (F6). **Code complete,
-NOT verified live:** the module is repo code, not yet wired into
-QwenPaw's approval-card path — see "What is NOT verified live" below.
-No machine file was changed by this work.
+Date: 2026-11-18. Port of gogibeta/rakazo PR #50 (F6). **Code complete
++ wiring written 2026-11-19, NOT verified live:** the module is repo
+code, the derived-image patch (`qwenpaw-approval-ttl.patch`,
+image `qwenpaw-agentx:2.3.0-approvalttl1`) wires it into QwenPaw's
+approval-card path — see "Wiring into QwenPaw" below — but the image
+is not built/deployed yet. No machine file was changed by this work.
 
 ## TL;DR
 
@@ -193,58 +195,78 @@ is defined and tested at module level but currently inert.
 
 ## Machine-apply (the parent runs this on the machine)
 
-This repo work changes nothing live. The parent applies it after
-syncing this directory to the machine:
+The wiring is written (2026-11-19, `qwenpaw-approval-ttl.patch` +
+`Dockerfile`, image `qwenpaw-agentx:2.3.0-approvalttl1`, wiring test
+28/28). To make it live:
 
 ```bash
-# 1. Sync the module (read-only until wired in):
-#    features/approval-ttl/ttl.py -> /app/working/approval-ttl/ttl.py
-# 2. Sweep on a timer (the store lives in the container, so the timer
-#    must run where the store is — inside the container or on a shared
-#    mount; a host timer pointed at the container overlay would
-#    silently no-op):
-python3 /app/working/approval-ttl/ttl.py sweep \
-  --store /app/working/approval-ttl/pending.json
-# 3. Check the queue any time:
-python3 /app/working/approval-ttl/ttl.py check \
-  --store /app/working/approval-ttl/pending.json
+# 1. Sync the module + the patch + the Dockerfile to the machine:
+#    features/approval-ttl/ttl.py -> /data/home/qwenpaw/working/approval-ttl/ttl.py
+#    (the store path is /app/working/approval-ttl/pending.json in the
+#    container, i.e. /data/home/qwenpaw/working/approval-ttl/pending.json
+#    on the host — a shared mount, so the store survives recreates).
+# 2. Build the derived image (base is the live gatefix6 image; the
+#    machine is at the 5-image cap — delete the fully superseded
+#    qwenpaw-agentx:2.3.0-bloatwinwin1 first):
+docker build -t qwenpaw-agentx:2.3.0-approvalttl1 -f Dockerfile .
+#    (run from features/approval-ttl/ on the machine, patch + Dockerfile
+#    synced there first; the build FAILS if the patch does not apply
+#    cleanly to either copy.)
+# 3. Point docker-compose.yml at the new image (image line only) and
+#    recreate the container (the one accepted restart: the wiring is
+#    new code in the running process):
+docker compose -f /data/home/qwenpaw/docker-compose.yml up -d
+# 4. Install the sweep timer (host systemd, daily 03:35 UTC):
+cp qwenpaw-approval-ttl-sweep.service qwenpaw-approval-ttl-sweep.timer \
+  /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now qwenpaw-approval-ttl-sweep.timer
+# 5. Check the queue any time:
+python3 /data/home/qwenpaw/working/approval-ttl/ttl.py check \
+  --store /data/home/qwenpaw/working/approval-ttl/pending.json
 ```
 
 A systemd timer (daily is enough for 24h/1h TTLs; the read-time
 check is the real enforcement and needs no timer) is the sweep's
-home. The routines Worker cron cannot sweep directly: it has no
-route into the container, and a separate-process sweep cannot resolve
-QwenPaw's in-memory `PendingApproval.future` — it resolves the file
-record and the audit, while the blocked ASK call waits for the
-in-process check. That is an honest ceiling of the file-store design,
-not a bug in the sweep.
+home. The timer runs on the HOST against the shared mount (the
+store lives on the mount, so host python3 + flock coordinates with
+the container's handlers through the lock file). The routines
+Worker cron cannot sweep directly: it has no route into the
+container, and a separate-process sweep cannot resolve QwenPaw's
+in-memory `PendingApproval.future` — it resolves the file record
+and the audit, while the blocked ASK call waits for the in-process
+check (or its own 300s timeout). That is an honest ceiling of the
+file-store design, not a bug in the sweep.
 
-## Wiring into QwenPaw (derived-image change, parent's job)
+## Wiring into QwenPaw (derived-image change, written 2026-11-19)
 
-To make TTL live, the derived image must call this module at exactly
-one choke point — the approve/deny handlers in
-`/app/src/qwenpaw/app/routers/approval.py` (`POST /approve`,
-`POST /deny`), before they resolve `PendingApproval.future`:
+Written (patch `qwenpaw-approval-ttl.patch`, `src/pristine/` +
+`src/patched/`, image `qwenpaw-agentx:2.3.0-approvalttl1`), NOT
+yet deployed. The derived image applies the patch to both the
+source copy and the installed copy and fails the build if it does
+not apply cleanly to either. A machine-free test proves the wiring
+(`test_wiring.py`, 28/28):
 
-1. On `POST /approve` or `POST /deny`, load the store and call
-   `answer(store, request_id, approve)` first.
-2. If it raises `ExpiredError`, return HTTP 409 with
-   `{"error": "approval_expired", "reason": "timed out"}` (the fork
-   maps the same error to a conflict; chat apps reply "That approval
-   expired.") — never resolve the future as approved.
-3. On `GET /api/approval/list`, call `read()` per card so an expired
-   card renders with the copy `"This approval expired"` (approval) or
-   `"Expired"` (secret) instead of a live Approve/Deny button.
+1. On `POST /approve` or `POST /deny`, the handlers call
+   `ttl_answer()` FIRST (before `resolve_request`).
+2. If it returns `expired`, the waiting `PendingApproval.future`
+   is resolved as denied, then the HTTP call is refused with 409
+   `approval_expired` — never resolved as approved.
+3. On `GET /api/approval/list`, `ttl_read()` annotates each card,
+   so an expired card renders with the copy `"This approval
+   expired"` (approval) or `"Expired"` (secret) instead of a live
+   Approve/Deny button, and a pending card carries `expires_at_ms`.
 4. The store path is `/app/working/approval-ttl/pending.json`
-   (working dir, survives container recreates). The TTL env vars
-   (`APPROVAL_TTL_MS`, `SECRET_REQUEST_TTL_MS`) go in the container
-   env (`.env` / compose), read at issue time only.
+   (working dir, survives container recreates). The TTL module is
+   loaded lazily from `/app/working/approval-ttl/ttl.py` and is
+   inert when absent; TTL helpers fail open to pre-TTL behaviour
+   with a loud log, so a TTL fault can never block approvals.
 
-Until that change lands, the live guard still decides by
+Until the image lands, the live guard still decides by
 `approval_level` and `denied_tools` alone, and a pending card can
 still wait forever. Do not present this module as live enforcement
-before the wiring + a browser check (a card left 24h unanswered
-shows expired; a late approve is refused with 409).
+before the deploy + a live check (a card left past its TTL shows
+expired; a late approve is refused with 409).
 
 ## Known limits (stated, not hidden)
 
@@ -291,10 +313,17 @@ shows expired; a late approve is refused with 409).
 
 ## What is NOT verified live
 
-- The module has never run on the machine; the store file does not
-  exist there; no timer is installed.
-- The derived-image wiring (approve/deny handlers, `GET /list`)
-  is not written, so no browser check exists yet (a card left
-  unanswered past its TTL shows expired; a late approve is refused).
+- The derived image is not built or deployed yet; the module is not
+  synced to the machine; no timer is installed. Until those land,
+  the live guard still decides by `approval_level` and
+  `denied_tools` alone, and a pending card can still wait forever.
+- No browser check exists yet (a card left unanswered past its TTL
+  shows expired; a late approve is refused with 409).
 - The routines Worker does not sweep (it cannot reach the store);
   that is by design, documented above.
+- Honest interaction (measured 2026-11-19): the in-memory approval
+  timeout is 300s (`TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS`) while the
+  TTL is 24h, so the in-memory timeout usually fires first and the
+  TTL rarely binds on the standard path. The TTL's live value is the
+  persistent audit, the refusal for cards that outlive the
+  in-memory timeout, and the secret kind when it gets a consumer.
