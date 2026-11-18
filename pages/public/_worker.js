@@ -1370,7 +1370,12 @@ async function proxy(request, url, env, ctx) {
         if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(recordLastVisit(env));
         const rebrandEnabled = env.AGENTX_REBRAND !== "0";
         const titled = html.replace("<title>QwenPaw Console</title>", "<title>AgentX Console</title>");
-        const injected = titled.replace("</body>", (rebrandEnabled ? headShim() : "") + computerPanelScript(rebrandEnabled) + "</body>");
+        // Search settings UI (2026-11-18): the Settings "Search" section
+        // (TinyFish key + feature checkboxes) loads as a module from the
+        // Pages assets and self-mounts when the Settings page is present.
+        // A module script is deferred, so it runs after the SPA HTML parses.
+        const searchSettingsScript = '<script type="module" src="/search-settings-ui.js"></script>';
+        const injected = titled.replace("</body>", (rebrandEnabled ? headShim() : "") + computerPanelScript(rebrandEnabled) + searchSettingsScript + "</body>");
         headers.set("Cache-Control", "no-store, no-transform");
         headers.delete("ETag");
         headers.delete("Last-Modified");
@@ -1430,6 +1435,18 @@ export default {
       // a request for /status.html to the clean URL /status (308), which
       // would loop back here. The differently-named asset is served as-is.
       return env.ASSETS.fetch(new Request(url.origin + "/status-page.html"));
+    }
+
+    // Search settings UI — the Settings "Search" section (TinyFish key +
+    // feature checkboxes, 2026-11-18). The module is a Pages static asset
+    // (pages/public/search-settings-ui.js); without this route the request
+    // falls through to the console proxy, which answers with the SPA HTML
+    // (B-35) and the <script src> parses as nothing.
+    if (path === "/search-settings-ui.js") {
+      if (!env.ASSETS) {
+        return new Response("Search settings assets are not bound.", { status: 500 });
+      }
+      return env.ASSETS.fetch(new Request(url.origin + "/search-settings-ui.js"));
     }
 
     // Computer (rebuilt from Rakazo's design, 2026-11-15). Everything under
