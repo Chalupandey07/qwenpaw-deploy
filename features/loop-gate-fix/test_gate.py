@@ -19,6 +19,14 @@ Discriminating tests (must FAIL on pristine, PASS on patched):
   A  merged message, two rounds: total must be 50 then 100 (not 150).
   E  stale last_iteration: the gate must still count round 0 (not skip).
 
+Bypass tests (must FAIL on the gatefix1 gate, PASS on patched):
+  H  a "Run workflow" (run_tool_batch) call must be expanded into its
+     sub-calls: a batch of 50 shell steps counts as 51 (1 batch + 50
+     sub-calls) and fires; 4 batches count 204. A completed batch is
+     counted from its result JSON when its call could not be expanded.
+     A batch is never counted twice (call + result = 51, not 101).
+     A small batch (3 steps) must NOT fire (no false positive).
+
 Regression tests (must PASS on both):
   B  fires in round 0 when the first batch already exceeds max_calls.
   C  per-tool cap fires on the true count.
@@ -35,6 +43,7 @@ Exit code 0 when every test passes, 1 otherwise.
 
 import argparse
 import asyncio
+import json
 import shutil
 import sys
 import tempfile
@@ -43,8 +52,10 @@ from pathlib import Path
 REPO_FEATURE = Path(__file__).resolve().parent
 PRISTINE = REPO_FEATURE / "src" / "pristine"
 PATCHED = REPO_FEATURE / "src" / "patched"
+GATEFIX1 = REPO_FEATURE / "src" / "gatefix1"
 
 SHELL = "execute_shell_command"
+BATCH = "run_tool_batch"
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +95,48 @@ class FakeAgentNoReplyId:
 
 def tool_block(name=SHELL):
     return {"type": "tool_call", "name": name}
+
+
+def batch_call_block(call_id, file_path=None, actions=None):
+    """A run_tool_batch tool-call block (file or inline actions)."""
+    args = {}
+    if file_path is not None:
+        args["file_path"] = file_path
+    if actions is not None:
+        args["actions"] = actions
+    return {"type": "tool_call", "id": call_id, "name": BATCH,
+            "input": args}
+
+
+def batch_result_block(call_id, n, name=SHELL, last_only=False):
+    """A run_tool_batch tool-result block with n sub-call results."""
+    if last_only:
+        payload = {"ok": True, "total": n, "completed": n,
+                   "last_step_result": {"step": n - 1, "tool_name": name,
+                                        "ok": True}}
+    else:
+        payload = {"ok": True, "total": n, "completed": n,
+                   "results": [{"step": i, "tool_name": name, "ok": True,
+                                "value": i + 1} for i in range(n)]}
+    return {"type": "tool_result", "id": call_id, "name": BATCH,
+            "output": [{"type": "text", "text": json.dumps(payload)}]}
+
+
+def batch_steps(n, name=SHELL):
+    """n batch steps, each one shell call (plus a control-flow step)."""
+    steps = [{"tool_name": name,
+              "arguments": {"command": f"echo {i + 1}"}}
+             for i in range(n)]
+    steps.append({"tool_name": "set_var",
+                  "arguments": {"expr": "i=1"}})
+    return steps
+
+
+def write_batch_file(directory, n, name=SHELL):
+    """Write a batch JSON file with n shell steps; return its path."""
+    path = Path(directory) / f"echo_batch_{n}.json"
+    path.write_text(json.dumps(batch_steps(n, name)))
+    return str(path)
 
 
 def msg_with_calls(msg_id, n, name=SHELL):
@@ -218,6 +271,127 @@ def run_tests(limits_mod):
         check("G2 fallback reason (50 calls)",
               res.reason == "Tool call budget reached (50 calls)",
               f"reason={res.reason!r}")
+
+        # -- H: workflow bypass (run_tool_batch) -----------------------
+        # The live test (2026-11-18) reached 200 echoes via 4 batches
+        # of 50 while the gate saw only 5 top-level calls. A batch call
+        # must expand into its sub-calls.
+        tmpdir = tempfile.mkdtemp(prefix="gate-batch-")
+        try:
+            batch50 = write_batch_file(tmpdir, 50)
+
+            # H1: one batch call (file, 50 steps) counts 51, fires.
+            gate = ToolCallBudgetGate(max_calls=30, per_tool={})
+            gate.reset_turn()
+            agent = FakeAgent(
+                [FakeMsg("r1", [batch_call_block("b1", batch50)])], "r1")
+            res = await gate.check({"iteration": 0, "agent": agent})
+            check("H1 file batch total==51 (1 + 50)",
+                  gate._state().total == 51, f"total={gate._state().total}")
+            check("H1 file batch TERMINATEs",
+                  res.action == StopAction.TERMINATE,
+                  f"action={res.action}")
+
+            # H2: one batch call (inline actions, 50 steps) counts 51.
+            gate = ToolCallBudgetGate(max_calls=30, per_tool={})
+            gate.reset_turn()
+            agent = FakeAgent(
+                [FakeMsg("r1", [batch_call_block(
+                    "b1", actions=batch_steps(50))])], "r1")
+            res = await gate.check({"iteration": 0, "agent": agent})
+            check("H2 inline batch total==51",
+                  gate._state().total == 51, f"total={gate._state().total}")
+            check("H2 inline batch TERMINATEs",
+                  res.action == StopAction.TERMINATE,
+                  f"action={res.action}")
+
+            # H3: four batches (the live test) count 204, fire.
+            gate = ToolCallBudgetGate(max_calls=30, per_tool={})
+            gate.reset_turn()
+            blocks = [batch_call_block(f"b{i}", batch50)
+                      for i in range(4)]
+            agent = FakeAgent([FakeMsg("r1", blocks)], "r1")
+            res = await gate.check({"iteration": 0, "agent": agent})
+            check("H3 four batches total==204",
+                  gate._state().total == 204,
+                  f"total={gate._state().total}")
+            check("H3 four batches TERMINATEs",
+                  res.action == StopAction.TERMINATE,
+                  f"action={res.action}")
+
+            # H4: completed batch counted from its result JSON when
+            # the call could not be expanded (unreadable file path).
+            gate = ToolCallBudgetGate(max_calls=30, per_tool={})
+            gate.reset_turn()
+            agent = FakeAgent(
+                [FakeMsg("r1", [
+                    batch_call_block("b1", "/nonexistent/echo.json"),
+                    batch_result_block("b1", 50),
+                ])], "r1")
+            res = await gate.check({"iteration": 0, "agent": agent})
+            check("H4 result fallback total==51 (1 + 50)",
+                  gate._state().total == 51, f"total={gate._state().total}")
+            check("H4 result fallback TERMINATEs",
+                  res.action == StopAction.TERMINATE,
+                  f"action={res.action}")
+
+            # H5: no double-counting -- call expanded AND its result
+            # present counts 51 once, not 101.
+            gate = ToolCallBudgetGate(max_calls=1000, per_tool={})
+            gate.reset_turn()
+            agent = FakeAgent(
+                [FakeMsg("r1", [
+                    batch_call_block("b1", batch50),
+                    batch_result_block("b1", 50),
+                ])], "r1")
+            await gate.check({"iteration": 0, "agent": agent})
+            check("H5 expanded call + result == 51 (not 101)",
+                  gate._state().total == 51, f"total={gate._state().total}")
+
+            # H6: per-tool cap fires through a batch (50 shell steps).
+            gate = ToolCallBudgetGate(max_calls=1000,
+                                      per_tool={SHELL: 20})
+            gate.reset_turn()
+            agent = FakeAgent(
+                [FakeMsg("r1", [batch_call_block("b1", batch50)])], "r1")
+            res = await gate.check({"iteration": 0, "agent": agent})
+            check("H6 per-tool via batch TERMINATEs",
+                  res.action == StopAction.TERMINATE,
+                  f"action={res.action}")
+            check("H6 per-tool reason",
+                  res.reason == f"Tool '{SHELL}' call budget reached (20)",
+                  f"reason={res.reason!r}")
+
+            # H7: small batch (3 steps) must NOT fire (no false
+            # positive) -- control-flow step excluded, total == 4.
+            gate = ToolCallBudgetGate(max_calls=30, per_tool={})
+            gate.reset_turn()
+            small = write_batch_file(tmpdir, 3)
+            agent = FakeAgent(
+                [FakeMsg("r1", [batch_call_block("b1", small)])], "r1")
+            res = await gate.check({"iteration": 0, "agent": agent})
+            check("H7 small batch total==4 (1 + 3)",
+                  gate._state().total == 4, f"total={gate._state().total}")
+            check("H7 small batch does NOT fire",
+                  res.action == StopAction.BYPASS,
+                  f"action={res.action}")
+
+            # H8: last_only result (no results list) counts via total.
+            gate = ToolCallBudgetGate(max_calls=30, per_tool={})
+            gate.reset_turn()
+            agent = FakeAgent(
+                [FakeMsg("r1", [
+                    batch_call_block("b1", "/nonexistent/echo.json"),
+                    batch_result_block("b1", 50, last_only=True),
+                ])], "r1")
+            res = await gate.check({"iteration": 0, "agent": agent})
+            check("H8 last_only total==51",
+                  gate._state().total == 51, f"total={gate._state().total}")
+            check("H8 last_only TERMINATEs",
+                  res.action == StopAction.TERMINATE,
+                  f"action={res.action}")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     asyncio.run(run_all())
     return results
