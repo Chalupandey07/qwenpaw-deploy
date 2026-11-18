@@ -2048,6 +2048,23 @@ def t124():
         ["features/approvals/test_approvals.py"], 40)
 
 
+def t125():
+    """Cost ledger with hard kill switch: per-run + cumulative tokens/cost (55).
+
+    Machine-free test (features/cost-ledger/test_cost_ledger.py) for the
+    token/cost ledger: ledger math on a hand-computed sample (350,000 prompt
+    / 110,000 completion / 460,000 total / 23 calls / $0.57), 80% alert at
+    exactly 80,000/100,000 tokens and not at 79,999, 100% hard stop refuses
+    a simulated model call with pre-call reservations, budget raise unblocks,
+    derived-image patch applies cleanly and reproduces the patched files
+    byte-for-byte. Fail-first proven: --no-cap fails 6/34 (the alert/denial
+    checks). The live half (image build, machine deploy, live /api/cost,
+    real deny at 100%) is verified by Muse after deploy.
+    """
+    return _py_script_harness(
+        ["features/cost-ledger/test_cost_ledger.py"], 55)
+
+
 def t131():
     """Telegram full-feature bot: token-only setup, menus, chats (66).
 
@@ -2589,6 +2606,7 @@ TESTS = [
     ("T122", "plan mode: read-only plan before any mutation — ToolGate refuses mutating calls naming the tool, plan file with required sections, no execution before approval, after approval only the plan's steps run in order and at most once (selftest)", "plan-mode", "protocol", t122),
     ("T123", "egress guard: untrusted-content wrapping (nonce fence, template-token strip) + allowlist egress (deny non-allowlisted, deny secret to allowlisted host, deny China hosts) + secret redaction in logs (selftest)", "egress-guard", "protocol", t123),
     ("T124", "SMART approval patch as a machine-apply script (agent.json AUTO -> SMART, idempotent, destructive auto-deny verified) + per-tool preview (exact shell command / file diff, never executes) + per-tool Allow/Block list (auto/ask/deny, deny beats every level incl. OFF) (selftest)", "approvals", "protocol", t124),
+    ("T125", "cost ledger with hard kill switch: per-run + cumulative tokens/cost from token_usage.json priced by a static table, /cost endpoint, alert at 80% and hard stop at 100% with pre-call reservations, budget raise unblocks (harness)", "cost-ledger", "protocol", t125),
     ("T131", "telegram full-feature bot: token-only setup (no numeric id), owner = first whitelist entry, guests read-only, strangers refused; new chat, list + preview + continue an existing console chat (task API); settings via button callbacks (model PATCH, approval PUT); menu grammar + token cache; outbound redaction + inbound untrusted wrapping; driver patch applies cleanly to the pinned v2.3.0 platform.py and reproduces the patched file byte-for-byte (selftest)", "telegram", "protocol", t131),
 ]
 
