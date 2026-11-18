@@ -1177,8 +1177,43 @@ function computerPanelScript(rebrandEnabled) {
           } catch (e) {}
           return out;
         }
+        // SCOPE TO THE SIDEBAR ONLY (2026-11-18 QA round 17): the rule
+        // ran on EVERY button on the page (the left gate was removed in
+        // round 15), and the /chat main pane started crashing with a
+        // React error boundary ("Something went wrong") on every load —
+        // the rule's node-moving wrap step and recursive truncation were
+        // touching main-pane buttons React owns, breaking its
+        // reconciliation. Find the sidebar container (the element
+        // holding the "Conversation History" heading) and only process
+        // buttons inside it; main-pane buttons are left entirely alone.
+        // The wrap step is REMOVED (it moved text nodes into new spans,
+        // changing the DOM shape React expects); truncation alone is
+        // sufficient now that the script parses (round 17 sidebar PASS).
+        function findSidebarScope() {
+          try {
+            var els = document.querySelectorAll ? document.querySelectorAll("*") : [];
+            for (var i = 0; i < els.length; i++) {
+              try {
+                var t = els[i].textContent || "";
+                if (t.indexOf("Conversation History") !== -1) {
+                  // Walk up to a nav/aside/section, or the nearest
+                  // ancestor that looks like the sidebar column.
+                  var n = els[i];
+                  for (var d = 0; d < 6 && n; d++) {
+                    var tag = (n.tagName || "").toUpperCase();
+                    if (tag === "NAV" || tag === "ASIDE" || tag === "SECTION") return n;
+                    n = n.parentElement;
+                  }
+                  return els[i].parentElement || document;
+                }
+              } catch (e) {}
+            }
+          } catch (e) {}
+          return null;
+        }
         try {
-          var btns = collectButtons(document, []);
+          var scope = findSidebarScope();
+          var btns = scope ? collectButtons(scope, []) : [];
           for (var i = 0; i < btns.length; i++) {
             try {
               var b = btns[i];
@@ -1268,40 +1303,14 @@ function computerPanelScript(rebrandEnabled) {
                   if (tag === "SPAN") k.style.display = "block";
                 } catch (e) {}
               }
-              // The title itself is often a bare TEXT NODE directly
-              // inside the flex button (an anonymous flex item) — no
-              // element to style, so no CSS ellipsis can engage on it.
-              // Wrap the first substantial direct text node (the visible
-              // title; the duplicate is a later node for the tooltip) in
-              // a span that IS a real flex item and can truncate.
-              // Guard: only wrap once — if a wrap span already exists
-              // (from a previous run), do not wrap again, or nested
-              // spans accumulate on every observer pass now that the
-              // attribute skip is gone.
-              try {
-                var alreadyWrapped = false;
-                try { alreadyWrapped = !!(b.querySelector && b.querySelector("span[data-agentx-title-wrap]")); } catch (e) {}
-                if (!alreadyWrapped) {
-                var nodes = b.childNodes;
-                for (var n = 0; n < nodes.length; n++) {
-                  var tn = nodes[n];
-                  if (tn && tn.nodeType === 3 && tn.nodeValue && tn.nodeValue.trim().length >= 3) {
-                    var span = document.createElement("span");
-                    span.setAttribute("data-agentx-title-wrap", "1");
-                    span.style.display = "block";
-                    span.style.overflow = "hidden";
-                    span.style.textOverflow = "ellipsis";
-                    span.style.whiteSpace = "nowrap";
-                    span.style.minWidth = "0";
-                    span.style.flexShrink = "1";
-                    span.style.maxWidth = "100%";
-                    b.insertBefore(span, tn);
-                    span.appendChild(tn);
-                    break;
-                  }
-                }
-                }
-              } catch (e) {}
+              // WRAP STEP REMOVED (2026-11-18 QA round 17): wrapping
+              // moved the title text node into a new <span>, changing
+              // the DOM shape React expects — the /chat main pane then
+              // crashed with a React error boundary on every load.
+              // Truncation (text-node value only, no node moves) is
+              // sufficient now that the script parses (round 17 sidebar
+              // PASS) and is safe: React overwrites a changed text node
+              // on re-render, it never crashes on one.
               try {
                 // Truncate by LENGTH, not by measured overflow: the
                 // clipping happens at a parent container (the button
