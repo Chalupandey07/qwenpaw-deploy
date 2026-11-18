@@ -1,7 +1,7 @@
 ---
 name: memory
-description: "Compact fact memory + session handoff for cross-session recall. At the start of a session, read the latest handoff and retrieve only the relevant facts (a few hundred tokens) instead of the whole history. During a session, distill salient facts, decisions, and preferences into the fact store. At the end of a session, write a handoff so the next session continues where this one left off. History is never modified — facts are additive, and universal search reaches back into the full history when needed."
-version: "1.0"
+description: "Compact fact memory + session handoff for cross-session recall. At the start of a session, read the latest handoff and retrieve only the relevant facts (a few hundred tokens) instead of the whole history. Retrieval is multi-signal (BM25 + entity overlap + importance, fused by reciprocal rank fusion) so a fact about the same project or person ranks up even when the keywords are thin. During a session, distill salient facts, decisions, and preferences into the fact store. At the end of a session, write a handoff so the next session continues where this one left off. History is never modified — facts are additive, superseded facts stay readable, and universal search reaches back into the full history when needed."
+version: "2.0"
 metadata:
   qwenpaw:
     emoji: "🧠"
@@ -21,13 +21,15 @@ off instead of starting cold.
 ## The tools (all read `memory.db`, a NEW file — never history.db)
 
 All commands run on the machine (you are inside the QwenPaw container).
-The store lives at `/data/home/qwenpaw/working/workspaces/default/memory.db`
-and the CLI at `/data/home/qwenpaw/working/memory-tools/facts.py`.
+The store lives at `/app/working/workspaces/default/memory.db`
+and the CLI at `/app/working/memory-tools/facts.py`.
+(These are the in-container paths: the host directory
+`/data/home/qwenpaw/working` is mounted at `/app/working`.)
 
 ```bash
-DB=/data/home/qwenpaw/working/workspaces/default/memory.db
-CLI=/data/home/qwenpaw/working/memory-tools/facts.py
-HIST=/data/home/qwenpaw/working/workspaces/default/history.db
+DB=/app/working/workspaces/default/memory.db
+CLI=/app/working/memory-tools/facts.py
+HIST=/app/working/workspaces/default/history.db
 
 # start of a session: what did the last session leave?
 python3 $CLI --db $DB handoff-read
@@ -37,9 +39,12 @@ python3 $CLI --db $DB search --query "<topic>" --limit 5
 python3 $CLI --db $DB search-history --history $HIST --query "<topic>" --limit 3
 # propose candidate facts from a transcript (proposes only, never writes)
 python3 $CLI --db $DB extract --transcript /tmp/turns.txt --session <id>
-# add a fact you judged salient
+# add a fact you judged salient (entities are auto-extracted from the
+# text when you do not supply them — people, projects, quoted names)
 python3 $CLI --db $DB add --text "<one sentence>" --kind decision \
-    --entities "loop gate,derived image" --session <id> --importance 3
+    --session <id> --importance 3
+# what was true on a past date? (time travel: facts valid then)
+python3 $CLI --db $DB search --query "<topic>" --as-of 2026-11-15 --limit 5
 # end of a session: write the handoff for the next session
 python3 $CLI --db $DB handoff-write --session <id> --summary "<one or two sentences>" \
     --open-tasks '["First open task", "Second open task"]' \
@@ -88,11 +93,21 @@ this skill exists to prevent.
 
 ## Universal search — facts first, history when needed
 
-`search` covers the compact facts (fast, few tokens). If the answer is
-not in the facts, use `search-history`: it returns the same facts plus
-windows from the full history (read-only, token-budgeted, redacted).
-Always say which one you used and how many tokens the retrieved set
-cost — the user cares about the token count.
+`search` covers the compact facts (fast, few tokens). It ranks by three
+signals at once — BM25 keywords, entity overlap (a fact about the same
+project, person, or tool as your query ranks up), and importance — so
+you get the most relevant facts, not just the ones with the most
+matching words. Each result reports its `entity_overlap` and
+`fused_score`. If the answer is not in the facts, use `search-history`:
+it returns the same facts plus windows from the full history (read-only,
+token-budgeted, redacted). Always say which one you used and how many
+tokens the retrieved set cost — the user cares about the token count.
+
+To ask what was true at an earlier time ("what did we believe about X
+last week?"), add `--as-of YYYY-MM-DD` to `search`: it returns the facts
+that were valid then, including ones that have since been superseded.
+A superseded fact is never deleted — its validity window just closes,
+so the past stays answerable.
 
 ## What this skill does NOT do
 
@@ -101,5 +116,9 @@ cost — the user cares about the token count.
   follow-up, layered on the derived image), the agent follows this skill
   by convention: handoff-read at the start, facts during, handoff-write
   at the end.
-- It does not use embeddings or any external service. Retrieval is FTS5
-  + BM25 over a single-user store, which is fast enough at this size.
+- It does not use embeddings or any external service. Retrieval is
+  multi-signal lexical (FTS5 + BM25, entity overlap, importance, fused
+  by reciprocal rank fusion) over a single-user store, which is fast
+  enough at this size. Semantic (vector) search would need an embedding
+  model; none is configured, and local models are forbidden here, so
+  the lexical path is the only honest one today.
