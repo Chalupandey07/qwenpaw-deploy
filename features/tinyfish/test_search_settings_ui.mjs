@@ -281,9 +281,10 @@ function settingsDoc() {
     { key: "TINYFISH_DDG_IA", value: "0" },
   ]);
   const section = mountSearchSettings(doc, fetchMock);
-  check("mount inserts the 'Your Keys' section after Environments",
+  check("mount appends 'Your Keys' to the settings content column (aligned with the cards)",
     section !== null && section.attributes.id === SECTION_ID
-    && page.children.includes(section));
+    && page.children.includes(section)
+    && section.parentElement === page);
   check("mount twice is a no-op (one section only)",
     mountSearchSettings(doc, fetchMock) === null
     && page.children.filter((c) => c.attributes.id === SECTION_ID).length === 1);
@@ -388,7 +389,8 @@ function settingsDoc() {
     section !== null && style !== null && style.tagName === "STYLE"
     && style.textContent.includes("#qwenpawYourKeys")
     && style.textContent.includes(".qwenpaw-key-block")
-    && style.textContent.includes(".qwenpaw-search-row"));
+    && style.textContent.includes(".qwenpaw-search-row")
+    && style.textContent.includes("flex-direction:column"));
   const keyInput = doc.getElementById("qwenpaw-tinyfish-key");
   const drexInput = doc.getElementById("qwenpaw-drex-key");
   check("key placeholders name where each key comes from",
