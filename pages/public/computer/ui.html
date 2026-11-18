@@ -147,6 +147,17 @@
     font-size:13px;opacity:0;visibility:hidden;transition:opacity .2s, visibility 0s linear .2s;pointer-events:none}
   .toast[data-show]{opacity:1;visibility:visible;transition:opacity .2s, visibility 0s}
   @media (max-width:860px){ #rail{width:100%;flex-basis:100%} #stage{display:none} }
+  /* ---- embed mode (?embed=1): the /computer page inside the 316 px
+     console rail (the floating Computer panel). The panel bar already
+     says "Computer" and offers "Open full", so the rail's own title
+     and its "Open" button would duplicate them; the stage is already
+     hidden by the narrow media query above. The rail scrolls instead
+     of cutting its bottom rows off (2026-11-18 QA: the terminal
+     "Take control…" note was cut at the panel's bottom edge). */
+  body.embed #rail{width:100%;flex:1 1 auto;border-inline-end:0;overflow-y:auto}
+  body.embed #stage{display:none}
+  body.embed #railTitle{display:none}
+  body.embed #railExpand{display:none}
 </style>
 </head>
 <body>
@@ -1411,6 +1422,10 @@
   (async () => {
     const q = new URLSearchParams(location.search);
     if (q.get("computer")) state.computer = q.get("computer");
+    // Embed mode (?embed=1): this page is the iframe inside the
+    // console's 316 px Computer rail. Add the class so the embed CSS
+    // hides the duplicate title/Open button and lets the rail scroll.
+    if (q.get("embed") === "1") document.body.classList.add("embed");
     // Session first: every call below is gated, so asking for one afterwards
     // would waste the first three requests and show three error states.
     await ensureSession();
