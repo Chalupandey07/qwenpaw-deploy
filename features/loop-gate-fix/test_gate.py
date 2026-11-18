@@ -27,6 +27,17 @@ Bypass tests (must FAIL on the gatefix1 gate, PASS on patched):
      A batch is never counted twice (call + result = 51, not 101).
      A small batch (3 steps) must NOT fire (no false positive).
 
+Execution-time tests (must FAIL on the gatefix2 gate, PASS on patched):
+  I  a single model response with 200 direct parallel tool calls must
+     stop at execution time: the enforcer (try_reserve_execution)
+     refuses calls past the budget BEFORE they execute, so only the
+     first 20 shell calls (per-tool cap) or 30 calls (total cap)
+     execute. On the gatefix2 gate there is no enforcer, so the
+     simulator executes all 200 -- the live failure (2026-11-18).
+     A small run must NOT be refused, the counter must persist across
+     rounds of one turn and reset on a new turn, and a batch call must
+     be refused whole when its sub-calls would exceed the budget.
+
 Regression tests (must PASS on both):
   B  fires in round 0 when the first batch already exceeds max_calls.
   C  per-tool cap fires on the true count.
@@ -35,8 +46,10 @@ Regression tests (must PASS on both):
   G  fallback when reply_id is missing: old incremental counting still works.
 
 Usage:
-  python3 test_gate.py --limits src/pristine/limits.py   # expect FAIL (bug)
-  python3 test_gate.py --limits src/patched/limits.py    # expect PASS (fix)
+  python3 test_gate.py --limits src/pristine/limits.py   # 18/47 (bug)
+  python3 test_gate.py --limits src/gatefix1/limits.py   # 22/47 (H + I fail)
+  python3 test_gate.py --limits src/gatefix2/limits.py   # 36/47 (I fails)
+  python3 test_gate.py --limits src/patched/limits.py    # 47/47 (fix)
   python3 test_gate.py                                    # defaults to patched
 Exit code 0 when every test passes, 1 otherwise.
 """
@@ -392,6 +405,166 @@ def run_tests(limits_mod):
                   f"action={res.action}")
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+        # -- I: execution-time enforcement (single-response burst) -----
+        # The live test (2026-11-18) issued 200 direct parallel calls
+        # in ONE model response. The gate counted 200 and fired, but
+        # the deferred stop let all 200 execute. The enforcer must
+        # refuse calls past the budget BEFORE they execute. The
+        # simulator mirrors ReactAgent._execute_tool_call: it reserves
+        # via try_reserve_execution and executes only when allowed.
+        # On a limits.py without the enforcer (gatefix2) it executes
+        # everything, reproducing the live failure (fail-first).
+        reserve_fn = getattr(limits_mod, "try_reserve_execution", None)
+
+        def simulate_execute(agent, blocks):
+            """Execute tool-call blocks through the enforcer.
+
+            Returns (executed, refused). A block is 'executed' when
+            the enforcer allows it (reserve returns None); 'refused'
+            when the enforcer returns a reason. Without an enforcer
+            (gatefix2) every block executes.
+            """
+            executed = 0
+            refused = 0
+            for block in blocks:
+                if reserve_fn is None:
+                    executed += 1
+                    continue
+                if reserve_fn(agent, block) is None:
+                    executed += 1
+                else:
+                    refused += 1
+            return executed, refused
+
+        # I1: 200 shell calls in one response. The per-tool cap (20)
+        # binds first: 20 execute, 180 refused.
+        gate = ToolCallBudgetGate(max_calls=30, per_tool={SHELL: 20})
+        gate.reset_turn()
+        blocks = [tool_block(SHELL) for _ in range(200)]
+        agent = FakeAgent([FakeMsg("r1", list(blocks))], "r1")
+        res = await gate.check({"iteration": 0, "agent": agent})
+        check("I1 gate fires on 200-call response",
+              res.action == StopAction.TERMINATE, f"action={res.action}")
+        executed, refused = simulate_execute(agent, blocks)
+        check("I1 20 shell calls execute (per-tool cap)",
+              executed == 20, f"executed={executed}")
+        check("I1 180 shell calls refused",
+              refused == 180, f"refused={refused}")
+
+        # I2: 25 shell then 175 web_search. Shell cap 20 binds, then
+        # the total cap 30 binds: 20 shell + 10 web execute, 170 refuse.
+        gate = ToolCallBudgetGate(max_calls=30, per_tool={SHELL: 20})
+        gate.reset_turn()
+        blocks = ([tool_block(SHELL) for _ in range(25)]
+                  + [tool_block("web_search") for _ in range(175)])
+        agent = FakeAgent([FakeMsg("r1", list(blocks))], "r1")
+        await gate.check({"iteration": 0, "agent": agent})
+        executed, refused = simulate_execute(agent, blocks)
+        check("I2 30 calls execute (20 shell + 10 web)",
+              executed == 30, f"executed={executed}")
+        check("I2 170 calls refused",
+              refused == 170, f"refused={refused}")
+
+        # I3: a small run (5 shell calls) must NOT be refused.
+        gate = ToolCallBudgetGate(max_calls=30, per_tool={SHELL: 20})
+        gate.reset_turn()
+        blocks = [tool_block(SHELL) for _ in range(5)]
+        agent = FakeAgent([FakeMsg("r1", list(blocks))], "r1")
+        res = await gate.check({"iteration": 0, "agent": agent})
+        check("I3 small run does NOT fire the gate",
+              res.action == StopAction.BYPASS, f"action={res.action}")
+        executed, refused = simulate_execute(agent, blocks)
+        check("I3 all 5 shell calls execute",
+              executed == 5, f"executed={executed}")
+        check("I3 none refused", refused == 0, f"refused={refused}")
+
+        # I4: the counter persists across rounds of one turn. Round 1:
+        # 25 web_search (no per-tool cap) all execute. Round 2 (same
+        # reply_id): 10 more web_search, only 5 execute (total 30).
+        gate = ToolCallBudgetGate(max_calls=30, per_tool={SHELL: 20})
+        gate.reset_turn()
+        ctx_msgs = [FakeMsg("r1", [tool_block("web_search")
+                                   for _ in range(25)])]
+        agent = FakeAgent(ctx_msgs, "r1")
+        await gate.check({"iteration": 0, "agent": agent})
+        executed1, _ = simulate_execute(
+            agent, list(ctx_msgs[0].content))
+        check("I4 round1 all 25 execute",
+              executed1 == 25, f"executed={executed1}")
+        ctx_msgs[0].content.extend(
+            [tool_block("web_search") for _ in range(10)])
+        await gate.check({"iteration": 1, "agent": agent})
+        executed2, refused2 = simulate_execute(
+            agent, list(ctx_msgs[0].content[25:]))
+        check("I4 round2 only 5 execute (total cap 30)",
+              executed2 == 5, f"executed={executed2}")
+        check("I4 round2 5 refused",
+              refused2 == 5, f"refused={refused2}")
+        check("I4 turn total executed == 30",
+              executed1 + executed2 == 30,
+              f"total={executed1 + executed2}")
+
+        # I5: a new turn (new reply_id) resets the counter: 200 shell
+        # calls in the new turn again allow 20, not 0.
+        blocks = [tool_block(SHELL) for _ in range(200)]
+        agent2 = FakeAgent([FakeMsg("r2", list(blocks))], "r2")
+        await gate.check({"iteration": 0, "agent": agent2})
+        executed, refused = simulate_execute(agent2, blocks)
+        check("I5 new turn 20 shell calls execute again",
+              executed == 20, f"executed={executed}")
+        check("I5 new turn 180 refused",
+              refused == 180, f"refused={refused}")
+
+        # I6: a batch call is refused whole when its sub-calls would
+        # exceed the budget (51 > 30); a small batch is allowed.
+        tmpdir2 = tempfile.mkdtemp(prefix="gate-batch-exec-")
+        try:
+            big = write_batch_file(tmpdir2, 50)
+            small = write_batch_file(tmpdir2, 3)
+            gate = ToolCallBudgetGate(max_calls=30, per_tool={SHELL: 20})
+            gate.reset_turn()
+            agent = FakeAgent(
+                [FakeMsg("r1", [batch_call_block("b1", big)])], "r1")
+            await gate.check({"iteration": 0, "agent": agent})
+            executed, refused = simulate_execute(
+                agent, [batch_call_block("b1", big)])
+            check("I6 big batch (50 steps) refused whole",
+                  executed == 0 and refused == 1,
+                  f"executed={executed} refused={refused}")
+            gate = ToolCallBudgetGate(max_calls=30, per_tool={SHELL: 20})
+            gate.reset_turn()
+            agent = FakeAgent(
+                [FakeMsg("r1", [batch_call_block("b1", small)])], "r1")
+            await gate.check({"iteration": 0, "agent": agent})
+            executed, refused = simulate_execute(
+                agent, [batch_call_block("b1", small)])
+            check("I6 small batch (3 steps) allowed",
+                  executed == 1 and refused == 0,
+                  f"executed={executed} refused={refused}")
+        finally:
+            shutil.rmtree(tmpdir2, ignore_errors=True)
+
+        # I7: the gate and the enforcer agree. After a 200-call
+        # response the gate's reason names the true total (200), and
+        # the refusal reason names the budget.
+        gate = ToolCallBudgetGate(max_calls=30, per_tool={SHELL: 20})
+        gate.reset_turn()
+        blocks = [tool_block(SHELL) for _ in range(200)]
+        agent = FakeAgent([FakeMsg("r1", list(blocks))], "r1")
+        res = await gate.check({"iteration": 0, "agent": agent})
+        check("I7 gate reason reports true total 200",
+              res.reason == "Tool call budget reached (200 calls)",
+              f"reason={res.reason!r}")
+        reason = None
+        if reserve_fn is not None:
+            for block in blocks:
+                reason = reserve_fn(agent, block)
+                if reason is not None:
+                    break
+        check("I7 refusal reason names the budget",
+              reason is not None and "budget" in reason,
+              f"reason={reason!r}")
 
     asyncio.run(run_all())
     return results
