@@ -47,6 +47,7 @@ __all__ = [
     "SANDBOX_USER",
     "WORKSPACE_MOUNT_TARGET",
     "WORKSPACE_ROOT",
+    "TOKEN_DIR_ROOT",
     "MEMORY_LIMIT",
     "MEMORY_SWAP_LIMIT",
     "CPU_LIMIT",
@@ -73,6 +74,17 @@ WORKSPACE_MOUNT_TARGET = "/workspace"
 # Host path prefix a job workspace may live under. Anything outside
 # this prefix is never mounted, even if the job asks for it.
 WORKSPACE_ROOT = "/data/home/qwenpaw/working/workspaces"
+
+# Host path prefix a per-job token directory may live under. The
+# runner mints the scoped token and writes it to
+# <TOKEN_DIR_ROOT>/<job_id>/token (dir 0700, file 0600) on the host's
+# /run tmpfs, then bind-mounts that directory at /run/sandbox-token
+# inside the container (see build_profile's `token_dir`). A token
+# directory anywhere else is never mounted: the validator refuses it,
+# so a job cannot smuggle an arbitrary host directory into the
+# container through the token mount. When no token_dir is given, the
+# profile keeps the empty tmpfs mount at /run/sandbox-token instead.
+TOKEN_DIR_ROOT = "/run/sandbox-tokens"
 
 # Resource caps (Free VM: 4 vCPU / 8 GiB, shared with main + desktop).
 MEMORY_LIMIT = "1g"
@@ -123,17 +135,24 @@ FORBIDDEN_ENV_NAMES = (
 )
 
 
-def _is_forbidden_mount(source: str) -> str | None:
+def _is_forbidden_mount(source: str, workspace_root: str = WORKSPACE_ROOT,
+                        token_root: str = TOKEN_DIR_ROOT) -> str | None:
     """Return the forbidden prefix a mount source falls under, or None.
 
-    The job's own workspace (under WORKSPACE_ROOT) is the ONE allowed
-    exception to the ``/data/home/qwenpaw/working`` prefix: the
-    workspace root is the mount the profile exists to provide. Every
-    other path under the working tree — the tree itself, its secrets,
-    its backups — stays forbidden.
+    The job's own workspace (under ``workspace_root``, default
+    WORKSPACE_ROOT) is the ONE allowed exception to the
+    ``/data/home/qwenpaw/working`` prefix: the workspace root is the
+    mount the profile exists to provide. Every other path under the
+    working tree — the tree itself, its secrets, its backups — stays
+    forbidden. The per-job token directory (under ``token_root``,
+    default TOKEN_DIR_ROOT) is the second allowed exception, for the
+    same reason: it is the mount the token delivery exists to provide,
+    and the validator pins its source to that root separately.
     """
     src = os.path.normpath(source)
-    if src.startswith(WORKSPACE_ROOT.rstrip("/") + "/"):
+    if src.startswith(workspace_root.rstrip("/") + "/"):
+        return None
+    if src.startswith(token_root.rstrip("/") + "/"):
         return None
     for prefix in FORBIDDEN_MOUNT_PREFIXES:
         if src == prefix or src.startswith(prefix.rstrip("/") + "/"):
@@ -147,7 +166,13 @@ def build_profile(job: dict) -> dict:
     ``job`` keys: ``job_id`` (str), ``workspace`` (host path of the
     job's own workspace dir, under WORKSPACE_ROOT), ``deadline_s``
     (optional, default JOB_DEADLINE_S), ``token_file`` (optional host
-    path of the tmpfs token file; default ``/run/sandbox-token/token``).
+    path of the tmpfs token file; default ``/run/sandbox-token/token``),
+    ``token_dir`` (optional host path of the per-job token directory,
+    under TOKEN_DIR_ROOT; when given, the /run/sandbox-token mount is
+    a bind of that directory instead of an empty tmpfs — that is how
+    the minted token file reaches the container, since a tmpfs mount
+    cannot be pre-filled. The directory lives on the host's /run
+    tmpfs and the runner removes it when the job ends).
 
     Returns a plain dict describing the container: image, user,
     network, mounts, env (empty by design), resource limits, security
@@ -166,6 +191,24 @@ def build_profile(job: dict) -> dict:
     token_file = str(
         job.get("token_file") or "/run/sandbox-token/token"
     ).strip()
+    token_dir = str(job.get("token_dir") or "").strip()
+    token_mounts = (
+        [{
+            "type": "bind",
+            "source": token_dir,
+            "target": "/run/sandbox-token",
+            "read_only": False,
+        }]
+        if token_dir
+        else [{
+            "type": "tmpfs",
+            "source": "tmpfs",
+            "target": "/run/sandbox-token",
+            "read_only": False,
+            "tmpfs_size": "1m",
+            "tmpfs_mode": "0700",
+        }]
+    )
     return {
         "job_id": job_id,
         "image": SANDBOX_IMAGE,
@@ -179,15 +222,7 @@ def build_profile(job: dict) -> dict:
                 "target": WORKSPACE_MOUNT_TARGET,
                 "read_only": False,
             },
-            {
-                "type": "tmpfs",
-                "source": "tmpfs",
-                "target": "/run/sandbox-token",
-                "read_only": False,
-                "tmpfs_size": "1m",
-                "tmpfs_mode": "0700",
-            },
-        ],
+        ] + token_mounts,
         "token_file": token_file,
         "env": {},  # empty by design: no credential ever rides in env
         "extra_hosts": [],  # empty by design: no route to the gateway
@@ -216,11 +251,16 @@ def build_profile(job: dict) -> dict:
     }
 
 
-def validate_profile(profile: dict) -> list[str]:
+def validate_profile(profile: dict, workspace_root: str = WORKSPACE_ROOT,
+                     token_root: str = TOKEN_DIR_ROOT) -> list[str]:
     """Validate a sandbox profile. Returns a list of violations (empty = ok).
 
     Every rule names what is wrong so a refusal can say why. A profile
     with ANY violation must not be run; ``dispatch.py`` enforces that.
+    ``workspace_root`` is the host prefix the workspace bind must live
+    under and ``token_root`` the host prefix the token-dir bind must
+    live under (defaults the machine paths; the runner's selftest
+    passes temp roots so the profile is testable without the machine).
     """
     violations: list[str] = []
     job_id = profile.get("job_id") or "<unknown>"
@@ -240,23 +280,54 @@ def validate_profile(profile: dict) -> list[str]:
         if "172.18.0.1" in str(host) or "gateway" in str(host).lower():
             violations.append(f"extra_hosts: route to the bridge gateway forbidden: {host!r}")
 
-    # Mounts: exactly one workspace bind + the token tmpfs, nothing else.
+    # Mounts: exactly one workspace bind, plus at most one token bind
+    # (a per-job token directory under TOKEN_DIR_ROOT, mounted at
+    # /run/sandbox-token) OR the empty token tmpfs — never both, never
+    # anything else. The token bind is the ONE exception to "one bind
+    # mount": it carries only the minted token file, and its source is
+    # pinned to the token root, so it cannot smuggle in another host
+    # directory.
     mounts = profile.get("mounts") or []
     binds = [m for m in mounts if m.get("type") == "bind"]
-    if len(binds) != 1:
-        violations.append(f"mounts: exactly one bind mount required, got {len(binds)}")
-    for m in binds:
+    ws_binds = [m for m in binds if m.get("target") == WORKSPACE_MOUNT_TARGET]
+    token_binds = [m for m in binds if m.get("target") == "/run/sandbox-token"]
+    other_binds = [m for m in binds
+                   if m.get("target") not in (WORKSPACE_MOUNT_TARGET, "/run/sandbox-token")]
+    if len(ws_binds) != 1:
+        violations.append(
+            f"mounts: exactly one workspace bind mount required, got {len(ws_binds)}")
+    if len(token_binds) > 1:
+        violations.append(
+            f"mounts: at most one token bind mount allowed, got {len(token_binds)}")
+    if other_binds:
+        violations.append(
+            f"mounts: unexpected bind mount target(s): "
+            f"{[m.get('target') for m in other_binds]!r}")
+    for m in ws_binds:
         source = str(m.get("source") or "")
-        target = str(m.get("target") or "")
-        if target != WORKSPACE_MOUNT_TARGET:
-            violations.append(f"mount target: must be {WORKSPACE_MOUNT_TARGET}, got {target!r}")
-        if not source.startswith(WORKSPACE_ROOT.rstrip("/") + "/"):
+        if not source.startswith(workspace_root.rstrip("/") + "/"):
             violations.append(
-                f"mount source: must be under {WORKSPACE_ROOT}, got {source!r}"
+                f"mount source: must be under {workspace_root}, got {source!r}"
             )
-        forbidden = _is_forbidden_mount(source)
+        forbidden = _is_forbidden_mount(source, workspace_root, token_root)
         if forbidden is not None:
             violations.append(f"mount source: forbidden prefix {forbidden}: {source!r}")
+    for m in token_binds:
+        source = str(m.get("source") or "")
+        if not source.startswith(token_root.rstrip("/") + "/"):
+            violations.append(
+                f"mount source: token dir must be under {token_root}, got {source!r}"
+            )
+        forbidden = _is_forbidden_mount(source, workspace_root, token_root)
+        if forbidden is not None:
+            violations.append(f"mount source: forbidden prefix {forbidden}: {source!r}")
+    token_tmpfs = [m for m in mounts
+                   if m.get("type") == "tmpfs" and m.get("target") == "/run/sandbox-token"]
+    if token_binds and token_tmpfs:
+        violations.append(
+            "mounts: token bind and token tmpfs are mutually exclusive")
+    if not token_binds and not token_tmpfs:
+        violations.append("mounts: missing token mount at /run/sandbox-token")
     for m in mounts:
         src = str(m.get("source") or "")
         if "docker.sock" in src:
@@ -323,14 +394,15 @@ def validate_profile(profile: dict) -> list[str]:
     return violations
 
 
-def docker_run_argv(profile: dict) -> list[str]:
+def docker_run_argv(profile: dict, workspace_root: str = WORKSPACE_ROOT,
+                    token_root: str = TOKEN_DIR_ROOT) -> list[str]:
     """Render a validated profile as a ``docker run`` argv list.
 
     Raises ValueError if the profile does not validate clean. Rendering
     is refused for an invalid profile: a leaky profile must never
     become a command line by accident.
     """
-    violations = validate_profile(profile)
+    violations = validate_profile(profile, workspace_root, token_root)
     if violations:
         raise ValueError("invalid sandbox profile: " + "; ".join(violations))
     argv: list[str] = [
@@ -367,13 +439,14 @@ def docker_run_argv(profile: dict) -> list[str]:
     return argv
 
 
-def compose_service(profile: dict) -> dict:
+def compose_service(profile: dict, workspace_root: str = WORKSPACE_ROOT,
+                    token_root: str = TOKEN_DIR_ROOT) -> dict:
     """Render a validated profile as a docker-compose service dict.
 
     Raises ValueError if the profile does not validate clean. The
     compose file in profile/ is the deployed form of this output.
     """
-    violations = validate_profile(profile)
+    violations = validate_profile(profile, workspace_root, token_root)
     if violations:
         raise ValueError("invalid sandbox profile: " + "; ".join(violations))
     tmpfs_entries = [f"{p}:{o}" for p, o in sorted(profile.get("tmpfs", {}).items())]
