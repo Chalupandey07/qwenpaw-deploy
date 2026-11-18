@@ -1,39 +1,44 @@
 #!/usr/bin/env node
 /**
- * Harness — TinyFish Settings search section (features/tinyfish/).
+ * Harness — "Your Keys" Settings section (features/tinyfish/).
  *
- * The skill reads its key from Settings (env vars), and the Search
- * section in Settings is where the user adds the key and picks the
- * features. This harness tests the section module
- * (features/tinyfish/search-settings-ui.js) without a browser:
+ * The skill reads its key from Settings (env vars), and the "Your Keys"
+ * section in Settings is where the user adds API keys and picks the
+ * search features. This harness tests the section module
+ * (pages/public/search-settings-ui.js) without a browser:
  *
  *   Static, on the real module source:
  *     - it uses PATCH /api/envs to save (never PUT, which would
  *       replace ALL environment variables);
- *     - it removes the key with DELETE /api/envs/TINYFISH_API_KEY;
- *     - the key field is a password input with autocomplete="new-password";
- *     - it never references the vault (the key lives in Settings);
+ *     - it removes a key with DELETE /api/envs/<KEY>;
+ *     - each key field is a password input with autocomplete="new-password";
+ *     - it never references the vault (the keys live in Settings);
  *     - it never logs anything (no console.log of state).
  *   Dynamic, importing the real module in Node:
  *     - flagOn: "0"/"false"/"no"/"off" are off (any case); absent,
  *       empty, "1", "true" are on.
- *     - parseLoadResponse: returns hasKey + the three flags as
- *       booleans, and the returned object never contains the key
- *       value (it cannot be rendered or logged by a caller).
- *     - buildSaveBody: includes the key only when the user typed a
+ *     - parseLoadResponse: returns hasKey + hasDrexKey + the three
+ *       flags as booleans, and the returned object never contains a
+ *       key value (it cannot be rendered or logged by a caller).
+ *     - buildSaveBody: includes a key only when the user typed a
  *       non-empty value (an empty field leaves the saved key alone);
  *       flags are always sent as "1"/"0".
  *   Dynamic, with a minimal DOM mock + a fetch mock:
- *     - mount inserts the section after the Environments heading and
- *       only once (a second mount is a no-op);
+ *     - mount inserts the "Your Keys" section after the Environments
+ *       heading and only once (a second mount is a no-op);
+ *     - mount on the chat page (a <main> with no Environments heading
+ *       and no Settings page) is a safe no-op — the old <main>
+ *       fallback put the section at the bottom of the chat view;
  *     - mount with no Settings anchor is a safe no-op (null);
- *     - after load, the checkboxes reflect the saved flags and the
- *       key state says "Key saved." while the key input stays empty
- *       (the value is never placed in the DOM);
+ *     - the section injects its own scoped styles once, and each key
+ *       placeholder names where the key comes from;
+ *     - after load, the checkboxes reflect the saved flags and each
+ *       key state says "Key saved." while the inputs stay empty (the
+ *       values are never placed in the DOM);
  *     - Save sends PATCH /api/envs with the flags and no key when the
- *       input is empty; with a typed key, the key is in the PATCH
- *       body only, and the input is cleared after save;
- *     - Remove sends DELETE /api/envs/TINYFISH_API_KEY.
+ *       inputs are empty; with typed keys, the keys are in the PATCH
+ *       body only, and the inputs are cleared after save;
+ *     - each key's Remove sends DELETE /api/envs/<KEY>.
  *
  * The live half (the section in a real browser on the deployed
  * console: it appears in Settings, saves through PATCH /api/envs,
@@ -47,8 +52,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  KEY_ENV, FLAG_SEARCH_ENV, FLAG_FETCH_ENV, FLAG_DDG_ENV, ENVS_API,
-  SECTION_ID, flagOn, parseLoadResponse, buildSaveBody,
+  KEY_ENV, DREX_KEY_ENV, FLAG_SEARCH_ENV, FLAG_FETCH_ENV, FLAG_DDG_ENV,
+  ENVS_API, SECTION_ID, flagOn, parseLoadResponse, buildSaveBody,
   mountSearchSettings,
 } from "../../pages/public/search-settings-ui.js";
 
@@ -68,16 +73,22 @@ function check(name, cond, detail = "") {
 // ---------- static checks on the module source ----------
 check("save uses PATCH /api/envs (never PUT)",
   SRC.includes('method: "PATCH"') && !SRC.includes('method: "PUT"'));
-check("remove uses DELETE /api/envs/TINYFISH_API_KEY",
-  SRC.includes('ENVS_API + "/" + KEY_ENV') && SRC.includes('method: "DELETE"'));
-check("key field is a password input with autocomplete new-password",
+check("remove uses DELETE /api/envs/<KEY> (per key)",
+  SRC.includes('ENVS_API + "/" + envName') && SRC.includes('method: "DELETE"'));
+check("key fields are password inputs with autocomplete new-password",
   SRC.includes('type: "password"') && SRC.includes('autocomplete: "new-password"'));
 check("module never references the vault",
   !SRC.toLowerCase().includes("vault"));
 check("module never logs anything",
   !SRC.includes("console.log") && !SRC.includes("console.info"));
-check("module never puts the key in a URL",
-  !SRC.includes("?key=") && !SRC.includes("TINYFISH_API_KEY="));
+check("module never puts a key in a URL",
+  !SRC.includes("?key=") && !SRC.includes("TINYFISH_API_KEY=")
+  && !SRC.includes("NACE_API_KEY="));
+check("section is 'Your Keys' and lists what each key is for",
+  SRC.includes('"Your Keys"') && SRC.includes("app.monid.ai")
+  && SRC.includes("console.nace.ai"));
+check("Drex key is NACE_API_KEY (the env var decide.py reads)",
+  SRC.includes('DREX_KEY_ENV = "NACE_API_KEY"'));
 check("self-mount is browser-only (skipped when document is undefined)",
   SRC.includes('typeof document !== "undefined"'));
 check("self-mount retries on DOM changes and stops once mounted",
@@ -106,32 +117,38 @@ check("flagOn: absent/empty/1/true/yes are on",
 
 const loaded = parseLoadResponse([
   { key: "TINYFISH_API_KEY", value: "sk-test-value-12345" },
+  { key: "NACE_API_KEY", value: "nace-test-value-67890" },
   { key: "TINYFISH_SEARCH", value: "0" },
   { key: "TINYFISH_FETCH", value: "1" },
 ]);
-check("parseLoadResponse: hasKey true, flags read",
-  loaded.hasKey === true && loaded.search === false
+check("parseLoadResponse: hasKey + hasDrexKey true, flags read",
+  loaded.hasKey === true && loaded.hasDrexKey === true
+  && loaded.search === false
   && loaded.fetch === true && loaded.ddg === true);
-check("parseLoadResponse: returned object never holds the key value",
-  !JSON.stringify(loaded).includes("sk-test-value-12345"));
+check("parseLoadResponse: returned object never holds a key value",
+  !JSON.stringify(loaded).includes("sk-test-value-12345")
+  && !JSON.stringify(loaded).includes("nace-test-value-67890"));
 const loadedEmpty = parseLoadResponse([]);
-check("parseLoadResponse: no key and no flags = defaults on",
-  loadedEmpty.hasKey === false && loadedEmpty.search === true
+check("parseLoadResponse: no keys and no flags = defaults on",
+  loadedEmpty.hasKey === false && loadedEmpty.hasDrexKey === false
+  && loadedEmpty.search === true
   && loadedEmpty.fetch === true && loadedEmpty.ddg === true);
 
 const bodyNoKey = buildSaveBody({
-  keyTyped: "", search: true, fetch: false, ddg: true,
+  keyTyped: "", drexKeyTyped: "", search: true, fetch: false, ddg: true,
 });
-check("buildSaveBody: empty key field leaves the key out",
-  !(KEY_ENV in bodyNoKey)
+check("buildSaveBody: empty key fields leave both keys out",
+  !(KEY_ENV in bodyNoKey) && !(DREX_KEY_ENV in bodyNoKey)
   && bodyNoKey[FLAG_SEARCH_ENV] === "1"
   && bodyNoKey[FLAG_FETCH_ENV] === "0"
   && bodyNoKey[FLAG_DDG_ENV] === "1");
 const bodyKey = buildSaveBody({
-  keyTyped: "  sk-typed-999  ", search: false, fetch: true, ddg: false,
+  keyTyped: "  sk-typed-999  ", drexKeyTyped: "  nace-typed-888  ",
+  search: false, fetch: true, ddg: false,
 });
-check("buildSaveBody: typed key is trimmed and included, flags 1/0",
+check("buildSaveBody: typed keys are trimmed and included, flags 1/0",
   bodyKey[KEY_ENV] === "sk-typed-999"
+  && bodyKey[DREX_KEY_ENV] === "nace-typed-888"
   && bodyKey[FLAG_SEARCH_ENV] === "0"
   && bodyKey[FLAG_FETCH_ENV] === "1"
   && bodyKey[FLAG_DDG_ENV] === "0");
@@ -195,12 +212,14 @@ function walk(node, out) {
 }
 function makeDoc(rootChildren) {
   const body = makeEl("body");
+  const head = makeEl("head");
   for (const child of rootChildren) body.appendChild(child);
   const doc = {
     body,
+    head,
     createElement(tag) { return makeEl(tag); },
     getElementById(id) {
-      return walk(body, []).find(
+      return walk(body, []).concat(walk(head, [])).find(
         (n) => n.attributes && n.attributes.id === id) || null;
     },
     querySelectorAll(sel) {
@@ -256,12 +275,13 @@ function settingsDoc() {
   const { doc, page } = settingsDoc();
   const fetchMock = makeFetch([
     { key: "TINYFISH_API_KEY", value: "sk-live-value-777" },
+    { key: "NACE_API_KEY", value: "nace-live-value-888" },
     { key: "TINYFISH_SEARCH", value: "0" },
     { key: "TINYFISH_FETCH", value: "1" },
     { key: "TINYFISH_DDG_IA", value: "0" },
   ]);
   const section = mountSearchSettings(doc, fetchMock);
-  check("mount inserts the Search section after Environments",
+  check("mount inserts the 'Your Keys' section after Environments",
     section !== null && section.attributes.id === SECTION_ID
     && page.children.includes(section));
   check("mount twice is a no-op (one section only)",
@@ -270,9 +290,13 @@ function settingsDoc() {
   await tick();
   const keyInput = doc.getElementById("qwenpaw-tinyfish-key");
   const keyState = doc.getElementById("qwenpaw-tinyfish-key-state");
-  check("load: key state says saved, input stays empty (value never in DOM)",
+  const drexInput = doc.getElementById("qwenpaw-drex-key");
+  const drexState = doc.getElementById("qwenpaw-drex-key-state");
+  check("load: both key states say saved, inputs stay empty (values never in DOM)",
     keyState && keyState.textContent === "Key saved."
-    && keyInput && keyInput.value === "");
+    && drexState && drexState.textContent === "Key saved."
+    && keyInput && keyInput.value === ""
+    && drexInput && drexInput.value === "");
   const searchBox = doc.getElementById("qwenpaw-tinyfish-search");
   const fetchBox = doc.getElementById("qwenpaw-tinyfish-fetch");
   const ddgBox = doc.getElementById("qwenpaw-tinyfish-ddg");
@@ -280,7 +304,7 @@ function settingsDoc() {
     searchBox.checked === false && fetchBox.checked === true
     && ddgBox.checked === false);
 
-  // Save with an empty key field: PATCH with flags, no key.
+  // Save with empty key fields: PATCH with flags, neither key.
   const saveBtn = section.children
     .flatMap((row) => row.children || [])
     .find((n) => n.tagName === "BUTTON" && n.textContent === "Save");
@@ -288,34 +312,43 @@ function settingsDoc() {
   await tick();
   const patch = fetchMock.calls.find((c) => c.method === "PATCH");
   const patchBody = patch ? JSON.parse(patch.body) : {};
-  check("save: PATCH /api/envs, flags sent, key omitted when input empty",
+  check("save: PATCH /api/envs, flags sent, both keys omitted when inputs empty",
     patch && patch.url === ENVS_API
     && patchBody[FLAG_SEARCH_ENV] === "0"
     && patchBody[FLAG_FETCH_ENV] === "1"
     && patchBody[FLAG_DDG_ENV] === "0"
-    && !(KEY_ENV in patchBody));
+    && !(KEY_ENV in patchBody) && !(DREX_KEY_ENV in patchBody));
 
-  // Save with a typed key: key in the PATCH body only, input cleared.
+  // Save with typed keys: both keys in the PATCH body only, inputs cleared.
   keyInput.value = "sk-typed-abc";
+  drexInput.value = "nace-typed-def";
   saveBtn.click();
   await tick();
   const patch2 = fetchMock.calls.filter((c) => c.method === "PATCH").pop();
   const patchBody2 = patch2 ? JSON.parse(patch2.body) : {};
-  check("save: typed key is in the PATCH body and the input is cleared",
-    patchBody2[KEY_ENV] === "sk-typed-abc" && keyInput.value === "");
-  check("the key value never appears in any GET call",
+  check("save: typed keys are in the PATCH body and the inputs are cleared",
+    patchBody2[KEY_ENV] === "sk-typed-abc"
+    && patchBody2[DREX_KEY_ENV] === "nace-typed-def"
+    && keyInput.value === "" && drexInput.value === "");
+  check("the key values never appear in any GET call",
     fetchMock.calls.filter((c) => c.method === "GET")
-      .every((c) => !c.url.includes("sk-")));
+      .every((c) => !c.url.includes("sk-") && !c.url.includes("nace-")));
 
-  // Remove: DELETE the key env var.
-  const removeBtn = section.children
-    .flatMap((row) => row.children || [])
-    .find((n) => n.tagName === "BUTTON" && n.textContent === "Remove key");
-  removeBtn.click();
+  // Each key has its own Remove button: DELETE /api/envs/<KEY>.
+  const removeFor = (input) => (input.parentElement.children || [])
+    .find((n) => n.tagName === "BUTTON" && n.textContent === "Remove");
+  const removeTinyfish = removeFor(keyInput);
+  removeTinyfish.click();
   await tick();
-  check("remove: DELETE /api/envs/TINYFISH_API_KEY",
+  check("remove TinyFish: DELETE /api/envs/TINYFISH_API_KEY",
     fetchMock.calls.some((c) => c.method === "DELETE"
       && c.url === ENVS_API + "/" + KEY_ENV));
+  const removeDrex = removeFor(drexInput);
+  removeDrex.click();
+  await tick();
+  check("remove Drex: DELETE /api/envs/NACE_API_KEY",
+    fetchMock.calls.some((c) => c.method === "DELETE"
+      && c.url === ENVS_API + "/" + DREX_KEY_ENV));
 }
 
 {
@@ -325,6 +358,50 @@ function settingsDoc() {
   check("mount with no Settings anchor is a safe no-op",
     mountSearchSettings(emptyDoc, fetchMock) === null
     && fetchMock.calls.length === 0);
+}
+
+{
+  // REGRESSION (2026-11-18 screenshot): the chat page has a <main>
+  // element but no Environments heading and no Settings page, and the
+  // old code fell back to <main> — so the Search section rendered at
+  // the bottom of the chat view, under the message input, unstyled.
+  // It must NOT mount there.
+  const main = makeEl("main");
+  const chatDiv = makeEl("div");
+  chatDiv.appendChild(makeText("GitHub Account Access Inquiry"));
+  main.appendChild(chatDiv);
+  const chatDoc = makeDoc([main]);
+  const fetchMock = makeFetch([]);
+  check("mount on the chat page (main, no Environments) is a no-op",
+    mountSearchSettings(chatDoc, fetchMock) === null
+    && fetchMock.calls.length === 0
+    && chatDoc.getElementById(SECTION_ID) === null);
+}
+
+{
+  // Styles + placeholders on a real mount.
+  const { doc } = settingsDoc();
+  const fetchMock = makeFetch([]);
+  const section = mountSearchSettings(doc, fetchMock);
+  const style = doc.getElementById("qwenpaw-search-settings-style");
+  check("mount injects the section styles once (scoped to the section)",
+    section !== null && style !== null && style.tagName === "STYLE"
+    && style.textContent.includes("#qwenpawYourKeys")
+    && style.textContent.includes(".qwenpaw-key-block")
+    && style.textContent.includes(".qwenpaw-search-row"));
+  const keyInput = doc.getElementById("qwenpaw-tinyfish-key");
+  const drexInput = doc.getElementById("qwenpaw-drex-key");
+  check("key placeholders name where each key comes from",
+    keyInput && keyInput.attributes.placeholder
+    && keyInput.attributes.placeholder.includes("app.monid.ai")
+    && !keyInput.attributes.placeholder.includes("agent.tinyfish.ai")
+    && drexInput && drexInput.attributes.placeholder
+    && drexInput.attributes.placeholder.includes("console.nace.ai"));
+  // Each key block says what the key is for.
+  const allText = walk(section, []).map((n) => n.textContent || "").join(" ");
+  check("each key block states what it is for",
+    allText.includes("Free live web search + page fetch")
+    && allText.includes("Decision model for verdicts and triage"));
 }
 
 // ---------- summary ----------
