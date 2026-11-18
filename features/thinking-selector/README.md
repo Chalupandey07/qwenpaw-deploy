@@ -31,9 +31,12 @@ over this API, injected by the `thinking-selector` rule in
 
 ## How the rule works
 
-- Anchor: the composer toolbar — the parent of the "Context usage"
-  button (same anchor as `chat-input-fixes`), falling back to the chat
-  input's grandparent. Only on `/chat*` pages.
+- Anchor: the chat composer toolbar itself — the Smart Mode row, the
+  parent of the "Smart Mode" button (user screenshot, 2026-11-19: the
+  selector sits in the circled toolbar next to Smart Mode, in the chat,
+  not in Settings → General). Fallbacks: the parent of the "Context
+  usage" button, then the chat input's grandparent. Only on `/chat*`
+  pages.
 - It appends (never moves) a "Thinking" label + a native `<select>`
   into the toolbar. React owns the toolbar, so the rule re-creates the
   select on every observer run if React removed it; the select is our
@@ -66,14 +69,14 @@ MutationObserver only.
 
 ## Test
 
-`test_thinking_selector.mjs` — 22 checks (T142 in
+`test_thinking_selector.mjs` — 23 checks (T142 in
 `features/test-project/run-tests.py`): static checks on the real
 `_worker.js` source (rule exists, observer wiring, GET/PUT paths,
 Bearer from localStorage, the six options, model_key, no polling,
 appendChild-only) + dynamic checks with a DOM mock and a fetch mock
-(create/show, PUT on change, no duplicate GET/select, pending on a
-new chat, 422 revert, out-of-set level shown truthfully, 401 no-op,
-off-chat no-op). Fail-first proven: 20/22 fail against the
+(create in the Smart Mode row, PUT on change, no duplicate GET/select,
+pending on a new chat, 422 revert, out-of-set level shown truthfully,
+401 no-op, off-chat no-op). Fail-first proven: 21/23 fail against the
 pre-feature `_worker.js` (the two passes are the vacuous no-polling
 and off-chat no-op checks on an empty rule).
 
