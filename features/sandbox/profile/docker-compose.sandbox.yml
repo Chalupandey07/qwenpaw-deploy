@@ -1,0 +1,100 @@
+# Sandbox compose file (gap #6, T139) — deploy on the machine only.
+#
+# Two services on ONE isolated bridge (qwenpaw-sandbox-net):
+#   sandbox  — the job container (see features/sandbox/sandbox.py for
+#              the profile this renders; the numbers must match)
+#   egress   — the allowlist proxy (features/sandbox/egress_proxy.py)
+#
+# The bridge is INTERNAL except for the proxy's outbound route: the
+# sandbox has no route to the internet and no route to the main
+# bridge gateway (172.18.0.1:8896 vault broker / :8898 MCP proxy).
+# That gateway isolation is enforced by the DOCKER-USER iptables
+# rule in the deploy notes (README.md §5) — compose alone cannot
+# express "this bridge may not reach that gateway", so the rule is a
+# deploy step, NOT a property of this file. Until the rule is live
+# and a container run proves it, the isolation is UNVERIFIED.
+#
+# The <JOB_WORKSPACE> and <JOB_ID> placeholders are filled by the
+# runner per job (dispatch.py routes, sandbox.py builds the profile).
+# Do NOT point the workspace volume at /data/home/qwenpaw/working or
+# at working.secret: the profile validator refuses those mounts, and
+# this file must never be hand-edited to add them.
+#
+# Resource budget (Free VM: 4 vCPU / 8 GiB, shared with the main
+# container + the desktop): sandbox 1 GiB / 1 CPU, proxy 128 MiB /
+# 0.25 CPU. If the box OOMs with both running, the sandbox is the
+# first thing to shrink, never the main container.
+services:
+  sandbox:
+    image: qwenpaw-sandbox:2.3.0
+    container_name: qwenpaw-sandbox-<JOB_ID>
+    user: "10001:10001"
+    networks:
+      - qwenpaw-sandbox-net
+    hostname: sandbox-<JOB_ID>
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges
+    pids_limit: 128
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 1.0
+    stop_grace_period: 5s
+    volumes:
+      # ONE mount: the job's own workspace dir only.
+      - <JOB_WORKSPACE>:/workspace
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /run:rw,noexec,nosuid,nodev,size=16m
+      - /dev/shm:rw,noexec,nosuid,nodev,size=64m
+      # Token file lives here (mode 0700, tmpfs, dies with the container).
+      - /run/sandbox-token:rw,noexec,nosuid,nodev,size=1m,mode=0700
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 1024
+      nproc: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "2"
+    # No ports. No env. No docker.sock. No extra_hosts.
+    # Lifetime is enforced by the runner (docker run --rm + timeout),
+    # not by compose: compose has no job deadline.
+
+  egress:
+    image: qwenpaw-sandbox:2.3.0
+    container_name: qwenpaw-sandbox-egress
+    user: "10001:10001"
+    networks:
+      - qwenpaw-sandbox-net
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges
+    pids_limit: 64
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.25
+    volumes:
+      - ../proxy-allowlist.txt:/proxy-allowlist.txt:ro
+      - ../egress_proxy.py:/egress_proxy.py:ro
+      - ../../egress-guard/egress_guard.py:/egress_guard.py:ro
+    command: ["python3", "/egress_proxy.py", "--host", "0.0.0.0", "--port", "8888", "--allowlist", "/proxy-allowlist.txt"]
+    # The sandbox reaches the proxy as http://egress:8888 (DNS name on
+    # the isolated bridge). Nothing else on the bridge listens.
+    # No ports published to the host: the proxy is reachable only from
+    # the sandbox bridge, never from the LAN or the internet.
+
+networks:
+  qwenpaw-sandbox-net:
+    driver: bridge
+    internal: false
+    # NOTE: `internal: true` would also block the proxy's own outbound
+    # route, so it is false here and the gateway isolation is done by
+    # the DOCKER-USER rule instead (README.md §5). Do NOT flip this
+    # without re-reading that section.
