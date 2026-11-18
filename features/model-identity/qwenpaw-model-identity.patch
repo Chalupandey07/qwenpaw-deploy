@@ -1,0 +1,867 @@
+--- a/src/qwenpaw/token_usage/model_wrapper.py
++++ b/src/qwenpaw/token_usage/model_wrapper.py
+@@ -11,6 +11,7 @@
+ from ..utils.model_response import safe_attr
+ from .buffer import _UsageEvent
+ from .counter import record_session_tokens
++from ..model_identity import stamp_serving_note_for_call
+ from .manager import _usage_agent_id, get_token_usage_manager
+ 
+ # AgentScope does not expose provider cache semantics through a public
+@@ -259,6 +260,21 @@
+         # 1.x ``structured_model`` if a caller still passes it.
+         kwargs.pop("structured_model", None)
+ 
++        # Serving-model identity note (fork #37/#44,
++        # features/model-identity): stamp the model actually serving
++        # this attempt onto a COPY of the messages, before the wrapped
++        # model sees them. The wrapper knows the exact serving model
++        # (self._provider_id / self.model) and the helper reads the
++        # fallback sink for the recorded switch reason, so a fallback
++        # mid-run updates the note on the next attempt. The stamp is
++        # first so the cost-ledger budget check (when present) measures
++        # the messages as actually sent, note included. Never raises:
++        # any failure returns the messages unchanged and the call
++        # proceeds without a note.
++        messages = stamp_serving_note_for_call(
++            self._provider_id, self.model, messages
++        )
++
+         # Fix: Omit tool_choice="auto" for vLLM compatibility
+         # vLLM without --enable-auto-tool-choice will reject requests when
+         # tool_choice="auto" is present, even if tools are provided.
+--- a/src/qwenpaw/app/routers/agents.py
++++ b/src/qwenpaw/app/routers/agents.py
+@@ -62,8 +62,14 @@
+ from ...harnesses.registry import ProviderCatalogItem, get_provider
+ from ..agent_startup import AgentStartupStatus
+ from ..multi_agent_manager import MultiAgentManager
+-from ...constant import WORKING_DIR
++from ...constant import SECRET_DIR, WORKING_DIR
+ from ...utils.io_utils import run_sync_io, write_json_atomic
++from ..model_identity import (
++    append_switch_log,
++    read_global_active_model,
++    resolve_serving_model,
++    switch_log_path,
++)
+ from ...utils.logging import sanitize_log_value
+ 
+ logger = logging.getLogger(__name__)
+@@ -208,6 +214,11 @@
+         | None
+     ) = None
+     thinking_budget: int | None = Field(default=None, ge=1)
++    # Free-text reason for the switch log only. Never stored on the
++    # agent config: the handler pops it from the patch values before
++    # applying them. A switch with no reason logs the factual default
++    # ("model-settings PATCH (no reason supplied)").
++    reason: str | None = None
+ 
+     @model_validator(mode="after")
+     def reject_null_non_nullable_fields(self):
+@@ -1364,7 +1375,19 @@
+     """Patch model-routing fields without overwriting other settings."""
+     values = {field: getattr(body, field) for field in body.model_fields_set}
+ 
++    # Serving-model identity note (features/model-identity): a caller
++    # may explain WHY the model is changing. The reason is not an agent
++    # config field, so it is popped here — before apply_settings runs —
++    # and used only for the switch log below.
++    switch_reason = values.pop("reason", None)
++
++    # Pre-mutation active_model, captured inside the lock-held
++    # transaction (see apply_settings): each PATCH then logs the true
++    # pre-state of its own mutation even when two PATCHes race.
++    before_active: list = []
++
+     def apply_settings(existing_config: AgentProfileConfig) -> None:
++        before_active.append(existing_config.active_model)
+         updated = AgentProfileConfig.model_validate(
+             {
+                 **existing_config.model_dump(),
+@@ -1407,6 +1430,43 @@
+     except AppBaseException as exc:
+         raise HTTPException(status_code=404, detail=str(exc)) from exc
+     schedule_agent_reload(request, agentId)
++    if "active_model" in values and before_active and updated.workspace_dir:
++        # Switch log (features/model-identity): append {from, to,
++        # reason} to <workspace>/model-switch-log.jsonl. "from"/"to"
++        # are the EFFECTIVE models (per-agent slot, else the global
++        # active_model.json value). Best-effort audit only: the switch
++        # already applied, so a log failure is warned, never raised —
++        # failing here would lie about state that is already durable.
++        # Lines may arrive out of order under concurrent PATCHes; sort
++        # by "at" to reconstruct the chain. A no-change switch logs
++        # nothing (append_switch_log returns False).
++        try:
++            global_slot = read_global_active_model(SECRET_DIR)
++            from_slot = resolve_serving_model(
++                before_active[0].model_dump()
++                if before_active[0] is not None
++                else None,
++                global_slot,
++            )
++            to_slot = resolve_serving_model(
++                updated.active_model.model_dump()
++                if updated.active_model is not None
++                else None,
++                global_slot,
++            )
++            append_switch_log(
++                switch_log_path(updated.workspace_dir),
++                agent_id=agentId,
++                from_slot=from_slot,
++                to_slot=to_slot,
++                reason=switch_reason,
++            )
++        except Exception:  # pylint: disable=broad-except
++            logger.warning(
++                "Failed to record model switch for agent %s",
++                sanitize_log_value(agentId),
++                exc_info=True,
++            )
+     return updated
+ 
+ 
+--- a/src/qwenpaw/providers/fallback_chat_model.py
++++ b/src/qwenpaw/providers/fallback_chat_model.py
+@@ -36,6 +36,20 @@
+     return sink
+ 
+ 
++def get_fallback_notice_sink() -> dict[str, Any] | None:
++    """Return the current request's fallback-notice sink, if installed.
++
++    Model-identity note (features/model-identity): the model wrapper
++    reads the sink to learn the fallback engine's RECORDED switch
++    reason (``reason_kind`` of the first event) for the identity note.
++    The sink is returned read-only in spirit — callers must never pop
++    or clear its events: the reply loop still needs them to re-attach
++    fallback data onto outgoing events. Returns None when no sink is
++    installed (a path with no fallback transparency).
++    """
++    return _FALLBACK_NOTICE_SINK.get()
++
++
+ class FallbackChatModel(ChatModelBase):
+     """Try configured models in order before any response becomes visible."""
+ 
+--- /dev/null
++++ b/src/qwenpaw/model_identity.py
+@@ -0,0 +1,715 @@
++#!/usr/bin/env python3
++"""Serving-model identity note (provisional T134, gap #17).
++
++Port of fork PR #37 ("Tell the model which model is actually serving the
++run") + PR #44 ("Harden the serving-model note: dispatch-boundary
++identity, recorded switch reason, budget reserve") from gogibeta/rakazo,
++adapted to QwenPaw (agentscope/qwenpaw v2.3.0, AgentScope 2.0).
++
++The problem the fork fixed, in QwenPaw terms: a bot's context is assembled
++from its *configured* model, so when a fallback silently took over a run
++the bot still answered "which model are you?" from its settings — it
++claimed to be the configured model while a different one wrote the
++replies. The runtime already knew the truth (FallbackChatModel tracks
++switches and publishes them into a per-request sink), but the model
++itself was never told.
++
++The port, in the fork's shape:
++
++* Dispatch boundary: :class:`TokenRecordingModelWrapper.__call__` in
++  ``qwenpaw/token_usage/model_wrapper.py`` — every model call passes
++  through it, and it knows the exact serving model
++  (``self._provider_id`` / ``self.model``). The note is recomputed for
++  every attempt, so a switch mid-run updates it. This is the QwenPaw
++  equivalent of the fork's ``servingModelNote`` resolver invoked with the
++  exact model handed to the provider.
++* Identity compares provider + model id only (fork #44): the same model
++  on another pooled key keeps the plain serving wording.
++* "Unavailable" wording is used ONLY when the fallback engine recorded a
++  failure for the configured model — read from the fallback sink's
++  recorded ``reason_kind``, latched at the first switch. Any other
++  differing dispatch gets neutral wording naming both models, with no
++  invented cause. Computer-mode / routing dispatches never inherit the
++  fallback reason (they are not fallback events at all).
++* The note is stamped onto a COPY of the messages, after context
++  preparation; the agent loop's live transcript is never mutated, so the
++  note is sent exactly once per call and never stacks. A transcript test
++  in the suite proves the input messages are untouched.
++* Budget reserve (fork #44): the note's token estimate
++  (:func:`estimate_note_tokens`, chars / 3.6, the repo convention) is
++  exposed so a caller can reserve it during context preparation. The
++  note is short and fixed-template, so the reserve is small and bounded.
++  A preparation-time reserve inside the compaction manager is NOT wired
++  here — that needs compaction-source work plus the machine, and is a
++  follow-up, not something this file claims.
++* Switch log: the PATCH ``/api/agents/{agentId}/model-settings`` handler
++  appends ``{from, to, reason}`` to ``<workspace>/model-switch-log.jsonl``
++  (see :func:`append_switch_log`). A switch with no change logs nothing.
++
++Differences from the fork, stated plainly:
++
++* The fork leaves subagent runs without a note. In QwenPaw the stamp
++  lives in the model wrapper, so subagent and compaction calls built by
++  the same factory also carry the note. That is still TRUE information
++  (the note names the model serving that call); it is a scope difference,
++  not a correctness one.
++* The fork's per-message UI provenance was deliberately left out there,
++  and is left out here too: messages do not carry the run's serving
++  model, and surfacing it would need a contract + web change.
++* The ``llm_routing`` path (``routing_chat_model.py``) calls
++  ``endpoint.model(...)`` directly and is NOT stamped. That path only
++  runs when ``llm_routing`` is enabled; the deploy keeps it disabled
++  (local models are ruled out — see features/board/config-patch.md §5),
++  so the gap is unreachable in this deploy.
++
++This module is stdlib-only and loads standalone on this VM and on the
++machine. It never touches the network, never reads a secret, and never
++writes outside the paths it is given. Model slots are plain dicts
++``{"provider_id": str, "model": str}`` — exactly upstream
++``ModelSlotConfig`` (``config.py:204``), minus the Pydantic wrapper.
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++import re
++import sys
++from datetime import datetime, timezone
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++
++#: Marker line heading every stamped note, so a stale note can be found
++#: and replaced instead of stacked. Internal only; the model sees it as
++#: part of the note, never as UI copy.
++NOTE_MARKER = "[serving-model]"
++
++#: Longest reason kept in the switch log. A caller-supplied reason is
++#: free text; capping it keeps one log line one line.
++MAX_REASON_CHARS = 500
++
++#: Fallback reason when a PATCH caller supplies none. Factual — it says
++#: how the switch happened — never an invented failure cause.
++DEFAULT_SWITCH_REASON = "model-settings PATCH (no reason supplied)"
++
++#: Chars per token for the note estimate (repo convention, AGENTS.md §7).
++CHARS_PER_TOKEN = 3.6
++
++SWITCH_LOG_FILENAME = "model-switch-log.jsonl"
++
++
++# ---------------------------------------------------------------------------
++# Slots
++# ---------------------------------------------------------------------------
++
++def normalize_slot(slot: object) -> dict[str, str] | None:
++    """Return ``{"provider_id", "model"}`` for a slot, or None if unusable.
++
++    Accepts a plain dict (the shape this module uses everywhere) or any
++    object with ``provider_id`` / ``model`` attributes (e.g. upstream
++    ``ModelSlotConfig``). Extra keys are dropped. A slot missing either
++    half, or with a blank half, is treated as missing — never invented.
++    """
++    if slot is None:
++        return None
++    if isinstance(slot, dict):
++        provider_id = slot.get("provider_id")
++        model = slot.get("model")
++    else:
++        provider_id = getattr(slot, "provider_id", None)
++        model = getattr(slot, "model", None)
++    if not isinstance(provider_id, str) or not provider_id.strip():
++        return None
++    if not isinstance(model, str) or not model.strip():
++        return None
++    return {"provider_id": provider_id, "model": model}
++
++
++def slots_equal(a: object, b: object) -> bool:
++    """Identity compares provider + model id only (fork #44).
++
++    The same model on another pooled key is the same identity; only the
++    provider/model pair decides.
++    """
++    return normalize_slot(a) == normalize_slot(b)
++
++
++def resolve_serving_model(
++    agent_slot: object,
++    global_slot: object,
++) -> dict[str, str] | None:
++    """Resolve the effective serving model for one agent.
++
++    Precedence (verified in features/board/config-patch.md §2): a
++    per-agent ``active_model`` if non-null wins; otherwise the global
++    ``working.secret/providers/active_model.json`` value governs; if
++    both are missing there is no serving model and this returns None —
++    the caller then stamps no note rather than inventing one.
++    """
++    agent = normalize_slot(agent_slot)
++    if agent is not None:
++        return agent
++    return normalize_slot(global_slot)
++
++
++def read_global_active_model(secret_dir: str | Path) -> dict[str, str] | None:
++    """Best-effort read of ``<secret_dir>/providers/active_model.json``.
++
++    Missing file, unreadable file, bad JSON, or a malformed slot all
++    return None. Never raises: the caller falls back to the per-agent
++    slot (or to no note) instead of failing a request over a read.
++    """
++    try:
++        path = Path(secret_dir) / "providers" / "active_model.json"
++        data = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, ValueError):
++        return None
++    if not isinstance(data, dict):
++        return None
++    return normalize_slot(data)
++
++
++def switch_log_path(workspace_dir: str | Path) -> Path:
++    """Per-agent switch-log path: ``<workspace>/model-switch-log.jsonl``."""
++    return Path(workspace_dir) / SWITCH_LOG_FILENAME
++
++
++# ---------------------------------------------------------------------------
++# The note (fork #37 wording, #44 hardening)
++# ---------------------------------------------------------------------------
++
++def _slot_label(slot: dict[str, str]) -> str:
++    return f"{slot['provider_id']}/{slot['model']}"
++
++
++def build_identity_note(
++    serving: object,
++    configured: object,
++    reason_kind: str | None = None,
++) -> str | None:
++    """Render the identity note for one model call, or None.
++
++    * ``serving`` is None: no note. The model is never told a lie.
++    * serving == configured (provider + model only): plain serving
++      wording, whatever the reason_kind says.
++    * serving != configured AND a recorded ``reason_kind`` exists: the
++      configured model "was unavailable (kind)" — the fork's wording,
++      using the fallback engine's RECORDED reason, never an inferred one.
++    * serving != configured and no reason: neutral wording naming both
++      models, with no cause invented.
++
++    The note is headed by :data:`NOTE_MARKER` so :func:`stamp_note`
++    can find and replace a stale one.
++    """
++    serving_slot = normalize_slot(serving)
++    if serving_slot is None:
++        return None
++    configured_slot = normalize_slot(configured)
++    serving_label = _slot_label(serving_slot)
++    if configured_slot is None or slots_equal(serving_slot, configured_slot):
++        body = (
++            f"You are currently being served by {serving_label}. "
++            "If asked which model you are, answer with this serving "
++            "model, not with a model named in your instructions or "
++            "settings."
++        )
++    elif reason_kind:
++        configured_label = _slot_label(configured_slot)
++        body = (
++            f"The configured model {configured_label} was unavailable "
++            f"({reason_kind}), so this backup model {serving_label} is "
++            "answering instead. If asked which model you are, answer "
++            f"with the serving model ({serving_label}) and mention the "
++            "switch."
++        )
++    else:
++        configured_label = _slot_label(configured_slot)
++        body = (
++            f"You are currently being served by {serving_label}. "
++            f"The configured model is {configured_label}. If asked "
++            "which model you are, answer with the serving model, not "
++            "with the configured model."
++        )
++    return f"{NOTE_MARKER}\n{body}"
++
++
++def estimate_note_tokens(note: str | None) -> int:
++    """Estimated tokens for a note, chars / 3.6 (repo convention).
++
++    Integer arithmetic (chars * 5 // 18, rounded up) so the result does
++    not depend on float rounding. Empty / None estimates zero. This is
++    the #44 budget reserve: a caller preparing context subtracts this
++    many tokens so a request trimmed to the window limit still fits
++    once the note is stamped.
++    """
++    if not note:
++        return 0
++    return -(-len(note) * 5 // 18)
++
++
++def _strip_stale_note_from_text(content: str) -> str:
++    """Drop a previously stamped note from system text, if present.
++
++    The note is always appended last, so everything from the marker to
++    the end of the string is the stale note. Cutting at the first
++    marker also removes anything a model echoed after it — the system
++    prompt is agent-controlled, so that content is never user text.
++    """
++    index = content.find(NOTE_MARKER)
++    if index == -1:
++        return content
++    return content[:index].rstrip("\n")
++
++
++def stamp_note(
++    messages: list[dict],
++    note: str | None,
++) -> list[dict]:
++    """Return a COPY of ``messages`` with the note stamped on it.
++
++    The note goes onto the leading system message (appended after the
++    existing content, separated by a blank line). If the system content
++    is a block list, the note is appended as a text block. If there is
++    no system message, one is synthesized and prepended. If ``note`` is
++    None, or ``messages`` is empty, the messages come back unchanged
++    (still a copy).
++
++    Exactly one note survives: a stale note already on the system
++    message is stripped first, so re-stamping replaces instead of
++    stacking. The input is never mutated — only the touched system
++    dict (and its content list, if it is one) is copied; the other
++    messages are shared by reference and never written to.
++    """
++    copied = list(messages)
++    if not note or not copied:
++        return copied
++    for index, message in enumerate(copied):
++        if not isinstance(message, dict):
++            continue
++        if message.get("role") != "system":
++            continue
++        new_message = dict(message)
++        content = message.get("content")
++        if isinstance(content, str):
++            new_message["content"] = (
++                _strip_stale_note_from_text(content) + "\n\n" + note
++                if _strip_stale_note_from_text(content)
++                else note
++            )
++        elif isinstance(content, list):
++            new_blocks = [
++                block
++                for block in content
++                if not (
++                    isinstance(block, dict)
++                    and isinstance(block.get("text"), str)
++                    and block["text"].startswith(NOTE_MARKER)
++                )
++            ]
++            new_blocks.append({"type": "text", "text": note})
++            new_message["content"] = new_blocks
++        else:
++            new_message["content"] = note
++        copied[index] = new_message
++        return copied
++    copied.insert(0, {"role": "system", "content": note})
++    return copied
++
++
++# ---------------------------------------------------------------------------
++# Fallback sink (fork #44: the RECORDED switch reason)
++# ---------------------------------------------------------------------------
++
++def fallback_state_from_sink(
++    sink: object,
++    serving_slot: object,
++) -> tuple[dict[str, str] | None, str | None]:
++    """Read the recorded switch state for this attempt from the sink.
++
++    ``sink`` is the per-request dict ``FallbackChatModel`` publishes
++    into (``{"events": [...], "actual_model": ...}``), or None when no
++    sink is installed. Returns ``(configured_slot, reason_kind)`` when
++    a recorded fallback event targets the serving model, else
++    ``(None, None)`` — the plain wording.
++
++    Rules, all from the fork's hardening:
++
++    * An event only counts when its ``to_*`` matches the serving slot:
++      a stale event from an earlier attempt (or an earlier turn sharing
++      the sink) targeting another model is ignored. The events are
++      NEVER consumed here — the reply loop still needs them to
++      re-attach fallback data onto outgoing events, so popping them
++      would break fallback transparency.
++    * The configured model is the FIRST event's ``from_*`` and the
++      reason is the FIRST event's ``reason_kind`` — latched at the
++      first switch, which is the failure of the configured model
++      itself. Later events are failures of intermediate fallbacks.
++    * Anything malformed degrades to (None, None): a bad sink must
++      never break a model call.
++    """
++    serving = normalize_slot(serving_slot)
++    if serving is None:
++        return None, None
++    if not isinstance(sink, dict):
++        return None, None
++    events = sink.get("events")
++    if not isinstance(events, list):
++        return None, None
++    targeted = [
++        event
++        for event in events
++        if isinstance(event, dict)
++        and event.get("to_provider_id") == serving["provider_id"]
++        and event.get("to_model_id") == serving["model"]
++    ]
++    if not targeted:
++        return None, None
++    first = events[0] if isinstance(events[0], dict) else None
++    if first is None:
++        return None, None
++    configured = normalize_slot(
++        {
++            "provider_id": first.get("from_provider_id"),
++            "model": first.get("from_model_id"),
++        }
++    )
++    if configured is None:
++        return None, None
++    reason = first.get("reason_kind")
++    return configured, reason if isinstance(reason, str) else None
++
++
++# ---------------------------------------------------------------------------
++# Switch log (PATCH /api/agents/{agentId}/model-settings)
++# ---------------------------------------------------------------------------
++
++def sanitize_reason(reason: object) -> str:
++    """One-line, capped reason for the switch log.
++
++    None / blank -> the factual default (how the switch happened).
++    Newlines become spaces (log injection: one switch, one line) and
++    the result is capped at :data:`MAX_REASON_CHARS`.
++    """
++    if reason is None or not str(reason).strip():
++        return DEFAULT_SWITCH_REASON
++    cleaned = (
++        str(reason).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
++    )
++    return cleaned[:MAX_REASON_CHARS]
++
++
++def default_switch_reason() -> str:
++    """The reason recorded when a PATCH caller supplies none."""
++    return DEFAULT_SWITCH_REASON
++
++
++def append_switch_log(
++    log_path: str | Path,
++    *,
++    agent_id: str,
++    from_slot: object,
++    to_slot: object,
++    reason: object = None,
++) -> bool:
++    """Append one ``{from, to, reason}`` line to the switch log.
++
++    Returns True when a line was written, False when the switch was a
++    no-change (``from`` == ``to`` by provider + model, including both
++    None) and nothing was logged — a no-change switch must never leave
++    a spurious entry. The log is JSONL, append-only, one line per
++    switch: ``{"agent_id", "at", "from", "to", "reason"}`` with
++    ``"at"`` in UTC ISO format. The write is a single ``O_APPEND``
++    write so concurrent appends do not interleave mid-line. Raises
++    ``OSError`` on write failure — the caller (the PATCH handler)
++    catches it, because a log failure must never fail a switch that
++    already applied.
++    """
++    from_norm = normalize_slot(from_slot)
++    to_norm = normalize_slot(to_slot)
++    if from_norm == to_norm:
++        return False
++    entry = {
++        "agent_id": agent_id,
++        "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
++        "from": from_norm,
++        "to": to_norm,
++        "reason": sanitize_reason(reason),
++    }
++    path = Path(log_path)
++    if path.parent != Path("."):
++        path.parent.mkdir(parents=True, exist_ok=True)
++    with open(path, "a", encoding="utf-8") as handle:
++        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
++    return True
++
++
++# ---------------------------------------------------------------------------
++# Wrapper entry point (what TokenRecordingModelWrapper.__call__ calls)
++# ---------------------------------------------------------------------------
++
++def stamp_serving_note_for_call(
++    provider_id: object,
++    model: object,
++    messages: list[dict],
++) -> list[dict]:
++    """Stamp the serving-model note for one model call.
++
++    This is the single function the model wrapper calls, once per
++    attempt, with its own provider/model — the exact model handed to
++    the provider (fork #44: the resolver is invoked with the dispatched
++    model, so a later substitution cannot leave the note describing a
++    different model). It reads the fallback sink for the RECORDED
++    switch reason (deferred import, guarded: when the sink is absent —
++    standalone use, or a path with no sink installed — the note is the
++    plain serving wording), builds the note, and stamps it onto a copy
++    of the messages.
++
++    ANY failure degrades gracefully: a sink failure still yields the
++    plain note, and a failure there returns the messages unchanged. A
++    note must never break a model call.
++    """
++    serving = normalize_slot(
++        {"provider_id": provider_id, "model": model}
++    )
++    if serving is None:
++        return list(messages)
++    try:
++        from qwenpaw.providers.fallback_chat_model import (
++            get_fallback_notice_sink,
++        )
++
++        sink = get_fallback_notice_sink()
++    except Exception:
++        sink = None
++    try:
++        configured, reason_kind = fallback_state_from_sink(sink, serving)
++        note = build_identity_note(serving, configured, reason_kind)
++        return stamp_note(messages, note)
++    except Exception:
++        return list(messages)
++
++
++# ---------------------------------------------------------------------------
++# Part 1 — the active-model discrepancy verdict, derived from repo files
++# ---------------------------------------------------------------------------
++
++_CONFIG_PATCH_RE = re.compile(
++    r"currently reads\s+`?\{[^}]*\"provider_id\":\s*\"([^\"]+)\""
++    r",\s*\"model\":\s*\"([^\"]+)\"[^}]*\}`?"
++)
++
++_PHRASE = "no active chat model configured"
++
++
++def discrepancy_verdict(repo_root: str | Path) -> dict:
++    """Derive the active-model source-of-truth verdict from repo files.
++
++    Reads (never hardcodes) the evidence and returns::
++
++        {
++          "effective": {"provider_id", "model"} | None,
++          "stale": {"provider_id", "model"} | None,
++          "rule": "per-agent active_model null -> global file governs",
++          "live_verification_required": True,
++          "evidence": {
++            "config_patch_value": ... | None,   # config-patch.md §2
++            "cost_data_value": ... | None,      # cost-data.json
++            "retest_confirms_cost_data": bool,
++            "handoff_confirms_cost_data": bool,
++            "phrase_in_reme_doctor": bool,
++            "phrase_is_diagnostic": bool,
++            "agent_active_models": {agent: slot | None},
++            "both_models_used_2026_11_15": bool,
++          },
++        }
++
++    The verdict rule: the value corroborated by two independent later
++    files (cost-data.json + the audit retest report, with the handoff
++    as a third witness) is effective; a value appearing only in the
++    earlier config-patch.md snapshot is stale. The per-day token usage
++    showing BOTH models used on 2026-11-15 corroborates that a switch
++    happened that day. Nothing here is live verification: the global
++    file may have changed again since 2026-11-15, so
++    ``live_verification_required`` is always True until the parent
++    re-reads the file on the machine.
++    """
++    root = Path(repo_root)
++    evidence: dict[str, object] = {}
++
++    config_patch = (root / "features" / "board" / "config-patch.md").read_text(
++        encoding="utf-8", errors="replace"
++    ) if (root / "features" / "board" / "config-patch.md").exists() else ""
++    match = _CONFIG_PATCH_RE.search(config_patch)
++    config_value = (
++        {"provider_id": match.group(1), "model": match.group(2)}
++        if match
++        else None
++    )
++    evidence["config_patch_value"] = config_value
++
++    cost_data_path = root / "features" / "board" / "cost-data.json"
++    cost_value = None
++    both_used = False
++    if cost_data_path.exists():
++        try:
++            cost_data = json.loads(cost_data_path.read_text(encoding="utf-8"))
++        except ValueError:
++            cost_data = {}
++        cost_value = normalize_slot(cost_data.get("active_model"))
++        day = (cost_data.get("per_day") or {}).get("2026-11-15") or {}
++        models = (day.get("models") or {}).keys()
++        both_used = (
++            config_value is not None
++            and cost_value is not None
++            and f"{config_value['provider_id']}/{config_value['model']}"
++            in models
++            and f"{cost_value['provider_id']}/{cost_value['model']}" in models
++        )
++    evidence["cost_data_value"] = cost_value
++    evidence["both_models_used_2026_11_15"] = both_used
++
++    retest_path = (
++        root / "features" / "audit-2026-11-15" / "retest-2026-11-15"
++        / "REPORT.md"
++    )
++    retest_text = (
++        retest_path.read_text(encoding="utf-8", errors="replace")
++        if retest_path.exists()
++        else ""
++    ).replace("`", "")
++    evidence["retest_confirms_cost_data"] = bool(
++        cost_value
++        and f"{cost_value['provider_id']}/{cost_value['model']}"
++        " in active_model.json" in retest_text
++    )
++
++    handoff_path = root / "HANDOFF-AUTOCLAW.md"
++    handoff_text = (
++        handoff_path.read_text(encoding="utf-8", errors="replace")
++        if handoff_path.exists()
++        else ""
++    )
++    evidence["handoff_confirms_cost_data"] = bool(
++        cost_value
++        and f"switched default model to "
++        f"{cost_value['provider_id']}/{cost_value['model']}" in handoff_text
++    )
++
++    reme_path = root / "features" / "memory" / "reme_doctor.py"
++    reme_text = (
++        reme_path.read_text(encoding="utf-8", errors="replace")
++        if reme_path.exists()
++        else ""
++    )
++    phrase_found = _PHRASE in reme_text
++    evidence["phrase_in_reme_doctor"] = phrase_found
++    diagnostic = False
++    if phrase_found:
++        lines = reme_text.splitlines()
++        for index, line in enumerate(lines):
++            if _PHRASE in line:
++                window = "\n".join(lines[max(0, index - 6):index + 1])
++                diagnostic = (
++                    '"no_active_model"' in reme_text
++                    and "if not active:" in window
++                )
++                break
++    evidence["phrase_is_diagnostic"] = diagnostic
++
++    open_work_path = root / "features" / "board" / "open-work-data.json"
++    agent_models: dict[str, object] = {}
++    if open_work_path.exists():
++        try:
++            open_work = json.loads(open_work_path.read_text(encoding="utf-8"))
++        except ValueError:
++            open_work = {}
++        for agent_id, agent in (open_work.get("agents") or {}).items():
++            agent_models[agent_id] = normalize_slot(agent.get("active_model"))
++    evidence["agent_active_models"] = agent_models
++
++    if (
++        cost_value is not None
++        and evidence["retest_confirms_cost_data"]
++        and config_value is not None
++        and config_value != cost_value
++    ):
++        effective, stale = cost_value, config_value
++    elif cost_value is not None:
++        effective, stale = cost_value, None
++    else:
++        effective, stale = config_value, None
++
++    return {
++        "effective": effective,
++        "stale": stale,
++        "rule": "per-agent active_model null -> global "
++        "active_model.json governs",
++        "live_verification_required": True,
++        "evidence": evidence,
++    }
++
++
++# ---------------------------------------------------------------------------
++# CLI (small; for live checks on the machine, not for the test suite)
++# ---------------------------------------------------------------------------
++
++def _cli() -> int:
++    parser = argparse.ArgumentParser(
++        description="Serving-model identity note helpers (T134)."
++    )
++    sub = parser.add_subparsers(dest="command", required=True)
++
++    resolve = sub.add_parser(
++        "resolve", help="print the effective serving model"
++    )
++    resolve.add_argument("--agent-slot", default=None,
++                         help='per-agent active_model as JSON, e.g. '
++                         '\'{"provider_id": "mosicn", "model": "nex-n2.6"}\'')
++    resolve.add_argument("--secret-dir", default=None,
++                         help="SECRET_DIR holding providers/active_model.json")
++
++    note = sub.add_parser("note", help="print the identity note")
++    note.add_argument("--provider", required=True)
++    note.add_argument("--model", required=True)
++    note.add_argument("--configured-provider", default=None)
++    note.add_argument("--configured-model", default=None)
++    note.add_argument("--reason-kind", default=None)
++
++    verdict = sub.add_parser(
++        "verdict", help="print the Part 1 discrepancy verdict for a repo"
++    )
++    verdict.add_argument("repo_root", nargs="?", default=str(HERE.parent.parent))
++
++    args = parser.parse_args()
++    if args.command == "resolve":
++        agent = json.loads(args.agent_slot) if args.agent_slot else None
++        glob = (
++            read_global_active_model(args.secret_dir)
++            if args.secret_dir
++            else None
++        )
++        print(json.dumps(resolve_serving_model(agent, glob)))
++        return 0
++    if args.command == "note":
++        configured = (
++            {"provider_id": args.configured_provider,
++             "model": args.configured_model}
++            if args.configured_provider and args.configured_model
++            else None
++        )
++        print(
++            build_identity_note(
++                {"provider_id": args.provider, "model": args.model},
++                configured,
++                reason_kind=args.reason_kind,
++            )
++            or "(no serving model — no note)"
++        )
++        return 0
++    print(json.dumps(discrepancy_verdict(args.repo_root), indent=2))
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(_cli())
