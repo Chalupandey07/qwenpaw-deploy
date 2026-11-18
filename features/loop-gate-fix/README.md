@@ -245,6 +245,125 @@ shape would additionally require a guard inside the batch runner
 itself; that is out of scope for this fix. Do not claim 30 unless a
 live test shows 30.
 
+Round 4 (below) narrows this gap for the TASK total: the gate now
+charges those sub-calls to the task from the completed-batch result
+JSON at the next check (once per result id), so they count against
+the 60-call task budget even though the per-turn enforcer never saw
+them. Residual: if the model ends the turn immediately after such a
+batch with no further model response, no check runs to charge them,
+and the task total undercounts by up to one batch (~50). The per-turn
+bound above is unchanged.
+
+## The bug (round 4: the cross-turn creep)
+
+The round-3 fix (image `qwenpaw-agentx:2.3.0-gatefix3`) was deployed
+and live-tested in a fresh ordinary chat (echo 1–200, browser task
+146acf9e, 2026-11-18). **The per-turn cap worked (20 executed, 180
+refused, stopped at 50) BUT the agent resumed the same task on the
+follow-up "hello" and did 21–40 (cumulative 40 across the chat).**
+The per-turn counter is keyed by `reply_id`, which changes every
+turn, so each turn grants a fresh 20/30. A task that needs 200 calls
+creeps there in 10 turns. The gate had no memory of the task across
+turns, no record of why it stopped, and nothing marking the task
+finished.
+
+## The fix (round 4, image `qwenpaw-agentx:2.3.0-gatefix4`)
+
+A per-task cap, a structured stop audit, and a finalize flag — all in
+`limits.py` (the `mode.py` / `config.py` wiring gains two fields;
+`react_agent.py` is unchanged, it already calls the enforcer).
+
+**Per-task cap: 60 total / 40 shell — 2x the per-turn cap.** The
+multiple is the design: one full turn plus one genuine resume turn.
+A task that needs a second turn to finish gets it; a runaway cannot
+creep past two turns' worth. Echo 1–200 needs 10 turns at 20/turn
+and stops at 40 shell / 60 total. 1x would forbid any legitimate
+cross-turn continuation; 3x (90/60) would let the runaway reach 60.
+The cap is cumulative EXECUTED calls across every turn of the task
+(reserved slots, the same ground truth the per-turn enforcer uses),
+not emitted calls. `ToolCallBudgetGate` takes
+`task_max_calls` / `task_per_tool` (default: 2x the per-turn values);
+`ToolCallBudgetConfig` gains the same two fields (default `None` /
+empty, meaning 2x). Limits are frozen when the task starts, so a
+config reload cannot move the goalposts mid-task.
+
+**Task identity.** An explicit task id wins when present
+(`ctx["task_id"]` or `agent.state.task_id` — the client-side "new
+task" action, when one exists). Otherwise the task is derived from
+the latest user message in `agent.state.context`: a
+continuation-only message (empty, greeting, "continue" / "go on" /
+"yes" / "ok" / "thanks") resumes the current task; a different
+substantive message starts a new task (the old one is abandoned);
+any substantive message after finalisation starts a new task. The
+continuation rule is a small English-only heuristic (this deploy is
+English-only) and is the fallback, not the primary signal. Two
+known warts, documented not hidden: a non-English continuation
+("weiter") reads as a new instruction and mints a fresh budget, and
+"ok now do X" reads as a continuation and is charged to the old
+task. A session-wide backstop counter was considered (DeepSeek
+review) and rejected: a whole chat legitimately exceeds any such
+number over a day, so it would cap normal use, not just runaways.
+
+**Repeat guard.** A task finalised BY CAP leaves its instruction
+fingerprint (normalised: lowercase, de-punctuated,
+whitespace-collapsed, SHA-256) in the session's prior-task record.
+Re-issuing the same instruction starts a task that INHERITS the
+spent totals — and finalisation when they already reach the cap — so
+replaying the same prompt N times cannot mint N fresh budgets. A
+task that ended normally (abandoned, never capped) does not poison
+repeats.
+
+**Finalize semantics (read carefully).** Only the TASK cap
+finalises a task. A per-turn gate TERMINATE does NOT finalise it:
+the task may legitimately continue next turn within its task budget,
+and finalising on a per-turn stop would collapse 2x to 1x. The
+sequence for the live case is: turn 1 hits the per-turn cap (20
+executed, task NOT finalised); turn 2 "hello" gets 20 more (task
+shell 40 = cap) and the task finalises the moment the 40th call is
+reserved; turn 3 "hello" is refused entirely (0 executed) with a
+stop message naming the task total. Check order, everywhere, is:
+finalised → task per-tool cap → task total cap → per-turn. Either
+task cap finalises the WHOLE task (a per-tool cap does not merely
+block that tool). The enforcer finalises when a reserve reaches the
+cap; the gate finalises when a check observes the cap. Task state
+lives ON the agent object, next to the per-turn exec counter — the
+same lifetime the per-turn counter already relies on (it is keyed by
+`reply_id`, which would be redundant if a fresh agent object were
+built per turn). `reset_turn()` deliberately does not touch it. The
+live check the parent should run after deploy: log `id(agent)`
+across two turns and confirm it is the same object; if the agent
+object were ever recreated per turn, the task budget would reset
+with it.
+
+**Structured stop audit.** An append-only list on the agent
+(`_tool_call_stop_audit`), one record per stop, deduped per
+(task, turn, kind) — a repeat stop of the same kind in the same
+turn does not append a second record, it adds to `refused` and
+refreshes the totals. Record fields:
+
+```
+seq, ts (ISO UTC), kind, reason, task_id, instruction (first 120
+chars), turn_id (reply_id), turn_total, turn_executed, task_total,
+task_by_tool, refused, finalized, finalized_by_this_stop
+```
+
+`turn_total` is the gate's emitted turn total for gate records and
+the executed-so-far turn total for enforcer records; `task_total`
+is always cumulative EXECUTED calls for the task. Kinds:
+`per-turn gate` (gate check, per-turn total/per-tool),
+`per-task cap` (gate or enforcer, task total/per-tool),
+`fuse` (enforcer refusal on per-turn grounds),
+`task_finalized` (a resumed turn on a finalised task). The gate
+refuses no calls itself, so gate records carry `refused: 0`;
+enforcer records count the calls they refused (fuse 180 in the live
+shape). Accessors: `get_stop_audit(agent)` and
+`get_task_state(agent)` return copies. The audit is in-memory for
+the chat session (agent object lifetime); there is no disk
+persistence in this change, so it is lost on a process restart.
+Fail-open throughout: any error in task resolution or audit
+recording falls through to the existing per-turn behaviour, and the
+per-turn gate reasons stay byte-identical.
+
 ## Test
 
 `test_gate.py` is a machine-free unit test for the counting fix and
@@ -295,13 +414,61 @@ fallback.
 against the pinned image), `src/gatefix1/` holds the round-1 gate
 (which passes A–G but fails H and I), `src/gatefix2/` holds the
 round-2 gate (which passes A–H but fails I — the live
-single-response burst), and `src/patched/limits.py` is the fixed gate
-the test runs against. The patch file is the authoritative diff; it
-was verified to apply cleanly to the pristine files and reproduce the
-patched files byte-for-byte (limits.py verified locally;
-react_agent.py verified on the machine against the container's
-pristine copy, which is identical in `/app/src` and site-packages
-because gatefix2 did not touch it).
+single-response burst), `src/gatefix3/` holds the round-3 gate
+(which passes T115 47/47 but has no per-task cap), and
+`src/patched/limits.py` is the fixed gate the test runs against. The
+patch file is the authoritative diff; it was verified to apply
+cleanly to the pristine files and reproduce the patched files
+byte-for-byte (limits.py verified locally; react_agent.py verified
+on the machine against the container's pristine copy, which is
+identical in `/app/src` and site-packages because gatefix2 did not
+touch it).
+
+`test_task_cap.py` is the machine-free unit test for round 4
+(T126, 61 checks), same harness style, same fake package. The same
+fake agent object is reused across turns (its context grows, its
+`reply_id` changes) because that is the lifetime the task budget
+relies on. Discriminating tests: **J** (the live cross-turn shape:
+turn 1 spends 20 shell, turn 2 "hello" gets 20 more — task shell 40
+= cap — and finalises, turn 3 "hello" executes 0, a new instruction
+gets a fresh budget); **K** (sub-cap creep: 25 web_search per turn
+never trips the per-turn cap, the 60 task cap stops turn 3 after
+10); **L** (the stop audit: 6 records, all four kinds, the fuse
+record refused 180, the finalised-resume record refused 200 with
+task_total 40, append-only); **M** (an explicit task id gets a fresh
+budget; re-issuing the capped instruction inherits the spent budget
+and executes 0); **N** (an unreadable batch's 50 sub-calls are
+charged to the task from the result JSON — task total 51 — and the
+resume is refused because 50 shell already exceeds the 40 shell
+cap); **O** (a batch that would jump the task cap from 55 to 66 is
+refused whole). Regression: **N1** (a 5-call run executes fully, is
+not finalised, writes no stops).
+
+```bash
+# Fail-first: the gatefix3 gate must FAIL (it reproduces the live bug:
+# turn 2 resumes with a fresh budget, turn 3 executes 20 more)
+python3 test_task_cap.py --limits src/gatefix3/limits.py  # 24/61
+# The patched gate must PASS
+python3 test_task_cap.py --limits src/patched/limits.py   # 61/61
+python3 test_task_cap.py                                  # defaults to patched
+```
+
+A DeepSeek design review (2026-11-18, deepseek-v4.1-flash-free,
+6,670 completion tokens, prompt 1,583; brief in
+`task-cap-design.md`) confirmed the shape and caught four things,
+all adopted except where noted: freeze task limits at creation
+(adopted); check order finalised → task shell → task total →
+per-turn, with either task cap finalising the whole task (adopted);
+the instruction-repeat guard (adopted); audit magnitude fields
+(`seq`, `refused`, `finalized_by_this_stop`) with dedupe per
+(task, turn, kind) (adopted); charging unreadable-batch sub-calls to
+the task from the result JSON (adopted). Rejected with reasons in
+the fix section above: a session-wide backstop counter (would cap
+legitimate long chats) and mirroring task state onto `agent.state`
+(two truths; the agent object is the single source, as for the
+per-turn counter). The reserve stays one synchronous function with
+no await between check and increment, so concurrent workers cannot
+overshoot (confirmed, no code change needed).
 
 The default-chain wiring (`mode.py` + `config.py`) and the
 `react_agent.py` funnel change are not covered by the machine-free
@@ -324,8 +491,8 @@ one more image layer), then:
 
 ```bash
 cd /data/home/qwenpaw/loop-gate-fix   # or wherever the files were synced
-docker build -t qwenpaw-agentx:2.3.0-gatefix3 .
-docker images qwenpaw-agentx:2.3.0-gatefix3   # record the digest
+docker build -t qwenpaw-agentx:2.3.0-gatefix4 .
+docker images qwenpaw-agentx:2.3.0-gatefix4   # record the digest
 ```
 
 The Dockerfile fails the build if the patch does not apply cleanly.
@@ -350,7 +517,7 @@ actually runs.
 
 ```bash
 # The patched modules import and the gate is in the default chain
-docker run --rm qwenpaw-agentx:2.3.0-gatefix3 python3 -c "
+docker run --rm qwenpaw-agentx:2.3.0-gatefix4 python3 -c "
 from qwenpaw.loop.gates.limits import ToolCallBudgetGate
 from qwenpaw.modes.default.mode import DefaultMode
 print('gate imports OK')
@@ -358,7 +525,7 @@ print('gate imports OK')
 # The enforcer refuses past the budget (machine-side, no browser):
 # install it for a fake turn, reserve 200 shell calls, expect 20
 # allowed and 180 refused, and a fresh turn to allow 20 again.
-docker run --rm qwenpaw-agentx:2.3.0-gatefix3 python3 -c "
+docker run --rm qwenpaw-agentx:2.3.0-gatefix4 python3 -c "
 from qwenpaw.loop.gates.limits import (
     install_execution_budget, try_reserve_execution)
 class S:
@@ -373,11 +540,39 @@ ok = sum(1 for _ in range(200)
                  'input': {}}) is None)
 print('executed:', ok, '(expect 20)')
 "
+# The task cap spans turns (machine-side, no browser): same fake
+# agent, two turns with a "hello" between them. Turn 1 executes 20,
+# turn 2 executes 20 more (task shell 40 = cap, task finalised), and
+# get_stop_audit shows the per-task cap record with task_total 40.
+docker run --rm qwenpaw-agentx:2.3.0-gatefix4 python3 -c "
+from qwenpaw.loop.gates.limits import (
+    install_execution_budget, try_reserve_execution,
+    get_task_state, get_stop_audit)
+class S:
+    reply_id = 'r1'
+    context = []
+class A:
+    state = S()
+a = A()
+def run(n):
+    install_execution_budget(a, a.state.reply_id, 30,
+                             {'execute_shell_command': 20})
+    return sum(1 for _ in range(n)
+               if try_reserve_execution(
+                   a, {'type': 'tool_call',
+                       'name': 'execute_shell_command',
+                       'input': {}}) is None)
+print('turn1 executed:', run(200), '(expect 20)')
+a.state.reply_id = 'r2'
+print('turn2 executed:', run(200), '(expect 20; task hits its 40 cap)')
+print('task:', get_task_state(a))
+print('audit kinds:', [r['kind'] for r in get_stop_audit(a)])
+"
 # Start it briefly on a scratch port and confirm the console serves
 # (do NOT point it at the live data dir for this check). The server
 # listens on 8088 inside the container (compose maps 127.0.0.1:8088).
 docker run -d --name gatefix-smoke -p 18099:8088 \
-  qwenpaw-agentx:2.3.0-gatefix3
+  qwenpaw-agentx:2.3.0-gatefix4
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:18099/
 docker rm -f gatefix-smoke
 ```
@@ -399,7 +594,7 @@ these checks.
 #    snapshot first per Rohan's standing delegation. Never delete
 #    qwenpaw-phase0-verified.
 # 2. Edit /data/home/qwenpaw/docker-compose.yml: change only the image
-#    line to qwenpaw-agentx:2.3.0-gatefix3. Keep every mount, env var,
+#    line to qwenpaw-agentx:2.3.0-gatefix4. Keep every mount, env var,
 #    and port. Keep the pinned upstream image available for rollback.
 # 3. Restart and confirm the console comes back:
 docker compose -f /data/home/qwenpaw/docker-compose.yml up -d
@@ -441,3 +636,34 @@ batch of 50 is refused whole) or through direct calls (bounded at
 ~20 by the enforcer). Either way the run must stop well before 200.
 If it completes 200 by any path, the gate is still bypassed — say so
 plainly.
+
+Then the cross-turn proof (the round-4 fix): in the SAME chat, send
+"hello" as the next message and let it run until it stops by itself.
+Report: how many more tool calls executed, the exact stop message,
+and the cumulative total across both turns. **Target: 20 more in
+turn 2 (cumulative 40 shell, the task cap), then a third "hello"
+executes 0** — report the real numbers honestly. If turn 2 executes
+another 20 and turn 3 executes 20 again, the task cap did not hold;
+say so plainly. Also confirm a new instruction in the same chat
+afterwards ("What is 2 + 2? Please use a shell echo") still works
+and gets a fresh budget.
+
+## What is NOT verified live (parent's job after deploy)
+
+- The derived image `qwenpaw-agentx:2.3.0-gatefix4` has NOT been
+  built. The patch was verified to apply to the pristine
+  `limits.py` and reproduce `src/patched/limits.py` byte-for-byte
+  locally, and the `mode.py` / `config.py` hunks have identical
+  context to the gatefix3 patch that applied cleanly to the real
+  image — but the image build, the in-image import + gate-chain
+  checks, and the container switch are all the parent's job.
+- No live-browser check has run for round 4 (the single-turn echo
+  test, the cross-turn "hello" test, or the new-instruction test
+  above). The machine-free tests are evidence, not proof.
+- The agent-object lifetime assumption (one agent object per chat
+  session, so task state survives across turns) is inferred from the
+  code's structure, not measured live: log `id(agent)` across two
+  turns after deploy and confirm it is the same object.
+- The stop audit is in-memory only; it has not been read from a
+  live session (there is no console surface for it yet — it is
+  reachable only through `get_stop_audit(agent)` in code).
