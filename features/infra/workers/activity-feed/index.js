@@ -53,7 +53,7 @@ async function probe(env) {
     if (res.status === 503) return { status: "waking", httpStatus: 503, note: "InstaBox is waking the machine" };
     if (res.status === 409) return { status: "cooldown", httpStatus: 409, note: "Max-run cooldown — wakes refused" };
     if ((res.status >= 200 && res.status < 400) || res.status === 401) {
-      return { status: "up", httpStatus: res.status, note: "QwenPaw console answered" };
+      return { status: "up", httpStatus: res.status, note: "AgentX console answered" };
     }
     return { status: "degraded", httpStatus: res.status, note: `Unexpected HTTP ${res.status}` };
   } catch (err) {
@@ -69,9 +69,9 @@ function page(data, env) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="60">
-<title>QwenPaw — Live activity</title></head>
+<title>AgentX — Live activity</title></head>
 <body style="font-family:system-ui,sans-serif;background:#0f1115;color:#e8eaf0;padding:2rem;max-width:640px;margin:auto">
-<h1>QwenPaw — live activity</h1>
+<h1>AgentX — live activity</h1>
 <p>Status: <strong style="color:${color}">${esc(label)}</strong>
 ${s.httpStatus ? `(HTTP ${esc(s.httpStatus)})` : ""}</p>
 <p>${esc(s.note || "")}</p>
