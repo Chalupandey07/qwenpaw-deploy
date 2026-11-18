@@ -1864,7 +1864,7 @@ def t116():
     vault-based SKILL.md, and the UI harness fails 2/27 before the
     _worker.js wiring lands (and 3/22 against a PUT instead of PATCH,
     2/22 against a buildSaveBody that always sends the key).
-    \"\"\"
+    """
     s1, m1 = _py_script_harness(
         ["features/tinyfish/test_tinyfish.py", "--selftest"], 108)
     s2, m2 = _harness("features/tinyfish/test_search_settings_ui.mjs", 27)
@@ -2026,6 +2026,54 @@ def t123():
     """
     return _py_script_harness(
         ["features/egress-guard/test_egress_guard.py"], 35)
+
+
+def t124():
+    """SMART approval patch + per-tool preview + Allow/Block list (40).
+
+    Machine-free test (features/approvals/test_approvals.py) for the
+    SMART apply-script (agent.json AUTO -> SMART, idempotent,
+    destructive auto-deny verified read-only), the preview builder
+    (exact shell command / unified diff, never executes), and the
+    Allow/Block enforcement (low-risk auto, medium ask, destructive
+    deny, deny-listed tool refused under SMART and under OFF).
+    Fail-first proven: against an empty approvals dir it fails 37/40.
+    DeepSeek review 2026-11-18: 5 findings, all fixed, 8 regression
+    checks (F1-F8). The live half (script run on the machine,
+    approval_level SMART confirmed via running-config; preview/policy
+    wired into the approval-card path in a derived image and checked
+    in a real browser) is verified by Muse after sync/deploy.
+    """
+    return _py_script_harness(
+        ["features/approvals/test_approvals.py"], 40)
+
+
+def t131():
+    """Telegram full-feature bot: token-only setup, menus, chats (66).
+
+    Machine-free test (features/telegram-full/test_telegram_full.py)
+    for the Telegram integration: token-only setup-check (safe flags
+    enforced, no numeric id), owner = first whitelist entry with
+    guests read-only and strangers refused, new chat clears the
+    pinned session, list + preview + continue an existing console
+    chat (task API, 409 busy, last-10 preview only), a settings
+    change via a button callback (model PATCH validated against the
+    Settings provider catalog, approval PUT), the menu grammar
+    (<=64 bytes, tga:/tgd: reserved, dots/slashes allowed for model
+    names), the per-chat token cache (15-min TTL, 200 cap), outbound
+    redaction (bot-token shape + known keys + vault reveal refused)
+    and inbound untrusted wrapping (forged END marker broken), and
+    the driver patch applying cleanly to the pristine v2.3.0
+    platform.py (sha256-pinned) and reproducing the patched file
+    byte-for-byte. Fail-first proven: the first run failed with
+    ModuleNotFoundError (no modules yet); the pristine file has no
+    menu routing. The live half (image build on the machine, skill
+    enable, token in Settings, pending flow, real DM + model tap +
+    chat continue + guest refusal in a browser) is verified by Muse
+    after deploy.
+    """
+    return _py_script_harness(
+        ["features/telegram-full/test_telegram_full.py"], 66)
 
 
 def t104():
@@ -2540,6 +2588,8 @@ TESTS = [
     ("T121", "mechanical checks: no China endpoint host/URL in code, no secret-shaped string outside the allowlist, AGENTS.md under its 20000-char cap, no setInterval in server code (selftest)", "checks", "protocol", t121),
     ("T122", "plan mode: read-only plan before any mutation — ToolGate refuses mutating calls naming the tool, plan file with required sections, no execution before approval, after approval only the plan's steps run in order and at most once (selftest)", "plan-mode", "protocol", t122),
     ("T123", "egress guard: untrusted-content wrapping (nonce fence, template-token strip) + allowlist egress (deny non-allowlisted, deny secret to allowlisted host, deny China hosts) + secret redaction in logs (selftest)", "egress-guard", "protocol", t123),
+    ("T124", "SMART approval patch as a machine-apply script (agent.json AUTO -> SMART, idempotent, destructive auto-deny verified) + per-tool preview (exact shell command / file diff, never executes) + per-tool Allow/Block list (auto/ask/deny, deny beats every level incl. OFF) (selftest)", "approvals", "protocol", t124),
+    ("T131", "telegram full-feature bot: token-only setup (no numeric id), owner = first whitelist entry, guests read-only, strangers refused; new chat, list + preview + continue an existing console chat (task API); settings via button callbacks (model PATCH, approval PUT); menu grammar + token cache; outbound redaction + inbound untrusted wrapping; driver patch applies cleanly to the pinned v2.3.0 platform.py and reproduces the patched file byte-for-byte (selftest)", "telegram", "protocol", t131),
 ]
 
 SKIP_NOTE = {
