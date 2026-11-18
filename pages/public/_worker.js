@@ -1182,16 +1182,6 @@ function computerPanelScript(rebrandEnabled) {
           for (var i = 0; i < btns.length; i++) {
             try {
               var b = btns[i];
-              // PROBE (2026-11-18 QA round 16 diagnostic, TEMPORARY):
-              // 11 rounds, zero effect. Set a visible marker on EVERY
-              // button this rule sees, before any selection gate, so the
-              // QA can prove whether the rule runs at all. If ANY button
-              // on the page gets a magenta outline, the rule executes;
-              // if the sidebar rows specifically get it, the rule
-              // reaches them and the truncation itself is the problem;
-              // if nothing gets it, the rule never runs. Remove after
-              // diagnosis.
-              try { b.style.outline = "2px solid #ff00ff"; } catch (e) {}
               // NO early skip on data-agentx-ellipsis (2026-11-18 QA
               // rounds 5–12): React re-renders and RESETS the text
               // node to the full title, but the attribute survives (it
@@ -1460,7 +1450,7 @@ function computerPanelScript(rebrandEnabled) {
           // /settings/models. The pills are a /chat convenience; on
           // Settings they only get in the way.
           var onSettings = false;
-          try { onSettings = /\/settings(\/|$)/.test(window.location ? window.location.pathname : ""); } catch (e) {}
+          try { onSettings = (window.location && window.location.pathname ? window.location.pathname : "").indexOf("/settings") !== -1; } catch (e) {}
           if (onSettings) {
             cBtn.style.display = "none";
             rBtn.style.display = "none";
