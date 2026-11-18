@@ -23,6 +23,19 @@ const WAKE_WAIT_MS = 45_000;
 const KEEPALIVE_URL = "https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev";
 const MACHINE_ID = "m_" + new URL(ORIGIN).hostname.split(".")[0].split("-").slice(1).join("-");
 
+// AgentX rebrand (2026-11-18, features/rebrand/README.md). The product is
+// AgentX now; the upstream console still calls itself QwenPaw, so the
+// visible rename is done by DOM injection (headShim + the rebrand rules
+// inside computerPanelScript) — never by rewriting the bundle. These are
+// the single source of truth for the pinned upstream version and the
+// upstream hosts the shim swallows. The image is pinned by digest in the
+// machine's docker-compose.yml (agentscope/qwenpaw:v2.3.0@sha256:46a782…),
+// so the version the PyPI stub returns can never drift from what runs.
+const PINNED_QWENPAW_VERSION = "2.3.0";
+const PYPI_QWENPAW_URL = "https://pypi.org/pypi/qwenpaw/json";
+const UPSTREAM_DOC_ORIGIN = "https://qwenpaw.agentscope.io";
+const UPSTREAM_GITHUB_URL = "https://github.com/agentscope-ai/QwenPaw";
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -95,6 +108,70 @@ function rewriteHeaders(res, pagesOrigin) {
 }
 
 /**
+ * The AgentX early shim (rebrand, 2026-11-18).
+ *
+ * A classic inline <script> injected before </body> (see proxy()). The
+ * console bundle is a deferred <script type="module">, so this classic
+ * script runs FIRST — that is what makes the two patches win the race:
+ *
+ *   (a) window.fetch: the console polls https://pypi.org/pypi/qwenpaw/json
+ *       hourly and shows "Update Available" / "Update QwenPaw?" when the
+ *       version differs. Only that ONE exact URL is answered, with the
+ *       pinned version (2.3.0, the digest-pinned image that actually runs),
+ *       so the checker always sees "up to date" and never nags. Every
+ *       other fetch falls through to the native fetch untouched.
+ *   (b) window.open: swallows the two upstream hosts (the docs site and
+ *       the upstream GitHub repo) by returning null without opening. Every
+ *       other URL falls through to the native window.open untouched.
+ *
+ * Both patches are wrapped in try/catch and fall through to native on any
+ * unmatched or unexpected input — a patch bug must never break a real
+ * request. Kill switch: ?rebrand=0 in the page URL skips the whole shim,
+ * and the worker env var AGENTX_REBRAND=0 skips emitting it (see proxy()).
+ */
+function headShim() {
+  return `<script>
+(function () {
+  try {
+    var off = false;
+    try { off = new URLSearchParams(location.search).get("rebrand") === "0"; } catch (e) {}
+    if (off) return;
+    var PYPI_URL = ${JSON.stringify(PYPI_QWENPAW_URL)};
+    var PINNED_VERSION = ${JSON.stringify(PINNED_QWENPAW_VERSION)};
+    var DOC_ORIGIN = ${JSON.stringify(UPSTREAM_DOC_ORIGIN)};
+    var GITHUB_URL = ${JSON.stringify(UPSTREAM_GITHUB_URL)};
+    try {
+      var nativeFetch = window.fetch;
+      if (typeof nativeFetch === "function") {
+        window.fetch = function (input, init) {
+          try {
+            var u = typeof input === "string" ? input : (input && input.url) || "";
+            if (u === PYPI_URL) {
+              return Promise.resolve(new Response(JSON.stringify({ info: { version: PINNED_VERSION } }), { status: 200, headers: { "Content-Type": "application/json" } }));
+            }
+          } catch (e) {}
+          return nativeFetch.apply(this, arguments);
+        };
+      }
+    } catch (e) {}
+    try {
+      var nativeOpen = window.open;
+      if (typeof nativeOpen === "function") {
+        window.open = function (url) {
+          try {
+            var u = String(url || "");
+            if (u.indexOf(DOC_ORIGIN) === 0 || u.indexOf(GITHUB_URL) === 0) return null;
+          } catch (e) {}
+          return nativeOpen.apply(this, arguments);
+        };
+      }
+    } catch (e) {}
+  } catch (e) { /* never break the console */ }
+})();
+</script>`;
+}
+
+/**
  * The floating "Computer" launcher injected into the console SPA.
  *
  * History, because it explains the shape: the previous version of this script
@@ -111,9 +188,12 @@ function rewriteHeaders(res, pagesOrigin) {
  * React re-renders cannot remove it. Every failure is swallowed: an
  * injection bug must never break the console.
  */
-function computerPanelScript() {
+function computerPanelScript(rebrandEnabled) {
   return `<script>
 (function () {
+  var AGENTX_REBRAND_ENABLED = ${rebrandEnabled ? "true" : "false"};
+  var AGENTX_UPSTREAM_DOC = ${JSON.stringify(UPSTREAM_DOC_ORIGIN)};
+  var AGENTX_UPSTREAM_GITHUB = ${JSON.stringify(UPSTREAM_GITHUB_URL)};
   try {
     if (!document.getElementById("root")) return;
     if (document.getElementById("qwenpawComputerBtn")) return;
@@ -121,7 +201,7 @@ function computerPanelScript() {
     btn.id = "qwenpawComputerBtn";
     btn.type = "button";
     btn.textContent = "Computer";
-    btn.title = "QwenPaw's computer — watch and drive the live desktop";
+    btn.title = "AgentX's computer — watch and drive the live desktop";
     btn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483647;padding:10px 16px;border-radius:999px;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
 
     // ---- Rest button ----
@@ -596,10 +676,230 @@ function computerPanelScript() {
         settingsBtn.parentNode.insertBefore(item, settingsBtn.nextSibling);
       } catch (e) { /* never break the console */ }
     }
+    // ---- AgentX rebrand (DOM injection, 2026-11-18) ----
+    // The product is AgentX; the upstream console still calls itself
+    // QwenPaw. The rename is done here, in the browser, by the same
+    // MutationObserver that re-inserts the Vault item — never by rewriting
+    // the bundle (immutable, cache-pinned for a year). Worst failure of any
+    // rule below is a stale label, never a broken console: every rule runs
+    // in its own try/catch, and the whole pass is throttled (leading +
+    // trailing, 400 ms) so React re-renders cannot make it a hot loop.
+    //
+    // NEVER-RENAME allowlist (features/rebrand/README.md): localStorage keys
+    // (qwenpaw_auth_token, qwenpaw-agent-storage, qwenpaw-last-used-agent),
+    // qwenpaw:* events, the qwenpaw- CSS prefix, QWENPAW_AUTH_ENABLED, the
+    // ~/.qwenpaw path, API paths, and the literal pip commands
+    // (Install qwenpaw[codex], uv pip install 'qwenpaw[whisper]'). The text
+    // pass skips any node whose own or parent text contains one of those
+    // load-bearing strings, so setup instructions stay truthful. The
+    // multi-window safety prompts ("Close QwenPaw?", "still in use in
+    // other windows") are NOT hidden — only their product name is renamed.
+    // Kill switches: worker env AGENTX_REBRAND=0 (bakes the flag false) or
+    // ?rebrand=0 in the page URL (checked at runtime).
+    /* AGENTX-REBRAND-START */
+    var AGENTX_MENU_LABELS = ["Tutorial", "Feature Demos", "Changelog", "FAQ", "GitHub", "Documentation", "Import"];
+    var AGENTX_CHINA_LABELS = ["DashScope", "SiliconFlow", "ModelScope", "Alibaba", "WeCom", "DingTalk", "Feishu", "QQ", "WeChat", "Xiaoyi"];
+    var AGENTX_LOAD_BEARING = ["qwenpaw[codex]", "qwenpaw[whisper]", "QWENPAW_AUTH_ENABLED", "~/.qwenpaw", "qwenpaw_auth_token", "qwenpaw-agent-storage", "qwenpaw-last-used-agent", "qwenpaw:", "qwenpaw-"];
+    var agentxLinkBlockerInstalled = false;
+    var agentxLastRun = 0;
+    var agentxTrailingTimer = null;
+    function agentxRebrandOff() {
+      if (!AGENTX_REBRAND_ENABLED) return true;
+      try { return new URLSearchParams(location.search).get("rebrand") === "0"; } catch (e) { return false; }
+    }
+    function agentxIsLoadBearing(text) {
+      if (!text) return false;
+      for (var i = 0; i < AGENTX_LOAD_BEARING.length; i++) {
+        if (text.indexOf(AGENTX_LOAD_BEARING[i]) !== -1) return true;
+      }
+      return false;
+    }
+    function agentxRenameTextIn(root) {
+      var walker;
+      try { walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null); } catch (e) { return 0; }
+      var changed = 0;
+      var node;
+      while ((node = walker.nextNode())) {
+        try {
+          var t = node.nodeValue;
+          if (!t || t.indexOf("QwenPaw") === -1) continue;
+          var parent = node.parentNode;
+          if (parent && (parent.nodeName === "SCRIPT" || parent.nodeName === "STYLE" || parent.nodeName === "TEXTAREA" || parent.nodeName === "INPUT")) continue;
+          if (agentxIsLoadBearing(t)) continue;
+          if (parent && parent.textContent && agentxIsLoadBearing(parent.textContent)) continue;
+          node.nodeValue = t.split("QwenPaw").join("AgentX");
+          changed += 1;
+        } catch (e) {}
+      }
+      return changed;
+    }
+    function agentxHideExact(label, itemSelector, ancestorSelector) {
+      var found = 0;
+      var els;
+      try { els = document.querySelectorAll(itemSelector); } catch (e) { return 0; }
+      for (var i = 0; i < els.length; i++) {
+        try {
+          var el = els[i];
+          if (el.children && el.children.length) continue;
+          if ((el.textContent || "").trim() !== label) continue;
+          var target = el;
+          try {
+            var anc = el.closest ? el.closest(ancestorSelector) : null;
+            if (anc) target = anc;
+          } catch (e) {}
+          if (target.getAttribute && target.getAttribute("data-agentx-hidden")) continue;
+          target.style.display = "none";
+          if (target.setAttribute) target.setAttribute("data-agentx-hidden", "1");
+          found += 1;
+        } catch (e) {}
+      }
+      return found;
+    }
+    function agentxHideAncestorByContent(substring, itemSelector, ancestorSelector) {
+      var found = 0;
+      var els;
+      try { els = document.querySelectorAll(itemSelector); } catch (e) { return 0; }
+      for (var i = 0; i < els.length; i++) {
+        try {
+          var el = els[i];
+          if ((el.textContent || "").indexOf(substring) === -1) continue;
+          var target = null;
+          try { target = el.closest ? el.closest(ancestorSelector) : null; } catch (e) {}
+          if (!target) target = el.parentNode && el.parentNode.parentNode ? el.parentNode.parentNode : el;
+          if (target.getAttribute && target.getAttribute("data-agentx-hidden")) continue;
+          target.style.display = "none";
+          if (target.setAttribute) target.setAttribute("data-agentx-hidden", "1");
+          found += 1;
+        } catch (e) {}
+      }
+      return found;
+    }
+    function agentxAboutRule() {
+      var items;
+      try { items = document.querySelectorAll("li, button, a, [role='menuitem']"); } catch (e) { return 0; }
+      var done = 0;
+      for (var i = 0; i < items.length; i++) {
+        try {
+          var el = items[i];
+          if (el.children && el.children.length) continue;
+          var t = (el.textContent || "").trim();
+          if (t !== "About QwenPaw" && t !== "About AgentX") continue;
+          if (el.getAttribute && el.getAttribute("data-agentx-about")) continue;
+          if (el.setAttribute) el.setAttribute("data-agentx-about", "1");
+          el.addEventListener("click", function (ev) {
+            try { ev.preventDefault(); ev.stopPropagation(); } catch (e) {}
+            try { window.open("/status", "_blank"); } catch (e) {}
+          });
+          done += 1;
+        } catch (e) {}
+      }
+      return done;
+    }
+    function agentxBlockUpstreamLinks() {
+      if (agentxLinkBlockerInstalled) return;
+      try {
+        document.addEventListener("click", function (ev) {
+          try {
+            var a = ev.target && ev.target.closest ? ev.target.closest("a[href]") : null;
+            if (!a) return;
+            var href = a.getAttribute("href") || "";
+            if (href.indexOf(AGENTX_UPSTREAM_DOC) === 0 || href.indexOf(AGENTX_UPSTREAM_GITHUB) === 0) {
+              ev.preventDefault();
+              ev.stopPropagation();
+            }
+          } catch (e) {}
+        }, true);
+        agentxLinkBlockerInstalled = true;
+      } catch (e) {}
+    }
+    var AGENTX_RULES = [
+      { id: "rename-title", run: function () {
+        if (document.title && document.title.indexOf("QwenPaw") !== -1) document.title = document.title.split("QwenPaw").join("AgentX");
+      } },
+      { id: "rename-attrs", run: function () {
+        var els;
+        try { els = document.querySelectorAll('[aria-label*="QwenPaw"], [placeholder*="QwenPaw"], [title*="QwenPaw"]'); } catch (e) { return; }
+        for (var i = 0; i < els.length; i++) {
+          try {
+            var el = els[i];
+            var a = el.getAttribute("aria-label");
+            if (a && a.indexOf("QwenPaw") !== -1) el.setAttribute("aria-label", a.split("QwenPaw").join("AgentX"));
+            var p = el.getAttribute("placeholder");
+            if (p && p.indexOf("QwenPaw") !== -1) el.setAttribute("placeholder", p.split("QwenPaw").join("AgentX"));
+            var t = el.getAttribute("title");
+            if (t && t.indexOf("QwenPaw") !== -1) el.setAttribute("title", t.split("QwenPaw").join("AgentX"));
+          } catch (e) {}
+        }
+      } },
+      { id: "rename-text", run: function () {
+        try { agentxRenameTextIn(document.body); } catch (e) {}
+      } },
+      { id: "hide-menu", run: function () {
+        for (var i = 0; i < AGENTX_MENU_LABELS.length; i++) {
+          agentxHideExact(AGENTX_MENU_LABELS[i], "li, button, a, [role='menuitem'], span, div", "li, [role='menuitem'], [class*='menu-item']");
+        }
+      } },
+      { id: "hide-about", run: function () { agentxAboutRule(); } },
+      { id: "hide-language", run: function () {
+        var els;
+        try { els = document.querySelectorAll('[aria-label*="Language"], [title*="Language"]'); } catch (e) { return; }
+        for (var i = 0; i < els.length; i++) {
+          try {
+            var el = els[i];
+            var target = el;
+            try {
+              var anc = el.closest ? el.closest("li, [role='menuitem'], button") : null;
+              if (anc) target = anc;
+            } catch (e) {}
+            if (target.getAttribute && target.getAttribute("data-agentx-hidden")) continue;
+            target.style.display = "none";
+            if (target.setAttribute) target.setAttribute("data-agentx-hidden", "1");
+          } catch (e) {}
+        }
+      } },
+      { id: "hide-desktop-prompt", run: function () {
+        agentxHideAncestorByContent("is ready to install", "[role='dialog'], [class*='modal'], [class*='banner'], [class*='alert'], [class*='notice']", "[role='dialog'], [class*='modal'], [class*='banner'], [class*='alert'], [class*='notice']");
+      } },
+      { id: "hide-codex-qoder", run: function () {
+        agentxHideExact("QwenPaw, Codex and Qoder profiles", "li, button, a, [role='menuitem'], span, div, h1, h2, h3, h4", "li, [role='menuitem'], [class*='card'], [class*='row'], section, div");
+        agentxHideExact("AgentX, Codex and Qoder profiles", "li, button, a, [role='menuitem'], span, div, h1, h2, h3, h4", "li, [role='menuitem'], [class*='card'], [class*='row'], section, div");
+      } },
+      { id: "hide-voice", run: function () {
+        agentxHideAncestorByContent("qwenpaw[whisper]", "code, pre, kbd, span, div, p", "section, [class*='card'], [class*='setting'], [class*='panel']");
+      } },
+      { id: "hide-import-text", run: function () {
+        agentxHideAncestorByContent("Import data from other AI applications", "span, div, p, li", "section, [class*='card'], [class*='row'], li, div");
+      } },
+      { id: "hide-china", run: function () {
+        for (var i = 0; i < AGENTX_CHINA_LABELS.length; i++) {
+          agentxHideExact(AGENTX_CHINA_LABELS[i], "li, button, a, [role='menuitem'], [role='listitem'], span, div, h1, h2, h3, h4", "[class*='card'], li, [role='listitem'], [class*='item'], section");
+        }
+      } },
+      { id: "block-links", run: function () { agentxBlockUpstreamLinks(); } },
+    ];
+    function agentxRunRules() {
+      if (agentxRebrandOff()) return;
+      var now = Date.now();
+      if (now - agentxLastRun < 400) {
+        if (!agentxTrailingTimer) {
+          agentxTrailingTimer = setTimeout(function () {
+            agentxTrailingTimer = null;
+            agentxRunRules();
+          }, 400);
+        }
+        return;
+      }
+      agentxLastRun = now;
+      for (var i = 0; i < AGENTX_RULES.length; i++) {
+        try { AGENTX_RULES[i].run(); } catch (e) { try { console.debug("[agentx] rule failed: " + AGENTX_RULES[i].id, e); } catch (e2) {} }
+      }
+    }
+    /* AGENTX-REBRAND-END */
     try {
-      var vaultMenuObserver = new MutationObserver(function () { addVaultMenuItem(); });
+      var vaultMenuObserver = new MutationObserver(function () { addVaultMenuItem(); agentxRunRules(); });
       vaultMenuObserver.observe(document.body, { childList: true, subtree: true });
       addVaultMenuItem();
+      agentxRunRules();
     } catch (e) { /* observer unavailable; the floating Vault button still works */ }
   } catch (e) { /* never break the console */ }
 })();
@@ -617,8 +917,8 @@ function wakingPage(retryAfter) {
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta http-equiv="refresh" content="60">` +
     `<meta name="viewport" content="width=device-width, initial-scale=1">` +
-    `<title>QwenPaw — Waking up</title></head><body style="font-family:system-ui,sans-serif;background:#0f1115;color:#e8eaf0;padding:2rem;max-width:640px;margin:0 auto">` +
-    `<h1>QwenPaw is waking up</h1>` +
+    `<title>AgentX — Waking up</title></head><body style="font-family:system-ui,sans-serif;background:#0f1115;color:#e8eaf0;padding:2rem;max-width:640px;margin:0 auto">` +
+    `<h1>AgentX is waking up</h1>` +
     `<p id="status">The InstaBox machine was paused and is starting now.</p>` +
     `<div style="background:#1e2230;border-radius:8px;height:10px;overflow:hidden;margin:1rem 0"><div id="bar" style="background:#22c55e;height:100%;width:8%;border-radius:8px;transition:width 1s linear"></div></div>` +
     `<p style="color:#9aa4b2;font-size:13px">Elapsed: <span id="elapsed">0s</span>${retryAfter ? ` &middot; usually ready in about ${retryAfter} seconds` : ` &middot; usually ready in about a minute`}.</p>` +
@@ -646,8 +946,8 @@ function cooldownPage(retryAfter, untilText) {
     // refused and teaches the user the page is broken).
     (retryAfter ? `<meta http-equiv="refresh" content="${Math.max(5, mins ? mins * 60 : 60)}">` : ``) +
     `<meta name="viewport" content="width=device-width, initial-scale=1">` +
-    `<title>QwenPaw — Cooldown</title></head><body style="font-family:system-ui,sans-serif;background:#0f1115;color:#e8eaf0;padding:2rem">` +
-    `<h1>QwenPaw is in max-run cooldown</h1>` +
+    `<title>AgentX — Cooldown</title></head><body style="font-family:system-ui,sans-serif;background:#0f1115;color:#e8eaf0;padding:2rem">` +
+    `<h1>AgentX is in max-run cooldown</h1>` +
     `<p>The InstaBox Free machine hit its maximum run length and is cooling down. ` +
     `Nothing can wake it until the cooldown ends${mins ? ` — about ${mins} minutes` : ``}${
       untilText ? ` (<strong>${untilText}</strong>)` : ``
@@ -716,7 +1016,7 @@ async function proxy(request, url, env, ctx) {
   } catch (err) {
     // Deliberately generic: fetch error text can contain the origin URL
     // or stack fragments — never reflect it to the visitor.
-    return new Response("QwenPaw origin unreachable. Try again in a moment.", {
+    return new Response("AgentX origin unreachable. Try again in a moment.", {
       status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
     });
   }
@@ -774,7 +1074,7 @@ async function proxy(request, url, env, ctx) {
     } catch { /* ignore */ }
     if (code === "machine_cooldown") return cooldownPage(retryAfter, untilText);
     return new Response(
-      `QwenPaw is busy with another operation (409 ${code || ""}). Retry in a moment.`,
+      `AgentX is busy with another operation (409 ${code || ""}). Retry in a moment.`,
       { status: 409, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
     );
   }
@@ -796,24 +1096,46 @@ async function proxy(request, url, env, ctx) {
   // `<div id="root"`); API JSON, SSE streams and assets are untouched.
   // The injection is defensive (try/catch, feature-detect) so a failure
   // can never break the console.
+  //
+  // AgentX rebrand (2026-11-18): the same injection carries the early shim
+  // (headShim — fetch/window.open patches, must run before the deferred
+  // module bundle) and the rebrand rules (inside computerPanelScript).
+  // The <title> is rewritten here at the proxy layer because the root HTML
+  // is ours to serve; the observer renames it again if React changes it.
+  // Kill switch: AGENTX_REBRAND=0 (worker env) skips the shim and bakes
+  // the rebrand flag false; ?rebrand=0 skips it per page load at runtime.
   if (isSafeMethod && res.status === 200 && (headers.get("Content-Type") || "").includes("text/html")) {
     try {
       const html = await res.text();
       if (html.includes('<div id="root"') && html.includes("</body>")) {
         // A console page load is a visit (sleep/wake signal). Fire-and-forget.
         if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(recordLastVisit(env));
-        const injected = html.replace("</body>", computerPanelScript() + "</body>");
+        const rebrandEnabled = env.AGENTX_REBRAND !== "0";
+        const titled = html.replace("<title>QwenPaw Console</title>", "<title>AgentX Console</title>");
+        const injected = titled.replace("</body>", (rebrandEnabled ? headShim() : "") + computerPanelScript(rebrandEnabled) + "</body>");
         headers.set("Cache-Control", "no-store, no-transform");
         headers.delete("ETag");
         headers.delete("Last-Modified");
         headers.delete("Content-Length");
+        // AgentX rebrand (2026-11-18): block the Alibaba CDN illustration
+        // images (gw.alicdn.com / img.alicdn.com, 17 distinct URLs on
+        // channel/setup pages) at the header layer. Report-Only first —
+        // nothing is blocked yet, violations are logged to the console;
+        // promote to an enforcing img-src after a day of reports. No
+        // report-uri is set (no endpoint exists yet); check DevTools.
+        // Referrer-Policy no-referrer overrides the same-origin set by
+        // rewriteHeaders for this HTML response only: strictly better for
+        // the token-leak fix (nothing is sent anywhere) and it does not
+        // break same-origin navigation, which does not need a Referer.
+        headers.set("Content-Security-Policy-Report-Only", "img-src 'self' data: blob:");
+        headers.set("Referrer-Policy", "no-referrer");
         return new Response(injected, { status: res.status, statusText: res.statusText, headers });
       }
       return new Response(html, { status: res.status, statusText: res.statusText, headers });
     } catch {
       // The origin body could not be read (it may now be consumed) —
       // do not return a broken stream.
-      return new Response("QwenPaw console temporarily unavailable. Try again in a moment.", {
+      return new Response("AgentX console temporarily unavailable. Try again in a moment.", {
         status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
       });
     }
