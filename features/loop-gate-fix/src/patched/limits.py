@@ -174,6 +174,146 @@ class _ToolCallBudgetState:
     last_iteration: int = -1
 
 
+# --- Execution-time enforcement -----------------------------------------
+# The gate checks AFTER a model response and a TERMINATE on a tool-call
+# iteration is DEFERRED (runner.apply_stop_result sets
+# agent._gate_pending_stop; the batch still executes; the stop applies
+# at the next _reasoning via check_pending_gates). When the model emits
+# all 200 calls in a SINGLE response, the gate counts 200 and fires,
+# but every call still executes before the stop can apply. The gate
+# alone cannot stop a single-response burst -- it only stops
+# multi-response runaways, where it can fire between responses.
+#
+# The enforcer below is checked BEFORE each tool call executes, from
+# ReactAgent._execute_tool_call -- the single funnel for both the
+# sequential and the concurrent paths. The gate installs the enforcement
+# state from its check() (which runs after every model response and
+# before the acting phase); the reserve is a plain synchronous counter
+# increment, so concurrent workers reserve in call order on the
+# single-threaded event loop (each worker runs up to its first await
+# before the next starts). A call past the budget is refused without
+# executing, as a DENIED tool result the model can read.
+#
+# A run_tool_batch call is expanded into the sub-calls it will execute
+# (the same expansion the gate uses) and reserves all of them; when
+# the batch would exceed the budget the WHOLE batch is refused, so the
+# batch path is bounded at execution time too. When a batch cannot be
+# expanded (unreadable file) only the batch call itself is reserved,
+# and the gate's result-JSON fallback bounds that case to one batch.
+_EXEC_ATTR = "_tool_call_budget_exec"
+
+
+@dataclass
+class _ToolCallBudgetExec:
+    """Per-turn execution counter (reserved slots, not context counts)."""
+
+    reply_id: str = ""
+    total: int = 0
+    by_tool: Counter[str] = field(default_factory=Counter)
+    max_calls: int | None = None
+    per_tool: dict[str, int] = field(default_factory=dict)
+
+
+def install_execution_budget(
+    agent: Any,
+    reply_id: str | None,
+    max_calls: int | None,
+    per_tool: dict[str, int] | None,
+) -> Any:
+    """Install (or refresh) the per-turn execution counter on the agent.
+
+    Counters reset only when the reply_id changes (a new turn). Within
+    a turn they accumulate across rounds, so a multi-round runaway is
+    bounded by the same budget as a single-response burst. The limits
+    are refreshed on every call so a config change takes effect without
+    a restart. No-op when the agent or reply_id is missing.
+    """
+    if agent is None or reply_id is None:
+        return None
+    current = getattr(agent, _EXEC_ATTR, None)
+    if current is None or getattr(current, "reply_id", None) != reply_id:
+        current = _ToolCallBudgetExec(
+            reply_id=reply_id,
+            max_calls=max_calls,
+            per_tool=dict(per_tool or {}),
+        )
+        setattr(agent, _EXEC_ATTR, current)
+    else:
+        current.max_calls = max_calls
+        current.per_tool = dict(per_tool or {})
+    return current
+
+
+def _exec_state(agent: Any, reply_id: str | None) -> Any:
+    """The installed execution counter for this turn, or None."""
+    if agent is None or reply_id is None:
+        return None
+    current = getattr(agent, _EXEC_ATTR, None)
+    if current is None:
+        return None
+    if getattr(current, "reply_id", None) != reply_id:
+        return None
+    return current
+
+
+def try_reserve_execution(agent: Any, tool_call: Any) -> str | None:
+    """Reserve budget for one tool call before it executes, or refuse it.
+
+    Returns None when the call may execute (the slot is reserved), or
+    a refusal reason string when the total cap or a per-tool cap would
+    be exceeded. The reserve is synchronous, so concurrent workers
+    reserve in call order. Fail-open: when no enforcement state is
+    installed for this turn (gate inactive, reply_id missing) the call
+    is allowed, so a missing enforcer can never break normal execution.
+    A call with no name is allowed (nothing to count).
+    """
+    name = ToolCallBudgetGate._block_name(tool_call)
+    if not name:
+        return None
+    state = getattr(agent, "state", None)
+    reply_id = getattr(state, "reply_id", None)
+    exec_state = _exec_state(agent, reply_id)
+    if exec_state is None:
+        return None
+    # Names to reserve: the call itself, plus its sub-calls when it is
+    # a batch call (expanded from its arguments, as the gate does).
+    names = [name]
+    if name == _BATCH_TOOL_NAME:
+        sub = ToolCallBudgetGate._expand_batch_call(tool_call)
+        if sub is not None:
+            names.extend(sub)
+    # Would this exceed the total cap? The gate fires at total >=
+    # max_calls, so a call is allowed while total + len(names) is at
+    # most max_calls (exactly max_calls calls execute).
+    if (
+        exec_state.max_calls is not None
+        and exec_state.total + len(names) > exec_state.max_calls
+    ):
+        return (
+            "Tool call budget reached: this turn already used "
+            f"{exec_state.total} tool calls (limit "
+            f"{exec_state.max_calls}); this call was not executed."
+        )
+    # Would this exceed a per-tool cap? Same boundary as the gate:
+    # exactly `limit` calls of that tool execute.
+    counts = Counter(names)
+    for tool_name, n in counts.items():
+        limit = exec_state.per_tool.get(tool_name)
+        if (
+            limit is not None
+            and exec_state.by_tool[tool_name] + n > limit
+        ):
+            return (
+                f"Tool '{tool_name}' call budget reached: this turn "
+                f"already used {exec_state.by_tool[tool_name]} "
+                f"'{tool_name}' calls (limit {limit}); this call was "
+                "not executed."
+            )
+    exec_state.total += len(names)
+    exec_state.by_tool.update(names)
+    return None
+
+
 class ToolCallBudgetGate(LoopGate):
     """Limit total and per-tool calls in one agent turn."""
 
@@ -229,6 +369,14 @@ class ToolCallBudgetGate(LoopGate):
         agent = ctx.get("agent")
         reply_id = getattr(getattr(agent, "state", None), "reply_id", None)
         if reply_id is not None:
+            # Install the execution-time enforcer for this turn. The
+            # check runs after every model response and before the
+            # acting phase, so the counter is in place before any call
+            # of the round executes. Counters reset only on a new
+            # reply_id (install_execution_budget handles that).
+            install_execution_budget(
+                agent, reply_id, self._max_calls, self._per_tool,
+            )
             names = self._turn_tool_names(agent, reply_id)
             state.total = len(names)
             state.by_tool = Counter(names)
@@ -535,4 +683,6 @@ __all__ = [
     "TimeoutGate",
     "TokenBudgetGate",
     "ToolCallBudgetGate",
+    "install_execution_budget",
+    "try_reserve_execution",
 ]
