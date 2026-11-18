@@ -2095,3 +2095,22 @@ Protocol run by the runner; browser / needs-token rows were recorded as skipped,
 | Test | Area | Method | Result | Evidence |
 |---|---|---|---|---|
 | T121 | checks | protocol | PASS | features/test-project/test_checks.py: exit=0 tally=14 passed, 0 failed |
+
+## Round 56 — 2026-11-18T09:14:03Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: FAIL=1.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T121 | checks | protocol | FAIL | features/test-project/test_checks.py: exit=1 tally=12 passed, 2 failed |
+
+### Notes (non-pass rows)
+- **T121** (FAIL): features/test-project/test_checks.py: exit=1 tally=12 passed, 2 failed
+
+## Round 57 — 2026-11-18T09:14:24Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: PASS=1.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T121 | checks | protocol | PASS | features/test-project/test_checks.py: exit=0 tally=14 passed, 0 failed |
