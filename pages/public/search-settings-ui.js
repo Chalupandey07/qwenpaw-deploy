@@ -117,6 +117,20 @@ function climbToSection(el) {
   return null;
 }
 
+/** True when the element sits inside the page navigation (left nav / sidebar). */
+function isInNav(el) {
+  let cur = el;
+  while (cur && cur.parentElement) {
+    cur = cur.parentElement;
+    const tag = (cur.tagName || "").toUpperCase();
+    if (tag === "NAV" || tag === "ASIDE") return true;
+    const cls = (cur.className || "").toString().toLowerCase();
+    if (cls.includes("sidebar") || cls.includes("left-nav")
+      || cls.includes("nav-") || cls.includes("sidenav")) return true;
+  }
+  return false;
+}
+
 /**
  * Find the settings CONTENT COLUMN to append the "Your Keys" section
  * into, or null. The column is the parent of the settings cards — it
@@ -126,8 +140,16 @@ function climbToSection(el) {
  * after the Environments container, or appended to full-width <main>
  * when no Environments heading was on the page, and the section
  * landed at x=0-2px on every Settings page).
+ *
+ * Settings-page ONLY (2026-11-18 QA round 2, N1): the heading search
+ * must not run on the chat page at all — the chat view has headings
+ * too, and the section mounted at the top of a conversation, hiding
+ * messages. Nav headings are skipped as well (round 2: the first
+ * heading found was in the left nav, so the section landed inside the
+ * 265px nav column at x=17 instead of the content column at x=330).
  */
 function findAnchor(doc) {
+  if (!isSettingsPage(doc)) return null;
   const headings = doc.querySelectorAll
     ? doc.querySelectorAll("h1,h2,h3,h4,[role='heading']")
     : [];
@@ -136,6 +158,7 @@ function findAnchor(doc) {
   let envColumn = null;
   let anyColumn = null;
   for (const h of headings) {
+    if (isInNav(h)) continue;
     const text = (h.textContent || "").trim().toLowerCase();
     const container = climbToSection(h);
     if (!container || !container.parentElement) continue;
@@ -149,8 +172,9 @@ function findAnchor(doc) {
   if (envColumn) return envColumn;
   if (anyColumn) return anyColumn;
   // Last resort, Settings page only: the main element. (On the chat
-  // page there is a <main> too — never mount there.)
-  if (isSettingsPage(doc) && doc.querySelector) {
+  // page there is a <main> too — never mount there; the guard above
+  // already returned null there.)
+  if (doc.querySelector) {
     const main = doc.querySelector("main,[role='main']");
     if (main) return main;
   }
