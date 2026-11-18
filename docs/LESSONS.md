@@ -442,3 +442,63 @@ same code repeatedly. And: a Pages Function runs on every request to the
 site, so its invocation count is the account's burn rate; consider a
 `_routes.json` exclude for `/assets/*` (hashed, immutable — the Function
 only adds cache headers there) to cut it.
+
+## 2026-11-19 — Smart sleep/wake: the busy machine that never slept, and the status page that never knew the next run
+
+**Symptom:** the machine ran the full ~8h max run on the evening of
+2026-11-18 and took a forced ~2h cooldown (suspended 00:57 IST, back
+03:04 IST), even though intelligent sleep/wake was deployed and working.
+The user asked why the cooldown was so long and whether the cycle
+repeats (it does: 8h on, ~2h off, fresh 8h). Separately, in integration
+review, the new status page's "next scheduled run" could never show a
+time: it reads `d.sleepwake.nextRoutineAt` from `GET /status`, but the
+stored status never carried a `sleepwake` field.
+
+**Cause (1):** `decideSleepWake` only sleeps an IDLE machine — every
+guard (no visit 30 min, no agent activity 10 min) must pass. A machine
+that stays busy all evening never qualifies, so it runs the full 8h
+into the forced cooldown. The smart system was working as designed; the
+design had no answer for a continuously-busy machine.
+
+**Cause (2):** the keep-alive tick's hold-sleeping branch returns
+`{...cached, sleepwake: {nextRoutineAt, ...}}` WITHOUT calling
+`saveStatus`, so the `sleepwake` object is only ever in a live tick
+response, never in the stored `qwenpaw:status` row that `GET /status`
+serves. The status page therefore always rendered "Not scheduled".
+No harness caught it: the pages harness checks the page reads the
+field, not that the Worker provides it.
+
+**Fix:** (1) max-run guard in `decideSleepWake` (T143): uptime >= 420
+min (7h, 1h buffer before InstaBox's 8h wall) + machine up + state
+running + no manual rest -> sleep with reason `max_run_guard`, even
+with recent visit/agent activity. WAKE still wins (the routine-due
+branch returns first) and unknown uptime (0) fails the threshold
+(fail-closed). The guard respects the keep-alive toggle automatically
+(the tick early-returns before `decideSleepWake` when OFF). (2) `GET
+/status` now computes `sleepwake.nextRoutineAt` itself with the same
+`computeNextRoutine` the tick uses (user-paced endpoint, so the extra
+D1 reads are proportional to user action); Infinity/no-routines and
+null/unknown both serialize as null. (3) Keep-alive ON/OFF toggle:
+`POST /keepalive` (Bearer <redacted>, header only) flips D1
+`keepalive:enabled`; the tick skips entirely when OFF (up to 288
+req/day saved); `/status` + `/sleepwake/state` expose `keepAlive`.
+(4) Hallmark waking/cooldown/status pages (no polling on status;
+waking/cooldown `<title>` changed from em dash to colon to clear
+Hallmark gate 19). (5) 22 net new AgentX rebrand rules (table 19 -> 41).
+
+**Verification:** machine-free only — T143 72/72 + 105/105 (fail-first
+48/72 + 44/105), T114 174/174 (fail-first 54/174), T108/T109 still
+green, `check-rebrand-syntax.sh` PASS, sloplint 0 FAIL (1 WARN F16 on
+status). DeepSeek review attempted 3 times, returned empty each time
+(known gateway failure mode: long/complex prompts return empty stdout
+with exit 0); the toggle/guard paths were verified by direct diff
+review instead, which is what caught cause (2). NOT verified live:
+deploy + browser (a real flip + skipping tick, a real 7h guard sleep,
+the pages in a real browser) — blocked by the 1027 outage until the
+00:00 UTC reset.
+
+**Rule:** an idle-only sleep rule cannot protect a busy machine —
+every sleep/wake design needs a max-run guard with a buffer before
+the platform's hard wall. And: a page field is only real if the
+endpoint that serves the page provides it — a harness that checks the
+page reads a field must also check the endpoint returns it.
