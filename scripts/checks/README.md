@@ -1,12 +1,18 @@
 # scripts/checks/ — mechanical checks
 
 A convention that lives only in prose gets violated within a week; a rule +
-a check survives. Each check here is an executable that exits 0 (pass) or 1
+a check survives. Each check here is a bash script that exits 0 (pass) or 1
 (fail). Run them all before pushing:
 
 ```bash
 bash scripts/checks/run-checks.sh
 ```
+
+Invoke every check with `bash`, never by direct execution: files pushed via
+the GitHub Contents API (`scripts/gh-push.py`) are stored as mode 100644,
+so the executable bit does not survive a push (the whole repo is 100644
+except `features/memory/install-ripwire.sh`). The runner and the T121 test
+both invoke the checks with `bash` for this reason.
 
 AGENTS.md §5 makes this part of the change protocol (run the checks before
 committing, alongside the machine-free suite).
