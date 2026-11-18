@@ -1,0 +1,15 @@
+[Unit]
+Description=Approval TTL sweep, daily at 03:35 UTC
+
+[Timer]
+# Daily is enough for the 24h approval / 1h secret TTLs: the
+# read-time check in the approve/deny handlers is the real
+# enforcement and needs no timer. The sweep exists to resolve the
+# file record + audit for cards nobody answers, so the store does
+# not accumulate stale pendings.
+OnCalendar=03:35
+Persistent=true
+Unit=qwenpaw-approval-ttl-sweep.service
+
+[Install]
+WantedBy=timers.target
