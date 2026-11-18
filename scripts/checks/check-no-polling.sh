@@ -32,6 +32,13 @@
 #     waking-page progress mechanism: a page whose whole purpose is to show
 #     live progress while the user waits. It is a UI timer inside a served
 #     page, not a poll in the proxy itself.
+#   UI-TIMER-ALLOWLIST: sidebar-ellipsis re-apply timer — the console
+#     sidebar truncation re-applied every 1.5 s in the user's browser
+#     (2026-11-18 QA rounds 5–13: React reverts the truncated title text
+#     between MutationObserver firings, so the observer alone never
+#     sticks). Client-side only, runs only while the user has the console
+#     open, makes no network calls and writes no data — it only
+#     re-truncates sidebar title text nodes. Not a server poll loop.
 #
 # Usage: check-no-polling.sh [ROOT]
 #   ROOT defaults to the repo root (parent of scripts/). Exits 0 if no
@@ -46,6 +53,7 @@ hits="$(grep -rn 'setInterval' \
     pages/public/_worker.js worker/src/ features/*/worker/src/ features/*/worker/*.js \
     2>/dev/null \
     | grep -v "getElementById('elapsed')" \
+    | grep -v "UI-TIMER-ALLOWLIST" \
     || true)"
 
 if [ -z "$hits" ]; then
