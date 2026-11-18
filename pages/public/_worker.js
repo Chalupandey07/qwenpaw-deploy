@@ -698,7 +698,7 @@ function computerPanelScript(rebrandEnabled) {
     // ?rebrand=0 in the page URL (checked at runtime).
     /* AGENTX-REBRAND-START */
     var AGENTX_MENU_LABELS = ["Tutorial", "Feature Demos", "Changelog", "FAQ", "GitHub", "Documentation", "Import"];
-    var AGENTX_CHINA_LABELS = ["DashScope", "SiliconFlow", "ModelScope", "Alibaba", "Alibaba Cloud", "Aliyun", "WeCom", "DingTalk", "Feishu", "QQ", "WeChat", "Xiaoyi"];
+    var AGENTX_CHINA_LABELS = ["DashScope", "SiliconFlow", "ModelScope", "Alibaba", "Alibaba Cloud", "Aliyun", "WeCom", "DingTalk", "Feishu", "QQ", "WeChat", "XiaoYi", "Yuanbao"];
     var AGENTX_LOAD_BEARING = ["qwenpaw[codex]", "qwenpaw[whisper]", "QWENPAW_AUTH_ENABLED", "~/.qwenpaw", "qwenpaw_auth_token", "qwenpaw-agent-storage", "qwenpaw-last-used-agent", "qwenpaw:", "qwenpaw-"];
     var agentxLinkBlockerInstalled = false;
     var agentxLastRun = 0;
@@ -891,6 +891,16 @@ function computerPanelScript(rebrandEnabled) {
     // optional climbFn (2026-11-18, hide-china) replaces
     // agentxClimbToContainer for callers whose cards the generic climb
     // cannot find — it must never return a list container.
+    // Matching is CASE-INSENSITIVE (fix 2026-11-18, live browser
+    // re-verification #3): the XiaoYi channel survived because the label
+    // list spelled it "Xiaoyi" while the console renders the display name
+    // "XiaoYi" and the channel icon img alt is the lowercase id "xiaoyi"
+    // — "Xiaoyi" occurs ZERO times in the live main bundle, so a
+    // case-sensitive match could never fire on either path. The other
+    // five China channels hide because their display names match the
+    // labels exactly; only XiaoYi differs in case. Lowercasing both
+    // sides also covers the icon-alt path (alt is always the lowercase
+    // channel id) and any future casing drift in a display name.
     function agentxHideByName(labels, itemSelector, containerSelector, climbFn) {
       var found = 0;
       var els;
@@ -907,16 +917,20 @@ function computerPanelScript(rebrandEnabled) {
           if (!name) { try { name = (el.textContent || "").trim(); } catch (e) {} }
           if (!name) continue;
           var matched = false;
+          var nameLower = "";
+          try { nameLower = name.toLowerCase(); } catch (e) { nameLower = name; }
           for (var j = 0; j < labels.length; j++) {
             var label = labels[j];
-            if (name === label) { matched = true; break; }
+            var labelLower = "";
+            try { labelLower = label.toLowerCase(); } catch (e) { labelLower = label; }
+            if (nameLower === labelLower) { matched = true; break; }
             if (fromAttr) {
               if (label.indexOf(" ") !== -1) {
-                if (name.indexOf(label) !== -1) { matched = true; break; }
+                if (nameLower.indexOf(labelLower) !== -1) { matched = true; break; }
               } else {
-                var words = name.split(/[^A-Za-z0-9]+/);
+                var words = nameLower.split(/[^a-z0-9]+/);
                 for (var k = 0; k < words.length; k++) {
-                  if (words[k] === label) { matched = true; break; }
+                  if (words[k] === labelLower) { matched = true; break; }
                 }
                 if (matched) break;
               }
