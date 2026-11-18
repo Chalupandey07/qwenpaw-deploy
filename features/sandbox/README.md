@@ -23,8 +23,14 @@ hold credentials.
 ## The trust boundary (read this before deploying)
 
 The boundary is: **the sandbox container can reach exactly two
-things — its own job workspace, and the egress proxy. Everything
-else is refused, and a refusal is visible.**
+things by design — its own job workspace, and the egress proxy.
+Everything else is refused, and a refusal is visible.**
+
+Measured 2026-11-19: direct internet egress from the bridge is
+OPEN (plain Docker bridge NAT — `api.github.com:443` reachable
+from a throwaway container on the bridge). The proxy is the only
+*intended* route out, not yet the only route. See "The internet,
+directly" below and the follow-up in DONE vs REMAINING.
 
 What the sandbox CAN reach:
 
@@ -40,11 +46,11 @@ What the sandbox CANNOT reach (each enforced in code, tested in T139):
 | Unreachable | Enforcement |
 |---|---|
 | `auth.json` / `working.secret` / provider keys | no mount outside the job workspace; the validator refuses `working.secret`, the whole `working` tree, and the machine home as mount sources |
-| The vault broker (172.18.0.1:8896) and the MCP proxy (:8898) | the sandbox is on the isolated bridge `qwenpaw-sandbox-net` with no route to the gateway; `extra_hosts` may not name the gateway; the proxy denies the gateway host too (T139 B9) |
+| The vault broker (172.18.0.1:8896) and the MCP proxy (:8898) | two iptables rules deny sandbox-subnet → 172.18.0.1 (DOCKER-USER + INPUT), measured 2026-11-19: the DOCKER-USER rule alone does NOT block it — container→gateway is host-bound INPUT traffic, the broker stayed REACHABLE with only that rule; the INPUT rule is the enforcing one (both ports TimeoutError after it). Re-apply script: `/data/home/qwenpaw/sandbox/iptables-sandbox-gateway-deny.sh` (rules are lost on Docker restart/reboot). `extra_hosts` may not name the gateway; the proxy denies the gateway host too (T139 B9) |
 | The host Docker daemon | no `docker.sock` mount (validator + argv render refuse it); no docker client in the image |
 | The host network / host PID / host IPC / host devices | `--network` is the isolated bridge only; no `--privileged`, no `--cap-add` (caps dropped `ALL`), `no-new-privileges`, no `--pid=host` / `--ipc=host`, no `--device` |
 | Any vault value, ever | the container holds no broker token and no key; the only credential-shaped thing it ever sees is a scoped token that carries NAMES, and the broker injects the value into the child env only |
-| The internet, directly | no route out of the bridge except through the proxy; the proxy enforces the T123 allowlist |
+| The internet, directly | **NOT enforced — measured 2026-11-19: a plain bridge NATs direct egress (`api.github.com:443` and `8.8.8.8:53` reachable from a container on the bridge). The proxy is the only *intended* route, not the only route. Follow-up, not yet applied (needs parent approval): pin the proxy to a fixed IP on the bridge and add an egress-default-deny DOCKER-USER rule for the rest of the subnet (RETURN for the proxy IP, DROP for the rest) — a blanket subnet DROP would also block the proxy's own outbound, so the pin comes first.** |
 | China endpoints | the proxy uses the T123 guard, which denies China hosts BEFORE the allowlist — even if one were added to it |
 | Any other job's workspace | one bind mount per container, per job; the container is `--rm` |
 
@@ -56,11 +62,16 @@ hand-waving):
    host. There is no gVisor/KVM on the Free tier. The sandbox raises
    the bar from "read a file" to "exploit the kernel"; it does not
    remove the kernel from the trust boundary.
-2. **The gateway is one iptables rule away.** `172.18.0.1` is
-   reachable from ANY bridge unless the DOCKER-USER rule in §5
-   denies it. If that rule is missing or wrong, the token gate is
-   bypassed entirely. The rule is a deploy step, and its absence is
-   the single most dangerous misconfiguration in this feature.
+2. **The gateway is two iptables rules away.** `172.18.0.1` is
+   reachable from ANY bridge unless the rules in §5 deny it —
+   measured 2026-11-19: the DOCKER-USER rule alone does NOT block
+   it (container→gateway is host-bound INPUT traffic); the INPUT
+   rule is the enforcing one. Both rules are lost on Docker
+   restart/reboot (no iptables-persistent on the box); re-apply with
+   `/data/home/qwenpaw/sandbox/iptables-sandbox-gateway-deny.sh`.
+   If either rule is missing, the token gate is bypassed entirely.
+   A missing rule is the single most dangerous misconfiguration in
+   this feature.
 3. **TLS through the proxy is opaque.** CONNECT is allowed only to
    allowlisted hosts, but the proxy cannot see the path or body
    inside TLS. An allowlisted host that turns hostile can still
@@ -68,9 +79,13 @@ hand-waving):
    control; there is no content inspection.
 4. **DNS is not pinned.** The host is checked before resolution; a
    rebinding answer after the check is not caught. DNS exfiltration
-   needs no HTTP at all. The bridge DNS must be the proxy host
-   itself (no upstream resolver reachable from the sandbox) — a
-   compose/deploy setting, NOT verified until a live run proves it.
+   needs no HTTP at all — measured 2026-11-19: `8.8.8.8:53` is
+   directly reachable from the bridge (plain NAT), so a job can
+   resolve anything without the proxy. The bridge DNS must be the
+   proxy host itself (no upstream resolver reachable from the
+   sandbox) — a compose/deploy setting, NOT verified until a live
+   run proves it. The proposed egress-default-deny rule (see "The
+   internet, directly" above) would close the direct-DNS path too.
 5. **Token replay inside the TTL.** The consumed-`jti` store is
    in-memory and dies with the broker; a leaked token stays live
    until its `exp` (at most 300 s). Real revocation is key rotation
@@ -81,8 +96,11 @@ hand-waving):
 7. **Symlink escape in the workspace.** A job workspace containing
    a symlink to `/app/working.secret` would be followed by the bind
    mount. The profile validator checks the mount SOURCE, not the
-   workspace contents. The deploy step must resolve symlinks in the
-   job workspace before mounting (see §5, step 4).
+   workspace contents. Closed in the runner: `resolve_job_workspace`
+   (`realpath`, refuse if the resolved path escapes the workspace
+   root) — wired 2026-11-19 and machine-free tested (T94 218/218);
+   a live symlink probe (a symlinked workspace presented to
+   `POST /api/run`) has NOT been run.
 8. **Supply chain.** The sandbox and proxy images are trust anchors:
    a compromised base image owns every job. Pin the digest at deploy
    time; do not rebuild from `latest` silently.
@@ -208,50 +226,86 @@ close.
   300, workspace outside the root, unknown kind → `refuse` with the
   reason named.
 
-## 5. Deploy (parent's job — machine side, needs the machine back)
+## 5. Deploy (machine side, done 2026-11-19 except the image)
 
-Nothing here is deployed. The deploy order, when the machine unlocks:
+Deployed 2026-11-19 (T139 deploy pass). The deploy order was:
 
-1. Build the image on the machine:
-   `docker build -t qwenpaw-sandbox:2.3.0 -f features/sandbox/profile/Dockerfile features/sandbox/profile/`
-   (pin the digest; record it).
+1. ~~Build the image on the machine~~ — NOT built. The machine is
+   at the 5-image cap and a T132 build is in flight; the parent
+   builds it: `docker build -t qwenpaw-sandbox:2.3.0 -f features/sandbox/profile/Dockerfile features/sandbox/profile/`
+   from `/data/home/qwenpaw/sandbox/profile/` (delete an old image
+   first; pin the digest; record it).
 2. Provision `SANDBOX_BROKER_KEY` (32 random bytes, hex) into
    `/data/home/qwenpaw/.env` (mode 600) for the broker. Never print
    it, never commit it. This is the ONE new secret this feature adds.
-3. Create the bridge + the DOCKER-USER gateway rule FIRST, before
-   any sandbox runs:
-   `docker network create qwenpaw-sandbox-net`
-   then an iptables rule in DOCKER-USER denying
-   `qwenpaw-sandbox-net` → `172.18.0.1` (broker :8896, MCP :8898).
-   Verify from a throwaway container on the bridge that the gateway
-   is unreachable AND that the proxy still answers. Without this
-   rule the isolation is fiction (residual hole 2).
+   Done 2026-11-19: generated on the machine, 1 line, 64 hex chars,
+   verified by count/length only.
+3. Create the bridge + the gateway rules FIRST, before any sandbox
+   runs: `docker network create --subnet 172.19.0.0/16 --gateway
+   172.19.0.1 qwenpaw-sandbox-net`, then TWO iptables rules denying
+   `qwenpaw-sandbox-net` → `172.18.0.1` (broker :8896, MCP :8898):
+   DOCKER-USER `-s 172.19.0.0/16 -d 172.18.0.1 -j DROP` AND INPUT
+   `-s 172.19.0.0/16 -d 172.18.0.1 -j DROP`. Measured: the
+   DOCKER-USER rule alone does NOT block the gateway (broker stayed
+   REACHABLE); with the INPUT rule both ports are unreachable
+   (TimeoutError), while the main container still reaches the
+   broker. Re-apply after reboot/Docker restart:
+   `sudo /data/home/qwenpaw/sandbox/iptables-sandbox-gateway-deny.sh`.
 4. Resolve symlinks in the job workspace before mounting
    (`realpath`; refuse the job if the resolved path escapes the
-   workspace root). Residual hole 7.
+   workspace root). Done in the runner (`resolve_job_workspace`),
+   machine-free tested; a live symlink probe has not been run.
 5. Sync `features/sandbox/egress_proxy.py`,
    `features/egress-guard/egress_guard.py`, and `proxy-allowlist.txt`
    to the machine; start the proxy from
-   `profile/docker-compose.sandbox.yml`.
+   `profile/docker-compose.sandbox.yml`. Done 2026-11-19: files
+   synced to `/data/home/qwenpaw/sandbox/` (+ `profile/`) and
+   `/data/home/qwenpaw/egress-guard/`; the proxy runs as container
+   `qwenpaw-sandbox-egress` on the bridge (172.19.0.2, started with
+   the existing `agentscope/qwenpaw:v2.3.0` image via the
+   compose-equivalent `docker run` — no image build — because the
+   sandbox image does not exist yet). Live: allowlisted host via
+   the proxy → 200; non-allowlisted → 403 `not_allowlisted`; China
+   host → 403 `china_host`; private IP → 403 `private_ip`; CONNECT
+   to an allowlisted host opens the tunnel, to a non-allowlisted
+   host fails 403.
 6. Implement the broker-side `POST /sandbox/inject` endpoint: verify
    the token (`vault_tokens.verify_token`, single-use store), fetch
    the named value from the Worker (`/vault/export`), inject it into
    the child env, scrub the output — the same pattern as the
    broker's existing `/run`, but token-gated instead of broker-token
-   gated. Until this endpoint exists, no sandbox job can use a vault
-   key at all (fail-closed, by design).
+   gated. Done 2026-11-19: endpoint live on the broker (service
+   restarted); bad/missing token refused (401/400), GET → 405, and
+   a valid token is verified live (502 `upstream_error` from the
+   down Worker, not 401) and consumed (replay → 401 "token already
+   used"). The value-in-env + scrub half is NOT yet proven live:
+   the Worker is down with Cloudflare error 1027 until the daily
+   limit resets 00:00 UTC (05:30 IST 2026-11-19). Re-run after the
+   reset: `python3 /data/home/qwenpaw/vault/t139-proof-inject.py`
+   (reads the key from `.env`, prints only statuses).
 7. Wire dispatch into the job runner: Code Mode jobs call
    `route_job`; a `sandbox` decision builds the profile, validates
    it, mints the token, writes it to the tmpfs file, and runs
    `docker run` from `docker_run_argv`. A `refuse` decision surfaces
-   the reason to the user.
-8. Live proof (parent runs this): a container on the bridge tries to
+   the reason to the user. Done 2026-11-19: runner + modules synced
+   to `/data/home/qwenpaw/codemode/`, service restarted, selftest
+   218/218 in the machine layout, `/health` reports
+   `"sandbox": "available"`; live over the socket: a desktop-tool
+   job → 200 refused with the reason surfaced, a sandbox-branch job
+   → 200 refused at the missing-script check with
+   `route.target == "sandbox"`, no token → 401.
+8. Live proof (done as far as possible WITHOUT the sandbox image):
+   gateway-unreachable probe ✓ (step 3), proxy allow/deny from
+   inside a bridge container ✓ (step 5), workspace write-back ✓
+   (a throwaway container writes `probe.txt` into the job workspace
+   and it lands on the host — as root; as uid 10001 it FAILS on a
+   root-owned job dir, see REMAINING). Still to run, with the real
+   image: a container on the bridge tries to
    `cat /app/working.secret/auth.json` (must fail: no such mount),
-   curl the gateway :8896 (must fail: no route), curl an
-   allowlisted host through the proxy (must work), curl a
-   non-allowlisted host (must 403), and run a job that writes a file
-   into `/workspace` (must land in the job workspace on the host).
-   Record the run; until then this feature is code, not protection.
+   and a real runner job end-to-end (token mint → container run →
+   file written into `/workspace` → token dir removed). Record the
+   run; until then this feature is code + partial live proof, not
+   full protection.
 
 ## 6. The test (T139)
 
@@ -290,21 +344,61 @@ DONE in this pass (code + machine-free test, committed):
 * Dockerfile + compose file for the sandbox + proxy.
 * T139, 50/50, fail-first proven (7 passed / 43 failed on the stub).
 
-REMAINING (not done, not faked — parent's job when the machine unlocks):
+DONE on the machine 2026-11-19 (T139 deploy pass, live evidence in
+§5; commits in the deploy-pass push):
 
-* **Broker-side `POST /sandbox/inject` endpoint.** The token API
-  exists; the endpoint that honours it does not. Without it no
-  sandbox job can use a vault key (fail-closed, by design).
-* **The DOCKER-USER gateway rule.** Compose alone cannot express
-  "this bridge may not reach that gateway". Until the rule is live,
-  the network isolation is a config claim, not a fact.
-* **Runner wiring.** Nothing calls `route_job` yet; Code Mode jobs
-  still run in the main container. The wiring is step 7 in §5.
-* **Live proof.** No container has run: no Dockerfile build, no
-  bridge test, no gateway-unreachable probe, no proxy-through-
-  container test, no browser check. All listed as NOT verified.
-* **Symlink resolution at mount time** (residual hole 7) and the
-  **bridge DNS setting** (residual hole 4) — both deploy steps.
+* Broker `POST /sandbox/inject` deployed + restarted: refusals
+  live (401/400/405), valid-token verification + single-use
+  consumption live (502 upstream, replay 401). The value-in-env +
+  scrub half awaits the Cloudflare 1027 reset (05:30 IST).
+* Bridge `qwenpaw-sandbox-net` (172.19.0.0/16) + BOTH gateway rules
+  (DOCKER-USER + INPUT) live; gateway unreachable from the bridge,
+  main container unaffected; re-apply script on the machine.
+* Runner wiring live: `/health` sandbox available, refuse +
+  sandbox-branch routing proven over the socket, selftest 218/218
+  in the machine layout.
+* Egress proxy live on the bridge (172.19.0.2): allow → 200, deny →
+  403 (`not_allowlisted` / `china_host` / `private_ip`), CONNECT
+  allow/deny as designed.
+* Workspace write-back live: a container writes into the job
+  workspace and it lands on the host.
+
+REMAINING (not done, not faked):
+
+* **The sandbox image itself** (`qwenpaw-sandbox:2.3.0`) — NOT
+  built. 5-image cap, a T132 build is in flight; the parent builds
+  it (`docker build -t qwenpaw-sandbox:2.3.0 -f
+  features/sandbox/profile/Dockerfile features/sandbox/profile/`
+  from `/data/home/qwenpaw/sandbox/profile/`, delete an old image
+  first, pin the digest). Until then no real sandbox container has
+  run: the `auth.json` no-mount probe and the end-to-end runner job
+  (token mint → container run → file in `/workspace` → token dir
+  removed) remain.
+* **Broker inject value-in-env + scrub live proof** — blocked by
+  the Cloudflare 1027 outage until 05:30 IST 2026-11-19. Re-run
+  `python3 /data/home/qwenpaw/vault/t139-proof-inject.py` after the
+  reset (expects: child env names include the item var, no broker
+  token / sandbox key in env, `printenv` → `[redacted]`).
+* **Direct internet egress from the bridge is OPEN (measured).**
+  The proxy is the intended route, not the only route. Follow-up
+  (needs parent approval, NOT applied): pin the proxy to a fixed IP
+  on the bridge and add an egress-default-deny DOCKER-USER rule for
+  the rest of the subnet. A blanket subnet DROP would also block the
+  proxy's own outbound, so the pin comes first.
+* **Workspace ownership for uid 10001.** A real sandbox job runs as
+  uid 10001, but job workspaces are root-owned 0755 (created by the
+  agent), so a job cannot write its own workspace — measured:
+  write-back as 10001 fails `Permission denied` on a root-owned
+  dir, succeeds after `chown 10001:10001`. The runner must chown or
+  chmod the job workspace before the run (design decision, not yet
+  made — recursive chown of a user workspace tree is a bigger
+  change than a one-line fix).
+* **Live symlink probe** — the runner resolves symlinks
+  (`realpath`, refuse on escape) and it is machine-free tested, but
+  a symlinked workspace has not been presented to `POST /api/run`.
+* **Bridge DNS setting** (residual hole 4) — direct DNS
+  (`8.8.8.8:53`) is reachable from the bridge; the egress-default-
+  deny follow-up would close it.
 * **No gVisor / seccomp profile / AppArmor profile.** The profile
   drops ALL caps and sets `no-new-privileges`; a seccomp default
   profile is a follow-up hardening step, not in this pass.
