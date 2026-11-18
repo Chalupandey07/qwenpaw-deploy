@@ -43,7 +43,8 @@ bounded.
 ```
 features/codemode/
   vm/
-    codemode-runner.py      the runner: fixed job, HTTP surface, audit trail
+    codemode-runner.py      the runner: fixed job, sandbox wiring (T139),
+                            HTTP surface, audit trail
     mcp.py                  MCP client: SSE discovery + JSON-RPC over POST
     test_mcp.py             27 checks against a REAL SSE + JSON-RPC server
     test_e2e.py             44 checks: runner -> real MCP -> real HTTP
@@ -65,10 +66,21 @@ features/codemode/
 
 ### The safety model, given this runs on the box holding `auth.json`
 
-1. **Fixed job only.** There is no `eval`, no `exec`, no template accepting
-   caller text. The only way to change what runs is to edit the file and
-   commit it. An AST assertion in the selftest enforces the absence — a
-   substring check would have passed the retired Worker's fake MCP shape.
+1. **Fixed job only, on main.** There is no `eval`, no `exec`, no template
+   accepting caller text for the main-container job. The only way to
+   change what runs there is to edit the file and commit it. An AST
+   assertion in the selftest enforces the absence — a substring check
+   would have passed the retired Worker's fake MCP shape.
+1b. **Generated code only in the sandbox (T139).** A generated-code job
+   is routed by `dispatch.route_job` and runs as uid 10001 on the
+   isolated bridge `qwenpaw-sandbox-net` with a workspace-only mount,
+   no docker.sock, no route to the vault broker, and a 300 s hard
+   deadline. Its only credential is a 90 s scoped token on a tmpfs
+   file — never the broker token, never in env. Anything that cannot
+   run in the sandbox is refused with a named reason, never silently
+   fallen back to main. The AST assertion now allows `subprocess`
+   only via `run()`, only from the sandbox runner and its docker-kill
+   helper: that is the one process the runner spawns, `docker run`.
 2. **No unbounded network.** The runner talks to exactly one URL, from config,
    never from the job.
 3. **Bounded time.** `JOB_DEADLINE_S = 120`, `MCP_TIMEOUT_S = 15` per call.
@@ -87,9 +99,10 @@ no store write. See "The job drives the real desktop" below.
 
 | Endpoint | What |
 |---|---|
-| `GET /health` | `{ ok, runtime:"vm", runner:"available", mcp, token, ready }` — `ready` is false without an MCP URL, and says so |
+| `GET /health` | `{ ok, runtime:"vm", runner:"available", mcp, token, ready, sandbox }` — `ready` is false without an MCP URL, and says so; `sandbox` is `available` only when the three sandbox modules are installed next to the runner |
 | `GET /api/bench` | the measured comparison, same arithmetic as before |
 | `POST /api/run` | runs the fixed job; per-step outcomes; needs `X-Codemode-Token` |
+| `POST /api/run {"job": {...}}` | runs a generated-code job in the sandbox (T139: route -> resolve workspace -> mint token -> `docker run`); refusals surface the reason with status 200; needs `X-Codemode-Token` |
 | `GET /api/runs` | audit trail (in-memory, last 20) |
 | `GET /` | HTML status page |
 
@@ -315,7 +328,10 @@ curl --unix-socket /run/qwenpaw-codemode/runner.sock http://localhost/health
 Requires in `/data/home/qwenpaw/.env`: `CODEMODE_TOKEN` (required for
 `/api/run`) and `MCP_SSE_URL` (default `http://172.18.0.1:8898`). Without the
 first the run endpoint is closed; without the second `/health` reports
-`ready: false` and every run reports the blocker.
+`ready: false` and every run reports the blocker. `SANDBOX_BROKER_KEY`
+(32 random bytes, hex) is required only for sandbox jobs that need a vault
+value — without it such a job is blocked, naming the key, and a job with
+no vault need still runs.
 
 One-shot, useful for a cron or a manual check:
 
@@ -330,7 +346,9 @@ hours later. `test_e2e.py` caught it.
 
 ## Deliberately not done
 
-- **No model-generated code.** The pilot measures the runtime, not a model.
+- **No model-generated code on main.** The pilot measures the runtime, not a
+  model. Generated code runs only in the sandbox (T139) — never in the main
+  container, never by falling back to it.
 - **No QwenPaw-side code-execution tool.** That is a QwenPaw feature (research
   note §4), not an integration.
 - **No legacy `createCodeTool`.**
