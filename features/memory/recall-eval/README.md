@@ -24,7 +24,9 @@ no model call, no machine.
 | `features/memory/recall-eval/integrity_fixtures.json` | NEW — 4 staged integrity cases (2 contradiction, 2 tool-failure), grade=judge-only. |
 | `features/memory/recall-eval/test_recall_eval.py` | NEW — provisional T137, 64 checks. |
 | `features/infra/evals/cases.json` | APPENDED 3 recall cases only (8 cases total now). Nothing existing changed; version left at 1 — the coordinator owns versioning. `run-evals.py` was NOT modified (the gap #5 sibling owns the judge wiring there). |
-| `features/memory/facts.py` | NOT touched — a parallel build (gap #20) owns its write path. |
+| `features/memory/facts.py` | FIXED 2026-11-19 (T137 wiring): one line in `extract_entities` — hyphens normalised to spaces before lexicon matching, so `loop-gate` matches the `loop gate` term. No scoring weights changed. |
+| `features/memory/recall-eval/test_recall_eval.py` | UPDATED 2026-11-19: hit@1 / false-top checks tightened to the new baseline (1.0 / 0.0); still 64 checks. |
+| `features/memory/recall-eval/recall_eval.py` | UPDATED 2026-11-19: thresholds tightened to the new baseline (hit@1 1.0, false-top 0.0); docstring re-baselined. |
 | `features/test-project/run-tests.py`, `TESTS.md`, `RESULTS.md`, `PLAN.md` | NOT touched — the coordinator registers T137 sequentially. |
 
 ## How to run
@@ -40,20 +42,21 @@ to open the live `workspaces/default/memory.db` unless
 `--allow-live-path` is passed (a live seeded run needs coordinator
 approval — seeding test facts into real memory would pollute it).
 
-## Measured baseline (2026-11-18, scratch DB, `recall_eval.py --check`)
+## Measured baseline (2026-11-18, scratch DB, `recall_eval.py --check`;
+re-baselined 2026-11-19 after the T137 hyphen fix in facts.py)
 
-| Metric | Measured | Threshold |
-|---|---|---|
-| hit@1 | 0.833 (5/6) | >= 0.8 |
-| hit@3 | 1.0 (6/6) | == 1.0 |
-| hit@5 | 1.0 (6/6) | reported only |
-| MRR | 0.917 | >= 0.9 |
-| mean rank | 1.17 (miss rank = limit+1) | reported only |
-| false-top rate | 1/6 | <= 1/6 |
-| candidate-pool hit rate | 1.0 | == 1.0 |
-| determinism (2nd run identical) | yes, all 6 queries | required |
-| max latency | 1.17 ms | informational |
-| max tokens per query | 38 | informational |
+| Metric | Measured (2026-11-19) | Was (2026-11-18) | Threshold |
+|---|---|---|---|
+| hit@1 | 1.0 (6/6) | 0.833 (5/6) | == 1.0 |
+| hit@3 | 1.0 (6/6) | 1.0 (6/6) | == 1.0 |
+| hit@5 | 1.0 (6/6) | 1.0 (6/6) | reported only |
+| MRR | 1.0 | 0.917 | >= 0.9 |
+| mean rank | 1.0 (miss rank = limit+1) | 1.17 | reported only |
+| false-top rate | 0/6 | 1/6 | == 0 |
+| candidate-pool hit rate | 1.0 | 1.0 | == 1.0 |
+| determinism (2nd run identical) | yes, all 6 queries | yes | required |
+| max latency | 1.59 ms | 1.17 ms | informational |
+| max tokens per query | 38 | 38 | informational |
 | staleness | old absent by default, new rank 1; as-of 2026-11-05 returns old, 2026-11-15 returns new, 2026-10-01 returns neither | required |
 | abstention | nonsense query 0 results; paraphrase canary 0 results; empty query raises FactError | required |
 
@@ -66,9 +69,9 @@ informational (done); the pool-hit metric, false-top rate,
 determinism check, as-of boundary checks, and the paraphrase canary
 as an expected-zero check were all added from that review.
 
-## Finding: the loop-gate query misses at rank 1 (measured, not fixed)
+## Finding: the loop-gate query missed at rank 1 (measured, FIXED 2026-11-19)
 
-Query `loop gate budget per task` returns the distractor
+Query `loop gate budget per task` used to return the distractor
 ("The loop gate budget per task counts shell calls and total calls.",
 fused 0.439) above the target ("The loop-gate budget is 60 total tool
 calls and 40 shell calls per task.", fused 0.432). Mechanism,
@@ -76,10 +79,22 @@ verified in the probe: the target spells it `loop-gate` (hyphen), and
 the lexicon entity regex `\bloop gate\b` does not match across a
 hyphen, so the target gets entity_overlap 0 while the space-spelled
 distractor gets 1 — and the shorter distractor also wins BM25. The
-answer is still in the top-3 (rank 2), so hit@3 is unaffected. This
-is reported as a finding for a follow-up in facts.py; it is NOT fixed
-here (facts.py is owned by the parallel gap #20 build, and the eval's
-job is to measure, not to re-tune the retriever).
+answer was still in the top-3 (rank 2), so hit@3 was unaffected.
+
+**Fix (T137 wiring, 2026-11-19):** `facts.py extract_entities`
+normalises hyphens to spaces before lexicon matching
+(`lowered = re.sub(r"-", " ", text.lower())`), so hyphenated forms
+match their lexicon term. Minimal by design: one line, no scoring
+weight changed, and it generalises to the other multi-word lexicon
+terms ("hugging face", "derived image", "daily summary"). Measured
+after the fix, scratch DB: hit@1 1.0 (6/6), MRR 1.0, false-top 0,
+all 6 queries rank 1; `test_recall_eval.py` still 64/64 (its hit@1
+and false-top checks were tightened to the new baseline, so a
+regression fails loudly), T117 41/41 and T118 40/40 unchanged. The
+fixed `facts.py` is synced to the machine
+(`/data/home/qwenpaw/working/memory-tools/facts.py`) and the eval
+was re-run there against scratch DBs only — see the machine-sync
+note in TESTS.md T137.
 
 ## Known limitation: queries must share vocabulary with the fact
 
@@ -155,8 +170,9 @@ into live memory needs approval, so no live run is claimed here.
 
 ## Deliberately not done
 
-- **No fix to facts.py** (hyphen/entity finding above) — parallel
-  ownership (gap #20) + eval measures, does not re-tune.
+- **No scoring-weight change with the hyphen fix** — the T137 fix
+  touches only the match text (hyphens → spaces before lexicon
+  matching); BM25/entity/importance weights are untouched.
 - **No substring grading of integrity cases** — that repeats the
   flaw gap #5 fixes.
 - **No `run-evals.py` change** — the gap #5 sibling owns judge
