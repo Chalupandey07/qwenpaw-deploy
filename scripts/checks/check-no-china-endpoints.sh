@@ -20,6 +20,16 @@
 #     it; the constant itself is the thing being tested against.
 #   pages/public/vendor/ — minified third-party bundles (xterm etc.), not
 #     our code. Excluded by path.
+#   features/model-identity/src/pristine/agents.py and
+#     features/model-identity/src/patched/agents.py — the UPSTREAM
+#     v2.3.0 file, kept as a patch fixture (pristine) and as the
+#     patched copy the .patch is diffed from. The flagged strings are
+#     upstream's _ALLOWED_MAIL_DOMAINS set ("aliyun.com",
+#     "qiye.aliyun.com" beside gmail.com / qq.com): mail domains whose
+#     auth codes are accepted, NOT endpoints the code calls — no URL,
+#     no fetch, no data sent. The deployed image already contains them
+#     (they are upstream code, not ours); this patch does not touch
+#     those lines. Do not delete the copies (the patch needs them).
 #   scripts/checks/check-no-china-endpoints.sh — this file itself. Its
 #     header documents the endpoint examples and its PATTERN variable
 #     contains the host patterns; those are the check's own definitions,
@@ -44,6 +54,8 @@ hits="$(grep -rniE "$PATTERN" \
     | grep -v '/\.git/' | grep -v '/vendor/' \
     | grep -v 'features/bloat-winwin/src/pristine/telemetry.py' \
     | grep -v 'features/bloat-winwin/test_bloat_winwin.py' \
+    | grep -v 'features/model-identity/src/pristine/agents.py' \
+    | grep -v 'features/model-identity/src/patched/agents.py' \
     | grep -v 'scripts/checks/check-no-china-endpoints.sh' \
     || true)"
 
