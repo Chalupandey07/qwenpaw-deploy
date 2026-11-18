@@ -1155,8 +1155,30 @@ function computerPanelScript(rebrandEnabled) {
         // button (the a11y tree lists no wrapper, but React usually
         // wraps it), so the ellipsis goes on the button AND on any
         // text-bearing child.
+        // SHADOW-DOM (2026-11-18 QA rounds 5–14): the rule never took
+        // effect in 9 rounds even though the code is deployed and the
+        // observer + timer both call it. The remaining explanation is
+        // that the sidebar lives in a SHADOW ROOT (or an iframe-like
+        // encapsulated subtree) that document.querySelectorAll cannot
+        // see — other rules work because they target main-document
+        // elements. So collect buttons by walking the whole tree and
+        // descending into every shadowRoot.
+        function collectButtons(root, out) {
+          try {
+            var list = root.querySelectorAll ? root.querySelectorAll("button") : [];
+            for (var i = 0; i < list.length; i++) out.push(list[i]);
+            var all = root.querySelectorAll ? root.querySelectorAll("*") : [];
+            for (var j = 0; j < all.length; j++) {
+              try {
+                var sr = all[j].shadowRoot;
+                if (sr) collectButtons(sr, out);
+              } catch (e) {}
+            }
+          } catch (e) {}
+          return out;
+        }
         try {
-          var btns = document.querySelectorAll("button");
+          var btns = collectButtons(document, []);
           for (var i = 0; i < btns.length; i++) {
             try {
               var b = btns[i];
@@ -1192,6 +1214,28 @@ function computerPanelScript(rebrandEnabled) {
               // detect it). Cut the longest direct text node to 15
               // chars + "…" when it exceeds 16 chars. This runs before
               // any wrapping, so it cannot be skipped by it.
+              // RECURSIVE (2026-11-18 QA round 14): the title may live
+              // inside a child element (span/div) rather than as a
+              // direct text node, so truncate EVERY text node in the
+              // button's subtree, not only direct children.
+              try {
+                (function truncAll(node) {
+                  try {
+                    var ch = node.childNodes;
+                    for (var q = 0; q < ch.length; q++) {
+                      var cn = ch[q];
+                      if (cn && cn.nodeType === 3) {
+                        var vv = cn.nodeValue || "";
+                        if (vv.length > 16 && vv.indexOf("…") === -1) {
+                          cn.nodeValue = vv.slice(0, 15).replace(/\\s+$/, "") + "…";
+                        }
+                      } else if (cn && cn.nodeType === 1) {
+                        truncAll(cn);
+                      }
+                    }
+                  } catch (e) {}
+                })(b);
+              } catch (e) {}
               try {
                 var direct = b.childNodes;
                 for (var d = 0; d < direct.length; d++) {
