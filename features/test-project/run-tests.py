@@ -1696,6 +1696,28 @@ def t112():
     return _harness("features/computer/harness-screen-retry.mjs", 17)
 
 
+def t113():
+    """Routines daily-summary slot always probes (B-47 follow-up, 9 checks).
+
+    Machine-free harness (features/routines/harness-routines-slot.mjs) that
+    replays the exact live instant from 2026-11-18 07:00:27 IST against the
+    real routines worker module. The daily-summary slot (cron "30 1 * * *")
+    fires AT the routine time, but by then rtNextRoutine has already rolled
+    to tomorrow, so the 15-min skip rule recorded both 07:00 slots as
+    "skipped" live — a silent miss if the keep-alive wake ever failed. The
+    fix makes the slot always probe (bypassing only that one skip branch).
+    Asserts: the slot at 07:00:27 probes (machine up, HTTP 200, one fetch),
+    its kind is daily-summary-slot; the wake-tick at the same instant still
+    skips (zero fetches); a wake-tick 15 min before the routine still
+    probes; a slot with no routines still skips (zero fetches). Fail-first
+    proven: with the fix stashed it fails 3/9 and reproduces the exact live
+    "skipped" entry. The live half (tomorrow's 07:00 slot must show the
+    daily-summary slot probing, not "skipped") is verified by Muse from
+    /api/history after deploy.
+    """
+    return _harness("features/routines/harness-routines-slot.mjs", 9)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2197,6 +2219,7 @@ TESTS = [
     ("T110", "reset: the broker's HTTP surface — auth, preview, confirmation, idempotency, partial, concurrency, happy path (harness)", "reset", "protocol", t110),
     ("T111", "reset broker: allowlist guard + category table (selftest)", "reset", "protocol", t111),
     ("T112", "screen retry on failure (B-47): failed branch retries through bounded single-flight scheduleReconnect (harness)", "computer", "protocol", t112),
+    ("T113", "routines daily-summary slot always probes (B-47 follow-up): slot bypasses the 15-min skip, wake-ticks still skip (harness)", "routines", "protocol", t113),
 ]
 
 SKIP_NOTE = {
