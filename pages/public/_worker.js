@@ -1177,6 +1177,23 @@ function computerPanelScript(rebrandEnabled) {
               b.style.paddingRight = "30px";
               b.style.boxSizing = "border-box";
               b.style.maxWidth = "100%";
+              // TRUNCATE FIRST, by length alone (2026-11-18 DOM
+              // inspection: the row button is only ~179px wide, not
+              // 228px — a 22-char title already overflows, so the old
+              // 24-char threshold never fired for it, and the clipping
+              // is at a parent container so no overflow measurement can
+              // detect it). Cut the longest direct text node to 15
+              // chars + "…" when it exceeds 16 chars. This runs before
+              // any wrapping, so it cannot be skipped by it.
+              try {
+                var direct = b.childNodes;
+                for (var d = 0; d < direct.length; d++) {
+                  var dt = direct[d];
+                  if (dt && dt.nodeType === 3 && (dt.nodeValue || "").length > 16 && (dt.nodeValue || "").indexOf("…") === -1) {
+                    dt.nodeValue = dt.nodeValue.slice(0, 15).replace(/\\s+$/, "") + "…";
+                  }
+                }
+              } catch (e) {}
               var kids = b.querySelectorAll ? b.querySelectorAll("*") : [];
               for (var j = 0; j < kids.length; j++) {
                 try {
@@ -1246,7 +1263,7 @@ function computerPanelScript(rebrandEnabled) {
                   var t2 = tNodes[m];
                   if (t2 && t2.nodeType === 3) {
                     var val = t2.nodeValue || "";
-                    if (val.trim().length >= 3 && val.length > 24 && val.indexOf("…") === -1) {
+                    if (val.trim().length >= 3 && val.length > 16 && val.indexOf("…") === -1) {
                       t2.nodeValue = val.slice(0, 22).replace(/\\s+$/, "") + "…";
                       break;
                     }
@@ -1255,7 +1272,7 @@ function computerPanelScript(rebrandEnabled) {
                     for (var q = 0; q < inner.length; q++) {
                       if (inner[q] && inner[q].nodeType === 3 && (inner[q].nodeValue || "").trim().length >= 3) {
                         var v = inner[q].nodeValue;
-                        if (v.length > 24 && v.indexOf("…") === -1) {
+                        if (v.length > 16 && v.indexOf("…") === -1) {
                           inner[q].nodeValue = v.slice(0, 22).replace(/\\s+$/, "") + "…";
                         }
                         break;
