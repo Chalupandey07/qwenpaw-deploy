@@ -259,8 +259,15 @@ function makeFetch(envList) {
 }
 const tick = () => new Promise((r) => setTimeout(r, 10));
 
-// Settings page mock: an Environments heading inside a section div.
+// Settings page mock: an Environments heading inside a section div,
+// plus a left-nav heading ("General") that must be IGNORED (the nav
+// is not the content column — 2026-11-18 QA round 2). The doc carries
+// a /settings URL, as the real console does.
 function settingsDoc() {
+  const nav = makeEl("nav");
+  const navHeading = makeEl("h2");
+  navHeading.appendChild(makeText("General"));
+  nav.appendChild(navHeading);
   const envSection = makeEl("div");
   envSection.className = "env-section";
   const heading = makeEl("h2");
@@ -268,7 +275,9 @@ function settingsDoc() {
   envSection.appendChild(heading);
   const page = makeEl("div");
   page.appendChild(envSection);
-  return { doc: makeDoc([page]), envSection, page };
+  const doc = makeDoc([nav, page]);
+  doc.defaultView = { location: { pathname: "/settings/general" } };
+  return { doc, envSection, page, nav };
 }
 
 {
@@ -377,6 +386,39 @@ function settingsDoc() {
     mountSearchSettings(chatDoc, fetchMock) === null
     && fetchMock.calls.length === 0
     && chatDoc.getElementById(SECTION_ID) === null);
+}
+
+{
+  // REGRESSION (2026-11-18 QA round 2, N1): the chat page HAS headings
+  // (a conversation title), and the heading search mounted the section
+  // at the top of a conversation, hiding messages. The section must
+  // mount on the Settings page ONLY, whatever headings the chat has.
+  const main = makeEl("main");
+  const title = makeEl("h2");
+  title.appendChild(makeText("Print Numbers 1 to 200"));
+  main.appendChild(title);
+  const chatDiv = makeEl("div");
+  chatDiv.appendChild(makeText("Hello, how can I help you today?"));
+  main.appendChild(chatDiv);
+  const chatDoc = makeDoc([main]);
+  chatDoc.defaultView = { location: { pathname: "/chat/7dec8b4d" } };
+  const fetchMock = makeFetch([]);
+  check("mount on the chat page WITH a heading is a no-op (Settings only)",
+    mountSearchSettings(chatDoc, fetchMock) === null
+    && fetchMock.calls.length === 0
+    && chatDoc.getElementById(SECTION_ID) === null);
+}
+
+{
+  // REGRESSION (2026-11-18 QA round 2, #1): the left nav has headings
+  // too ("General" in the nav). The section must land in the content
+  // column, not inside the nav.
+  const { doc, page, nav } = settingsDoc();
+  const fetchMock = makeFetch([]);
+  const section = mountSearchSettings(doc, fetchMock);
+  check("mount ignores nav headings — section lands in the content column, not the nav",
+    section !== null && section.parentElement === page
+    && !nav.children.includes(section));
 }
 
 {
