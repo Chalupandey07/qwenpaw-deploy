@@ -261,7 +261,17 @@ Repo file → live path:
 | `features/memory/recall.py` | `/data/home/qwenpaw/working/memory-tools/recall.py` |
 | `features/memory/lessons.py` | `/data/home/qwenpaw/working/memory-tools/lessons.py` |
 | `features/memory/reme_doctor.py` | `/data/home/qwenpaw/working/memory-tools/reme_doctor.py` |
+| `features/memory/facts.py` | `/data/home/qwenpaw/working/memory-tools/facts.py` |
+| `features/memory/SKILL.md` | `/data/home/qwenpaw/working/workspaces/default/skills/memory/SKILL.md` |
 | `features/memory/test_*.py` | `/data/home/qwenpaw/working/memory-tools/` |
+
+The fact store itself lives at
+`/data/home/qwenpaw/working/workspaces/default/memory.db` (created by
+`facts.py` on first use; the workspace is root-owned, so seed it with
+`sudo`). Sync with `python3 ~/workspace/scripts/sync-memory.py` — it
+fetches the three files from GitHub, writes them, enables the skill,
+and live-tests the CLI. The skill is enabled with
+`docker exec qwenpaw qwenpaw skills enable memory` (scanner: 0 findings).
 
 No container restart, no restart of any service, no write to `auth.json`,
 `.env`, or any user chat. These tools only ever read.
