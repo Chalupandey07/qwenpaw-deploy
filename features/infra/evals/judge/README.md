@@ -11,7 +11,7 @@ replacing the substring grading of prose in `run-evals.py` / `cases.json`
 | `../judge.py` | The judge: prompt builder, verdict parser, console transport, `grade_case`, `audit_cases`. Stdlib only. |
 | `../rubrics/v1.md` | Versioned rubric (immutable — a change means a new file, `v2.md`). |
 | `calibration.json` | 12 human-reviewed calibration examples with expected verdicts. |
-| `../test_judge.py` | Machine-free test (44 checks). Run it standalone. |
+| `../test_judge.py` | Machine-free test (49 checks). Run it standalone. |
 | `README.md` | This file. |
 
 ## API (for gap #6's integrity fixtures — do not rename)
@@ -113,15 +113,21 @@ QWENPAW_USER=satwik QWENPAW_PASS='...' python3 judge.py --calibrate --live
 
 which grades all 12 examples with the real console judge and requires
 12/12 agreement before the judge is called trusted. **Live agreement
-is NOT VERIFIED yet** — the machine was suspended when this was built
-(cooldown until ~16:36 IST, 2026-11-18) and no live judge call has
-been made. Do not claim it from the machine-free test. The parent /
-coordinator runs the live calibration once the machine is back.
+is NOT VERIFIED yet.** Run 1 (2026-11-19 ~04:08 IST) finished 0/12 NOT
+TRUSTED — on transport, not substance: cal-01..09 hit the 6-min poll
+timeout (MAX_POLLS 72 x 5s; live agent turns take ~6 min), cal-10/11
+hit a token 401 (the 1h token expired mid-run; a supplied token cannot
+re-login by design), cal-12 had an empty reply. The fix is a 15-min poll
+window (MAX_POLLS 72 to 180 in judge.py and run-evals.py, checks G1-G3
+in test_judge.py); run 2 launched with the longer window and a 2h token
+and needs 12/12. Do not claim live agreement from the machine-free
+test. The parent / coordinator runs the live calibration once the machine
+is back.
 
 ## Run
 
 ```bash
-python3 test_judge.py              # must PASS (44 checks)
+python3 test_judge.py              # must PASS (49 checks)
 python3 test_judge.py --old-grader # must FAIL (old grader wrong on >= 2)
 python3 judge.py --audit-cases cases.json   # flags all 5 legacy cases
 python3 judge.py --calibrate       # set summary, live NOT VERIFIED
