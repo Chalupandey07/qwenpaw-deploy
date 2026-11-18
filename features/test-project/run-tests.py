@@ -2424,7 +2424,7 @@ def t135():
 
 
 def t136():
-    """Eval harness, LLM judge: judge.py + versioned rubric + calibration set (46).
+    """Eval harness, LLM judge: judge.py + versioned rubric + calibration set (49).
 
     Machine-free test (features/infra/evals/test_judge.py) for the
     all-20 gap #13. judge_reply(reply, rubric, task, *, transport=None,
@@ -2466,7 +2466,13 @@ def t136():
     the smuggled block itself contains "Paris"). Token path (F5/F6,
     added 2026-11-19): a supplied token skips the login call and is
     sent as the Bearer token; a 401 on a supplied token fails as infra
-    without a re-login. Fail-first proven: the test failed with
+    without a re-login. Poll window (G1-G3, added 2026-11-19):
+    MAX_POLLS 72 to 180 (15-min window) in judge.py and run-evals.py
+    - live calibration run 1 (2026-11-19 ~04:08 IST) finished 0/12 NOT
+    TRUSTED on transport, not substance (cal-01..09 poll timeout at
+    360s, cal-10/11 token 401, cal-12 empty reply); run 2 launched
+    with the longer window and a 2h token, needs 12/12. Fail-first
+    proven: the test failed with
     ModuleNotFoundError before judge.py existed. The live half
     (live-model agreement with the calibration set:
     QWENPAW_TOKEN=<token minted in the container>
@@ -2476,7 +2482,7 @@ def t136():
     after deploy.
     """
     return _py_script_harness(
-        ["features/infra/evals/test_judge.py"], 46)
+        ["features/infra/evals/test_judge.py"], 49)
 
 
 def t137():
