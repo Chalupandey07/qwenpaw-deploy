@@ -433,7 +433,7 @@ function taskText(t) {
     lines.push("", "Comments:");
     for (const c of t.comments) lines.push(`- ${c.text}`);
   }
-  lines.push("", "Source: QwenPaw ticket board (qwenpaw-board)");
+  lines.push("", "Source: AgentX ticket board (qwenpaw-board)");
   return lines.join("\n");
 }
 
@@ -461,9 +461,9 @@ function qwenpawTask(t) {
       `  -b '<your logged-in console session cookie>' \\\n` +
       `  -d '${JSON.stringify(body).replace(/'/g, "'\\''")}'`,
     note:
-      "Posting a ticket to QwenPaw uses POST /api/console/chat (Agent API Request Format). " +
+      "Posting a ticket to AgentX uses POST /api/console/chat (Agent API Request Format). " +
       "It requires a logged-in console session, so the board cannot post it server-side: " +
-      "copy the task text and paste it into the QwenPaw console chat, or run the curl above " +
+      "copy the task text and paste it into the AgentX console chat, or run the curl above " +
       "from a browser session that is already logged in. The run continues in the background " +
       "after disconnect; stop it with POST /api/console/chat/stop?chat_id=<chat id>. " +
       "The ticket's session_id is board-<first 8 chars of ticket id>, so the work lands in " +
@@ -477,7 +477,7 @@ const BOARD_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>QwenPaw Ticket Board</title>
+<title>AgentX Ticket Board</title>
 <style>
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0f172a;color:#e2e8f0}
 header{padding:14px 18px;background:#1e293b;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
@@ -516,7 +516,7 @@ code{background:#0f172a;padding:1px 4px;border-radius:4px}
 </head>
 <body>
 <header>
-  <h1>QwenPaw Ticket Board</h1>
+  <h1>AgentX Ticket Board</h1>
   <p>Columns: To do / In progress / In review / Blocked / Done / Won't do &middot; stored in Cloudflare D1 (one row per ticket)</p>
   <span id="keybar">
     <input type="password" id="key" placeholder="Board key" size="18">
@@ -535,8 +535,8 @@ code{background:#0f172a;padding:1px 4px;border-radius:4px}
   </form>
   <div id="board"></div>
   <div id="taskbox">
-    <h2 style="font-size:15px;margin:0 0 6px">Post to QwenPaw</h2>
-    <p style="font-size:13px;color:#94a3b8">The board cannot post this itself (QwenPaw needs your logged-in console session). Copy the text below into the console chat at <a href="https://qwenpawx.pages.dev" target="_blank" rel="noopener">qwenpawx.pages.dev</a>, or run the curl from a logged-in browser session. One ticket = one console session (<code>board-&lt;ticket id&gt;</code>). After posting, press "Mark as sent" on the ticket so the board records it.</p>
+    <h2 style="font-size:15px;margin:0 0 6px">Post to AgentX</h2>
+    <p style="font-size:13px;color:#94a3b8">The board cannot post this itself (AgentX needs your logged-in console session). Copy the text below into the console chat at <a href="https://qwenpawx.pages.dev" target="_blank" rel="noopener">qwenpawx.pages.dev</a>, or run the curl from a logged-in browser session. One ticket = one console session (<code>board-&lt;ticket id&gt;</code>). After posting, press "Mark as sent" on the ticket so the board records it.</p>
     <pre id="tasktext"></pre>
     <pre id="taskcurl"></pre>
     <button id="copytask">Copy task text</button>
@@ -575,7 +575,7 @@ function render(){
       card.innerHTML = "<h3>"+esc(t.title)+(t.follow_up?' <span class="follow" title="follow-up">★ follow-up</span>':'')+"</h3>"
         + (t.description ? "<p>"+esc(t.description)+"</p>" : "")
         + '<div class="meta">'+esc(t.agent)+' · '+esc(t.priority)+' · '+esc(t.id.slice(0,8))+' · '+esc((t.created_at||"").slice(0,10))+'</div>'
-        + (t.sent_to_qwenpaw_at ? '<div class="sent">Sent to QwenPaw ' + esc(t.sent_to_qwenpaw_at.slice(0,16).replace("T"," ")) + ' · session <code>'+esc(t.qwenpaw_session||"")+'</code></div>' : "");
+        + (t.sent_to_qwenpaw_at ? '<div class="sent">Sent to AgentX ' + esc(t.sent_to_qwenpaw_at.slice(0,16).replace("T"," ")) + ' · session <code>'+esc(t.qwenpaw_session||"")+'</code></div>' : "");
       const comments = t.comments || [];
       if(comments.length){
         const ul = document.createElement("ul"); ul.className="comments";
@@ -593,7 +593,7 @@ function render(){
       for(const c of COLUMNS){ const o=document.createElement("option"); o.value=c.id; o.textContent="→ "+c.label; if(c.id===t.column) o.selected=true; sel.appendChild(o); }
       sel.onchange = async ()=>{ try{ const upd = await api("/api/tickets/"+t.id,{method:"PATCH",body:JSON.stringify({column:sel.value})}); TICKETS = TICKETS.map(x=>x.id===t.id?upd:x); render(); refreshSoon(); }catch(e){ err(e.message); } };
       row.appendChild(sel);
-      const toQ = document.createElement("button"); toQ.textContent="Post to QwenPaw"; toQ.className="ghost";
+      const toQ = document.createElement("button"); toQ.textContent="Post to AgentX"; toQ.className="ghost";
       toQ.onclick = async ()=>{ try{ const d = await api("/api/tickets/"+t.id+"/qwenpaw-task"); $("tasktext").textContent=d.task_text; $("taskcurl").textContent=d.curl; $("taskbox").style.display="block"; $("taskbox").scrollIntoView(); }catch(e){ err(e.message); } };
       row.appendChild(toQ);
       if(!t.sent_to_qwenpaw_at){
