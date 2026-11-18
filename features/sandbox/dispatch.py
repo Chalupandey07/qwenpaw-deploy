@@ -74,25 +74,34 @@ FIXED_PILOT_JOB_ID = "codemode-fixed-job"
 def _load_egress_allowlist() -> set[str]:
     """The T123 allowlist — the SAME list, loaded from egress_guard.
 
-    Dispatch reuses it; it does not invent a second allowlist. If the
-    egress-guard module cannot be loaded, dispatch fails closed: no
-    network host is allowed at all.
+    Dispatch reuses it; it does not invent a second allowlist. Search
+    order: the repo tree (features/egress-guard/egress_guard.py), then
+    next to this file — the machine layout, where egress_guard.py is
+    synced into the codemode directory alongside dispatch.py. If the
+    module cannot be loaded from either place, dispatch fails closed:
+    no network host is allowed at all.
     """
-    path = os.path.join(REPO_ROOT, "features", "egress-guard", "egress_guard.py")
-    try:
-        import importlib.util
+    candidates = [
+        os.path.join(REPO_ROOT, "features", "egress-guard", "egress_guard.py"),
+        os.path.join(HERE, "egress_guard.py"),
+    ]
+    for path in candidates:
+        try:
+            import importlib.util
 
-        spec = importlib.util.spec_from_file_location("egress_guard", path)
-        if spec is None or spec.loader is None:
-            return set()
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return set(module.load_allowlist())
-    except Exception:
-        return set()
+            spec = importlib.util.spec_from_file_location("egress_guard", path)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return set(module.load_allowlist())
+        except Exception:
+            continue
+    return set()
 
 
-def route_job(job: dict, allowlist: set[str] | None = None) -> dict:
+def route_job(job: dict, allowlist: set[str] | None = None,
+              workspace_root: str = "/data/home/qwenpaw/working/workspaces") -> dict:
     """Route one job. Returns a dict with at least ``target`` + ``reason``.
 
     ``job`` keys: ``job_id``, ``kind`` (``generated-code`` | ``code`` |
@@ -103,7 +112,10 @@ def route_job(job: dict, allowlist: set[str] | None = None) -> dict:
     (optional list of vault item names), ``token_items`` (optional list
     of vault item names the minted token actually scopes — the caller
     passes what it minted; dispatch checks the job's needs are inside
-    it, it does not mint).
+    it, it does not mint). ``workspace_root`` is the host prefix a job
+    workspace must live under (default the machine path; the runner's
+    selftest passes a temp root so the routing is testable without the
+    machine).
     """
     job_id = str(job.get("job_id") or "").strip()
     kind = str(job.get("kind") or "").strip()
@@ -136,7 +148,7 @@ def route_job(job: dict, allowlist: set[str] | None = None) -> dict:
 
     # Workspace must be a real job workspace under the workspace root.
     workspace = str(job.get("workspace") or "").strip()
-    root = "/data/home/qwenpaw/working/workspaces"
+    root = workspace_root
     if not workspace.startswith(root.rstrip("/") + "/"):
         return {
             "target": "refuse",
