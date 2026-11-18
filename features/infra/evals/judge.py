@@ -12,8 +12,11 @@ How it works
    (POST /api/auth/login, POST /api/console/chat/task,
    GET /api/console/chat/task/{id}). No new key, no decision-model key.
    Credentials come only from the environment at call time
-   (QWENPAW_BASE_URL, QWENPAW_USER, QWENPAW_PASS); they are never
-   written to disk or printed.
+   (QWENPAW_BASE_URL, QWENPAW_TOKEN, or QWENPAW_USER + QWENPAW_PASS);
+   they are never written to disk or printed. QWENPAW_TOKEN is a
+   console token minted inside the container
+   (qwenpaw.app.auth.create_token) — it skips the login call, which
+   is the only path when the account password is not available.
 2. The judge must answer with exactly one verdict block::
 
        <verdict>{"pass": true, "reason": "...", "evidence": "..."}</verdict>
@@ -88,11 +91,14 @@ RUBRIC_VERSION = "rubrics/v1"
 RUBRIC_PATH = HERE / "rubrics" / "v1.md"
 JUDGE_PROMPT_VERSION = "judge-prompt/v1"
 # The judge runs through the console, so the model is whatever the
-# console's active model is. Expected: mosicn/nex-n2.6 (the live
-# default per active_model.json). The live calibration run must confirm
-# the serving model; if it differs, the verdicts still stand (they
-# record the rubric + prompt version) but agreement must be re-measured.
-JUDGE_MODEL = "mosicn/nex-n2.6 (console active model, expected)"
+# console's active model is. Verified 2026-11-19:
+# deepseek-v4.1-flash-free (provider millionseek) per active_model.json
+# — NOT mosicn/nex-n2.6 as this file said before. The live calibration
+# run must confirm the serving model; if it differs, the verdicts
+# still stand (they record the rubric + prompt version) but agreement
+# must be re-measured. Calibration measures agreement, not model
+# identity.
+JUDGE_MODEL = "deepseek-v4.1-flash-free (console active model, verified 2026-11-19)"
 DEFAULT_BASE = "https://qwenpawx.pages.dev"
 POLL_INTERVAL = 5
 MAX_POLLS = 72  # 72 * 5s = 6 min per judge call, same as run-evals.py
@@ -318,21 +324,31 @@ def _extract_text(body):
 class ConsoleJudgeTransport:
     """Call the judge model through the live console chat-task API.
 
-    Mirrors run-evals.py: login once, Bearer token in memory only, 423
-    aborts the run, 429 honours Retry-After with backoff (max 3), 401
-    gets one re-login. A judge-side lock/throttle is an infra failure
-    (JudgeError kind "infra"), never a case verdict.
+    Mirrors run-evals.py: login once (or use a supplied QWENPAW_TOKEN
+    and skip login), Bearer token in memory only, 423 aborts the run,
+    429 honours Retry-After with backoff (max 3), 401 gets one
+    re-login when the token came from a login — a supplied token that
+    is rejected is an infra failure, not a retry. A judge-side
+    lock/throttle is an infra failure (JudgeError kind "infra"),
+    never a case verdict.
     """
 
-    def __init__(self, base=None, user=None, password=None,
+    def __init__(self, base=None, user=None, password=None, token=None,
                  max_calls: int = MAX_JUDGE_CALLS):
         self.base = (base or os.environ.get(
             "QWENPAW_BASE_URL", DEFAULT_BASE)).rstrip("/")
         self.user = user or os.environ.get("QWENPAW_USER")
         self.password = password or os.environ.get("QWENPAW_PASS")
+        # A pre-minted console token (QWENPAW_TOKEN) skips the login call
+        # entirely. It is minted inside the container with
+        # qwenpaw.app.auth.create_token(<user>) and lives in memory only,
+        # never on disk. A supplied token cannot re-login, so a 401 is an
+        # infra failure, not a retry (see _refresh_token).
+        self.token = token or os.environ.get("QWENPAW_TOKEN")
+        self._token = self.token
+        self._token_from_login = self.token is None
         self.max_calls = max_calls
         self.calls = 0
-        self._token = None
 
     @classmethod
     def from_env(cls, **kw):
@@ -346,6 +362,22 @@ class ConsoleJudgeTransport:
         if not token:
             raise JudgeError("judge login returned no token", "infra")
         return token
+
+    def _refresh_token(self):
+        """Re-login after a 401, or fail when the token was supplied.
+
+        A token minted outside the transport (QWENPAW_TOKEN) has no
+        login credentials behind it, so a 401 means the token itself
+        was rejected — retrying a login with no username/password
+        would only send a bogus login. Fail as infra so the run stops
+        instead of looping on a dead token.
+        """
+        if not self._token_from_login or not self.user or not self.password:
+            raise JudgeError(
+                "judge token rejected (401) and no login credentials "
+                "are available to refresh it; mint a fresh token",
+                "infra")
+        self._token = self._login()
 
     def _submit(self, prompt: str, case_id: str | None):
         payload = {
@@ -388,10 +420,11 @@ class ConsoleJudgeTransport:
                          f"{MAX_POLLS * POLL_INTERVAL}s", "judge_timeout")
 
     def __call__(self, prompt: str, case_id: str | None = None) -> str:
-        if not self.user or not self.password:
+        if not self.token and (not self.user or not self.password):
             raise JudgeError(
-                "judge needs QWENPAW_USER and QWENPAW_PASS in the "
-                "environment (never stored); no live judge call was made",
+                "judge needs QWENPAW_TOKEN or QWENPAW_USER and "
+                "QWENPAW_PASS in the environment (never stored); no live "
+                "judge call was made",
                 "judge_error")
         if self.calls >= self.max_calls:
             raise JudgeError(
@@ -413,7 +446,7 @@ class ConsoleJudgeTransport:
         except ApiError as e:
             if e.status == 401:
                 try:
-                    self._token = self._login()
+                    self._refresh_token()
                     task_id = self._submit(prompt, case_id)
                 except ApiError as e2:
                     raise JudgeError(
@@ -429,7 +462,7 @@ class ConsoleJudgeTransport:
             body = self._poll(task_id)
         except ApiError as e:
             if e.status == 401:
-                self._token = self._login()
+                self._refresh_token()
                 body = self._poll(task_id)
             else:
                 raise JudgeError(f"judge poll failed: {e}",
@@ -697,8 +730,8 @@ def main(argv=None) -> int:
                    help="show the calibration set; with --live, grade it "
                         "with the real console judge")
     p.add_argument("--live", action="store_true",
-                   help="use the live console judge (needs QWENPAW_USER / "
-                        "QWENPAW_PASS in the environment)")
+                   help="use the live console judge (needs QWENPAW_TOKEN "
+                        "or QWENPAW_USER / QWENPAW_PASS in the environment)")
     args = p.parse_args(argv)
     if args.audit_cases:
         with open(args.audit_cases, encoding="utf-8") as f:
