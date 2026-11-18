@@ -2131,6 +2131,34 @@ def t128():
         ["features/mcp-client/test_mcp_client.py"], 61)
 
 
+def t129():
+    """Skills as progressive-disclosure packages + self-written skills (46).
+
+    Machine-free test (features/skills/test_skills_packages.py) for gap
+    #10: (a) a skill with valid frontmatter passes the scanner and appears
+    in the index with only name/description/when-to-use/allowed-tools;
+    (b) a skill missing frontmatter FAILS the scanner; (c) a skill
+    invoking a tool outside its declared allowed-tools list is flagged by
+    scope enforcement; (d) the self-written writer drafts a valid skill
+    from a demonstrated task transcript (steps + checks + when-to-use
+    present) and it passes the scanner, including a guidance-only draft
+    (allowed_tools: []); (e) the writer REFUSES a draft that needs a
+    secret or a China endpoint, or has unbounded scope; (f) the index
+    builder loads only the index (no body text). Fail-first proven: 13
+    of the 46 checks fail against the pre-change scanner. DeepSeek design
+    review 2026-11-18 (17,647 prompt + 5,361 completion tokens) caught
+    six issues, all fixed: body-only scope (helper scripts now covered),
+    backslash-continuation hole, unknown binaries in shell blocks,
+    guidance-only refused, over-broad secret refusal, narrow vault
+    mediation — plus three narrowed false positives. The live half
+    (converting the 20 pool-only skills, wiring the agent to load the
+    index, first draft installed from the writer) is verified by Muse
+    after deploy.
+    """
+    return _py_script_harness(
+        ["features/skills/test_skills_packages.py"], 46)
+
+
 def t131():
     """Telegram full-feature bot: token-only setup, menus, chats (66).
 
@@ -2676,6 +2704,7 @@ TESTS = [
     ("T126", "per-task cap + structured stop audit: task budget 60 total / 40 shell across turns, finalise flag, stop audit (harness)", "loop-gate", "protocol", t126),
     ("T127", "checkpoints + rollback: per-run workspace snapshot (tarball + manifest) tagged with run id, restore refuses on drift without --force, automatic pre-restore safety snapshot, list command (harness)", "checkpoints", "protocol", t127),
     ("T128", "MCP client: stdio + streamable HTTP, servers disabled by default, per-server allowlist, namespaced tools mcp.<server>.<tool>, HTTP egress limited to declared hosts, no auto-install (harness)", "mcp-client", "protocol", t128),
+    ("T129", "skills as progressive-disclosure packages: frontmatter schema + tool-scope enforcement, index-only default load, self-written skill writer with secret/China/unbounded refusals, mechanical converter", "skills", "protocol", t129),
     ("T131", "telegram full-feature bot: token-only setup (no numeric id), owner = first whitelist entry, guests read-only, strangers refused; new chat, list + preview + continue an existing console chat (task API); settings via button callbacks (model PATCH, approval PUT); menu grammar + token cache; outbound redaction + inbound untrusted wrapping; driver patch applies cleanly to the pinned v2.3.0 platform.py and reproduces the patched file byte-for-byte (selftest)", "telegram", "protocol", t131),
 ]
 
