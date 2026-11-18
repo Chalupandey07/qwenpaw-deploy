@@ -2114,3 +2114,11 @@ Protocol run by the runner; browser / needs-token rows were recorded as skipped,
 | Test | Area | Method | Result | Evidence |
 |---|---|---|---|---|
 | T121 | checks | protocol | PASS | features/test-project/test_checks.py: exit=0 tally=14 passed, 0 failed |
+
+## Round 58 — 2026-11-18T09:14:41Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: PASS=1.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T121 | checks | protocol | PASS | features/test-project/test_checks.py: exit=0 tally=14 passed, 0 failed |
