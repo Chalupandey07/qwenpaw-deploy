@@ -1,0 +1,191 @@
+--- a/src/qwenpaw/loop/gates/limits.py
++++ b/src/qwenpaw/loop/gates/limits.py
+@@ -182,17 +182,37 @@
+         self.activate(_ToolCallBudgetState())
+ 
+     async def check(self, ctx: Any) -> StopHandlerResult:
+-        """Count the latest iteration's calls and enforce limits."""
++        """Recompute this turn's tool-call total and enforce limits.
++
++        The total is recomputed from the context on every check, scoped
++        to the current reply (``agent.state.reply_id``). The parent
++        accumulates all of a turn's tool-call blocks into the assistant
++        message(s) carrying the current ``reply_id``; adding the latest
++        message's (cumulative) names to the running total once per round
++        inflated the count (50, then 150, then 300, ...) and fired with
++        a wrong total. Recomputing from the reply-scoped blocks counts
++        every call exactly once and does not depend on the iteration
++        counter, so a stale ``last_iteration`` cannot skip a count.
++        When ``reply_id`` is unavailable, fall back to the previous
++        incremental counting.
++        """
+         state = self._state()
+         if state is None:
+             state = _ToolCallBudgetState()
+             self.activate(state)
+-        iteration = int(ctx.get("iteration", 0))
+-        if iteration != state.last_iteration:
+-            names = self._latest_tool_names(ctx.get("agent"))
+-            state.total += len(names)
+-            state.by_tool.update(names)
+-            state.last_iteration = iteration
++        agent = ctx.get("agent")
++        reply_id = getattr(getattr(agent, "state", None), "reply_id", None)
++        if reply_id is not None:
++            names = self._turn_tool_names(agent, reply_id)
++            state.total = len(names)
++            state.by_tool = Counter(names)
++        else:
++            iteration = int(ctx.get("iteration", 0))
++            if iteration != state.last_iteration:
++                names = self._latest_tool_names(agent)
++                state.total += len(names)
++                state.by_tool.update(names)
++                state.last_iteration = iteration
+ 
+         if self._max_calls is not None and state.total >= self._max_calls:
+             return StopHandlerResult(
+@@ -208,29 +228,52 @@
+         return _bypass()
+ 
+     @staticmethod
++    def _turn_tool_names(agent: Any, reply_id: str) -> list[str]:
++        """Tool names issued in the current turn (messages with reply_id).
++
++        All of this turn's tool-call blocks live in messages carrying
++        the current ``reply_id`` -- one message if the parent merges a
++        turn's blocks, one per round otherwise. Counting every block in
++        every such message gives the true turn total.
++        """
++        context = getattr(getattr(agent, "state", None), "context", [])
++        names: list[str] = []
++        for message in context:
++            if getattr(message, "id", None) != reply_id:
++                continue
++            names.extend(ToolCallBudgetGate._tool_names_in(message))
++        return names
++
++    @staticmethod
++    def _tool_names_in(message: Any) -> list[str]:
++        """Tool names from the tool_call/tool_use blocks of one message."""
++        names: list[str] = []
++        content = getattr(message, "content", None)
++        if not isinstance(content, list):
++            return names
++        for block in content:
++            block_type = (
++                block.get("type")
++                if isinstance(block, dict)
++                else getattr(block, "type", None)
++            )
++            if block_type not in ("tool_call", "tool_use"):
++                continue
++            name = (
++                block.get("name", "")
++                if isinstance(block, dict)
++                else getattr(block, "name", "")
++            )
++            if name:
++                names.append(str(name))
++        return names
++
++    @staticmethod
+     def _latest_tool_names(agent: Any) -> list[str]:
+         """Extract tool names from the latest context message with calls."""
+         context = getattr(getattr(agent, "state", None), "context", [])
+         for message in reversed(context):
+-            names: list[str] = []
+-            content = getattr(message, "content", None)
+-            if not isinstance(content, list):
+-                continue
+-            for block in content:
+-                block_type = (
+-                    block.get("type")
+-                    if isinstance(block, dict)
+-                    else getattr(block, "type", None)
+-                )
+-                if block_type not in ("tool_call", "tool_use"):
+-                    continue
+-                name = (
+-                    block.get("name", "")
+-                    if isinstance(block, dict)
+-                    else getattr(block, "name", "")
+-                )
+-                if name:
+-                    names.append(str(name))
++            names = ToolCallBudgetGate._tool_names_in(message)
+             if names:
+                 return names
+         return []
+--- a/src/qwenpaw/modes/default/mode.py
++++ b/src/qwenpaw/modes/default/mode.py
+@@ -14,6 +14,7 @@
+ )
+ from ...loop.gates.doom_loop import DoomLoopGate
+ from ...loop.gates.iteration import IterationGate
++from ...loop.gates.limits import ToolCallBudgetGate
+ from ...loop.gates.rubric import QualitativeRubricGate
+ from ...loop.gates.runner import clear_pending_gate_state
+ from ...runtime.hooks import HookContext
+@@ -125,6 +126,13 @@
+                     stages=loop_config.doom_loop.stages,
+                 ),
+             )
++        if loop_config.tool_call_budget.enabled:
++            gates.append(
++                ToolCallBudgetGate(
++                    max_calls=loop_config.tool_call_budget.max_calls,
++                    per_tool=dict(loop_config.tool_call_budget.per_tool),
++                ),
++            )
+         if loop_config.rubric.enabled:
+             gates.append(
+                 QualitativeRubricGate(
+--- a/src/qwenpaw/config/config.py
++++ b/src/qwenpaw/config/config.py
+@@ -1547,6 +1547,34 @@
+     )
+ 
+ 
++class ToolCallBudgetConfig(BaseModel):
++    """Tool call budget configuration (default loop chain).
++
++    Enforced by ToolCallBudgetGate in the default gate chain, so the
++    cap applies to every chat without a per-chat opt-in.
++    """
++
++    enabled: bool = Field(
++        default=True,
++        description="Enable tool call budget in the default loop",
++    )
++    max_calls: Optional[int] = Field(
++        default=30,
++        ge=1,
++        le=10000,
++        description=(
++            "Maximum tool calls per user turn before stopping. "
++            "The bound is one model batch: the batch that reaches "
++            "the limit still executes, so the enforced bound is "
++            "about one batch (~50 calls), not this number."
++        ),
++    )
++    per_tool: Dict[str, int] = Field(
++        default_factory=lambda: {"execute_shell_command": 20},
++        description="Per-tool call cap per user turn",
++    )
++
++
+ class RubricGateConfig(BaseModel):
+     """Completion check gate configuration.
+ 
+@@ -1694,6 +1722,10 @@
+         default_factory=RubricGateConfig,
+         description="Completion check settings",
+     )
++    tool_call_budget: ToolCallBudgetConfig = Field(
++        default_factory=ToolCallBudgetConfig,
++        description="Tool call budget settings (default loop chain)",
++    )
+     goal: GoalLoopModeConfig = Field(
+         default_factory=GoalLoopModeConfig,
+         description="Fixed Goal mode gate values",
