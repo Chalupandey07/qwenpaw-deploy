@@ -447,11 +447,20 @@ def main() -> int:
             tmp = Path(tmp)
             usage = tmp / "token_usage.json"
             usage.write_text(json.dumps(SAMPLE), encoding="utf-8")
+            # The deny scenarios need a 200k budget (210k > 200k). Use an
+            # explicit fixture, NOT the repo's cost-budget.json: that file
+            # is a user-configurable value (raised to 20M on 2026-11-18
+            # when the 200k repo default blocked the agent) and the test
+            # must not break when it changes.
+            budget200k = tmp / "budget-200k.json"
+            budget200k.write_text(json.dumps(
+                {"daily_token_budget": 200000, "daily_usd_budget": 5.0,
+                 "alert_fraction": 0.8}), encoding="utf-8")
             proc = subprocess.run(
                 [sys.executable, str(HERE / "cost_ledger.py"),
                  "--usage", str(usage),
                  "--prices", str(HERE / "cost-prices.json"),
-                 "--budget", str(HERE / "cost-budget.json"),
+                 "--budget", str(budget200k),
                  "--today", "2026-11-18"],
                 capture_output=True, text=True)
             try:
@@ -469,7 +478,7 @@ def main() -> int:
             import cost_server as srv  # noqa: E402
 
             budget_f = tmp / "cost-budget.json"
-            shutil.copy(HERE / "cost-budget.json", budget_f)
+            shutil.copy(budget200k, budget_f)
             state_f = tmp / "cost-ledger-state.json"
             srv.CostHandler.usage_path = usage
             srv.CostHandler.prices_path = HERE / "cost-prices.json"
