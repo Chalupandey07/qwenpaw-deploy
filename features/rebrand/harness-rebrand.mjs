@@ -57,8 +57,13 @@
  *       provider (OpenAI) is NOT hidden, the provider list container is
  *       NOT hidden, a WeCom / DingTalk configured channel card and a
  *       Feishu / QQ / WeChat available-channel button are hidden as
- *       whole cards/buttons, a non-China channel (Telegram / Slack) is
- *       NOT hidden, the channel grid is NOT hidden, and the China cards
+ *       whole cards/buttons, a XiaoYi / Yuanbao channel (available
+ *       button and configured card, real DOM) is hidden, a XiaoYi
+ *       channel matched only by its icon img alt (lowercase id
+ *       "xiaoyi") is hidden (this proves the case-insensitive match
+ *       does work the label spelling alone cannot do), a non-China
+ *       channel (Telegram / Slack / iMessage) is NOT hidden, the
+ *       channel grid is NOT hidden, and the China cards
  *       are hidden when the provider list mounts after the initial pass
  *       — the old mock used class "provider-card", which the real
  *       bundle never emits, so it passed while the live rule hid the
@@ -205,8 +210,9 @@ console.log("static: the rule table is data-driven and guarded");
     "an interpolation would make the extracted section unevaluable");
   check("the menu-hide list covers the upstream items",
     /"Tutorial", "Feature Demos", "Changelog", "FAQ", "GitHub", "Documentation", "Import"/.test(rebrandSrc));
-  check("the China-hide list covers the providers and channels, including Aliyun",
-    /"DashScope", "SiliconFlow", "ModelScope", "Alibaba", "Alibaba Cloud", "Aliyun", "WeCom", "DingTalk", "Feishu", "QQ", "WeChat", "Xiaoyi"/.test(rebrandSrc));
+  check("the China-hide list covers the providers and channels, including Aliyun, XiaoYi and Yuanbao",
+    /"DashScope", "SiliconFlow", "ModelScope", "Alibaba", "Alibaba Cloud", "Aliyun", "WeCom", "DingTalk", "Feishu", "QQ", "WeChat", "XiaoYi", "Yuanbao"/.test(rebrandSrc),
+    "XiaoYi is the console's real display name (the old 'Xiaoyi' occurs nowhere in the live bundle); Yuanbao is Tencent's channel, missed by the original research");
   check("the load-bearing allowlist is enforced by the text pass",
     /"qwenpaw\[codex\]", "qwenpaw\[whisper\]", "QWENPAW_AUTH_ENABLED", "~\/\.qwenpaw"/.test(rebrandSrc) &&
     /agentxIsLoadBearing\(t\)/.test(rebrandSrc) &&
@@ -225,6 +231,12 @@ console.log("static: the rule table is data-driven and guarded");
     /function agentxClimbToContainer\(el, containerSelector\)/.test(rebrandSrc) &&
     /el\.closest\(containerSelector\)/.test(rebrandSrc),
     "hiding only the name leaf leaves an unnamed icon-only shell");
+  check("the hide-by-name matching is case-insensitive (XiaoYi fix)",
+    /nameLower = name\.toLowerCase\(\)/.test(rebrandSrc) &&
+    /labelLower = label\.toLowerCase\(\)/.test(rebrandSrc) &&
+    /nameLower === labelLower/.test(rebrandSrc) &&
+    /words\[k\] === labelLower/.test(rebrandSrc),
+    "the console renders 'XiaoYi' and the icon img alt is the lowercase id 'xiaoyi'; the old case-sensitive match could fire on neither");
   check("the China climb is structural and never returns the list (2026-11-18 fix)",
     /function agentxClimbToChinaCard\(el\)/.test(rebrandSrc) &&
     /providercards/.test(rebrandSrc) && /availablegrid/.test(rebrandSrc) &&
@@ -585,6 +597,12 @@ if (!rebrandSrc) {
     "a Feishu available-channel button (real DOM) is hidden as a whole button",
     "a QQ available-channel button (real DOM) is hidden as a whole button",
     "a WeChat available-channel button (real DOM) is hidden as a whole button",
+    "a XiaoYi available-channel button (real DOM) is hidden as a whole button",
+    "a XiaoYi configured channel card (real DOM) is hidden as a whole card",
+    "a Yuanbao available-channel button (real DOM) is hidden as a whole button",
+    "a Yuanbao configured channel card (real DOM) is hidden as a whole card",
+    "a XiaoYi channel matched only by its icon img alt (lowercase id 'xiaoyi', real DOM) is hidden as a whole button",
+    "a non-China channel (iMessage available, real DOM) is NOT hidden",
     "a non-China channel (Telegram configured, real DOM) is NOT hidden",
     "a non-China channel (Slack available, real DOM) is NOT hidden",
     "the channel grid is NOT hidden",
@@ -672,6 +690,14 @@ if (!rebrandSrc) {
   // class=channelCard] > top / middle(cardTitle=name) / bottom(Configure);
   // an available channel is a button.availableItem > icon +
   // span.availableItemName + Configure. The grid is div.availableGrid.
+  // The icon is the live channel-icon component: <img alt={channelKey}>,
+  // so the alt is the LOWERCASE channel id ("xiaoyi", "yuanbao", ...) while
+  // the name span carries the display name ("XiaoYi", "Yuanbao"). The
+  // nameInAltOnly variant (no name span) exercises the img-alt match path
+  // alone — it is a real element of the real card, isolated here so the
+  // case-insensitive attribute match is proven to do work on its own
+  // (with only the label-spelling fix, alt "xiaoyi" still would not match
+  // label "XiaoYi" under a case-sensitive comparison).
   const CH = {
     grid: "index-module__availableGrid__UBOlC",
     card: "index-module__channelCard__a6OxB",
@@ -689,12 +715,17 @@ if (!rebrandSrc) {
     wrapper._name = name; card._name = name;
     return wrapper;
   }
-  function realAvailableItem(name) {
-    const btn = makeEl("button", { type: "button", class: CH.item }, [
-      makeEl("span", { class: "index-module__availableItemIcon__x" }, []),
-      makeEl("span", { class: CH.itemName }, [makeText(name)]),
-      makeEl("span", { class: "index-module__availableItemAction__Et-aH" }, [makeText("Configure")]),
-    ]);
+  function realAvailableItem(name, opts = {}) {
+    const children = [
+      makeEl("span", { class: "index-module__availableItemIcon__x" }, [
+        makeEl("img", { alt: name.toLowerCase() }, []),
+      ]),
+    ];
+    if (!opts.nameInAltOnly) {
+      children.push(makeEl("span", { class: CH.itemName }, [makeText(name)]));
+    }
+    children.push(makeEl("span", { class: "index-module__availableItemAction__Et-aH" }, [makeText("Configure")]));
+    const btn = makeEl("button", { type: "button", class: CH.item }, children);
     btn._name = name;
     return btn;
   }
@@ -705,8 +736,15 @@ if (!rebrandSrc) {
   const itemSlack = realAvailableItem("Slack");
   const itemQQ = realAvailableItem("QQ");
   const itemWeChat = realAvailableItem("WeChat");
+  const itemXiaoYi = realAvailableItem("XiaoYi");
+  const chanXiaoYi = realChannelCard("XiaoYi");
+  const itemYuanbao = realAvailableItem("Yuanbao");
+  const chanYuanbao = realChannelCard("Yuanbao");
+  const itemXiaoYiAltOnly = realAvailableItem("XiaoYi", { nameInAltOnly: true });
+  const itemIMessage = realAvailableItem("iMessage");
   const channelGrid = makeEl("div", { class: CH.grid }, [
     chanWeCom, chanTelegram, chanDingTalk, itemFeishu, itemSlack, itemQQ, itemWeChat,
+    itemXiaoYi, chanXiaoYi, itemYuanbao, chanYuanbao, itemXiaoYiAltOnly, itemIMessage,
   ]);
   // Async mount: this list is empty on the first pass (the API has not
   // returned yet); the cards mount afterwards and the observer's re-run
@@ -794,6 +832,18 @@ if (!rebrandSrc) {
     itemQQ.style.display === "none", `display=${itemQQ.style.display}`);
   check("a WeChat available-channel button (real DOM) is hidden as a whole button",
     itemWeChat.style.display === "none", `display=${itemWeChat.style.display}`);
+  check("a XiaoYi available-channel button (real DOM) is hidden as a whole button",
+    itemXiaoYi.style.display === "none", `display=${itemXiaoYi.style.display}`);
+  check("a XiaoYi configured channel card (real DOM) is hidden as a whole card",
+    chanXiaoYi.style.display === "none", `display=${chanXiaoYi.style.display}`);
+  check("a Yuanbao available-channel button (real DOM) is hidden as a whole button",
+    itemYuanbao.style.display === "none", `display=${itemYuanbao.style.display}`);
+  check("a Yuanbao configured channel card (real DOM) is hidden as a whole card",
+    chanYuanbao.style.display === "none", `display=${chanYuanbao.style.display}`);
+  check("a XiaoYi channel matched only by its icon img alt (lowercase id 'xiaoyi', real DOM) is hidden as a whole button",
+    itemXiaoYiAltOnly.style.display === "none", `display=${itemXiaoYiAltOnly.style.display}`);
+  check("a non-China channel (iMessage available, real DOM) is NOT hidden",
+    itemIMessage.style.display !== "none", `display=${itemIMessage.style.display}`);
   check("a non-China channel (Telegram configured, real DOM) is NOT hidden",
     chanTelegram.style.display !== "none", `display=${chanTelegram.style.display}`);
   check("a non-China channel (Slack available, real DOM) is NOT hidden",
