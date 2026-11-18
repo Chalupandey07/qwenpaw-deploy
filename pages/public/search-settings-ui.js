@@ -30,6 +30,27 @@ export const FLAG_FETCH_ENV = "TINYFISH_FETCH";
 export const FLAG_DDG_ENV = "TINYFISH_DDG_IA";
 export const FEATURE_ENVS = [FLAG_SEARCH_ENV, FLAG_FETCH_ENV, FLAG_DDG_ENV];
 export const ENVS_API = "/api/envs";
+
+/**
+ * The console's API bearer token, as the console itself stores it.
+ * The QwenPaw console authenticates /api/* with `Authorization: Bearer
+ * <qwenpaw_auth_token>` from localStorage — a session cookie alone is NOT
+ * enough (the machine returns 401 without the bearer header). The
+ * search-settings section previously sent no Authorization header, so
+ * both the load (GET) and the save (PATCH) failed with 401; the load
+ * failure was invisible because the UI shows the same "No key saved."
+ * defaults, and only the save surfaced as "Save failed. Try again."
+ * (2026-11-18, user report). Every /api/envs call below sends this.
+ */
+function consoleAuthHeaders() {
+  try {
+    if (typeof localStorage !== "undefined") {
+      const tok = localStorage.getItem("qwenpaw_auth_token");
+      if (tok && tok.length > 8) return { Authorization: "Bearer " + tok };
+    }
+  } catch (_e) {}
+  return {};
+}
 export const SECTION_ID = "qwenpawYourKeys";
 
 /** A flag env value: off only for "0"/"false"/"no"/"off" (any case). */
@@ -361,6 +382,7 @@ export function mountSearchSettings(doc, fetchImpl) {
       fetchFn(ENVS_API + "/" + envName, {
         method: "DELETE",
         credentials: "same-origin",
+        headers: consoleAuthHeaders(),
       })
         .then((res) => {
           if (!res.ok) throw new Error("remove failed: " + res.status);
@@ -375,7 +397,7 @@ export function mountSearchSettings(doc, fetchImpl) {
       removeKey(DREX_KEY_ENV, drex.state, "Drex (NACE)"));
 
     // Load current state (presence of each key + flag values only).
-    fetchFn(ENVS_API, { credentials: "same-origin" })
+    fetchFn(ENVS_API, { credentials: "same-origin", headers: consoleAuthHeaders() })
       .then((res) => (res.ok ? res.json() : []))
       .then((list) => {
         const state = parseLoadResponse(list);
@@ -400,7 +422,7 @@ export function mountSearchSettings(doc, fetchImpl) {
       fetchFn(ENVS_API, {
         method: "PATCH",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...consoleAuthHeaders() },
         body: JSON.stringify(body),
       })
         .then((res) => {
