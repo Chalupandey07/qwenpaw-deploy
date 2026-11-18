@@ -1,9 +1,13 @@
 # Ask-before-durable-write — the consent gate for memory v2 fact writes
 
 **Status:** code complete, machine-free test T133 green (114/114).
-**Not verified live:** no machine check, no browser check, no run of the
-agent loop through the gate. That verification is the parent's job when
-the machine unlocks.
+**Wired + live-checked 2026-11-19:** the SKILL.md routing line is in
+(the agent routes high-stakes facts through `gated_add()` /
+`durable_write.py add-gated` instead of `facts.py add`), the module
+is synced to the machine, and a held-fact → accept → searchable
+round-trip passed on the machine against a scratch memory.db (see
+TESTS.md T133). No browser check: the gate is a CLI/skill path, not
+a UI path.
 
 Gap #20 from the 2026-11-18 all-20 evaluation (todo #2). The consent
 gate already existed for the lessons ledger (`features/memory/lessons.py`:
@@ -33,8 +37,8 @@ write silently with provenance. It does not ask every time.
   regression risk to T117/T118 — verified: both still pass unchanged
   (41/41 and 40/40, see below). The agent-facing change is a routing
   one: use `durable_write.py add-gated` instead of `facts.py add` for
-  gated writes (a SKILL.md line for this is a follow-up for the parent,
-  not done here — see "Deliberately left alone").
+  gated writes — **wired 2026-11-19** (SKILL.md routing line added and
+  synced to the machine; see "Machine sync").
 - **Not touched:** `features/test-project/run-tests.py`, `TESTS.md`,
   `RESULTS.md`, `PLAN.md`, `features/memory/README.md` — the coordinator
   registers all seven gaps sequentially at the end to avoid write-write
@@ -196,15 +200,16 @@ migration after a propose); no auto-supersede; the CLI end to end;
 and the flat machine layout (facts.py + recall.py + durable_write.py
 side by side) importing and working.
 
-## Machine sync (parent does this — see AGENTS.md §2)
+## Machine sync
 
-Repo file → live path:
+Repo file → live path (synced 2026-11-19, live-checked on the machine):
 
 | Repo | Live path on the machine |
 |---|---|
 | `features/memory/durable-write/durable_write.py` | `/data/home/qwenpaw/working/memory-tools/durable_write.py` |
 | `features/memory/durable-write/test_durable_write.py` | `/data/home/qwenpaw/working/memory-tools/` |
-| `features/memory/facts.py` | unchanged, already synced |
+| `features/memory/SKILL.md` | `/data/home/qwenpaw/working/workspaces/default/skills/memory/SKILL.md` |
+| `features/memory/facts.py` | unchanged by this gap, already synced (T137 fix synced separately) |
 | `features/memory/recall.py` | unchanged, already synced |
 
 The pending store lives in the existing
@@ -217,14 +222,14 @@ sibling. Both layouts are covered by the test.
 
 ## Deliberately left alone (and why)
 
-- **`facts.py` untouched** — the wrapper is enough; see above.
-- **No change to `SKILL.md`** — the one-line routing change ("use
-  `durable_write.py add-gated` instead of `facts.py add` for gated
-  writes") is a follow-up for the parent when the file is synced; the
-  skill is installed on the machine, and editing the repo copy without
-  syncing it would leave two truths. Until that line lands, the gate
-  is code-complete but not wired into the agent loop — the same
-  standing as other recent features before wiring.
+- **`facts.py` untouched by this gap** — the wrapper is enough; see above.
+  (facts.py itself was fixed separately for T137, 2026-11-19.)
+- **SKILL.md routing line — DONE 2026-11-19, no longer left alone.**
+  The routing line ("route EVERY add through `durable_write.py
+  add-gated`, never `facts.py add`") is in `features/memory/SKILL.md`
+  and synced to the machine skill path, so the gate is now wired
+  into the agent loop. Live-checked on the machine the same day
+  (held-fact → accept → searchable round-trip on a scratch DB).
 - **No general contradiction detector** — see design review #3. The
   narrow identity-field version is what shipped.
 - **No semantic/vector judgement of "high-stakes"** — no embedding
