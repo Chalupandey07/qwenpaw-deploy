@@ -371,6 +371,43 @@ function settingsDoc() {
 }
 
 {
+  // REGRESSION (2026-11-18, user screenshot): on the Settings page the
+  // old code fell back to full-width <main> when no heading was found
+  // yet, and the section landed at x=0, flush against the viewport
+  // edge, while the General card starts at x~330. There is NO main
+  // fallback any more — with no headings the mount is a no-op and the
+  // observer retries once the Settings headings have rendered.
+  const main = makeEl("main");
+  const doc = makeDoc([main]);
+  doc.defaultView = { location: { pathname: "/settings/general" } };
+  const fetchMock = makeFetch([]);
+  check("mount on Settings with a main but no headings is a no-op (no main fallback)",
+    mountSearchSettings(doc, fetchMock) === null
+    && fetchMock.calls.length === 0
+    && doc.getElementById(SECTION_ID) === null);
+}
+
+{
+  // RE-PARENT (2026-11-18, user screenshot): a section that mounted
+  // early to full-width <main> (x=0) must move into the content column
+  // once the Settings headings have rendered, instead of staying
+  // flush-left.
+  const { doc, page } = settingsDoc();
+  const main = makeEl("main");
+  doc.body.appendChild(main);
+  const stray = makeEl("section");
+  stray.setAttribute("id", SECTION_ID);
+  main.appendChild(stray);
+  const fetchMock = makeFetch([]);
+  mountSearchSettings(doc, fetchMock);
+  // (The mock's appendChild does not remove the child from its old
+  // parent's children list — a real browser does. The parentElement
+  // is what the code sets and what matters.)
+  check("an existing section in the wrong place moves into the content column",
+    stray.parentElement === page);
+}
+
+{
   // REGRESSION (2026-11-18 screenshot): the chat page has a <main>
   // element but no Environments heading and no Settings page, and the
   // old code fell back to <main> — so the Search section rendered at
