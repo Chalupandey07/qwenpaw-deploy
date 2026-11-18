@@ -37,6 +37,10 @@
 #   install -d -m 0755 /data/home/qwenpaw/codemode
 #   cp features/codemode/vm/codemode-runner.py /data/home/qwenpaw/codemode/
 #   cp features/codemode/vm/mcp.py              /data/home/qwenpaw/codemode/
+#   cp features/sandbox/dispatch.py             /data/home/qwenpaw/codemode/
+#   cp features/sandbox/sandbox.py              /data/home/qwenpaw/codemode/
+#   cp features/sandbox/vault_tokens.py         /data/home/qwenpaw/codemode/
+#   cp features/egress-guard/egress_guard.py    /data/home/qwenpaw/codemode/
 #   cp features/codemode/qwenpaw-codemode.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now qwenpaw-codemode
 #
