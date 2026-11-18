@@ -2066,28 +2066,35 @@ def t125():
 
 
 def t126():
-    """Per-task cap + structured stop audit + rebuild persistence (87).
+    """Per-task cap + structured stop audit + rebuild persistence (117).
 
     Machine-free test (features/loop-gate-fix/test_task_cap.py) for the
-    round-4 per-task cap and the round-5 (gatefix5, T140) persistence:
-    task budget 60 total / 40 shell across turns, finalise flag,
-    structured stop audit. J — the live cross-turn shape (turn 1 spends
-    20 shell, turn 2 "hello" gets 20 more to task shell 40 = cap and
-    finalises, turn 3 "hello" executes 0, a new instruction gets a fresh
-    budget); K — sub-cap creep; L — the stop audit (all four kinds); M —
-    explicit task id, re-issued capped instruction inherits the spent
-    budget; N — unreadable batch charged from the result JSON; O — a
-    batch that would jump the task cap is refused whole; P (T140) — the
-    per-turn agent rebuild: the runtime builds a fresh agent per turn,
-    so the task budget must persist through the state_dict round-trip
-    (turn 2 gets 20 more to 40 and finalises, turns 3 and 4 execute 0).
-    Fail-first proven: against gatefix3 limits.py it fails 52/87;
-    against gatefix4 limits.py it fails 14/87 (P only). T115 still
+    round-4 per-task cap, the round-5 (gatefix5, T140) persistence, and
+    the round-6 (gatefix6, T141) realistic resume messages: task budget
+    60 total / 40 shell across turns, finalise flag, structured stop
+    audit. J — the live cross-turn shape (turn 1 spends 20 shell, turn
+    2 "hello" gets 20 more to task shell 40 = cap and finalises, turn
+    3 "hello" executes 0, a new instruction gets a fresh budget); K —
+    sub-cap creep; L — the stop audit (all four kinds); M — explicit
+    task id, re-issued capped instruction inherits the spent budget;
+    N — unreadable batch charged from the result JSON; O — a batch that
+    would jump the task cap is refused whole; P (T140) — the per-turn
+    agent rebuild: the runtime builds a fresh agent per turn, so the
+    task budget must persist through the state_dict round-trip (turn 2
+    gets 20 more to 40 and finalises, turns 3 and 4 execute 0); Q
+    (T141) — realistic resume messages: "hello, are you working?" and
+    "Yes, continue from 21" resume the current task (prefix match at a
+    word boundary), "continue" executes 0 after finalisation, a new
+    instruction after finalisation mints a fresh task. Fail-first
+    proven: against gatefix3 limits.py it fails 63 checks (45 passed;
+    9 Q2 checks do not run — _is_continuation does not exist on
+    gatefix3); against gatefix4 limits.py it fails 25/117 (P+Q);
+    against gatefix5 limits.py it fails 11/117 (Q only). T115 still
     47/47. The live half (single-turn echo test, cross-turn "hello"
     test, new-instruction test) is verified by Muse after deploy.
     """
     return _py_script_harness(
-        ["features/loop-gate-fix/test_task_cap.py"], 87)
+        ["features/loop-gate-fix/test_task_cap.py"], 117)
 
 
 def t127():
@@ -2583,6 +2590,36 @@ def t140():
     """
     return _py_script_harness(
         ["features/loop-gate-fix/test_task_cap.py", "--section", "P"], 26)
+
+
+def t141():
+    """Realistic resume messages resume the current task (30).
+
+    Machine-free test (features/loop-gate-fix/test_task_cap.py, section
+    Q) for gatefix6: gatefix5 persisted the task budget correctly
+    (proven by the live session file), but its _is_continuation
+    required an EXACT match against a fixed set of bare words, so
+    realistic resume messages each minted a FRESH task budget and
+    abandoned the previous task -- the per-task cap never accumulated
+    (live failure d0f77cb7, chat 0b220b4f: "hello, are you working?"
+    abandoned the echo task at 20 shell; "Yes, continue from 21"
+    minted a fresh task that ran 40 shell, 21-60, for 60 shell across
+    the chat, past the 40-shell cap). Gatefix6 matches a continuation
+    phrase at the START of the message at a word boundary. Q1 replays
+    the live shape WITH fresh agent objects per turn and the realistic
+    messages: "hello, are you working?" resumes the same task (0
+    calls), "Yes, continue from 21" resumes and spends 20 more to 40
+    and finalises, "continue" executes 0. Q2 unit-checks the matcher
+    (prefix + word boundary: "yesterday" / "history" / "surely" /
+    "thanksgiving" are NOT continuations). Q3 checks a genuinely new
+    instruction after finalisation still mints a fresh task. Fail-first
+    proven: against gatefix5 limits.py the Q section fails 11/30
+    (Q1f/Q1g/Q1h/Q1l/Q1m/Q1o/Q1p/Q2a/Q2b/Q2c/Q2e) with byte-identical
+    task ids to the live session file. The live half (the 1-200 echo
+    cross-turn browser test) is verified by Muse after deploy.
+    """
+    return _py_script_harness(
+        ["features/loop-gate-fix/test_task_cap.py", "--section", "Q"], 30)
 
 
 def t104():
@@ -3114,6 +3151,7 @@ TESTS = [
     ("T138", "artifacts library: SQLite index over workspace + sent-file metadata + history.db (read-only, mutation-denying authorizer); one searchable static page; backfill for files already sent; re-index is idempotent (selftest)", "artifacts", "protocol", t138),
     ("T139", "real sandbox profile: separate container, workspace-only mount, isolated bridge, read-only rootfs, user 10001, caps dropped ALL, no docker.sock; vault mints short-lived scoped tokens (90s default / 300s max); egress via the T123 allowlist only; dispatcher routes generated-code jobs to sandbox, refuses the rest (selftest)", "sandbox", "protocol", t139),
     ("T140", "per-task cap survives the per-turn agent rebuild (gatefix5): the runtime builds a fresh agent per turn, so the task budget must persist through the state_dict round-trip (task_budget_state_dict / load_task_budget_state_dict, wired into ReactAgent.state_dict / load_state_dict); turn 2 gets 20 more to 40 and finalises, turns 3 and 4 execute 0; snapshot round-trip + loader fails open on bad data (harness, section P of test_task_cap.py)", "loop-gate", "protocol", t140),
+    ("T141", "realistic resume messages resume the current task (gatefix6): _is_continuation matches a continuation phrase at the START of the message at a word boundary, not just an exact match -- 'hello, are you working?' and 'Yes, continue from 21' resume the echo task (20 shell, then 20 more to 40 and finalise, then 0); 'yesterday' / 'history' / 'surely' / 'thanksgiving' are NOT continuations; a genuinely new instruction after finalisation still mints a fresh task (harness, section Q of test_task_cap.py)", "loop-gate", "protocol", t141),
 ]
 
 SKIP_NOTE = {
