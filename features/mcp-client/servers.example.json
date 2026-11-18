@@ -1,0 +1,1 @@
+{"servers":[{"allowed_tools":["echo","read"],"command":["python3","mock_mcp_server.py","/tmp/mcp-echo-marker.txt","/tmp/mcp-echo-log.txt","normal"],"enabled":false,"env":{},"name":"echo","timeout_s":15.0,"transport":"stdio"}]}
