@@ -347,3 +347,43 @@ upstream_busy, retry_after ~20s) — retry.
    verify-before-truncate; the KV lesson by `check-no-polling.sh`; the
    China-endpoint rule by `check-no-china-endpoints.sh`; the secret rule by
    `check-no-secrets.sh`; the AGENTS.md budget by `check-agents-budget.sh`.
+
+---
+
+## 2026-11-18 — Rebrand script syntax error killed every UI rule at once
+
+**Symptom:** QA rounds 15–16: the sidebar truncation (11 rounds, zero
+effect), the "1 providers online" grammar fix, and the chat-input banner
+gap ALL regressed in the same deploy, and a magenta-outline diagnostic
+probe showed NO outline on ANY button — as if the rebrand script did not
+run at all. MiniMax "Configure ›" and "Your Keys" still passed (the
+former coincidentally, the latter from a separate script).
+
+**Root cause:** the pill-hide-on-Settings code added in round 15 used a
+regex `/\/settings(\/|$)/` inside the rebrand script, which lives in a JS
+TEMPLATE LITERAL in `pages/public/_worker.js`. The template literal ate
+the backslashes: `\/` became `/`, so the deployed code read
+`//settings(/|$)/` — and `//` starts a LINE COMMENT, commenting out the
+rest of the line. The next line (`if (onSettings) {`) then hit a
+`SyntaxError: Unexpected token 'if'`, so the ENTIRE injected rebrand
+script failed to parse and NO rule executed. `node --check` on
+`_worker.js` never caught it: a template literal's content is just a
+string to Node.
+
+**Fix:** replaced the regex with a backslash-free string check
+(`pathname.indexOf("/settings") !== -1`), removed the diagnostic probe,
+and added `scripts/checks/check-rebrand-syntax.sh`, which extracts the
+template literal, evaluates it the way the runtime does, and runs
+`node --check` on the resulting inline script. The check was validated
+both ways: it FAILS on the broken regex (same `Unexpected token 'if'`)
+and PASSES on the fix.
+
+**Verification:** `bash scripts/checks/run-checks.sh` ALL PASS (including
+the new check); the fixed script was extracted from the deployed HTML
+and parses cleanly.
+
+**Rule:** never put a regex starting with `/\/` (or any regex whose
+leading backslash the template literal can eat) inside the rebrand
+template literal — prefer a plain string check. Every `_worker.js`
+change must pass `check-rebrand-syntax.sh`, which syntax-checks the
+EVALUATED injected script, not just the file.
