@@ -3,9 +3,12 @@
 # Base is the pinned upstream image (same digest as the live deploy).
 # The only change is the loop-gate patch: it fixes ToolCallBudgetGate
 # counting (round 1) and expands workflow/batch sub-calls so the batch
-# runner cannot bypass the budget (round 2), and wires the gate into
-# the default loop chain so the cap applies to every chat. Nothing
-# else is changed. Tag: qwenpaw-agentx:2.3.0-gatefix2.
+# runner cannot bypass the budget (round 2), wires the gate into
+# the default loop chain so the cap applies to every chat, and enforces
+# the budget at execution time (round 3) so a single response carrying
+# 200 direct parallel calls cannot execute them all before the gate's
+# deferred stop applies. Nothing else is changed.
+# Tag: qwenpaw-agentx:2.3.0-gatefix3.
 FROM agentscope/qwenpaw:v2.3.0@sha256:46a782f4b39b673eac399c90294244e348e71a01bdf032f8e78b00776be3c87d
 
 COPY qwenpaw-loop-gate-fix.patch /tmp/qwenpaw-loop-gate-fix.patch
@@ -15,7 +18,7 @@ COPY qwenpaw-loop-gate-fix.patch /tmp/qwenpaw-loop-gate-fix.patch
 # the source tree the install was built from. Both copies are byte-identical
 # upstream, so the same patch applies to both: -p1 from /app patches
 # src/qwenpaw/..., -p2 from site-packages patches qwenpaw/....
-# Then byte-compile all six patched modules so a stale .pyc can never win.
+# Then byte-compile all eight patched modules so a stale .pyc can never win.
 # The build FAILS here if the patch does not apply cleanly to either copy.
 RUN cd /app \
     && patch -p1 < /tmp/qwenpaw-loop-gate-fix.patch \
@@ -26,6 +29,8 @@ RUN cd /app \
         /app/src/qwenpaw/loop/gates/limits.py \
         /app/src/qwenpaw/modes/default/mode.py \
         /app/src/qwenpaw/config/config.py \
+        /app/src/qwenpaw/agents/react_agent.py \
         /app/venv/lib/python3.11/site-packages/qwenpaw/loop/gates/limits.py \
         /app/venv/lib/python3.11/site-packages/qwenpaw/modes/default/mode.py \
-        /app/venv/lib/python3.11/site-packages/qwenpaw/config/config.py
+        /app/venv/lib/python3.11/site-packages/qwenpaw/config/config.py \
+        /app/venv/lib/python3.11/site-packages/qwenpaw/agents/react_agent.py
