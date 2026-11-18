@@ -2273,6 +2273,50 @@ def t133():
         ["features/memory/durable-write/test_durable_write.py"], 114)
 
 
+def t134():
+    """Serving-model identity note: per-attempt note + switch log (48).
+
+    Machine-free test (features/model-identity/test_model_identity.py)
+    for the all-20 gap #17, a port of fork PR #37/#44. Part 1
+    (discrepancy verdict, derived from the repo files, not hardcoded):
+    the correct source of truth as of the last repo evidence
+    (2026-11-15) is mosicn/nex-n2.6; the xingchiapi/gpt-6-astra value
+    in features/board/config-patch.md §2 is a stale same-day snapshot
+    (true ~01:34 IST, superseded ~02:22 IST when the user switched to
+    mosicn after two Astra stream stalls; corroborated by
+    cost-data.json 02:46 IST, the audit retest 02:50 IST, the handoff,
+    and repeated T38 fleet runs). The per-agent rule still holds (both
+    agents' active_model: null, so the global file governs). The phrase
+    "no active chat model configured" does exist in the repo
+    (features/memory/reme_doctor.py:289) but is a conditional
+    diagnostic string, not a live-state claim. Part 2: the identity
+    note is stamped per attempt at the dispatch boundary,
+    TokenRecordingModelWrapper.__call__, onto a copy of the messages
+    (never mutates the live transcript, exactly one note, never
+    stacks); wording follows #44 (plain when serving == configured,
+    "unavailable (reason_kind)" only with the fallback engine's
+    recorded reason, neutral otherwise, same-model-another-key stays
+    plain). PATCH /api/agents/{agentId}/model-settings gains an
+    optional reason field (popped before applying, never stored on the
+    config) and appends {from, to, reason} to
+    <workspace>/model-switch-log.jsonl — effective from/to (per-agent
+    else global file), no-change switches log nothing, log failures
+    can never fail an applied switch. Fail-first proven:
+    ModuleNotFoundError before the module existed. The patch applies
+    cleanly -p1 and -p2 and reproduces the patched files byte-for-byte,
+    and also applies onto cost-ledger's already-patched
+    model_wrapper.py (both features coexist, stamp runs first so the
+    budget check measures the stamped messages). The live half (live
+    re-read of working.secret/providers/active_model.json, image build,
+    browser check that the note never leaks into stored messages and
+    the agent answers "which model are you?" with mosicn/nex-n2.6,
+    live PATCH switch with/without reason, first real fallback) is
+    verified by Muse after deploy.
+    """
+    return _py_script_harness(
+        ["features/model-identity/test_model_identity.py"], 48)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2795,6 +2839,7 @@ TESTS = [
     ("T131", "telegram full-feature bot: token-only setup (no numeric id), owner = first whitelist entry, guests read-only, strangers refused; new chat, list + preview + continue an existing console chat (task API); settings via button callbacks (model PATCH, approval PUT); menu grammar + token cache; outbound redaction + inbound untrusted wrapping; driver patch applies cleanly to the pinned v2.3.0 platform.py and reproduces the patched file byte-for-byte (selftest)", "telegram", "protocol", t131),
     ("T132", "approval TTL: pending approvals + secret requests expire — issue stamps expires_at (approval 24h, secret 1h, question never), read is pure and fails closed (expired reads as denied, reason 'timed out'), late answers refused with ExpiredError, sweep expires stale cards idempotently (never legacy, post-migration card with no expiry fails closed), fork-shaped audit rows, store survives reload, flock serialises every read-modify-write (selftest)", "approvals", "protocol", t132),
     ("T133", "ask-before-durable-write: high-stakes memory v2 facts are held in a pending_facts table until explicit accept --id --why; routine facts write silently with provenance; secrets rejected, never held; caps mirror lessons.py (max 3 pending, --why required, PF-001 ids never reused) (selftest)", "memory", "protocol", t133),
+    ("T134", "serving-model identity note: per-attempt note stamped at the model-wrapper dispatch boundary (plain when serving == configured) + {from,to,reason} switch log in PATCH model-settings; discrepancy verdict derived from repo evidence (mosicn/nex-n2.6 is the source of truth, xingchiapi/gpt-6-astra is a stale snapshot) (selftest)", "model-identity", "protocol", t134),
 ]
 
 SKIP_NOTE = {
