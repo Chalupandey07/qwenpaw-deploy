@@ -791,7 +791,7 @@ function computerPanelScript(rebrandEnabled) {
       for (var depth = 0; cur && cur.nodeType === 1 && depth < 6; depth++) {
         try {
           var cls = "";
-          try { cls = cur.getAttribute("class") || ""; } catch (e) {}
+          try { cls = (cur.getAttribute("class") || "").toLowerCase(); } catch (e) {}
           var role = "";
           try { role = cur.getAttribute("role") || ""; } catch (e) {}
           var tag = (cur.tagName || "").toLowerCase();
@@ -804,7 +804,7 @@ function computerPanelScript(rebrandEnabled) {
           var parent = cur.parentNode;
           if (parent && parent.nodeType === 1) {
             var pCls = "";
-            try { pCls = parent.getAttribute("class") || ""; } catch (e) {}
+            try { pCls = (parent.getAttribute("class") || "").toLowerCase(); } catch (e) {}
             var pRole = "";
             try { pRole = parent.getAttribute("role") || ""; } catch (e) {}
             var pTag = (parent.tagName || "").toLowerCase();
@@ -814,6 +814,64 @@ function computerPanelScript(rebrandEnabled) {
             }
           }
         } catch (e) {}
+        cur = cur.parentNode;
+      }
+      return null;
+    }
+    // Climb from a matched China name to the CARD that must be hidden —
+    // never the list that holds all the cards. Fix 2026-11-18 (live
+    // browser re-verification): the old climb hid the WHOLE provider
+    // list. Root cause, proven by replaying the real card DOM in the
+    // harness: the provider card's class is a hashed CSS module,
+    // "index-module__groupCardGlass__-GYEf" — "Card" with a capital C —
+    // so the case-sensitive [class*='card'] never matched the card,
+    // while [class*='provider'] matched the LIST container
+    // "index-module__providerCards__fYCGM" and closest() climbed past
+    // the card to the list. The settled page then showed no provider
+    // cards at all (the transient snapshots caught the list before the
+    // rule ran); SiliconFlow / ModelScope / Aliyun were never hidden as
+    // cards. This climb is structural and case-insensitive: the card is
+    // the ancestor that is a direct child of the list/grid (the provider
+    // list, the channel grid, a role=list, a ul/ol), or — failing that —
+    // the first ancestor whose lowercased class names the card itself
+    // (groupCardGlass = provider card, channelCard = configured channel
+    // card, availableItem = available-channel button), skipping the
+    // name-bearing leaves (groupCardName / cardTitle / availableItemName).
+    // The list/grid container itself is never returned, so non-China
+    // providers (OpenAI, Anthropic, DeepSeek, ...) are never hidden
+    // with it. Returns null when no card is found, so the caller hides
+    // the matched element itself.
+    function agentxClimbToChinaCard(el) {
+      var cur = el;
+      for (var depth = 0; cur && cur.nodeType === 1 && depth < 8; depth++) {
+        var parent = cur.parentNode;
+        if (parent && parent.nodeType === 1) {
+          var pCls = "";
+          try { pCls = (parent.getAttribute("class") || "").toLowerCase(); } catch (e) {}
+          var pRole = "";
+          try { pRole = parent.getAttribute("role") || ""; } catch (e) {}
+          var pTag = (parent.tagName || "").toLowerCase();
+          if (pCls.indexOf("providercards") !== -1 || pCls.indexOf("availablegrid") !== -1 ||
+              pCls.indexOf("channelsgrid") !== -1 || pRole === "list" ||
+              pTag === "ul" || pTag === "ol" ||
+              pCls.indexOf("list") !== -1 || pCls.indexOf("grid") !== -1) {
+            return cur;
+          }
+        }
+        cur = parent;
+      }
+      cur = el;
+      for (var d2 = 0; cur && cur.nodeType === 1 && d2 < 8; d2++) {
+        var cls = "";
+        try { cls = (cur.getAttribute("class") || "").toLowerCase(); } catch (e) {}
+        if (cls.indexOf("providercards") !== -1 || cls.indexOf("availablegrid") !== -1 ||
+            cls.indexOf("channelsgrid") !== -1) { cur = cur.parentNode; continue; }
+        if (cls.indexOf("groupcardname") !== -1 || cls.indexOf("cardtitle") !== -1 ||
+            cls.indexOf("availableitemname") !== -1) { cur = cur.parentNode; continue; }
+        if (cls.indexOf("groupcardglass") !== -1 || cls.indexOf("channelcard") !== -1 ||
+            cls.indexOf("availableitem") !== -1) {
+          return cur;
+        }
         cur = cur.parentNode;
       }
       return null;
@@ -829,8 +887,11 @@ function computerPanelScript(rebrandEnabled) {
     // match as a whole word ("Open GitHub" matches "GitHub"); a name from
     // text must match exactly, so a container whose text merely contains
     // a label among other items is never hidden. The container found by
-    // agentxClimbToContainer is hidden, not the name element alone.
-    function agentxHideByName(labels, itemSelector, containerSelector) {
+    // the climb function is hidden, not the name element alone. The
+    // optional climbFn (2026-11-18, hide-china) replaces
+    // agentxClimbToContainer for callers whose cards the generic climb
+    // cannot find — it must never return a list container.
+    function agentxHideByName(labels, itemSelector, containerSelector, climbFn) {
       var found = 0;
       var els;
       try { els = document.querySelectorAll(itemSelector); } catch (e) { return 0; }
@@ -862,7 +923,10 @@ function computerPanelScript(rebrandEnabled) {
             }
           }
           if (!matched) continue;
-          var target = agentxClimbToContainer(el, containerSelector);
+          var target = null;
+          try {
+            target = climbFn ? climbFn(el) : agentxClimbToContainer(el, containerSelector);
+          } catch (e) { target = null; }
           if (!target) target = el;
           if (target.getAttribute && target.getAttribute("data-agentx-hidden")) continue;
           target.style.display = "none";
@@ -1050,7 +1114,9 @@ function computerPanelScript(rebrandEnabled) {
         agentxHideAncestorByContent("Import data from other AI applications", "span, div, p, li", "section, [class*='card'], [class*='row'], li, div");
       } },
       { id: "hide-china", run: function () {
-        agentxHideByName(AGENTX_CHINA_LABELS, "li, button, a, [role='menuitem'], [role='listitem'], span, div, h1, h2, h3, h4, img", "[class*='card'], li, [role='listitem'], [class*='item'], [class*='provider'], section");
+        // agentxClimbToChinaCard, not the generic climb: the generic
+        // climb hid the whole provider list (see agentxClimbToChinaCard).
+        agentxHideByName(AGENTX_CHINA_LABELS, "li, button, a, [role='menuitem'], [role='listitem'], span, div, h1, h2, h3, h4, img", null, agentxClimbToChinaCard);
       } },
       { id: "block-links", run: function () { agentxBlockUpstreamLinks(); } },
     ];
