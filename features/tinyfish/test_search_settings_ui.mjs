@@ -248,7 +248,7 @@ function makeDoc(rootChildren) {
 function makeFetch(envList) {
   const calls = [];
   const fn = async (url, opts = {}) => {
-    calls.push({ url, method: opts.method || "GET", body: opts.body });
+    calls.push({ url, method: opts.method || "GET", body: opts.body, headers: opts.headers || {} });
     if ((opts.method || "GET") === "GET") {
       return { ok: true, json: async () => envList };
     }
@@ -258,6 +258,14 @@ function makeFetch(envList) {
   return fn;
 }
 const tick = () => new Promise((r) => setTimeout(r, 10));
+
+// The console stores its API bearer token in localStorage under
+// qwenpaw_auth_token; the section must send it on every /api/envs call
+// (2026-11-18: save failed with 401 because no Authorization header
+// was sent). Node has no localStorage, so the harness provides one.
+globalThis.localStorage = {
+  getItem: (k) => (k === "qwenpaw_auth_token" ? "test-console-token-abc123" : null),
+};
 
 // Settings page mock: an Environments heading inside a section div,
 // plus a left-nav heading ("General") that must be IGNORED (the nav
@@ -343,6 +351,10 @@ function settingsDoc() {
   check("the key values never appear in any GET call",
     fetchMock.calls.filter((c) => c.method === "GET")
       .every((c) => !c.url.includes("sk-") && !c.url.includes("nace-")));
+  check("every /api/envs call sends the console bearer token (2026-11-18: save failed 401 without it)",
+    fetchMock.calls.length > 0
+    && fetchMock.calls.every((c) => c.headers
+      && c.headers.Authorization === "Bearer test-console-token-abc123"));
 
   // Each key has its own Remove button: DELETE /api/envs/<KEY>.
   const removeFor = (input) => (input.parentElement.children || [])
