@@ -1,0 +1,18 @@
+# Egress allowlist extras -- hosts the USER adds, one per line.
+#
+# The guard (egress_guard.py) allows an outbound request ONLY if its
+# host is on the default allowlist in the code OR on this list.
+# Default-allow is NOTHING else. Add a host here when a fetch path
+# legitimately needs a new destination; say why in the comment, and
+# never add a host because a poisoned page asked for it.
+#
+# This file is the list that matters. The EGRESS_ALLOWLIST_EXTRA env
+# var is also honoured, but it is NOT a trust boundary: any process
+# with a shell can set its own env, so env extras are convenience
+# only. Never put a secret in this file.
+#
+# Format: one bare host per line, no scheme, no path, no port.
+# Lines starting with # are comments. Blank lines are ignored.
+#
+# (No extras yet -- the defaults cover the LLM providers, TinyFish,
+# DuckDuckGo Instant Answer, AnySearch, GitHub, and Cloudflare.)
