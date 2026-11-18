@@ -103,34 +103,53 @@ function isSettingsPage(doc) {
   return false;
 }
 
-/** Find the element to insert the Search section after, or null. */
+/** Climb from a heading to its section/card container, or null. */
+function climbToSection(el) {
+  let cur = el;
+  for (let i = 0; i < 6 && cur.parentElement; i++) {
+    cur = cur.parentElement;
+    const cls = (cur.className || "").toString().toLowerCase();
+    if (cls.includes("section") || cls.includes("card")
+      || cls.includes("panel") || cur.tagName === "SECTION") {
+      return cur;
+    }
+  }
+  return null;
+}
+
+/**
+ * Find the settings CONTENT COLUMN to append the "Your Keys" section
+ * into, or null. The column is the parent of the settings cards — it
+ * carries the page's left indent (sidebar + card offset). Appending
+ * there keeps the section aligned with the cards instead of flush
+ * against the viewport edge (2026-11-18 QA: the old code inserted
+ * after the Environments container, or appended to full-width <main>
+ * when no Environments heading was on the page, and the section
+ * landed at x=0-2px on every Settings page).
+ */
 function findAnchor(doc) {
-  // Prefer right after the Environments section (the key lives there
-  // too). Match by visible heading text, not by hashed class names.
   const headings = doc.querySelectorAll
     ? doc.querySelectorAll("h1,h2,h3,h4,[role='heading']")
     : [];
+  // Prefer the Environments card (the key lives there too); any other
+  // settings heading gives the same content column.
+  let envColumn = null;
+  let anyColumn = null;
   for (const h of headings) {
     const text = (h.textContent || "").trim().toLowerCase();
+    const container = climbToSection(h);
+    if (!container || !container.parentElement) continue;
+    const column = container.parentElement;
     if (text.includes("environment")) {
-      // Climb to the section/card container, if one is identifiable.
-      let el = h;
-      for (let i = 0; i < 6 && el.parentElement; i++) {
-        el = el.parentElement;
-        const cls = (el.className || "").toString().toLowerCase();
-        if (cls.includes("section") || cls.includes("card")
-          || cls.includes("panel") || el.tagName === "SECTION") {
-          return el;
-        }
-      }
-      return h;
+      envColumn = column;
+      break;
     }
+    if (!anyColumn) anyColumn = column;
   }
-  // Fall back to the settings content area ONLY on the Settings page.
-  // Never fall back to <main> on other pages: the chat page has a
-  // <main> too, and mounting there puts the Search section at the
-  // bottom of the chat view (2026-11-18 screenshot: it rendered
-  // under the message input, unstyled, labels jammed together).
+  if (envColumn) return envColumn;
+  if (anyColumn) return anyColumn;
+  // Last resort, Settings page only: the main element. (On the chat
+  // page there is a <main> too — never mount there.)
   if (isSettingsPage(doc) && doc.querySelector) {
     const main = doc.querySelector("main,[role='main']");
     if (main) return main;
@@ -166,15 +185,19 @@ function ensureStyles(doc) {
   style.setAttribute("id", STYLE_ID);
   style.textContent = [
     "#qwenpawYourKeys{margin:24px 0;padding:16px 0 8px;"
-      + "border-top:1px solid rgba(128,128,128,.35);max-width:720px;}",
+      + "border-top:1px solid rgba(128,128,128,.35);max-width:720px;"
+      + "width:100%;box-sizing:border-box;}",
     "#qwenpawYourKeys h2{margin:0 0 8px;}",
     "#qwenpawYourKeys h3{margin:16px 0 8px;}",
     "#qwenpawYourKeys p{margin:0 0 12px;}",
     ".qwenpaw-key-block{margin:0 0 16px;}",
-    ".qwenpaw-key-head{display:flex;align-items:baseline;gap:8px;"
-      + "margin:0 0 6px;flex-wrap:wrap;}",
-    ".qwenpaw-key-head label{font-weight:600;white-space:nowrap;}",
-    ".qwenpaw-key-head span{opacity:.75;}",
+    // Label on its own line, description below it (muted). The old
+    // one-line flex row ran the two together with no break
+    // ("TinyFish (Monid) API key Free live web search…", 2026-11-18 QA).
+    ".qwenpaw-key-head{display:flex;flex-direction:column;"
+      + "align-items:flex-start;gap:2px;margin:0 0 6px;}",
+    ".qwenpaw-key-head label{font-weight:600;}",
+    ".qwenpaw-key-head span{opacity:.75;font-size:13px;}",
     ".qwenpaw-search-row{display:flex;align-items:center;gap:10px;"
       + "margin:0 0 10px;flex-wrap:wrap;}",
     ".qwenpaw-search-row label{font-weight:600;white-space:nowrap;}",
@@ -359,12 +382,12 @@ export function mountSearchSettings(doc, fetchImpl) {
         .catch(() => setStatus("Save failed. Try again."));
     });
 
-    // Insert after the anchor (or append inside it when it is a main).
-    if (anchor.parentElement && anchor.tagName !== "MAIN") {
-      anchor.parentElement.insertBefore(section, anchor.nextSibling);
-    } else {
-      anchor.appendChild(section);
-    }
+    // Append at the end of the content column (after all settings
+    // cards), inheriting the column's indent and width. The anchor IS
+    // the column (findAnchor returns the cards' parent), so appendChild
+    // is the whole insertion — never insertBefore a card, which would
+    // put the section outside the column.
+    anchor.appendChild(section);
     return section;
   } catch (_e) {
     return null;
