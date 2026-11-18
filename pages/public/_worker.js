@@ -1077,15 +1077,99 @@ function computerPanelScript(rebrandEnabled) {
         // and "1 providers online" — the count is 1 but the noun is
         // plural. Fix the singular forms in text nodes; other counts
         // ("2 steps", "3 providers") are already correct and untouched.
+        // Split-node case (QA round 2): React renders the count and the
+        // label in SEPARATE text nodes ("1" | " providers online"), so
+        // a single-node "1 providers" never matches. Collect the text
+        // nodes in document order first, then fix a "providers" node
+        // whose immediately preceding text node ends with "1".
         try {
           var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+          var nodes = [];
           var node;
-          while ((node = walker.nextNode())) {
+          while ((node = walker.nextNode())) nodes.push(node);
+          for (var i = 0; i < nodes.length; i++) {
             try {
-              var t = node.nodeValue;
+              var n = nodes[i];
+              var t = n.nodeValue;
               if (!t) continue;
               var fixed = t.split("1 steps").join("1 step").split("1 providers").join("1 provider");
-              if (fixed !== t) node.nodeValue = fixed;
+              if (fixed !== t) { n.nodeValue = fixed; continue; }
+              if (t.indexOf("providers") !== -1 && i > 0) {
+                var prev = nodes[i - 1];
+                var prevText = prev ? (prev.nodeValue || "") : "";
+                if (/\b1\s*$/.test(prevText)) {
+                  n.nodeValue = t.split("providers").join("provider");
+                }
+              }
+            } catch (e) {}
+          }
+        } catch (e) {}
+      } },
+      { id: "sidebar-ellipsis", run: function () {
+        // Sidebar conversation titles (2026-11-18 QA): titles are cut
+        // mid-word with NO ellipsis ("Print Numbers 1 to 20C", "Checking
+        // assistant avai"), and the "…" More actions button sits on top
+        // of the last character. Conversation rows are links to
+        // /chat/<id>; give the link and its title child an ellipsis and
+        // right padding so the actions button has room and the cut reads
+        // as "…" instead of a clipped word.
+        try {
+          var links = document.querySelectorAll('a[href^="/chat/"]');
+          for (var i = 0; i < links.length; i++) {
+            try {
+              var link = links[i];
+              if (link.getAttribute && link.getAttribute("data-agentx-ellipsis")) continue;
+              if (link.setAttribute) link.setAttribute("data-agentx-ellipsis", "1");
+              link.style.overflow = "hidden";
+              link.style.textOverflow = "ellipsis";
+              link.style.whiteSpace = "nowrap";
+              link.style.paddingRight = "30px";
+              link.style.boxSizing = "border-box";
+              var kids = link.querySelectorAll ? link.querySelectorAll("span, div") : [];
+              for (var j = 0; j < kids.length; j++) {
+                try {
+                  var k = kids[j];
+                  if (!k.textContent || !k.textContent.trim()) continue;
+                  k.style.overflow = "hidden";
+                  k.style.textOverflow = "ellipsis";
+                  k.style.whiteSpace = "nowrap";
+                  k.style.maxWidth = "100%";
+                } catch (e) {}
+              }
+            } catch (e) {}
+          }
+        } catch (e) {}
+      } },
+      { id: "chat-input-fixes", run: function () {
+        // Chat composer (2026-11-18 QA): the blue "This tab queues
+        // only" banner touches the input box with zero gap, and the
+        // "Context usage" control shows only a tiny green icon while
+        // its text ("Context usage 10%, cache hit rate 81%") sits
+        // invisible in the page. Give the banner a gap below it, and
+        // let the context-usage control show its text instead of
+        // clipping it to the icon.
+        try {
+          var els = document.querySelectorAll("div, p, span, section, button");
+          for (var i = 0; i < els.length; i++) {
+            try {
+              var el = els[i];
+              var t = el.textContent || "";
+              if (t.indexOf("This tab queues only") !== -1) {
+                // Only the innermost element holding the banner text.
+                var childHas = false;
+                try {
+                  var kids = el.querySelectorAll ? el.querySelectorAll("*") : [];
+                  for (var c = 0; c < kids.length; c++) {
+                    if ((kids[c].textContent || "").indexOf("This tab queues only") !== -1) { childHas = true; break; }
+                  }
+                } catch (e2) {}
+                if (!childHas) el.style.marginBottom = "8px";
+              }
+              if (t.indexOf("Context usage") !== -1) {
+                el.style.whiteSpace = "nowrap";
+                el.style.overflow = "visible";
+                el.style.maxWidth = "none";
+              }
             } catch (e) {}
           }
         } catch (e) {}
@@ -1097,15 +1181,19 @@ function computerPanelScript(rebrandEnabled) {
         // the AgentX wordmark in text, in the same brand slot, so the
         // sidebar layout does not shift. The alt is renamed first, so the
         // a11y tree says AgentX even if the swap is skipped.
-        // Size gate (2026-11-18 QA): the bottom-left user card ALSO
-        // carries a small QwenPaw avatar image, and swapping THAT for an
-        // 18px "AgentX" span overflows its circle and prints over the
-        // "satwik" / "Console account" text. Only the large brand logo
-        // gets the text swap; a small avatar keeps its image (alt
-        // renamed) so the user card stays readable. An image whose
-        // size is not known yet (not loaded, naturalWidth 0) is left
-        // alone — it still matches the selector on a later pass, once
-        // loaded, so the decision is made with a real size.
+        // Size gate (2026-11-18 QA round 2): the bottom-left user card
+        // ALSO carries a small QwenPaw avatar image, and swapping THAT
+        // for an 18px "AgentX" span overflows its circle and prints over
+        // the "satwik" / "Console account" text. Only the large brand
+        // logo gets the text swap; a small avatar keeps its image (alt
+        // renamed) so the user card stays readable. Gate on the
+        // DISPLAYED width (getBoundingClientRect), not naturalWidth:
+        // the logo file is intrinsically large, so naturalWidth passed
+        // the avatar too — the avatar is DISPLAYED small (~32px) while
+        // the brand logo is displayed large. An image whose displayed
+        // size is not known yet (not laid out, width 0) is left alone —
+        // it still matches the selector on a later pass, once laid out,
+        // so the decision is made with a real size.
         var imgs;
         try { imgs = document.querySelectorAll('img[alt*="QwenPaw"]'); } catch (e) { return; }
         for (var i = 0; i < imgs.length; i++) {
@@ -1113,7 +1201,8 @@ function computerPanelScript(rebrandEnabled) {
             var img = imgs[i];
             if (img.getAttribute && img.getAttribute("data-agentx-logo")) continue;
             var w = 0;
-            try { w = img.naturalWidth || 0; } catch (e) {}
+            try { w = img.getBoundingClientRect ? img.getBoundingClientRect().width : 0; } catch (e) {}
+            if (!w) { try { w = img.width || 0; } catch (e) {} }
             if (!w) continue;
             if (img.setAttribute) img.setAttribute("data-agentx-logo", "1");
             try { img.setAttribute("alt", (img.getAttribute("alt") || "").split("QwenPaw").join("AgentX")); } catch (e) {}
