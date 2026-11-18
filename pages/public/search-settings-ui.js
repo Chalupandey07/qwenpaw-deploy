@@ -171,13 +171,12 @@ function findAnchor(doc) {
   }
   if (envColumn) return envColumn;
   if (anyColumn) return anyColumn;
-  // Last resort, Settings page only: the main element. (On the chat
-  // page there is a <main> too — never mount there; the guard above
-  // already returned null there.)
-  if (doc.querySelector) {
-    const main = doc.querySelector("main,[role='main']");
-    if (main) return main;
-  }
+  // No fallback to <main> (2026-11-18, user screenshot): the main
+  // element is full-width, so appending to it put the section at x=0,
+  // flush against the viewport edge, while the General card starts at
+  // x~330. Returning null here is safe — the throttled MutationObserver
+  // keeps retrying, and the section mounts once the Settings headings
+  // have rendered and the real content column is found.
   return null;
 }
 
@@ -247,7 +246,21 @@ function ensureStyles(doc) {
 export function mountSearchSettings(doc, fetchImpl) {
   try {
     if (!doc || !doc.createElement) return null;
-    if (doc.getElementById && doc.getElementById(SECTION_ID)) return null;
+    // Re-parent if the section already exists in the WRONG place
+    // (2026-11-18, user screenshot): it may have mounted early to a
+    // fallback (full-width <main> at x=0) before the Settings headings
+    // rendered. When the real content column is found, move the section
+    // there so it aligns with the cards instead of sitting flush-left.
+    const existing = doc.getElementById
+      ? doc.getElementById(SECTION_ID)
+      : null;
+    if (existing) {
+      const anchor = findAnchor(doc);
+      if (anchor && existing.parentElement !== anchor) {
+        anchor.appendChild(existing);
+      }
+      return null;
+    }
     const anchor = findAnchor(doc);
     if (!anchor) return null;
     const fetchFn = fetchImpl
