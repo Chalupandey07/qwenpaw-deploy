@@ -2500,6 +2500,59 @@ def t138():
         ["features/artifacts/test_artifacts.py"], 44)
 
 
+def t139():
+    """Real sandbox profile for generated code (50).
+
+    Machine-free test (features/sandbox/test_sandbox.py) for the
+    all-20 gap #6 — code-complete, PARTIAL as a deployed sandbox. The
+    profile, token API, proxy, and dispatcher are built, tested, and
+    pushed; the sandbox itself is not live (no container has run, and
+    two pieces — the broker-side token endpoint, the gateway firewall
+    rule — remain). sandbox.py is the profile builder + validator +
+    renderers: one bind mount (job workspace -> /workspace), isolated
+    bridge qwenpaw-sandbox-net, read-only rootfs, non-root user 10001,
+    caps dropped ALL, no-new-privileges, no docker.sock / privileged /
+    host network / host PID / IPC / devices, no credential in env.
+    Caps sized for the Free VM: 1 GiB memory (swap = memory), 1 CPU,
+    128 pids, 120 s default / 300 s hard-max lifetime. Rendering
+    refuses an invalid profile outright. vault_tokens.py is the broker
+    token API: v1.<payload>.<HMAC-SHA256> tokens, 90 s default / 300 s
+    max TTL, single-use jti, exact-match scope (vault item names +
+    hosts, no wildcards/prefixes), fail-closed key loading from
+    SANDBOX_BROKER_KEY, plus a mint/verify CLI. egress_proxy.py is a
+    stdlib forward proxy for the sandbox bridge; it forwards only to
+    hosts on the T123 allowlist — no new allowlist; proxy-allowlist.txt
+    is a generated snapshot of it, and the test asserts exact equality
+    so drift fails loudly. dispatch.py routes generated-code jobs ->
+    sandbox; desktop/unknown-kind/non-allowlisted-host/vault-out-of-
+    scope/over-deadline/out-of-root jobs -> refuse, never silently to
+    main. One legacy exception: the B-41 fixed pilot job (exact id)
+    stays on main. The profile/Dockerfile + docker-compose.sandbox.yml
+    are a minimal image (python:3.12-slim, uid 10001, no curl/wget/git/
+    docker client) and sandbox + proxy on the isolated bridge. The
+    README states the precise trust boundary (what the sandbox can and
+    cannot reach, with enforcement per row) plus 8 residual holes that
+    cannot be closed on this VM (shared kernel,
+    gateway-is-one-iptables-rule-away, opaque TLS, no DNS pinning,
+    in-memory-only token revocation, side channels, workspace symlink
+    escape, supply chain). Fail-first proven: --impl none (the
+    pre-sandbox stub: main-container mounts, host network, unsigned
+    never-expiring tokens, allow-everything proxy,
+    route-everything-to-main) -> 7 passed, 43 failed. Two real bugs
+    caught by the test before shipping: the forbidden-mount check
+    flagged the legitimate workspace path, and compose_service dropped
+    the token tmpfs mount. T123 still 35/35. The live half (the
+    broker-side POST /sandbox/inject endpoint, the DOCKER-USER iptables
+    rule denying the sandbox bridge -> 172.18.0.1:8896/:8898, runner
+    wiring, symlink resolution, and live proof: Dockerfile build,
+    gateway-unreachable probe, proxy allow/deny from inside a
+    container, workspace write-back, browser check) is the parent's job
+    when the machine unlocks.
+    """
+    return _py_script_harness(
+        ["features/sandbox/test_sandbox.py"], 50)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -3027,6 +3080,7 @@ TESTS = [
     ("T136", "eval harness LLM judge: judge.py grades prose via the console chat-task path (mosicn nex-n2.6, no new key); JSON verdict {pass, reason, evidence} in a <verdict> sentinel, non-JSON/missing-field/error/timeout is unqualified never pass; expect_contains refused (ValueError); 12-example calibration set (selftest)", "evals", "protocol", t136),
     ("T137", "memory-recall eval: Layer-1 baseline measured on the real facts.py search (hit@1 0.833, hit@3 1.0, MRR 0.917, staleness + abstention verified); integrity fixtures staged, graded by the T136 judge only, never by substring (selftest)", "memory", "protocol", t137),
     ("T138", "artifacts library: SQLite index over workspace + sent-file metadata + history.db (read-only, mutation-denying authorizer); one searchable static page; backfill for files already sent; re-index is idempotent (selftest)", "artifacts", "protocol", t138),
+    ("T139", "real sandbox profile: separate container, workspace-only mount, isolated bridge, read-only rootfs, user 10001, caps dropped ALL, no docker.sock; vault mints short-lived scoped tokens (90s default / 300s max); egress via the T123 allowlist only; dispatcher routes generated-code jobs to sandbox, refuses the rest (selftest)", "sandbox", "protocol", t139),
 ]
 
 SKIP_NOTE = {
