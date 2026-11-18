@@ -15,7 +15,10 @@ DIR="$ROOT/scripts/checks"
 fail=0
 for check in "$DIR"/check-*.sh; do
     name="$(basename "$check")"
-    if output="$("$check" "$ROOT" 2>&1)"; then
+    # Invoke with bash, not direct execution: files pushed via the GitHub
+    # Contents API (scripts/gh-push.py) are stored as mode 100644, so the
+    # executable bit does not survive a push. `bash` works regardless.
+    if output="$(bash "$check" "$ROOT" 2>&1)"; then
         printf '%s\n' "$output"
     else
         printf '%s\n' "$output"
