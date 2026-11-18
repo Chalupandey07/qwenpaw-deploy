@@ -180,23 +180,44 @@ const flush = async () => {
 };
 
 // Build one sandboxed world per scenario: fresh state, fresh DOM.
+// The mock mirrors the user's screenshot (2026-11-19): the composer
+// toolbar row holds the Smart Mode button (plus model/agent/send), and
+// the "Context usage" button lives in a SEPARATE container above it.
+// The rule must put the selector in the Smart Mode row, not the
+// Context container.
 function makeWorld({ pathname, token = "tok-123", fetchHandler }) {
   const storage = makeStorage(token ? { qwenpaw_auth_token: token } : {});
-  const toolbar = makeEl("div");
+  const toolbarRow = makeEl("div");
+  const smartBtn = makeEl("button");
+  smartBtn.setAttribute("aria-label", "Smart Mode");
+  smartBtn.textContent = "Smart Mode";
+  const modelBtn = makeEl("button");
+  modelBtn.textContent = "deepseek-v4.1-flash-free";
+  const agentBtn = makeEl("button");
+  agentBtn.textContent = "default Agent default";
+  const sendBtn = makeEl("button");
+  sendBtn.setAttribute("aria-label", "Send");
+  toolbarRow.appendChild(modelBtn);
+  toolbarRow.appendChild(agentBtn);
+  toolbarRow.appendChild(smartBtn);
+  toolbarRow.appendChild(sendBtn);
+  const ctxContainer = makeEl("div");
   const ctxBtn = makeEl("button");
   ctxBtn.setAttribute("aria-label", "Context usage 0%");
   ctxBtn.textContent = "Context usage 0%";
-  toolbar.appendChild(ctxBtn);
+  ctxContainer.appendChild(ctxBtn);
   const chatInput = makeEl("textarea");
   chatInput.setAttribute("placeholder", "Ask anything, @ to mention");
   const doc = {
     querySelectorAll(sel) {
-      if (sel === "button") return [ctxBtn];
+      if (sel === "button") return [ctxBtn, modelBtn, agentBtn, smartBtn, sendBtn];
       if (sel === "[placeholder]") return [chatInput];
       return [];
     },
     querySelector(sel) {
-      if (sel === "[data-agentx-thinking]") return toolbar.querySelector(sel);
+      if (sel === "[data-agentx-thinking]") {
+        return toolbarRow.querySelector(sel) ?? ctxContainer.querySelector(sel);
+      }
       return null;
     },
     createElement: (tag) => makeEl(tag),
@@ -211,8 +232,8 @@ function makeWorld({ pathname, token = "tok-123", fetchHandler }) {
     const r = vm.runInContext("__thinkingRule;", sandbox);
     if (r && typeof r.run === "function") vm.runInContext("__thinkingRule.run();", sandbox);
   };
-  const select = () => toolbar.querySelector("[data-agentx-thinking]");
-  return { storage, toolbar, ctxBtn, fetchMock, run, select, windowMock };
+  const select = () => toolbarRow.querySelector("[data-agentx-thinking]") ?? ctxContainer.querySelector("[data-agentx-thinking]");
+  return { storage, toolbar: toolbarRow, toolbarRow, ctxContainer, smartBtn, ctxBtn, fetchMock, run, select, windowMock };
 }
 
 // ---------- dynamic checks ----------
@@ -233,6 +254,9 @@ function makeWorld({ pathname, token = "tok-123", fetchHandler }) {
   check("on /chat/<id> the rule creates one Thinking select in the toolbar",
     sel !== null && sel.tagName === "SELECT" && sel.options.length === 6
     && world.toolbar.children.filter((c) => c.attributes["data-agentx-thinking"]).length === 1);
+  check("the select lands in the Smart Mode row itself (next to Smart Mode), not the Context container",
+    sel !== null && sel.parentElement === world.toolbarRow
+    && world.ctxContainer.children.filter((c) => c.attributes["data-agentx-thinking"]).length === 0);
   check("on /chat/<id> it GETs the stored level with the Bearer token and shows it",
     world.fetchMock.calls.length === 1
     && world.fetchMock.calls[0].url === "/api/chats/abc-123/thinking"
