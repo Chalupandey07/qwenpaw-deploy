@@ -22,9 +22,10 @@ vault, never by you, and you never see its value.
 
 **If the user has entered a TinyFish key, use TinyFish. If not, use the
 built-in `web_search` and `web_fetch` tools exactly as you do now.**
-Do not error when no key exists. Do not claim TinyFish was used when it
-was not. Do not tell the user search is broken because a key is missing —
-the built-in search still works.
+When no key exists, use the built-in tools and say so plainly — for
+example: "No TinyFish key is in the vault, so I searched with the
+built-in search." Always report which search you actually used. The
+built-in search still works without a key.
 
 - Search with a key: TinyFish (ranked results) + DuckDuckGo Instant
   Answer (quick abstract, keyless) as a complement.
@@ -170,8 +171,7 @@ If `vault_list` has no `tinyfish` item, do NOT call TinyFish. Use:
   Markdown). Use it exactly as you would without this skill.
 
 Say which path you used when you report results ("searched with TinyFish"
-vs "searched with the built-in search"). Do not claim TinyFish when you
-used the fallback.
+vs "searched with the built-in search").
 
 ## TinyFish errors — handle honestly, fall back, do not loop
 
