@@ -1,0 +1,306 @@
+--- a/src/qwenpaw/app/routers/approval.py
++++ b/src/qwenpaw/app/routers/approval.py
+@@ -3,13 +3,20 @@
+ 
+ from __future__ import annotations
+ 
++import asyncio
+ import logging
+ from typing import Optional
+ 
+ from fastapi import APIRouter, HTTPException, Request
+ from pydantic import BaseModel, Field
+ 
+-from ..approvals import ApprovalActor, PendingApproval, get_approval_service
++from ..approvals import (
++    ApprovalActor,
++    PendingApproval,
++    get_approval_service,
++    ttl_answer,
++    ttl_read,
++)
+ from ..approvals.display import approval_display_fields
+ from ...security.tool_guard.approval import ApprovalDecision, ApprovalScope
+ 
+@@ -137,6 +144,26 @@
+             )
+             scope = None
+ 
++    # Approval TTL (T132): refuse a late answer before resolving the
++    # Future. ttl_answer runs off the event loop (blocking file I/O).
++    # "expired" means the card waited out its TTL — unblock the
++    # waiting agent call as denied, then refuse the late approval so
++    # the Future never resolves approved after expiry. "unknown" /
++    # "answered" fall through to the normal resolve path below.
++    outcome, _denial = await asyncio.to_thread(
++        ttl_answer, body.request_id, True)
++    if outcome == "expired":
++        await svc.resolve_request(
++            body.request_id,
++            ApprovalDecision.DENIED,
++            actor=_console_admin_actor(request, pending),
++        )
++        raise HTTPException(
++            status_code=409,
++            detail="approval_expired: This request expired before it "
++            "was answered.",
++        )
++
+     # Resolve the Future
+     resolved = await svc.resolve_request(
+         body.request_id,
+@@ -214,6 +241,23 @@
+             detail="Root session mismatch: cannot approve other session trees",
+         )
+ 
++    # Approval TTL (T132): refuse a late answer before resolving the
++    # Future. On expiry the waiting call is already denied by the
++    # resolve below, so the handler only refuses the late answer.
++    outcome, _denial = await asyncio.to_thread(
++        ttl_answer, body.request_id, False)
++    if outcome == "expired":
++        await svc.resolve_request(
++            body.request_id,
++            ApprovalDecision.DENIED,
++            actor=_console_admin_actor(request, pending),
++        )
++        raise HTTPException(
++            status_code=409,
++            detail="approval_expired: This request expired before it "
++            "was answered.",
++        )
++
+     # Resolve the Future
+     resolved = await svc.resolve_request(
+         body.request_id,
+@@ -290,6 +334,22 @@
+             },
+         )
+ 
++    # Approval TTL (T132): an expired card renders as expired, not as
++    # a live Approve/Deny button; a pending card carries its expiry
++    # so the UI can show a countdown. ttl_read is pure — listing
++    # never mutates the store. Cards absent from the store (created
++    # before the wiring) render unchanged.
++    for entry in result:
++        state = await asyncio.to_thread(ttl_read, entry["request_id"])
++        if state is None:
++            continue
++        if state.get("status") == "denied" and state.get("expired"):
++            entry["expired"] = True
++            entry["card"] = state.get("card")
++            entry["reason"] = state.get("reason")
++        elif state.get("status") == "pending":
++            entry["expires_at_ms"] = state.get("expires_at_ms")
++
+     logger.info("Listed %d pending approvals", len(result))
+ 
+     return ApprovalListResponse(
+--- a/src/qwenpaw/app/approvals/service.py
++++ b/src/qwenpaw/app/approvals/service.py
+@@ -10,11 +10,13 @@
+ from __future__ import annotations
+ 
+ import asyncio
++import importlib.util
+ import logging
+ import time
+ import uuid
+ from dataclasses import dataclass, field
+ from enum import Enum
++from pathlib import Path
+ from typing import TYPE_CHECKING, Any
+ 
+ from ...constant import TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS
+@@ -33,6 +35,147 @@
+ _GC_MAX_PENDING = 200
+ 
+ 
++# ------------------------------------------------------------------
++# Approval TTL (gap #18, T132)
++# ------------------------------------------------------------------
++# The TTL store + module live on the working mount
++# (/app/working/approval-ttl/), synced from the repo — never baked
++# into the image, so the store survives container recreates. The
++# module is loaded lazily; if it is absent (not synced yet) TTL is
++# inert and approvals behave exactly as before. A TTL failure must
++# never break approval creation or resolution: every helper below
++# fails open to the pre-TTL behaviour and logs loudly.
++_TTL_MODULE_PATH = "/app/working/approval-ttl/ttl.py"
++_TTL_STORE_PATH = "/app/working/approval-ttl/pending.json"
++_ttl_module = None
++
++
++def _load_ttl_module():
++    """Load the approval-TTL module from the working mount, or None.
++
++    Cached on success; a missing file is retried on the next call so
++    a module synced after startup is picked up without a restart.
++    A file that fails to import is also retried (it may be mid-sync).
++    """
++    global _ttl_module
++    if _ttl_module is not None:
++        return _ttl_module
++    if not Path(_TTL_MODULE_PATH).is_file():
++        return None
++    try:
++        spec = importlib.util.spec_from_file_location(
++            "approval_ttl", _TTL_MODULE_PATH)
++        if spec is None or spec.loader is None:
++            return None
++        module = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(module)
++        _ttl_module = module
++    except Exception:  # noqa: BLE001 — TTL must never break approvals
++        logger.warning("approval TTL module failed to load from %s",
++                       _TTL_MODULE_PATH, exc_info=True)
++        _ttl_module = None
++    return _ttl_module
++
++
++def _ttl_store():
++    """A CardStore for the TTL file, or None when TTL is inert."""
++    module = _load_ttl_module()
++    if module is None:
++        return None
++    return module.CardStore(_TTL_STORE_PATH)
++
++
++def ttl_issue(request_id, tool, session_id):
++    """Stamp a TTL expiry for a newly created approval (best-effort).
++
++    Called from create_pending / create_pending_summary. Returns the
++    stored item, or None when TTL is inert or the issue failed (the
++    card then carries no expiry and stays answerable, as before).
++    """
++    store = _ttl_store()
++    if store is None:
++        return None
++    try:
++        return _load_ttl_module().issue(
++            store, "approval", request_id, tool, session_id=session_id)
++    except Exception:  # noqa: BLE001 — TTL must never break creation
++        logger.warning("approval TTL issue failed for %s",
++                       request_id[:8], exc_info=True)
++        return None
++
++
++def ttl_answer(request_id, approve):
++    """Answer a TTL item. Returns (outcome, denial).
++
++    outcome is one of:
++    - "ok": the answer was recorded (approved/denied).
++    - "expired": the card waited out its TTL; `denial` is the denial
++      dict (reason "timed out"). The caller must NOT apply the
++      approval and should resolve the waiting call as denied.
++    - "unknown": the request is not in the TTL store (created before
++      the wiring, or issue() failed) — legacy, proceed as before.
++    - "answered": the store already holds a terminal decision; the
++      in-memory request reports already-resolved through the normal
++      path, so the caller proceeds.
++    A corrupt store or a lock timeout is logged and treated as
++    "unknown" (proceed as before) so a TTL fault can never block
++    approvals outright.
++    """
++    store = _ttl_store()
++    if store is None:
++        return "unknown", None
++    module = _load_ttl_module()
++    try:
++        module.answer(store, request_id, approve)
++        return "ok", None
++    except module.ExpiredError:
++        item = store.find(store.load(), request_id)
++        if item is None:
++            return "expired", {
++                "request_id": request_id, "kind": "approval",
++                "status": "denied", "reason": "timed out",
++                "expired": True, "do_not_retry": True,
++                "card": "This approval expired"}
++        return "expired", module.denial_for(item)
++    except module.UnknownRequestError:
++        return "unknown", None
++    except module.AlreadyAnsweredError:
++        return "answered", None
++    except Exception:  # noqa: BLE001 — TTL must never block approvals
++        logger.warning("approval TTL answer failed for %s",
++                       request_id[:8], exc_info=True)
++        return "unknown", None
++
++
++def ttl_read(request_id):
++    """The effective TTL state of a card, or None when unknown/inert.
++
++    Returns the read() dict (pending with expires_at_ms, or the
++    denial for an expired card). Pure — it never mutates the store.
++    A terminal-expired item (already answered/swept) reads back as
++    {"status": "denied", "answer": "expired"} with no card/reason;
++    it is normalized to the full denial shape here so callers can
++    treat the pending-past-TTL and terminal-expired cases the same.
++    """
++    store = _ttl_store()
++    if store is None:
++        return None
++    module = _load_ttl_module()
++    try:
++        state = module.read(store, request_id)
++    except module.UnknownRequestError:
++        return None
++    except Exception:  # noqa: BLE001 — listing must never break
++        logger.warning("approval TTL read failed for %s",
++                       request_id[:8], exc_info=True)
++        return None
++    if state.get("status") == "denied" and state.get("answer") == "expired":
++        item = store.find(store.load(), request_id)
++        if item is not None:
++            return module.denial_for(item)
++    return state
++
++
+ class ApprovalIdentityPolicy(str, Enum):
+     """Identity boundary applied when an approval is resolved.
+ 
+@@ -227,6 +370,11 @@
+             self._gc_pending_locked()
+             _sdk_approval_changed(pending)
+ 
++        # Approval TTL (T132): stamp the card's expiry at issue time.
++        # to_thread keeps the blocking file write off the event loop.
++        await asyncio.to_thread(ttl_issue, request_id, tool_name,
++                                session_id)
++
+         logger.info(
+             "Approval pending created: request_id=%s agent_id=%s tool=%s "
+             "severity=%s session=%s root=%s",
+@@ -298,6 +446,11 @@
+             self._pending[request_id] = pending
+             self._gc_pending_locked()
+             _sdk_approval_changed(pending)
++
++        # Approval TTL (T132): stamp the card's expiry at issue time.
++        await asyncio.to_thread(ttl_issue, request_id, summary.name,
++                                session_id)
++
+         logger.info(
+             "Generic approval pending created: request_id=%s agent_id=%s "
+             "name=%s source=%s session=%s root=%s",
+--- a/src/qwenpaw/app/approvals/__init__.py
++++ b/src/qwenpaw/app/approvals/__init__.py
+@@ -8,6 +8,9 @@
+     ApprovalService,
+     PendingApproval,
+     get_approval_service,
++    ttl_answer,
++    ttl_issue,
++    ttl_read,
+ )
+ from .models import ApprovalRequestSummary
+ 
+@@ -19,4 +22,7 @@
+     "ApprovalRequestSummary",
+     "PendingApproval",
+     "get_approval_service",
++    "ttl_answer",
++    "ttl_issue",
++    "ttl_read",
+ ]
