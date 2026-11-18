@@ -1207,6 +1207,11 @@ function computerPanelScript(rebrandEnabled) {
               // Wrap the first substantial direct text node (the visible
               // title; the duplicate is a later node for the tooltip) in
               // a span that IS a real flex item and can truncate.
+              // FALLBACK (2026-11-18 QA rounds 5–9: CSS ellipsis never
+              // engaged through five different approaches): if the row
+              // still overflows after wrapping, truncate the title text
+              // itself to fit and append "…". This does not depend on
+              // CSS layout at all — the "…" is in the text.
               try {
                 var nodes = b.childNodes;
                 for (var n = 0; n < nodes.length; n++) {
@@ -1224,6 +1229,39 @@ function computerPanelScript(rebrandEnabled) {
                     b.insertBefore(span, tn);
                     span.appendChild(tn);
                     break;
+                  }
+                }
+              } catch (e) {}
+              try {
+                // Only truncate when the row actually overflows; short
+                // titles are left alone. The sidebar is ~228px wide and
+                // the title starts at ~x31, so ~170px fits ~24 chars.
+                var over = false;
+                try { over = b.scrollWidth > b.clientWidth + 1; } catch (e) {}
+                if (over) {
+                  var tNodes = b.childNodes;
+                  for (var m = 0; m < tNodes.length; m++) {
+                    var t2 = tNodes[m];
+                    var val = "";
+                    if (t2 && t2.nodeType === 3) val = t2.nodeValue || "";
+                    else if (t2 && t2.textContent) {
+                      // A wrapped title span: truncate its text node.
+                      var inner = t2.childNodes;
+                      for (var q = 0; q < inner.length; q++) {
+                        if (inner[q] && inner[q].nodeType === 3 && (inner[q].nodeValue || "").trim().length >= 3) {
+                          var v = inner[q].nodeValue;
+                          if (v.length > 25 && v.indexOf("…") === -1) {
+                            inner[q].nodeValue = v.slice(0, 22).replace(/\s+$/, "") + "…";
+                          }
+                          break;
+                        }
+                      }
+                      continue;
+                    }
+                    if (val.trim().length >= 3 && val.length > 25 && val.indexOf("…") === -1) {
+                      t2.nodeValue = val.slice(0, 22).replace(/\s+$/, "") + "…";
+                      break;
+                    }
                   }
                 }
               } catch (e) {}
@@ -1321,7 +1359,16 @@ function computerPanelScript(rebrandEnabled) {
           var rBtn = document.getElementById("qwenpawRestBtn");
           var vBtn = document.getElementById("qwenpawVaultBtn");
           if (!panel || !cBtn || !rBtn || !vBtn) return;
-          var isOpen = panel.style.display === "flex";
+          // The panel can be opened by the console's own UI (not only
+          // by the floating pill's setOpen), which may show it via a
+          // CSS class rather than an inline display style — so
+          // panel.style.display is "" even while it is visible. Use
+          // the COMPUTED display, which reflects the real state either
+          // way. (2026-11-18 QA round 9: pills sat on Send because the
+          // rule read the inline style and thought the panel was closed.)
+          var disp = "";
+          try { disp = window.getComputedStyle ? window.getComputedStyle(panel).display : ""; } catch (e) {}
+          var isOpen = disp !== "none" && disp !== "";
           var right = isOpen ? "332px" : "16px";
           cBtn.style.right = right;
           rBtn.style.right = right;
