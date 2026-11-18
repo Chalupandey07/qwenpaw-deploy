@@ -18,14 +18,16 @@ Files: `pages/public/_worker.js` (shim + rebrand rules + our strings),
 `pages/public/{reset/index.html, vault/ui.html, status-page.html,
 computer/router.js, computer/ui.html, vault/router.js, reset/ui.js}`,
 `features/rebrand/` (this README + harness). Tests: T114
-(harness-rebrand.mjs, 69 checks), PASS; fail-first proven (against the
+(harness-rebrand.mjs, 86 checks), PASS; fail-first proven (against the
 unmodified `_worker.js` it fails 49/51 — the 2 that pass check for the
 ABSENCE of a rebrand section, which is vacuously true on the original
 file; after the browser-verification fixes below, the extended harness
-fails 22/69 against the pre-fix code and passes 69/69 after). Full
-machine-free suite 21 PASS / 4 known NEEDS-REBUILD. Secret-scan clean.
-NOT deployed — the parent deploys after the model-loop browser test
-finishes, so the Pages proxy is untouched by this commit.
+fails 22/69 against the pre-fix code and passes 69/69 after; after the
+China-card fix below, the extended harness fails 13/86 against the
+pre-fix code and passes 86/86 after). Full machine-free suite 21 PASS /
+4 known NEEDS-REBUILD. Secret-scan clean. NOT deployed — the parent
+deploys after the model-loop browser test finishes, so the Pages proxy
+is untouched by this commit.
 
 What changed, in order:
 1. **Freeze upstream.** The machine's `/data/home/qwenpaw/docker-compose.yml`
@@ -133,6 +135,65 @@ this commit; the harness grew from 51 to 69 checks for them.
    climb). "Aliyun" (Alibaba Cloud's visible brand) and "Alibaba
    Cloud" were added to the label list — "Aliyun" was never in it.
 
+## China-card fix (2026-11-18, after second live verification)
+
+A second live browser re-verification (satwik, qwenpawx.pages.dev,
+11:30–11:34 IST) found SiliconFlow, ModelScope and Aliyun STILL present
+in Settings > Models > Cloud Providers (17 cards: OpenCode, SiliconFlow
+FREE, Zhipu, AgentScope, Aliyun, Anthropic, Azure, DeepSeek, Google
+Gemini, Kimi, MiniMax, ModelScope, OpenAI, OpenRouter, TypeSafe,
+Volcengine, Xiaomi MiMo; DashScope 0). The diagnosis, proven by
+replaying the REAL card DOM in the harness, was worse than "not hidden":
+
+- **The rule hid the WHOLE provider list, not the card.** The provider
+  card's class is a hashed CSS module,
+  `index-module__groupCardGlass__-GYEf` — "Card" with a capital C — so
+  the case-sensitive `[class*='card']` never matched the card, while
+  `[class*='provider']` matched the LIST container
+  (`index-module__providerCards__fYCGM`) and `closest()` climbed past
+  the card to the list. The settled page then showed NO provider cards
+  at all and no search box — the transient snapshots (right after
+  navigation/reload, before the rule ran) caught the list with
+  SiliconFlow / ModelScope / Aliyun still counted. DashScope was 0 in
+  the transient snapshots too, so it is absent from the rendered list
+  (not proven hidden by the rule); it stays in the label list, so its
+  card is hidden if it ever renders.
+- **The harness mock was fictional.** It used class `provider-card`,
+  which the real bundle never emits, so it passed while the live rule
+  failed. The mock is now the real DOM (hashed classes from the served
+  chunks: `RemoteProviderCard-CFfBXPIy.js` + `index.module-D02jL-aA.js`).
+- **Available-channel buttons were only blanked.** The available
+  channel item (`button.availableItem`, name in `span.availableItemName`)
+  has no lowercase "card"/"item"/"provider"/"channel" in any class
+  (all CamelCase: `availableItem`, `availableItemName`,
+  `availableGrid`), so the old climb found no container and hid only
+  the name span, leaving an unnamed icon + Configure button. The
+  configured channel card DID hide (its class `channelCard` contains
+  lowercase "channel", so the old fallback climb found it) — the
+  Channels page showing no cards at all was ambiguous (an empty/failed
+  load, not proof the rule worked).
+
+Fix: new `agentxClimbToChinaCard(el)` — structural and case-insensitive.
+The card is the ancestor that is a direct child of the list/grid (the
+provider list `providerCards`, the channel grid `availableGrid` /
+`channelsGrid`, a `role=list`, a `ul`/`ol`, or a class containing
+"list"/"grid"), or — failing that — the first ancestor whose lowercased
+class names the card itself (`groupCardGlass` = provider card,
+`channelCard` = configured channel card, `availableItem` =
+available-channel button), skipping the name-bearing leaves
+(`groupCardName` / `cardTitle` / `availableItemName`). The list/grid
+container itself is never returned, so non-China providers (OpenAI,
+Anthropic, DeepSeek, …) are never hidden with it. `agentxHideByName`
+takes an optional climb function; the hide-china rule passes
+`agentxClimbToChinaCard`, the hide-menu rule keeps the generic climb.
+`agentxClimbToContainer`'s fallback class checks are now
+case-insensitive too (lowercased before matching). The observer already
+re-runs on mount (it watches the whole body subtree with a 400 ms
+throttle + trailing timer), so the async list mount is covered — the
+harness now simulates it (empty list on the first pass, cards appended,
+re-run after the throttle window). T114 grew 69 → 86 checks; fail-first
+proven 13/86 against the pre-fix code, 86/86 after.
+
 ## Live verification (NOT yet done — parent deploys)
 
 - **NOT deployed.** The Pages proxy and both Workers are untouched by
@@ -144,7 +205,10 @@ this commit; the harness grew from 51 to 69 checks for them.
   menu has no Tutorial / Feature Demos / Changelog / FAQ / GitHub /
   Documentation items; "About AgentX" opens /status; no menu item opens
   qwenpaw.agentscope.io or github.com/agentscope-ai/QwenPaw; the
-  China provider/channel cards are hidden; the waking page says AgentX.
+  China provider/channel cards are hidden AND the non-China cards and
+  the provider list itself are still visible (the last fix hid the
+  whole list — check the list is present, not just that the China names
+  are gone); the waking page says AgentX.
   The harness (T114) proves the mechanism against mocks; only a real
   browser proves it against the live console.
 
@@ -219,7 +283,8 @@ or parent text contains `qwenpaw[codex]`, `qwenpaw[whisper]`,
 - `pages/public/_worker.js` — `headShim()` (fetch/window.open patches),
   `computerPanelScript(rebrandEnabled)` (rebrand rule table + observer),
   `agentxHideByName` / `agentxClimbToContainer` (hide by accessible name,
-  whole button/card), `agentxAboutRule` (delegated About click),
+  whole button/card) / `agentxClimbToChinaCard` (structural China-card
+  climb that never returns the list), `agentxAboutRule` (delegated About click),
   `agentxWatchTitle` (title observer), `PINNED_QWENPAW_VERSION` /
   `PYPI_QWENPAW_URL` / `UPSTREAM_DOC_ORIGIN` / `UPSTREAM_GITHUB_URL`
   constants, proxy injection + title rewrite + CSP-Report-Only /
