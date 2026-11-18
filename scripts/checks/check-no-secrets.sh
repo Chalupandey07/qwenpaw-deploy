@@ -27,6 +27,11 @@
 #                            (a sequential/patterned fake, not a real key).
 #   Remember the key sk-   — redaction-test input (test_lessons.py:226).
 #   token: ghp_            — redaction-test input (test_recall.py:279).
+#   token ghp_             — redaction-test input
+#                            (features/botpages/routine-loop/test_routine_loop.py:273,
+#                            "refuses a secret-shaped value" — a fake ghp_
+#                            fixture; added 2026-11-18 with T132, whose
+#                            checks were blocked by it).
 #   aws_akid               — redaction-test input (test_recall.py:281).
 #   openai_sk              — redaction-test input (test_recall.py:282).
 #   The key is sk-         — redaction-test input (test_facts.py:322).
@@ -53,6 +58,7 @@ hits="$(grep -rniE "$PATTERN" \
     | grep -v '11ABCDEFG0123456789' \
     | grep -v 'Remember the key sk-' \
     | grep -v 'token: ghp_' \
+    | grep -v 'token ghp_' \
     | grep -v 'aws_akid' \
     | grep -v 'openai_sk' \
     | grep -v 'The key is sk-' \
