@@ -1112,12 +1112,12 @@ function computerPanelScript(rebrandEnabled) {
               var n = nodes[i];
               var t = n.nodeValue;
               if (!t) continue;
-              var fixed = t.replace(/1\s+steps/g, "1 step").replace(/1\s+providers/g, "1 provider");
+              var fixed = t.replace(/1\\s+steps/g, "1 step").replace(/1\\s+providers/g, "1 provider");
               if (fixed !== t) { n.nodeValue = fixed; continue; }
               if (t.indexOf("providers") !== -1 && i > 0) {
                 var prev = nodes[i - 1];
                 var prevText = prev ? (prev.nodeValue || "") : "";
-                if (/\b1\s*$/.test(prevText)) {
+                if (/\\b1\\s*$/.test(prevText)) {
                   n.nodeValue = t.split("providers").join("provider");
                 }
               }
@@ -1151,7 +1151,7 @@ function computerPanelScript(rebrandEnabled) {
               var name = "";
               try { name = (b.getAttribute("aria-label") || "") + " " + (b.textContent || ""); } catch (e) {}
               if (/more actions/i.test(name)) continue;
-              if (/^\s*(new task|new group|conversation history|by source|manage group)\s*$/i.test((b.textContent || "").trim())) continue;
+              if (/^\\s*(new task|new group|conversation history|by source|manage group)\\s*$/i.test((b.textContent || "").trim())) continue;
               var left = -1;
               try { left = b.getBoundingClientRect ? b.getBoundingClientRect().left : -1; } catch (e) {}
               if (left < 0 || left > 260) continue;
@@ -1222,7 +1222,7 @@ function computerPanelScript(rebrandEnabled) {
               try { label = (b.getAttribute("aria-label") || "") + " " + (b.getAttribute("title") || "") + " " + (b.textContent || ""); } catch (e) {}
               if (label.indexOf("Context usage") === -1) continue;
               if (b.setAttribute) b.setAttribute("data-agentx-ctx-label", "1");
-              var m = label.match(/Context usage\s*(\d+)\s*%/);
+              var m = label.match(/Context usage\\s*(\\d+)\\s*%/);
               var pct = m ? m[1] + "%" : "";
               if (!pct) continue;
               var span = document.createElement("span");
