@@ -35,13 +35,29 @@ Discriminating tests (must FAIL on the gatefix3 gate, PASS on patched):
   N  an unreadable batch's sub-calls are charged to the task from the
      completed-batch result JSON (DeepSeek review fix).
   O  a batch that would jump over the task cap is refused whole.
+  P  (T140, gatefix5) the per-turn agent rebuild: the runtime builds a
+     FRESH agent object for every user turn and restores the session
+     via load_state_dict, which restores only self.state -- NOT plain
+     attributes. Gatefix4 stored the task budget as such an attribute,
+     so every turn started with a fresh task and the per-task cap never
+     bound (live failure b6180034: 20 shell per turn for 4 turns,
+     cumulative 80). Gatefix5 persists the task budget through the
+     state_dict round-trip. P replays the live shape WITH a fresh agent
+     object per turn (same context, task state round-tripped through
+     task_budget_state_dict / load_task_budget_state_dict when they
+     exist): turn 2 gets 20 more to 40 and finalises, turns 3 and 4
+     execute 0. P2 checks the snapshot round-trip; P3 checks the loader
+     fails open on bad data. P FAILS on the gatefix4 gate (no
+     persistence functions: every rebuild loses the task) and PASSES
+     on gatefix5.
 
 Regression tests (must PASS on both):
   N1 a small run executes fully, is not finalised, writes no stops.
 
 Usage:
   python3 test_task_cap.py --limits src/gatefix3/limits.py  # FAILs (bug)
-  python3 test_task_cap.py --limits src/patched/limits.py   # 61/61 (fix)
+  python3 test_task_cap.py --limits src/gatefix4/limits.py  # FAILs (P only)
+  python3 test_task_cap.py --limits src/patched/limits.py   # 87/87 (fix)
   python3 test_task_cap.py                                  # defaults to patched
 Exit code 0 when every test passes, 1 otherwise.
 """
@@ -181,7 +197,7 @@ def load_gate_module(limits_path):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-def run_tests(limits_mod):
+def run_tests(limits_mod, section=None):
     ToolCallBudgetGate = limits_mod.ToolCallBudgetGate
     StopAction = limits_mod.StopAction
     get_task_state = getattr(limits_mod, "get_task_state", None)
@@ -190,6 +206,10 @@ def run_tests(limits_mod):
     results = []
 
     def check(name, cond, detail=""):
+        # --section P runs only the P checks (T140); the other sections
+        # still execute (they are independent) but are not recorded.
+        if section is not None and not name.startswith(section):
+            return
         results.append((name, bool(cond), detail))
         print(f"  {'PASS' if cond else 'FAIL'}  {name}"
               + (f"  ({detail})" if detail else ""))
@@ -619,6 +639,196 @@ def run_tests(limits_mod):
               and task.get("total") == 55,
               f"task={task}")
 
+        # -- P: the per-turn agent rebuild (T140, gatefix5) -------------
+        # The live gatefix4 failure (browser task b6180034, 2026-11-18):
+        # the runtime builds a FRESH agent object for every user turn
+        # (runtime/runtime.py: ctx.agent = builder.build(ctx) per
+        # request) and restores the session via load_state_dict, which
+        # restores only self.state -- NOT plain attributes on the agent.
+        # Gatefix4 stored the task budget as such an attribute, so every
+        # turn started with a fresh task (total=0) and the per-task cap
+        # never bound: 20 shell calls per turn for 4 turns (cumulative
+        # 80, past the 40-shell cap). Gatefix5 persists the task budget
+        # through the state_dict round-trip. These tests rebuild a fresh
+        # agent object per turn (same context, task state round-tripped
+        # through the persistence functions when they exist) and verify
+        # the cap holds. They FAIL on the gatefix4 gate (no persistence
+        # functions: every rebuild loses the task) and PASS on gatefix5.
+        snapshot_fn = getattr(limits_mod, "task_budget_state_dict", None)
+        load_fn = getattr(limits_mod, "load_task_budget_state_dict", None)
+
+        def rebuild_agent(agent, reply_id):
+            """Fresh agent object, same context, task state restored.
+
+            Mirrors the real runtime: a new agent per turn, the context
+            restored from the session state, the task budget restored
+            only if the persistence functions exist (gatefix5). On
+            gatefix4 code the snapshot/load functions are absent, so
+            the rebuild loses the task -- exactly the live failure.
+            """
+            snapshot = None
+            if snapshot_fn is not None:
+                try:
+                    snapshot = snapshot_fn(agent)
+                except Exception:
+                    snapshot = None
+            fresh = FakeAgent(agent.state.context, reply_id)
+            if snapshot is not None and load_fn is not None:
+                try:
+                    load_fn(fresh, snapshot)
+                except Exception:
+                    pass
+            return fresh
+
+        # P1: the live shape WITH rebuilds (browser task b6180034).
+        gate = make_gate()
+        gate.reset_turn()
+        agent = FakeAgent([], "r1")
+        blocks = [tool_block(SHELL) for _ in range(50)]
+        begin_turn(agent, "r1", ECHO, blocks)
+        res = await gate.check({"iteration": 0, "agent": agent})
+        check("P1a turn1 gate TERMINATEs (per-turn)",
+              res.action == StopAction.TERMINATE, f"action={res.action}")
+        executed, refused = simulate_execute(agent, blocks)
+        check("P1b turn1 20 shell execute",
+              executed == 20, f"executed={executed}")
+        check("P1c turn1 30 refused",
+              refused == 30, f"refused={refused}")
+        task = task_of(agent)
+        task_a_id = task.get("task_id") if task else None
+        check("P1d task shell total == 20 after turn1",
+              task is not None
+              and task.get("by_tool", {}).get(SHELL) == 20,
+              f"task={task}")
+        # Turn 2: a FRESH agent object (the rebuild), same context.
+        agent = rebuild_agent(agent, "r2")
+        gate.reset_turn()
+        blocks2 = [tool_block(SHELL) for _ in range(20)]
+        begin_turn(agent, "r2", "hello", blocks2)
+        task = task_of(agent)
+        check("P1e rebuild preserves the task (same task id)",
+              task is not None and task.get("task_id") == task_a_id,
+              f"task_id={task.get('task_id') if task else None!r} "
+              f"expected={task_a_id!r}")
+        res = await gate.check({"iteration": 0, "agent": agent})
+        check("P1f turn2 gate TERMINATEs",
+              res.action == StopAction.TERMINATE, f"action={res.action}")
+        executed, refused = simulate_execute(agent, blocks2)
+        check("P1g turn2 20 more shell execute (not a fresh 20/30)",
+              executed == 20, f"executed={executed}")
+        check("P1h turn2 0 refused (the model only sent 20)",
+              refused == 0, f"refused={refused}")
+        task = task_of(agent)
+        check("P1i task shell total == 40 (the cap) after turn2",
+              task is not None
+              and task.get("by_tool", {}).get(SHELL) == 40,
+              f"task={task}")
+        check("P1j task is finalised at the cap after turn2",
+              task is not None and task.get("finalized") is True,
+              f"task={task}")
+        # Turn 3: another rebuild; the finalised task must refuse all.
+        agent = rebuild_agent(agent, "r3")
+        gate.reset_turn()
+        blocks3 = [tool_block(SHELL) for _ in range(20)]
+        begin_turn(agent, "r3", "hello", blocks3)
+        res = await gate.check({"iteration": 0, "agent": agent})
+        check("P1k turn3 gate TERMINATEs (finalised task)",
+              res.action == StopAction.TERMINATE, f"action={res.action}")
+        executed, refused = simulate_execute(agent, blocks3)
+        check("P1l turn3 0 execute",
+              executed == 0, f"executed={executed}")
+        check("P1m turn3 20 refused",
+              refused == 20, f"refused={refused}")
+        # Turn 4: the live failure's fourth turn -- also 0.
+        agent = rebuild_agent(agent, "r4")
+        gate.reset_turn()
+        blocks4 = [tool_block(SHELL) for _ in range(20)]
+        begin_turn(agent, "r4", "hello", blocks4)
+        res = await gate.check({"iteration": 0, "agent": agent})
+        check("P1n turn4 gate TERMINATEs (still finalised)",
+              res.action == StopAction.TERMINATE, f"action={res.action}")
+        executed, refused = simulate_execute(agent, blocks4)
+        check("P1o turn4 0 execute, 20 refused",
+              executed == 0 and refused == 20,
+              f"executed={executed} refused={refused}")
+
+        # P2: the persistence round-trip itself.
+        gate = make_gate()
+        gate.reset_turn()
+        agent = FakeAgent([], "r1")
+        blocks = [tool_block(SHELL) for _ in range(50)]
+        begin_turn(agent, "r1", ECHO, blocks)
+        await gate.check({"iteration": 0, "agent": agent})
+        simulate_execute(agent, blocks)
+        snapshot = None
+        if snapshot_fn is not None:
+            try:
+                snapshot = snapshot_fn(agent)
+            except Exception:
+                snapshot = None
+        check("P2a snapshot exists (persistence function present)",
+              snapshot is not None, f"snapshot={snapshot!r}"[:120])
+        snap = snapshot or {}
+        check("P2b snapshot version is 1",
+              snap.get("version") == 1, f"version={snap.get('version')!r}")
+        snap_task = snap.get("task") or {}
+        check("P2c snapshot task: total 20, shell 20, not finalised",
+              snap_task.get("total") == 20
+              and (snap_task.get("by_tool") or {}).get(SHELL) == 20
+              and snap_task.get("finalized") is False,
+              f"task={snap_task}")
+        fresh = FakeAgent(agent.state.context, "r2")
+        loaded = False
+        if load_fn is not None and snapshot is not None:
+            try:
+                loaded = bool(load_fn(fresh, snapshot))
+            except Exception:
+                loaded = False
+        check("P2d load onto a fresh agent returns True",
+              loaded is True, f"loaded={loaded!r}")
+        task = task_of(fresh)
+        check("P2e restored task matches (total 20, shell 20, same id)",
+              task is not None
+              and task.get("total") == 20
+              and task.get("by_tool", {}).get(SHELL) == 20
+              and task.get("task_id") == task_a_id
+              and task.get("finalized") is False,
+              f"task={task}")
+
+        # P3: the loader fails open on bad data (never crashes, never
+        # restores a half-valid task). On gatefix4 the loader does not
+        # exist, so these fail (the feature is missing).
+        fresh = FakeAgent([], "r1")
+        r_none = load_fn(fresh, None) if load_fn is not None else "MISSING"
+        check("P3a load(None) returns False",
+              r_none is False, f"result={r_none!r}")
+        r_ver = (
+            load_fn(fresh, {"version": 999, "task": None, "prior": {}})
+            if load_fn is not None else "MISSING"
+        )
+        check("P3b load(wrong version) returns False",
+              r_ver is False, f"result={r_ver!r}")
+        r_bad = (
+            load_fn(fresh, {"version": 1,
+                            "task": {"total": "not-an-int"},
+                            "prior": {}})
+            if load_fn is not None else "MISSING"
+        )
+        check("P3c load(bad task payload) returns False",
+              r_bad is False, f"result={r_bad!r}")
+        check("P3d agent has no task after failed loads",
+              task_of(fresh) is None, f"task={task_of(fresh)}")
+        gate = make_gate()
+        gate.reset_turn()
+        blocks = [tool_block(SHELL) for _ in range(5)]
+        begin_turn(fresh, "r1", "Echo hello five times.", blocks)
+        res = await gate.check({"iteration": 0, "agent": fresh})
+        check("P3e a fresh task starts normally after failed loads",
+              res.action == StopAction.BYPASS, f"action={res.action}")
+        executed, _ = simulate_execute(fresh, blocks)
+        check("P3f fresh task 5 shell execute",
+              executed == 5, f"executed={executed}")
+
     asyncio.run(run_all())
     return results
 
@@ -627,6 +837,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--limits", default=str(PATCHED / "limits.py"),
                     help="limits.py to test (default: patched)")
+    ap.add_argument("--section", default=None,
+                    help="run only one section (e.g. P for T140)")
     args = ap.parse_args()
     limits_path = Path(args.limits)
     if not limits_path.exists():
@@ -634,7 +846,7 @@ def main():
         return 2
     print(f"Testing task cap from: {limits_path}")
     limits_mod = load_gate_module(limits_path)
-    results = run_tests(limits_mod)
+    results = run_tests(limits_mod, section=args.section)
     n_pass = sum(1 for r in results if r[1])
     n_fail = len(results) - n_pass
     print(f"\n{n_pass} passed, {n_fail} failed")
