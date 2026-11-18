@@ -54,6 +54,14 @@ Env (never committed):
     TYPESAFE_API_KEY   -> provider "jev"   (default model jev-latest)
     NACE_API_KEY       -> provider "drex"  (default model drex-max-v1.1)
     DECISION_PROVIDER  -> "jev" | "drex"   (optional; auto-detected from keys)
+    NACE_BASE_URL      -> Drex endpoint override (default https://console.nace.ai)
+    TYPESAFE_BASE_URL  -> Jev endpoint override (default https://api.typesafe.ai)
+    Base precedence: explicit `base=` argument > per-provider env var >
+    provider default. Each env var is scoped to its own provider:
+    NACE_BASE_URL never retargets Jev (a stray var must never ship the
+    TypeSafe key to NACE). A base must be https, except http on loopback
+    (127.0.0.1 / localhost / ::1, for the local mock in test_drex.py);
+    anything else disables the client with a clear reason.
 """
 
 from __future__ import annotations
@@ -73,6 +81,7 @@ from typing import Any, Mapping
 PROVIDERS: dict[str, dict[str, Any]] = {
     "jev": {
         "base": "https://api.typesafe.ai",
+        "base_env": "TYPESAFE_BASE_URL",
         "key_env": "TYPESAFE_API_KEY",
         "default_model": "jev-latest",
         "input_per_mtok": 0.042,
@@ -81,6 +90,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     },
     "drex": {
         "base": "https://console.nace.ai",
+        "base_env": "NACE_BASE_URL",
         "key_env": "NACE_API_KEY",
         "default_model": "drex-max-v1.1",
         "input_per_mtok": 0.03,
@@ -159,18 +169,53 @@ class DecisionClient:
         self.key_env = spec.get("key_env", "")
         self.api_key = api_key or (os.environ.get(self.key_env, "") if self.key_env else "")
         self.model = model or spec.get("default_model", "")
-        self.base = (base or spec.get("base", "")).rstrip("/")
+        self.base, self.base_source = self._resolve_base(base, spec)
         self.timeout = timeout
+
+    @staticmethod
+    def _resolve_base(base: str | None, spec: dict[str, Any]) -> tuple[str, str]:
+        """Precedence: explicit arg > per-provider env var > provider default.
+
+        An explicit arg always wins, even an empty one (which leaves no
+        usable base, so the client is disabled with a clear reason); pass
+        None to fall through. The env var is read at construction time,
+        not import time, and is scoped to its own provider.
+        """
+        if base is not None:
+            return base.strip().rstrip("/"), "arg"
+        env_var = spec.get("base_env", "")
+        env_val = os.environ.get(env_var, "").strip() if env_var else ""
+        if env_val:
+            return env_val.rstrip("/"), "env"
+        return spec.get("base", "").rstrip("/"), "default"
+
+    @staticmethod
+    def _valid_base(base: str) -> bool:
+        """https always; http only on loopback (local mock in test_drex.py).
+
+        A non-loopback http base would send a bearer key in cleartext, so
+        it is rejected and the client stays disabled instead of calling it.
+        """
+        if not base:
+            return False
+        if base.startswith("https://") and len(base) > len("https://"):
+            return True
+        if base.startswith("http://"):
+            host = base[len("http://"):].split("/")[0].split(":")[0].strip("[]")
+            return host in ("127.0.0.1", "localhost", "::1")
+        return False
 
     # -- state ---------------------------------------------------------
     def is_enabled(self) -> bool:
-        return bool(self.provider and self.api_key and self.base and self.model)
+        return bool(self.provider and self.api_key and self.base
+                    and self.model and self._valid_base(self.base))
 
     def status(self) -> dict[str, Any]:
         return {
             "provider": self.provider or None,
             "model": self.model or None,
             "base": self.base or None,
+            "base_source": self.base_source or None,
             "enabled": self.is_enabled(),
             "key_env": self.key_env or None,
             "key_present": bool(self.api_key),
@@ -185,6 +230,9 @@ class DecisionClient:
             return f"{self.key_env} is not set"
         if not self.base:
             return "no base URL for this provider"
+        if not self._valid_base(self.base):
+            return (f"base URL for {self.provider} is not a valid https URL "
+                    f"(http only for loopback): {self.base!r}")
         if not self.model:
             return "no model configured"
         return "unknown"
@@ -423,6 +471,8 @@ def selftest() -> int:
     os.environ.pop("TYPESAFE_API_KEY", None)
     os.environ.pop("NACE_API_KEY", None)
     os.environ.pop("DECISION_PROVIDER", None)
+    os.environ.pop("NACE_BASE_URL", None)
+    os.environ.pop("TYPESAFE_BASE_URL", None)
     c = DecisionClient()
     expect("disabled with no keys", not c.is_enabled())
     expect("status explains why", "TYPESAFE_API_KEY" in (c.status()["reason"] or "")
