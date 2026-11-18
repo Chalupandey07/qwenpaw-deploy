@@ -125,7 +125,7 @@ function render() {
   list.innerHTML = rows.map((it) => `
     <div class="card" data-name="${esc(it.name)}">
       <h3>${esc(it.name)} <span class="tag">${esc(it.kind)}</span>${it.policy === "off" ? '<span class="tag off">off</span>' : ""}</h3>
-      <div class="meta">${esc(it.title || "")}</div>
+      ${it.title ? `<div class="meta">${esc(it.title)}</div>` : ""}
       <div class="meta">${it.origin ? `Origin: ${esc(it.origin)}` : "Variable — exported as $" + esc(it.name.toUpperCase().replace(/-/g, "_"))}</div>
       ${it.note ? `<div class="meta">${esc(it.note)}</div>` : ""}
       <div class="row" style="margin-top:8px">
