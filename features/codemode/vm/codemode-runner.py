@@ -25,17 +25,33 @@ QwenPaw. That is a strictly better place for this pilot anyway —
 WHAT IT IS, AND WHAT IT IS NOT
 
 It is a BOUNDED PILOT that measures whether Code Mode is worth adopting for
-predictable jobs. It is NOT a code-execution service and it does NOT run
-model-generated code: the job is a FIXED, AUDITABLE program (`BENCH_STEPS`)
-chosen so a run tells you whether the *runtime* works. A generated script
-would confound "the harness failed" with "the model wrote bad code", which is
-the one thing a pilot must not do.
+predictable jobs. The FIXED job below (`BENCH_STEPS`) is still the only job
+that runs on the MAIN container: it is a fixed, auditable program chosen so
+a run tells you whether the *runtime* works. A generated script would
+confound "the harness failed" with "the model wrote bad code", which is the
+one thing a pilot must not do.
+
+Generated code runs ONLY in the sandbox (gap #6, T139): `run_sandbox_job`
+routes a generated-code job through `dispatch.route_job`, builds the
+sandbox profile, validates it, mints a short-lived scoped token, and runs
+`docker run` from `docker_run_argv`. Anything that cannot run in the
+sandbox is REFUSED with a named reason, never silently fallen back to the
+main container. The fixed pilot job is the one legacy exception (exact job
+id `codemode-fixed-job`): it drives the real desktop through the MCP proxy
+and cannot run in the sandbox.
 
 THE SAFETY MODEL (this runs on a box that holds the user's auth file)
 
-  1. FIXED JOB ONLY. There is no `eval`, no `exec`, no template that accepts
-     caller text. The only way to change what runs is to edit this file and
-     commit it. That is deliberate and it is the whole sandbox.
+  1. FIXED JOB ONLY, on main. There is no `eval`, no `exec`, no template
+     that accepts caller text for the main-container job. The only way to
+     change what runs there is to edit this file and commit it. That is
+     deliberate and it is the whole sandbox for the main path.
+  1b. GENERATED CODE ONLY in the sandbox. A generated-code job is routed
+     by `route_job`, runs as uid 10001 on the isolated bridge
+     `qwenpaw-sandbox-net` with a workspace-only mount, no docker.sock,
+     no route to the vault broker, and a 300 s hard deadline. Its only
+     credential is a 90 s scoped token on a tmpfs file — never the
+     broker token, never in env.
   2. NO UNBOUNDED NETWORK. The runner talks to exactly one URL — the MCP
      proxy — resolved from config, not from the job. It makes no outbound
      call of its own.
@@ -70,9 +86,11 @@ import json
 import os
 import re
 import resource
+import shutil
 import signal
 import socket
 import socketserver
+import subprocess
 import sys
 import threading
 import time
@@ -1343,6 +1361,254 @@ def record_run(entry: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# The sandbox path (gap #6, T139)
+#
+# Generated code runs ONLY in the sandbox container. This section is the
+# wiring: route the job, resolve the workspace, mint the token, build
+# and validate the profile, run `docker run`, and surface refusals.
+# It never falls back to main: a refusal is a refusal, with the reason.
+# ---------------------------------------------------------------------------
+
+#: Host root a sandbox job workspace must live under (the same constant
+#: as features/sandbox/sandbox.py WORKSPACE_ROOT; kept literal here so
+#: the runner can refuse a bad path even before the sandbox module
+#: loads).
+SANDBOX_WORKSPACE_ROOT = "/data/home/qwenpaw/working/workspaces"
+
+#: Host root for per-job token directories (features/sandbox/sandbox.py
+#: TOKEN_DIR_ROOT). On the host /run is tmpfs, so the token file lives
+#: on tmpfs and dies with the reboot; the runner removes the directory
+#: when the job ends, success or failure.
+SANDBOX_TOKEN_ROOT = "/run/sandbox-tokens"
+
+#: Job ids that may name a container and a token directory. Anything
+#: else (a slash, a space, a shell metacharacter) is refused before it
+#: can reach a path or an argv.
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+_SANDBOX_MODULES = None
+_SANDBOX_MODULES_TRIED = False
+
+
+def _load_sandbox_modules():
+    """Load the sandbox modules (dispatch, sandbox, vault_tokens).
+
+    Search order: next to this file (the machine layout, where the
+    three modules are synced into /data/home/qwenpaw/codemode/
+    alongside the runner), then the repo tree (features/sandbox/).
+    Returns (dispatch, sandbox, vault_tokens) or (None, None, None)
+    when any of them cannot be loaded — the sandbox path is then
+    unavailable and every generated-code job is refused, never run
+    on main.
+    """
+    global _SANDBOX_MODULES, _SANDBOX_MODULES_TRIED
+    if _SANDBOX_MODULES_TRIED:
+        return _SANDBOX_MODULES
+    _SANDBOX_MODULES_TRIED = True
+    import importlib.util
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        here,
+        os.path.normpath(os.path.join(os.path.dirname(here), "..", "sandbox")),
+    ]
+    loaded = {}
+    for name in ("dispatch", "sandbox", "vault_tokens"):
+        module = None
+        for base in candidates:
+            path = os.path.join(base, name + ".py")
+            if not os.path.exists(path):
+                continue
+            try:
+                spec = importlib.util.spec_from_file_location("sandbox_" + name, path)
+                if spec is None or spec.loader is None:
+                    continue
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                break
+            except Exception:
+                module = None
+                continue
+        loaded[name] = module
+    if any(v is None for v in loaded.values()):
+        _SANDBOX_MODULES = (None, None, None)
+    else:
+        _SANDBOX_MODULES = (loaded["dispatch"], loaded["sandbox"], loaded["vault_tokens"])
+    return _SANDBOX_MODULES
+
+
+def sandbox_available() -> dict:
+    """Is the sandbox path usable? Reports the reason, never raises."""
+    dispatch_mod, sandbox_mod, tokens_mod = _load_sandbox_modules()
+    if dispatch_mod is None or sandbox_mod is None or tokens_mod is None:
+        return {"available": False,
+                "reason": "sandbox modules not installed (dispatch/sandbox/vault_tokens)"}
+    return {"available": True, "reason": None}
+
+
+def resolve_job_workspace(workspace: str, root: str = SANDBOX_WORKSPACE_ROOT):
+    """Resolve symlinks in a job workspace before mounting (T139
+    residual hole 7). Returns (resolved_path, None) or (None, reason).
+    Refuses: a path that does not exist, is not a directory, or whose
+    realpath escapes the workspace root. The resolved path is what gets
+    mounted — never the unresolved one."""
+    if not isinstance(workspace, str) or not workspace:
+        return None, "workspace is missing"
+    resolved = os.path.realpath(workspace)
+    root_real = os.path.realpath(root)
+    if resolved == root_real or not resolved.startswith(root_real.rstrip("/") + "/"):
+        return None, f"workspace escapes the workspace root: {workspace!r}"
+    if not os.path.isdir(resolved):
+        return None, f"workspace is not a directory: {workspace!r}"
+    return resolved, None
+
+
+def _docker_kill(container_name: str) -> None:
+    """Best-effort kill of a sandbox container (timeout path). Never raises."""
+    try:
+        subprocess.run(["docker", "kill", container_name],
+                       capture_output=True, timeout=10)
+    except Exception:
+        pass
+
+
+def run_sandbox_job(config: dict, job: dict, client=None,
+                    _run=None, token_root: str = SANDBOX_TOKEN_ROOT,
+                    workspace_root: str = SANDBOX_WORKSPACE_ROOT) -> dict:
+    """Route and run one generated-code job in the sandbox (T139).
+
+    ``job`` keys: job_id, kind ("generated-code" | "code"), workspace
+    (host path), script (basename of the .py file in the workspace to
+    run as ``python3 /workspace/<script>``), deadline_s (optional),
+    hosts (optional), vault_items (optional), tools / needs_desktop
+    (optional, for the desktop refusal). Returns an entry dict with at
+    least status/target/reason; a refusal surfaces the reason and runs
+    nothing. Never raises for a bad job.
+
+    The token scope the runner mints is exactly the job's declared
+    needs (vault_items + hosts): route_job is called with token_items
+    == vault_items, i.e. "the token I am about to mint scopes exactly
+    these" — dispatch then checks the job's needs are inside it, and
+    the mint below mints exactly that scope. A job whose needs change
+    between routing and minting cannot exist: both read the same job
+    dict.
+    """
+    started = time.time()
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started))
+    job_id = str((job or {}).get("job_id") or "").strip()
+    entry = {
+        "id": "run_%x" % int(started * 1000),
+        "job": job_id or "<unknown>",
+        "runtime": "vm",
+        "target": "sandbox",
+        "startedAt": started_at,
+        "status": "refused",
+        "reason": None,
+        "route": None,
+    }
+
+    def _finish(status, reason):
+        entry["status"] = status
+        entry["reason"] = reason
+        entry["durationMs"] = int((time.time() - started) * 1000)
+        return entry
+
+    dispatch_mod, sandbox_mod, tokens_mod = _load_sandbox_modules()
+    if dispatch_mod is None or sandbox_mod is None or tokens_mod is None:
+        return _finish("refused", "sandbox unavailable: the sandbox modules "
+                        "(dispatch/sandbox/vault_tokens) are not installed")
+    if not _JOB_ID_RE.match(job_id):
+        return _finish("refused", f"job_id {job_id!r} must match "
+                        "[A-Za-z0-9][A-Za-z0-9_-]{0,63} (it names a "
+                        "container and a token directory)")
+    routed = dict(job or {})
+    routed["token_items"] = list((job or {}).get("vault_items") or [])
+    decision = dispatch_mod.route_job(routed, workspace_root=workspace_root)
+    entry["route"] = decision
+    target = decision.get("target")
+    if target == "main":
+        # The one legacy exception: the fixed desktop pilot job. It is
+        # not generated code and it cannot run in the sandbox.
+        fixed = run_job(config, job="codemode-fixed-job", client=client)
+        fixed["target"] = "main"
+        fixed["route"] = decision
+        return fixed
+    if target != "sandbox":
+        return _finish("refused", decision.get("reason") or "refused by dispatch")
+    script = str((job or {}).get("script") or "").strip()
+    if (not script or "/" in script or "\\" in script or ".." in script
+            or not script.endswith(".py")):
+        return _finish("refused", f"script {script!r} must be a plain .py "
+                        "basename inside the job workspace")
+    resolved, err = resolve_job_workspace(str((job or {}).get("workspace") or ""),
+                                          root=workspace_root)
+    if err is not None:
+        return _finish("refused", err)
+    script_host = os.path.realpath(os.path.join(resolved, script))
+    if not script_host.startswith(resolved.rstrip("/") + "/") or not os.path.isfile(script_host):
+        return _finish("refused", f"script {script!r} is not a file in the job workspace")
+    deadline = int(decision.get("deadline_s") or 120)
+    vault_items = [str(i) for i in ((job or {}).get("vault_items") or []) if i]
+    hosts = [str(h).lower() for h in ((job or {}).get("hosts") or []) if h]
+    token_dir = None
+    try:
+        profile_job = {"job_id": job_id, "workspace": resolved, "deadline_s": deadline}
+        if vault_items:
+            # Mint first: a job that needs a vault value without a
+            # configured key is blocked, not run without the value.
+            try:
+                kid, key = tokens_mod.load_key()
+            except Exception:
+                return _finish("blocked", "SANDBOX_BROKER_KEY is not set on this "
+                               "runner, so no scoped token can be minted for a "
+                               "job that needs a vault value")
+            try:
+                token = tokens_mod.mint_token(key, kid, job_id, vault_items, hosts)
+            except Exception as exc:
+                return _finish("refused", f"cannot mint a scoped token: {exc}")
+            token_dir = os.path.join(token_root, job_id)
+            try:
+                os.makedirs(token_dir, mode=0o700, exist_ok=True)
+                os.chmod(token_dir, 0o700)
+                token_path = os.path.join(token_dir, "token")
+                with open(token_path, "w", encoding="utf-8") as fh:
+                    fh.write(token)
+                os.chmod(token_path, 0o600)
+            except OSError as exc:
+                return _finish("error", f"cannot write the token file: {exc}")
+            profile_job["token_dir"] = token_dir
+        profile = sandbox_mod.build_profile(profile_job)
+        violations = sandbox_mod.validate_profile(profile, workspace_root, token_root)
+        if violations:
+            return _finish("refused", "invalid sandbox profile: " + "; ".join(violations))
+        argv = sandbox_mod.docker_run_argv(profile, workspace_root, token_root)
+        argv += ["python3", "/workspace/" + script]
+        container_name = f"qwenpaw-sandbox-{job_id}"
+        run = _run or subprocess.run
+        try:
+            proc = run(argv, capture_output=True, text=True, timeout=deadline)
+        except subprocess.TimeoutExpired:
+            _docker_kill(container_name)
+            entry["exitCode"] = None
+            entry["timedOut"] = True
+            return _finish("timeout", f"job deadline ({deadline} s) exceeded; "
+                           "container killed")
+        except Exception as exc:
+            return _finish("error", f"docker run failed: {type(exc).__name__}: {exc}")
+        entry["exitCode"] = proc.returncode
+        entry["stdout"] = truncate(getattr(proc, "stdout", "") or "")
+        entry["stderr"] = truncate(getattr(proc, "stderr", "") or "")
+        entry["container"] = container_name
+        entry["image"] = sandbox_mod.SANDBOX_IMAGE
+        return _finish("ok" if proc.returncode == 0 else "error",
+                       None if proc.returncode == 0 else
+                       f"sandbox job exited {proc.returncode}")
+    finally:
+        if token_dir is not None:
+            shutil.rmtree(token_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # HTTP surface
 # ---------------------------------------------------------------------------
 
@@ -1399,6 +1665,7 @@ def make_handler(config: dict):
         def do_GET(self):  # noqa: N802
             path = self.path.split("?")[0]
             if path == "/health":
+                sb = sandbox_available()
                 self._json({
                     "ok": True,
                     "version": VERSION,
@@ -1409,6 +1676,10 @@ def make_handler(config: dict):
                     # `ready` is the honest bit: the runner exists, but a job
                     # cannot run without an MCP URL.
                     "ready": bool(config.get("mcp_url")),
+                    # The sandbox path (T139): usable only when the three
+                    # sandbox modules are installed next to the runner.
+                    "sandbox": ("available" if sb["available"]
+                                else "unavailable: " + (sb["reason"] or "")),
                 })
                 return
             if path == "/api/bench":
@@ -1449,10 +1720,17 @@ def make_handler(config: dict):
                     return
             # apply_limits stays False in server mode: the process is long-lived and
             # a permanent RLIMIT_AS set by one request would bite later, silently.
-            entry = run_job(config, job=str((body or {}).get("job") or "fixed-bench-job"),
-                            apply_limits=False)
+            # A job object routes through the sandbox (T139); anything else
+            # runs the fixed pilot job, exactly as before.
+            requested = (body or {}).get("job")
+            if isinstance(requested, dict):
+                entry = run_sandbox_job(config, requested)
+            else:
+                entry = run_job(config, job=str(requested or "fixed-bench-job"),
+                                apply_limits=False)
             record_run(entry)
-            status = 200 if entry["status"] == "ok" else (503 if entry["status"] == "blocked" else 502)
+            status = 200 if entry["status"] in ("ok", "refused") else (
+                503 if entry["status"] == "blocked" else 502)
             self._json(entry, status)
 
     return Handler
@@ -1463,6 +1741,8 @@ def status_page(config: dict) -> str:
     d = b["desktop_job"]
     mcp_state = "configured" if config.get("mcp_url") else "not configured"
     token_state = "set" if config.get("token") else "unset (run endpoint closed)"
+    sb = sandbox_available()
+    sandbox_state = "available" if sb["available"] else "unavailable: " + (sb["reason"] or "")
     return """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1512,12 +1792,16 @@ is <em>not</em> this job.</p>
   <span class="%s">%s</span></div>
  <div class="row"><span class="k">Run token</span>
   <span class="%s">%s</span></div>
+ <div class="row"><span class="k">Sandbox (T139)</span>
+  <span class="%s">%s</span></div>
 </div>
 
 <h2>Endpoints</h2>
 <pre>GET  /health      -> runner + MCP + token state
 GET  /api/bench   -> this comparison as JSON
 POST /api/run     -> run the fixed job (needs X-Codemode-Token)
+POST /api/run {"job": {...}} -> run a generated-code job in the sandbox
+                    (needs X-Codemode-Token; refusals surface the reason)
 GET  /api/runs    -> audit trail</pre>
 
 <footer style="margin-top:36px;padding-top:16px;border-top:1px solid #252a34;
@@ -1535,6 +1819,7 @@ and tests on the machine; this page reports what the code can prove on its own.
         d["turn_reduction"]["from"], d["turn_reduction"]["to"],
         "ok" if config.get("mcp_url") else "warn", mcp_state,
         "ok" if config.get("token") else "warn", token_state,
+        "ok" if sb["available"] else "warn", sandbox_state,
     )
 
 
@@ -1840,8 +2125,56 @@ def selftest() -> int:
             imported.update(a.name.split(".")[0] for a in node.names)
         elif isinstance(node, _ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
-    check("the runner spawns no process", "subprocess" not in imported,
-          json.dumps(sorted(imported & {"subprocess", "multiprocessing", "pty"})))
+    # The sandbox path (T139) DOES spawn a process — `docker run` — so
+    # "spawns nothing" is no longer the rule. The rule is now precise:
+    # subprocess is used ONLY via run() (TimeoutExpired is raised, not
+    # spawned, by the selftest's deadline fixture), only from the
+    # sandbox runner (and its docker-kill helper), never Popen /
+    # os.system / os.exec*.
+    _subprocess_attrs = {
+        node.func.attr
+        for node in _ast.walk(tree)
+        if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute)
+        and isinstance(node.func.value, _ast.Name)
+        and node.func.value.id == "subprocess"
+    }
+    check("subprocess is used only via run() (or raising TimeoutExpired)",
+          _subprocess_attrs <= {"run", "TimeoutExpired"},
+          json.dumps(sorted(_subprocess_attrs)))
+    _run_owners = set()
+
+    def _collect_owners(node, current=None):
+        # Innermost enclosing function only: a call inside the nested
+        # _fake_run_timeout fixture belongs to the fixture, not to
+        # selftest as a whole.
+        if isinstance(node, _ast.FunctionDef):
+            current = node.name
+        if (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute)
+                and isinstance(node.func.value, _ast.Name)
+                and node.func.value.id == "subprocess"):
+            _run_owners.add(current)
+        for _child in _ast.iter_child_nodes(node):
+            _collect_owners(_child, current)
+
+    _collect_owners(tree)
+    check("docker is spawned only from the sandbox runner",
+          _run_owners <= {"run_sandbox_job", "_docker_kill", "_fake_run_timeout"},
+          json.dumps(sorted(_run_owners)))
+    _os_attrs = {
+        node.func.attr
+        for node in _ast.walk(tree)
+        if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute)
+        and isinstance(node.func.value, _ast.Name)
+        and node.func.value.id == "os"
+    }
+    check("no os.system / os.exec* / os.spawn* / os.popen anywhere",
+          not (_os_attrs & {"system", "execv", "execl", "execve", "execlp",
+                            "execvp", "spawnl", "spawnlp", "spawnv",
+                            "spawnve", "popen"}),
+          json.dumps(sorted(_os_attrs)))
+    check("the runner imports no multiprocessing or pty",
+          not (imported & {"multiprocessing", "pty"}),
+          json.dumps(sorted(imported & {"multiprocessing", "pty"})))
     check("the runner imports no shell helper",
           not (imported & {"shlex", "commands"}), json.dumps(sorted(imported)))
 
@@ -2344,6 +2677,177 @@ def selftest() -> int:
     check("page states nothing is verified by the author",
           "Nothing here is deployed or verified" in page)
     check("page leaks no token", "X-Codemode-Token" not in page.split("Endpoints")[0])
+
+    print("sandbox: generated-code jobs route to the sandbox, refusals surface (T139)")
+    import tempfile as _tempfile
+    import types as _types
+    _sb_root = _tempfile.mkdtemp(prefix="codemode-sandbox-test-")
+    _sb_ws_root = os.path.join(_sb_root, "workspaces")
+    _sb_ws = os.path.join(_sb_ws_root, "job-001")
+    os.makedirs(_sb_ws)
+    with open(os.path.join(_sb_ws, "job.py"), "w", encoding="utf-8") as fh:
+        fh.write("print('sandbox-ok')\n")
+    _sb_token_root = os.path.join(_sb_root, "tokens")
+    os.makedirs(_sb_token_root)
+    _sb_calls = []
+
+    def _fake_run(argv, capture_output=None, text=None, timeout=None):
+        _sb_calls.append(list(argv))
+        return _types.SimpleNamespace(returncode=0, stdout="sandbox-ok\n", stderr="")
+
+    _sb_job = {"job_id": "job-001", "kind": "generated-code",
+               "workspace": _sb_ws, "script": "job.py", "deadline_s": 120,
+               "hosts": [], "vault_items": []}
+    _sb_entry = run_sandbox_job({"mcp_url": "http://mcp.test"}, dict(_sb_job),
+                                _run=_fake_run, token_root=_sb_token_root,
+                                workspace_root=_sb_ws_root)
+    check("sandbox job runs and reports ok", _sb_entry["status"] == "ok",
+          json.dumps(_sb_entry)[:300])
+    _sb_argv = _sb_calls[-1] if _sb_calls else []
+    check("sandbox argv uses the sandbox image", "qwenpaw-sandbox:2.3.0" in _sb_argv,
+          json.dumps(_sb_argv))
+    check("sandbox argv uses the isolated bridge",
+          "--network" in _sb_argv and "qwenpaw-sandbox-net" in _sb_argv,
+          json.dumps(_sb_argv))
+    check("sandbox argv mounts the resolved workspace read-write",
+          any(a.startswith("type=bind,source=" + _sb_ws + ",target=/workspace")
+              for a in _sb_argv),
+          json.dumps(_sb_argv))
+    check("sandbox argv runs the job script as uid 10001",
+          "--user" in _sb_argv and "10001:10001" in _sb_argv
+          and _sb_argv[-2:] == ["python3", "/workspace/job.py"],
+          json.dumps(_sb_argv))
+    check("sandbox argv carries no credential in env",
+          not any("TOKEN" in a or "SECRET" in a for a in _sb_argv),
+          json.dumps(_sb_argv))
+    check("no token dir is created when the job needs no vault value",
+          os.listdir(_sb_token_root) == [], json.dumps(os.listdir(_sb_token_root)))
+    # A vault job mints a token, writes it to the tmpfs file, and the
+    # runner removes the directory when the job ends.
+    _old_key = os.environ.get("SANDBOX_BROKER_KEY")
+    os.environ["SANDBOX_BROKER_KEY"] = "44" * 32
+    try:
+        def _fake_run_token(argv, capture_output=None, text=None, timeout=None):
+            _sb_calls.append(list(argv))
+            _tok_seen = os.path.join(_sb_token_root, "job-002", "token")
+            _seen = os.path.exists(_tok_seen) and open(_tok_seen).read().startswith("v1.")
+            return _types.SimpleNamespace(returncode=0,
+                                          stdout="token-seen:%s" % _seen, stderr="")
+
+        _sb_job2 = {"job_id": "job-002", "kind": "generated-code",
+                    "workspace": _sb_ws, "script": "job.py", "deadline_s": 120,
+                    "hosts": ["api.github.com"], "vault_items": ["github-api"]}
+        _sb_entry2 = run_sandbox_job({"mcp_url": "http://mcp.test"}, dict(_sb_job2),
+                                     _run=_fake_run_token, token_root=_sb_token_root,
+                                     workspace_root=_sb_ws_root)
+        check("vault job mints a token and writes it to the tmpfs file",
+              _sb_entry2["status"] == "ok"
+              and "token-seen:True" in (_sb_entry2.get("stdout") or ""),
+              json.dumps(_sb_entry2)[:300])
+        check("the token directory is removed when the job ends",
+              not os.path.exists(os.path.join(_sb_token_root, "job-002")),
+              json.dumps(os.listdir(_sb_token_root)))
+        check("the token bind mounts the per-job token dir",
+              any(a == "type=bind,source=" + os.path.join(_sb_token_root, "job-002")
+                  + ",target=/run/sandbox-token" for a in _sb_calls[-1]),
+              json.dumps(_sb_calls[-1]))
+    finally:
+        if _old_key is None:
+            os.environ.pop("SANDBOX_BROKER_KEY", None)
+        else:
+            os.environ["SANDBOX_BROKER_KEY"] = _old_key
+    # Missing key + vault need -> blocked, naming the key.
+    _sb_entry3 = run_sandbox_job({"mcp_url": "http://mcp.test"},
+                                 {"job_id": "job-003", "kind": "generated-code",
+                                  "workspace": _sb_ws, "script": "job.py",
+                                  "hosts": ["api.github.com"], "vault_items": ["github-api"]},
+                                 _run=_fake_run, token_root=_sb_token_root,
+                                 workspace_root=_sb_ws_root)
+    check("vault job without a key is blocked and names SANDBOX_BROKER_KEY",
+          _sb_entry3["status"] == "blocked"
+          and "SANDBOX_BROKER_KEY" in (_sb_entry3.get("reason") or ""),
+          json.dumps(_sb_entry3)[:300])
+    # Refusals surface the reason and run nothing.
+    _before = len(_sb_calls)
+    _ref = run_sandbox_job({"mcp_url": "http://mcp.test"},
+                           {"job_id": "job-004", "kind": "generated-code",
+                            "workspace": _sb_ws, "script": "job.py",
+                            "tools": ["click"]},
+                           _run=_fake_run, token_root=_sb_token_root,
+                           workspace_root=_sb_ws_root)
+    check("desktop-tool job is refused with the reason surfaced",
+          _ref["status"] == "refused" and "desktop" in (_ref.get("reason") or "").lower(),
+          json.dumps(_ref)[:300])
+    check("a refused job spawns nothing", len(_sb_calls) == _before,
+          f"{len(_sb_calls)} vs {_before}")
+    _ref2 = run_sandbox_job({"mcp_url": "http://mcp.test"},
+                            {"job_id": "job-005", "kind": "generated-code",
+                             "workspace": _sb_ws, "script": "job.py",
+                             "hosts": ["evil.example.com"]},
+                            _run=_fake_run, token_root=_sb_token_root,
+                            workspace_root=_sb_ws_root)
+    check("non-allowlisted host is refused at the runner",
+          _ref2["status"] == "refused" and "egress" in (_ref2.get("reason") or "").lower(),
+          json.dumps(_ref2)[:300])
+    # Symlink escape: a workspace that resolves outside the root is refused.
+    _outside = os.path.join(_sb_root, "outside")
+    os.makedirs(_outside)
+    _link = os.path.join(_sb_ws, "escape-link")
+    try:
+        os.symlink(_outside, _link)
+    except OSError:
+        _link = None
+    if _link is not None:
+        _ref3 = run_sandbox_job({"mcp_url": "http://mcp.test"},
+                                {"job_id": "job-006", "kind": "generated-code",
+                                 "workspace": _link, "script": "job.py"},
+                                _run=_fake_run, token_root=_sb_token_root,
+                                workspace_root=_sb_ws_root)
+        check("a workspace symlink escaping the root is refused",
+              _ref3["status"] == "refused" and "escapes" in (_ref3.get("reason") or ""),
+              json.dumps(_ref3)[:300])
+    else:
+        check("a workspace symlink escaping the root is refused", False,
+              "could not create a symlink in the test dir")
+    # A bad job id never reaches a path or an argv.
+    _ref4 = run_sandbox_job({"mcp_url": "http://mcp.test"},
+                            {"job_id": "job/../007", "kind": "generated-code",
+                             "workspace": _sb_ws, "script": "job.py"},
+                            _run=_fake_run, token_root=_sb_token_root,
+                            workspace_root=_sb_ws_root)
+    check("a job id with a slash is refused",
+          _ref4["status"] == "refused" and "job_id" in (_ref4.get("reason") or ""),
+          json.dumps(_ref4)[:300])
+    # A missing script is refused, not run.
+    _ref5 = run_sandbox_job({"mcp_url": "http://mcp.test"},
+                            {"job_id": "job-008", "kind": "generated-code",
+                             "workspace": _sb_ws, "script": "nope.py"},
+                            _run=_fake_run, token_root=_sb_token_root,
+                            workspace_root=_sb_ws_root)
+    check("a missing job script is refused",
+          _ref5["status"] == "refused" and "script" in (_ref5.get("reason") or ""),
+          json.dumps(_ref5)[:300])
+    # Timeout: the fake run raises, the entry says so, nothing leaks.
+    def _fake_run_timeout(argv, capture_output=None, text=None, timeout=None):
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    _to = run_sandbox_job({"mcp_url": "http://mcp.test"}, dict(_sb_job),
+                          _run=_fake_run_timeout, token_root=_sb_token_root,
+                          workspace_root=_sb_ws_root)
+    check("a job past its deadline reports timeout",
+          _to["status"] == "timeout" and _to.get("timedOut") is True,
+          json.dumps(_to)[:300])
+    # The legacy exception still routes to main (fixed job via FakeMcp).
+    _main_entry = run_sandbox_job({"mcp_url": "http://mcp.test"},
+                                  {"job_id": "codemode-fixed-job",
+                                   "kind": "codemode-fixed-job"},
+                                  client=FakeMcp(), token_root=_sb_token_root,
+                                  workspace_root=_sb_ws_root)
+    check("the fixed pilot job still routes to main",
+          _main_entry.get("target") == "main"
+          and _main_entry["status"] in ("ok", "partial"),
+          json.dumps(_main_entry.get("status")) + " / " + str(_main_entry.get("target")))
+    shutil.rmtree(_sb_root, ignore_errors=True)
 
     print()
     total = passed + len(failed)
