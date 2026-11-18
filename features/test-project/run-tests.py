@@ -2066,23 +2066,28 @@ def t125():
 
 
 def t126():
-    """Per-task cap + structured stop audit: task budget across turns (61).
+    """Per-task cap + structured stop audit + rebuild persistence (87).
 
     Machine-free test (features/loop-gate-fix/test_task_cap.py) for the
-    round-4 per-task cap: task budget 60 total / 40 shell across turns,
-    finalise flag, structured stop audit. J — the live cross-turn shape
-    (turn 1 spends 20 shell, turn 2 "hello" gets 20 more to task shell 40
-    = cap and finalises, turn 3 "hello" executes 0, a new instruction gets
-    a fresh budget); K — sub-cap creep; L — the stop audit (all four
-    kinds); M — explicit task id, re-issued capped instruction inherits
-    the spent budget; N — unreadable batch charged from the result JSON;
-    O — a batch that would jump the task cap is refused whole.
-    Fail-first proven: against gatefix3 limits.py it fails 37/61.
-    T115 still 47/47. The live half (single-turn echo test, cross-turn
-    "hello" test, new-instruction test) is verified by Muse after deploy.
+    round-4 per-task cap and the round-5 (gatefix5, T140) persistence:
+    task budget 60 total / 40 shell across turns, finalise flag,
+    structured stop audit. J — the live cross-turn shape (turn 1 spends
+    20 shell, turn 2 "hello" gets 20 more to task shell 40 = cap and
+    finalises, turn 3 "hello" executes 0, a new instruction gets a fresh
+    budget); K — sub-cap creep; L — the stop audit (all four kinds); M —
+    explicit task id, re-issued capped instruction inherits the spent
+    budget; N — unreadable batch charged from the result JSON; O — a
+    batch that would jump the task cap is refused whole; P (T140) — the
+    per-turn agent rebuild: the runtime builds a fresh agent per turn,
+    so the task budget must persist through the state_dict round-trip
+    (turn 2 gets 20 more to 40 and finalises, turns 3 and 4 execute 0).
+    Fail-first proven: against gatefix3 limits.py it fails 52/87;
+    against gatefix4 limits.py it fails 14/87 (P only). T115 still
+    47/47. The live half (single-turn echo test, cross-turn "hello"
+    test, new-instruction test) is verified by Muse after deploy.
     """
     return _py_script_harness(
-        ["features/loop-gate-fix/test_task_cap.py"], 61)
+        ["features/loop-gate-fix/test_task_cap.py"], 87)
 
 
 def t127():
@@ -2551,6 +2556,33 @@ def t139():
     """
     return _py_script_harness(
         ["features/sandbox/test_sandbox.py"], 50)
+
+
+def t140():
+    """Per-task cap survives the per-turn agent rebuild (26).
+
+    Machine-free test (features/loop-gate-fix/test_task_cap.py, section
+    P) for gatefix5: the runtime builds a FRESH agent object for every
+    user turn (runtime/runtime.py: ctx.agent = builder.build(ctx) per
+    request) and restores the session via load_state_dict, which
+    restores only self.state -- NOT plain attributes on the agent.
+    Gatefix4 stored the task budget as such an attribute, so every turn
+    started with a fresh task (total=0) and the per-task cap never bound
+    (live failure b6180034: 20 shell calls per turn for 4 turns,
+    cumulative 80, past the 40-shell cap). Gatefix5 persists the task
+    budget through the state_dict round-trip (task_budget_state_dict /
+    load_task_budget_state_dict in limits.py, wired into
+    ReactAgent.state_dict / load_state_dict). P replays the live shape
+    WITH a fresh agent object per turn: turn 2 gets 20 more to task
+    shell 40 = cap and finalises, turns 3 and 4 execute 0. P2 checks
+    the snapshot round-trip; P3 checks the loader fails open on bad
+    data. Fail-first proven: against gatefix4 limits.py the P section
+    fails 14/26 (the J-O sections still pass, 61/61). The live half
+    (the 1-200 echo cross-turn browser test) is verified by Muse after
+    deploy.
+    """
+    return _py_script_harness(
+        ["features/loop-gate-fix/test_task_cap.py", "--section", "P"], 26)
 
 
 def t104():
@@ -3081,6 +3113,7 @@ TESTS = [
     ("T137", "memory-recall eval: Layer-1 baseline measured on the real facts.py search (hit@1 0.833, hit@3 1.0, MRR 0.917, staleness + abstention verified); integrity fixtures staged, graded by the T136 judge only, never by substring (selftest)", "memory", "protocol", t137),
     ("T138", "artifacts library: SQLite index over workspace + sent-file metadata + history.db (read-only, mutation-denying authorizer); one searchable static page; backfill for files already sent; re-index is idempotent (selftest)", "artifacts", "protocol", t138),
     ("T139", "real sandbox profile: separate container, workspace-only mount, isolated bridge, read-only rootfs, user 10001, caps dropped ALL, no docker.sock; vault mints short-lived scoped tokens (90s default / 300s max); egress via the T123 allowlist only; dispatcher routes generated-code jobs to sandbox, refuses the rest (selftest)", "sandbox", "protocol", t139),
+    ("T140", "per-task cap survives the per-turn agent rebuild (gatefix5): the runtime builds a fresh agent per turn, so the task budget must persist through the state_dict round-trip (task_budget_state_dict / load_task_budget_state_dict, wired into ReactAgent.state_dict / load_state_dict); turn 2 gets 20 more to 40 and finalises, turns 3 and 4 execute 0; snapshot round-trip + loader fails open on bad data (harness, section P of test_task_cap.py)", "loop-gate", "protocol", t140),
 ]
 
 SKIP_NOTE = {
