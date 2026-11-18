@@ -138,6 +138,22 @@ docker images qwenpaw-agentx:2.3.0-gatefix1   # record the digest
 
 The Dockerfile fails the build if the patch does not apply cleanly.
 
+**Gotcha (caught by the image verification, 2026-11-18): the package
+is installed in site-packages, not run from `/app/src`.** Python
+imports `qwenpaw` from
+`/app/venv/lib/python3.11/site-packages/qwenpaw/` — `/app/src/qwenpaw/`
+is only the source tree the install was built from. Patching
+`/app/src` alone leaves the running code unpatched (the first
+`gatefix1` build did exactly this: the patch applied, the image
+built, but `LoopConfig` had no `tool_call_budget` at runtime). So the
+Dockerfile applies the same patch to **both** copies (`-p1` from
+`/app` for `src/qwenpaw/...`, `-p2` from site-packages for
+`qwenpaw/...`). Both copies are byte-identical upstream, so the patch
+applies cleanly to both. If you ever change the patch, verify the
+import path again — `docker run --rm <image> python3 -c "import
+qwenpaw.config.config as c; print(c.__file__)"` tells you which copy
+actually runs.
+
 ## Verify the image (before switching the live container)
 
 ```bash
