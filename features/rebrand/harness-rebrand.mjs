@@ -29,7 +29,10 @@
  *     - the window.open patch swallows exactly the two upstream hosts;
  *     - the kill switch exists (worker env AGENTX_REBRAND=0 and
  *       ?rebrand=0 at runtime);
- *     - the rule table exists (13 rules) and each rule runs in its own
+ *     - the rule table exists (41 rules: the original 13 plus the
+ *       later fix-grammar / sidebar-ellipsis / chat-input-fixes /
+ *       thinking-selector / page-bottom-padding / pill-positions rules
+ *       plus the 22 Part 3 rules) and each rule runs in its own
  *       try/catch with a console.debug naming the rule;
  *     - the CSP-Report-Only + Referrer-Policy headers are set on the
  *       console HTML response, and the <title> is rewritten;
@@ -37,6 +40,12 @@
  *       calls the rebrand pass;
  *     - the keep-alive Worker and the activity-feed Worker report the
  *       note "AgentX console answered" (the /status page shows it).
+ *     - Part 3 (2026-11-19): the upstream-host list, the model-label
+ *       display map, the inline AX favicon, the no-fetch manifest note,
+ *       rename-attrs alt/data-tooltip, rename-logo title/aria-label,
+ *       rename-text covering in-body toasts, the thinking-selector
+ *       toolbar rename, the title-observer rule, and the leaf-only
+ *       row-hide helper.
  *   Dynamic, in a VM with mocks:
  *     - the real shim (extracted from the file, run with the file's own
  *       constants): PyPI fetch is stubbed, other fetches pass through;
@@ -73,6 +82,16 @@
  *       by an "AgentX" text label, a title change is renamed
  *       immediately by the title observer, and an upstream link click is
  *       blocked while a normal link is not.
+ *     - Part 3 (2026-11-19), one rule at a time on small mock DOMs
+ *       (via agentxRunRuleNow, extracted from the file): each new rule
+ *       hides/renames its target and leaves a non-target alone, e.g.
+ *       block-links-v2 blocks qwenpaw.com + chat.qwen.ai + data-url /
+ *       data-href / form-action upstream targets but NOT the console's
+ *       own origin or pages.dev; model-labels renames the picker label
+ *       text but NOT the option value or an API payload string;
+ *       hide-upgrade hides the upsell but not a "Settings" row;
+ *       rename-attrs covers alt + data-tooltip (img alt stays for the
+ *       logo rule); rename-logo covers title/aria-label imgs.
  *
  * The live half (a real browser on the deployed console: title is
  * "AgentX Console", no update badge, no upstream menu items, no upstream
@@ -194,12 +213,19 @@ console.log("static: the kill switch exists at both layers");
 console.log("static: the rule table is data-driven and guarded");
 {
   const ruleIds = [...rebrandSrc.matchAll(/\{ id: "([^"]+)", run: function/g)].map((m) => m[1]);
-  check("the rule table exists with 13 rules",
-    ruleIds.length === 13, `got ${ruleIds.length}: ${ruleIds.join(", ")}`);
+  check("the rule table exists with 41 rules",
+    ruleIds.length === 41, `got ${ruleIds.length}: ${ruleIds.join(", ")}`);
   check("the expected rules are all present",
-    ["rename-title", "rename-attrs", "rename-text", "rename-logo", "hide-menu", "hide-about",
-     "hide-language", "hide-desktop-prompt", "hide-codex-qoder", "hide-voice",
-     "hide-import-text", "hide-china", "block-links"].every((id) => ruleIds.includes(id)));
+    ["rename-title", "rename-attrs", "rename-text", "fix-grammar", "sidebar-ellipsis",
+     "chat-input-fixes", "thinking-selector", "page-bottom-padding", "pill-positions",
+     "rename-logo", "hide-menu", "hide-about", "hide-language", "hide-desktop-prompt",
+     "hide-codex-qoder", "hide-voice", "hide-import-text", "hide-china", "block-links",
+     "footer-rebrand", "block-links-v2", "hide-powered-by", "hide-feedback",
+     "settings-about", "settings-language", "settings-providers", "settings-integrations",
+     "hide-upgrade", "account-card", "workspace-switcher", "sidebar-help", "model-labels",
+     "title-observer", "head-rebrand", "export-rebrand", "hide-run-in", "auth-rebrand",
+     "error-rebrand", "hide-onboarding", "hide-update-banner", "hide-shortcuts-dialog"].every((id) => ruleIds.includes(id)),
+    `got ${ruleIds.join(", ")}`);
   check("each rule runs in its own try/catch",
     /try \{ AGENTX_RULES\[i\]\.run\(\); \} catch/.test(rebrandSrc),
     "one rule throwing must not take down the whole pass");
@@ -263,6 +289,43 @@ console.log("static: the rule table is data-driven and guarded");
     /label\.textContent = "AgentX"/.test(rebrandSrc));
 }
 
+console.log("static: Part 3 rebrand gaps (2026-11-19)");
+{
+  check("the upstream-host list covers the seven upstream hosts",
+    /"qwenpaw.com", "qwenlm.github.io", "github.com\/QwenLM", "discord.gg", "alibabacloud.com", "dashscope.aliyuncs.com", "chat.qwen.ai"/.test(rebrandSrc));
+  check("the upstream-host helper exists and the link blocker uses it",
+    /function agentxIsUpstreamHref\(href\)/.test(rebrandSrc) &&
+    /agentxIsUpstreamHref\(href\)/.test(rebrandSrc));
+  check("block-links-v2 covers data-url / data-href / form action, not just a[href]",
+    /id: "block-links-v2"/.test(rebrandSrc) &&
+    /\[data-url\]/.test(rebrandSrc) && /\[data-href\]/.test(rebrandSrc) && /form\[action\]/.test(rebrandSrc));
+  check("the model-label display map is AgentX-1-Mini for flash-free, AgentX-1 for nex-n2.6",
+    /"deepseek-v4.1-flash-free", "AgentX-1-Mini"/.test(rebrandSrc) &&
+    /"nex-n2.6", "AgentX-1"/.test(rebrandSrc),
+    "documented judgment call (flash = small/fast tier) — needs user confirmation, see README");
+  check("the favicon is an inline data-URI SVG with the AX mark (no external URL)",
+    /AGENTX_FAVICON_DATA = "data:image\/svg\+xml,/.test(rebrandSrc) &&
+    /%3EAX%3C\/text%3E/.test(rebrandSrc));
+  check("head-rebrand does not fetch the external manifest (no-op if no inline name)",
+    /do NOT fetch it/.test(rebrandSrc) &&
+    !/fetch\([^)]*manifest/.test(rebrandSrc));
+  check("rename-attrs covers alt and data-tooltip (in addition to aria-label, placeholder, title)",
+    /\[alt\*="QwenPaw"\]/.test(rebrandSrc) && /\[data-tooltip\*="QwenPaw"\]/.test(rebrandSrc));
+  check("rename-logo covers img matched by title / aria-label, not only alt",
+    /img\[title\*="QwenPaw"\]/.test(rebrandSrc) && /img\[aria-label\*="QwenPaw"\]/.test(rebrandSrc));
+  check("rename-text walks document.body, so in-body toasts are renamed too",
+    /agentxRenameTextIn\(document\.body\)/.test(rebrandSrc),
+    "Ant Design mounts its message/toast container under document.body; see README for the verification note");
+  check("the thinking-selector rule renames QwenPaw text in its own toolbar (thinking-text merge)",
+    /agentxRenameTextIn\(toolbar\)/.test(rebrandSrc));
+  check("title-observer wires the title watcher into a rule (install once + rename now)",
+    /id: "title-observer"/.test(rebrandSrc) && /agentxWatchTitle\(\)/.test(rebrandSrc));
+  check("the row-hide helper is leaf-only and marks hidden rows (never hides a list container)",
+    /function agentxHideRowByText\(/.test(rebrandSrc) &&
+    /el\.children && el\.children\.length/.test(rebrandSrc) &&
+    /data-agentx-hidden/.test(rebrandSrc));
+}
+
 console.log("static: the /status note is AgentX (keep-alive + activity-feed workers)");
 {
   const keepalive = readFileSync(resolve(REPO, "worker/src/index.js"), "utf8");
@@ -286,15 +349,17 @@ console.log("static: the proxy wires the shim, the title, and the headers");
   check("the console <title> is rewritten at the proxy layer",
     /html\.replace\("<title>QwenPaw Console<\/title>", "<title>AgentX Console<\/title>"\)/.test(worker));
   check("the observer calls the rebrand pass",
-    /new MutationObserver\(function \(\) \{ addVaultMenuItem\(\); agentxRunRules\(\); \}\)/.test(worker));
+    /vaultMenuObserver = new MutationObserver\(function \(\) \{/.test(worker) &&
+    /agentxRunRules\(\);/.test(worker),
+    "the observer is vaultMenuObserver (addVaultMenuItem + agentxRunRuleNow fast path + agentxRunRules), not the old inline form");
   check("CSP-Report-Only blocks third-party images (alicdn)",
     /headers\.set\("Content-Security-Policy-Report-Only", "img-src 'self' data: blob:"\)/.test(worker));
   check("Referrer-Policy no-referrer is set on the console HTML",
     /headers\.set\("Referrer-Policy", "no-referrer"\)/.test(worker));
   check("the waking page title is AgentX",
-    /<title>AgentX — Waking up<\/title>/.test(worker) && /<h1>AgentX is waking up<\/h1>/.test(worker));
+    /<title>AgentX: Waking up<\/title>/.test(worker) && /<h1>AgentX is waking up<\/h1>/.test(worker));
   check("the cooldown page title is AgentX",
-    /<title>AgentX — Cooldown<\/title>/.test(worker) && /<h1>AgentX is in max-run cooldown<\/h1>/.test(worker));
+    /<title>AgentX: Cooldown<\/title>/.test(worker) && /<h1>AgentX is in max-run cooldown<\/h1>/.test(worker));
   check("the 502 text is AgentX",
     /AgentX console temporarily unavailable/.test(worker) &&
     !/QwenPaw console temporarily unavailable/.test(worker));
@@ -359,6 +424,16 @@ function makeEl(tag, attrs, children) {
     set(v) { this.childNodes = [makeText(String(v))]; this.childNodes[0].parentNode = this; this.children = []; },
     configurable: true,
   });
+  Object.defineProperty(el, "parentElement", {
+    get() { return this.parentNode && this.parentNode.nodeType === 1 ? this.parentNode : null; },
+    configurable: true,
+  });
+  // select.options: the OPTION element children (a real HTMLCollection is
+  // array-like; an array is enough for the rules, which only index it).
+  Object.defineProperty(el, "options", {
+    get() { return this.children.filter((c) => c.tagName === "OPTION"); },
+    configurable: true,
+  });
   for (const child of children || []) {
     child.parentNode = el;
     el.childNodes.push(child);
@@ -371,6 +446,7 @@ function makeEl(tag, attrs, children) {
 function matchesCompound(el, sel) {
   sel = sel.trim();
   if (!sel) return false;
+  if (sel === "*") return true;
   const tagMatch = /^([a-zA-Z][a-zA-Z0-9]*)/.exec(sel);
   if (tagMatch && el.tagName !== tagMatch[1].toUpperCase()) return false;
   const attrRe = /\[([a-zA-Z-]+)(\*?=)"([^"]*)"\]/g;
@@ -391,6 +467,14 @@ function matchesCompound(el, sel) {
     if (m[2] === "*=") { if (!val.includes(m[3])) return false; }
     else if (val !== m[3]) return false;
   }
+  // [attr~="v"] (whitespace-separated token, e.g. link[rel~="icon"]).
+  const attrReTilde = /\[([a-zA-Z-]+)~="([^"]*)"\]/g;
+  while ((m = attrReTilde.exec(sel)) !== null) {
+    anyAttr = true;
+    const val = el.getAttribute(m[1]);
+    if (val === null) return false;
+    if (!val.split(/\s+/).includes(m[2])) return false;
+  }
   // Bare [attr] (presence only, e.g. a[href]).
   const bareAttrRe = /\[([a-zA-Z-]+)\]/g;
   while ((m = bareAttrRe.exec(sel)) !== null) {
@@ -410,12 +494,15 @@ function collectAll(root, out) {
   }
   return out;
 }
-function makeDocument(rootEl) {
+function makeDocument(rootEl, headChildren) {
   const listeners = {};
   const titleText = makeText("QwenPaw Console");
   const titleEl = makeEl("title", {}, [titleText]);
+  const headEl = makeEl("head", {}, headChildren || []);
   const doc = {
     body: rootEl,
+    head: headEl,
+    _headEl: headEl,
     _listeners: listeners,
     _titleEl: titleEl,
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
@@ -427,7 +514,12 @@ function makeDocument(rootEl) {
       return all.length ? all[0] : null;
     },
     querySelectorAll(selector) {
-      return collectAll(rootEl, []).filter((el) => matchesSelector(el, selector));
+      // Head elements (meta/link/title) live outside the body root, so
+      // search both trees — the head-rebrand rule queries them.
+      return [...collectAll(rootEl, []), ...collectAll(headEl, [])].filter((el) => matchesSelector(el, selector));
+    },
+    getElementById(id) {
+      return this.querySelectorAll("*").find((el) => el.getAttribute("id") === id) || null;
     },
     createElement(tag) { return makeEl(tag, {}, []); },
     createTreeWalker(root, whatToShow) {
@@ -635,6 +727,10 @@ if (!rebrandSrc) {
   const aboutSpan = makeEl("span", {}, [makeText("About QwenPaw v2.3.0")]);
   const aboutLi = makeEl("li", { class: "qwenpaw-menu-item" }, [aboutSpan]);
   const logoImg = makeEl("img", { alt: "QwenPaw" }, []);
+  // The mock has no layout engine, so give the brand logo a displayed
+  // width (the real logo is displayed large; the size gate in
+  // rename-logo needs a real width to swap it for the text label).
+  logoImg.getBoundingClientRect = () => ({ width: 120, height: 40 });
   const brandDiv = makeEl("div", { class: "sidebar-brand" }, [logoImg, makeText(" v2.3.0")]);
   const greeting = makeEl("p", {}, [makeText("Hello! I'm QwenPaw. How can I help you?")]);
   const loadBearing = makeEl("p", {}, [makeText("Set QWENPAW_AUTH_ENABLED=true to use the QwenPaw terminal.")]);
@@ -894,6 +990,10 @@ if (!rebrandSrc) {
   MockMutationObserver.instances = [];
   let titleWatcherRan = false;
   try {
+    // The title-observer rule may already have installed the watcher
+    // during the full pass above; reset the flag so this direct call
+    // proves the installer itself registers an observer.
+    vm.runInContext("agentxTitleWatcherInstalled = false;", sandbox);
     vm.runInContext("agentxWatchTitle()", sandbox);
     titleWatcherRan = true;
   } catch (e) { /* agentxWatchTitle not defined in the unfixed file */ }
@@ -923,6 +1023,407 @@ if (!rebrandSrc) {
     blocked === true, `blocked=${blocked}`);
   check("a click on a same-origin link is NOT blocked",
     normalBlocked === null, `blocked=${normalBlocked}`);
+}
+
+console.log("dynamic: Part 3 rebrand gaps, one rule at a time (isolated runs)");
+if (!rebrandSrc) {
+  for (const name of [
+    "Part 3 rules (rebrand section missing)",
+  ]) check(name, false, "AGENTX-REBRAND markers not found in _worker.js");
+} else {
+  // Run ONE rule in isolation on a small DOM, so a pass proves that
+  // rule (and not rename-text or another rule) did the work. The
+  // negative checks (non-target left alone) only mean something in
+  // isolation: in a full pass rename-text would rename the same text.
+  const runRuleNowSrc = extractFunction(worker, "agentxRunRuleNow");
+  function runOneRule(rootEl, ruleId, opts = {}) {
+    const doc = makeDocument(rootEl, opts.head || []);
+    const opened = [];
+    const localStore = {};
+    const sandbox = {
+      document: doc,
+      location: { search: opts.search || "", pathname: opts.pathname || "" },
+      window: {
+        open: (url) => { opened.push(url); return { closed: false }; },
+        location: { pathname: opts.pathname || "", search: opts.search || "" },
+        localStorage: {
+          getItem: (k) => (k in localStore ? localStore[k] : null),
+          setItem: (k, v) => { localStore[k] = String(v); },
+          removeItem: (k) => { delete localStore[k]; },
+        },
+      },
+      NodeFilter: { SHOW_TEXT: 4 },
+      MutationObserver: MockMutationObserver,
+      setTimeout: (fn) => 0,
+      clearTimeout: () => {},
+      fetch: async () => ({ ok: false, status: 404, json: async () => null }),
+      Date,
+      console,
+      AGENTX_REBRAND_ENABLED: true,
+      AGENTX_UPSTREAM_DOC: DOC_ORIGIN,
+      AGENTX_UPSTREAM_GITHUB: GITHUB_URL,
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(rebrandSrc, sandbox);
+    if (runRuleNowSrc) vm.runInContext(runRuleNowSrc, sandbox);
+    MockMutationObserver.instances = [];
+    vm.runInContext(`agentxRunRuleNow("${ruleId}")`, sandbox);
+    return { doc, sandbox, opened };
+  }
+  function clickBlocked(doc, target) {
+    let blocked = false;
+    doc.dispatch("click", {
+      target,
+      preventDefault() { blocked = true; },
+      stopPropagation() {},
+    });
+    return blocked;
+  }
+
+  { // footer-rebrand
+    const foot = makeEl("footer", {}, [makeText("Made with QwenPaw")]);
+    const chat = makeEl("p", {}, [makeText("QwenPaw chat")]);
+    runOneRule(makeEl("div", {}, [foot, chat]), "footer-rebrand");
+    check("footer-rebrand renames QwenPaw in the page footer",
+      foot.textContent === "Made with AgentX", `got ${foot.textContent}`);
+    check("footer-rebrand leaves QwenPaw outside the footer alone",
+      chat.textContent === "QwenPaw chat", `got ${chat.textContent}`);
+  }
+
+  { // block-links-v2
+    const lQwenpawCom = makeEl("a", { href: "https://qwenpaw.com/pricing" }, [makeText("Pricing")]);
+    const lChatQwen = makeEl("a", { href: "https://chat.qwen.ai/" }, [makeText("Chat")]);
+    const lDataUrl = makeEl("a", { href: "https://example.com/x", "data-url": "https://discord.gg/qwenpaw" }, [makeText("Discord")]);
+    const lDataHref = makeEl("a", { href: "https://example.com/y", "data-href": "https://dashscope.aliyuncs.com/api" }, [makeText("API")]);
+    const form = makeEl("form", { action: "https://alibabacloud.com/console" }, [makeEl("button", {}, [makeText("Go")])]);
+    const lPages = makeEl("a", { href: "https://qwenpawx.pages.dev/chat" }, [makeText("Console")]);
+    const lStatus = makeEl("a", { href: "/status" }, [makeText("Status")]);
+    const lRepo = makeEl("a", { href: "https://github.com/Ratulbaba7/qwenpaw-deploy" }, [makeText("Repo")]);
+    const { doc } = runOneRule(makeEl("div", {}, [lQwenpawCom, lChatQwen, lDataUrl, lDataHref, form, lPages, lStatus, lRepo]), "block-links-v2");
+    check("block-links-v2 blocks a click to qwenpaw.com",
+      clickBlocked(doc, lQwenpawCom) === true);
+    check("block-links-v2 blocks a click to chat.qwen.ai",
+      clickBlocked(doc, lChatQwen) === true);
+    check("block-links-v2 blocks a click whose data-url points upstream (discord.gg)",
+      clickBlocked(doc, lDataUrl) === true);
+    check("block-links-v2 blocks a click whose data-href points upstream (dashscope)",
+      clickBlocked(doc, lDataHref) === true);
+    check("block-links-v2 blocks a click on a form whose action points upstream",
+      clickBlocked(doc, form) === true);
+    check("block-links-v2 does NOT block the console's own pages.dev origin",
+      clickBlocked(doc, lPages) === false);
+    check("block-links-v2 does NOT block a same-origin link",
+      clickBlocked(doc, lStatus) === false);
+    check("block-links-v2 does NOT block the deploy repo (github.com/Ratulbaba7, not QwenLM)",
+      clickBlocked(doc, lRepo) === false);
+  }
+
+  { // hide-powered-by
+    const badge = makeEl("div", { class: "powered-by-card" }, [makeEl("span", {}, [makeText("Powered by QwenPaw")])]);
+    const badgeAx = makeEl("div", { class: "powered-by-card" }, [makeEl("span", {}, [makeText("Powered by AgentX")])]);
+    const plain = makeEl("span", {}, [makeText("QwenPaw v2.3.0")]);
+    runOneRule(makeEl("div", {}, [badge, badgeAx, plain]), "hide-powered-by");
+    check("hide-powered-by hides the 'Powered by QwenPaw' badge",
+      badge.style.display === "none", `display=${badge.style.display}`);
+    check("hide-powered-by hides the badge after rename-text already made it 'Powered by AgentX'",
+      badgeAx.style.display === "none", `display=${badgeAx.style.display}`);
+    check("hide-powered-by leaves a plain version string alone",
+      plain.style.display !== "none", `display=${plain.style.display}`);
+  }
+
+  { // hide-feedback
+    const fb = makeEl("button", {}, [makeText("Send feedback")]);
+    const st = makeEl("button", {}, [makeText("Settings")]);
+    runOneRule(makeEl("div", {}, [fb, st]), "hide-feedback");
+    check("hide-feedback hides the 'Send feedback' button",
+      fb.style.display === "none", `display=${fb.style.display}`);
+    check("hide-feedback leaves a 'Settings' button alone",
+      st.style.display !== "none", `display=${st.style.display}`);
+  }
+
+  { // settings-about
+    const settingsRow = makeEl("li", {}, [makeText("About QwenPaw v2.3.0")]);
+    const settingsDiv = makeEl("div", { class: "settings-page" }, [makeEl("h2", {}, [makeText("Settings")]), settingsRow]);
+    const menuRow = makeEl("li", {}, [makeText("About QwenPaw v2.3.0")]);
+    const menuDiv = makeEl("div", { class: "menu" }, [menuRow]);
+    runOneRule(makeEl("div", {}, [settingsDiv, menuDiv]), "settings-about", { pathname: "/chat/abc" });
+    check("settings-about renames the About row inside Settings",
+      settingsRow.textContent === "About AgentX v2.3.0", `got ${settingsRow.textContent}`);
+    check("settings-about leaves the same row outside Settings alone (scoped rule)",
+      menuRow.textContent === "About QwenPaw v2.3.0", `got ${menuRow.textContent}`);
+  }
+
+  { // settings-language
+    const row = makeEl("li", { class: "settings-row" }, [makeEl("span", {}, [makeText("Language")]), makeEl("span", {}, [makeText("English")])]);
+    const para = makeEl("p", {}, [makeText("Language: English")]);
+    runOneRule(makeEl("div", {}, [row, para]), "settings-language");
+    check("settings-language hides the Settings row labelled exactly 'Language'",
+      row.style.display === "none", `display=${row.style.display}`);
+    check("settings-language leaves a 'Language: English' paragraph alone",
+      para.style.display !== "none", `display=${para.style.display}`);
+  }
+
+  { // settings-providers
+    const label = makeEl("span", {}, [makeText("QwenPaw provider settings")]);
+    const models = makeEl("div", { class: "models-section" }, [label]);
+    const chat = makeEl("p", {}, [makeText("QwenPaw is great")]);
+    runOneRule(makeEl("div", {}, [models, chat]), "settings-providers", { pathname: "/chat/abc" });
+    check("settings-providers renames QwenPaw labels in Settings > Models",
+      label.textContent === "AgentX provider settings", `got ${label.textContent}`);
+    check("settings-providers leaves chat text alone (scoped rule)",
+      chat.textContent === "QwenPaw is great", `got ${chat.textContent}`);
+  }
+
+  { // settings-integrations
+    const label = makeEl("span", {}, [makeText("Connect QwenPaw to Slack")]);
+    const list = makeEl("div", { class: "integrations-list" }, [label]);
+    runOneRule(makeEl("div", {}, [list]), "settings-integrations", { pathname: "/chat/abc" });
+    check("settings-integrations renames QwenPaw mentions in Settings > Integrations",
+      label.textContent === "Connect AgentX to Slack", `got ${label.textContent}`);
+  }
+
+  { // hide-upgrade
+    const btn = makeEl("button", {}, [makeText("Upgrade to Pro")]);
+    const card = makeEl("div", { class: "upsell-card" }, [makeEl("p", {}, [makeText("Upgrade to Pro today")])]);
+    const row = makeEl("li", {}, [makeText("Settings")]);
+    runOneRule(makeEl("div", {}, [btn, card, row]), "hide-upgrade");
+    check("hide-upgrade hides the 'Upgrade to Pro' button",
+      btn.style.display === "none", `display=${btn.style.display}`);
+    check("hide-upgrade hides the upsell card",
+      card.style.display === "none", `display=${card.style.display}`);
+    check("hide-upgrade leaves a 'Settings' row alone",
+      row.style.display !== "none", `display=${row.style.display}`);
+  }
+
+  { // account-card
+    const user = makeEl("span", {}, [makeText("satwik")]);
+    const acc = makeEl("span", {}, [makeText("QwenPaw account")]);
+    const card = makeEl("div", { class: "user-card" }, [user, acc, makeEl("span", {}, [makeText("Console account")])]);
+    runOneRule(makeEl("div", {}, [card]), "account-card");
+    check("account-card renames QwenPaw in the account card",
+      acc.textContent === "AgentX account", `got ${acc.textContent}`);
+    check("account-card does NOT touch the satwik username",
+      user.textContent === "satwik", `got ${user.textContent}`);
+  }
+
+  { // workspace-switcher
+    const label = makeEl("button", {}, [makeText("QwenPaw workspace")]);
+    const sw = makeEl("div", { class: "workspace-switcher" }, [label]);
+    runOneRule(makeEl("div", {}, [sw]), "workspace-switcher");
+    check("workspace-switcher renames QwenPaw in the workspace switcher",
+      label.textContent === "AgentX workspace", `got ${label.textContent}`);
+  }
+
+  { // sidebar-help
+    const nav = makeEl("nav", {}, []);
+    const upLink = makeEl("a", { href: "https://qwenpaw.agentscope.io/docs" }, [makeText("Help")]);
+    const okLink = makeEl("a", { href: "/settings" }, [makeText("Help")]);
+    nav.appendChild(upLink);
+    nav.appendChild(okLink);
+    const outside = makeEl("a", { href: "https://chat.qwen.ai/" }, [makeText("Help")]);
+    const plain = makeEl("div", {}, [outside]);
+    runOneRule(makeEl("div", {}, [nav, plain]), "sidebar-help");
+    check("sidebar-help hides the sidebar Help link that points upstream",
+      upLink.style.display === "none", `display=${upLink.style.display}`);
+    check("sidebar-help leaves a same-origin sidebar Help link alone",
+      okLink.style.display !== "none", `display=${okLink.style.display}`);
+    check("sidebar-help leaves an upstream link outside the sidebar alone (block-links owns clicks)",
+      outside.style.display !== "none", `display=${outside.style.display}`);
+  }
+
+  { // model-labels
+    const pickerLabel = makeEl("span", {}, [makeText("deepseek-v4.1-flash-free")]);
+    const picker = makeEl("div", { "aria-label": "Model picker" }, [pickerLabel]);
+    const opt = makeEl("option", { value: "deepseek-v4.1-flash-free" }, [makeText("deepseek-v4.1-flash-free")]);
+    const sel = makeEl("select", { "aria-label": "Model" }, [opt]);
+    const nexLabel = makeEl("span", {}, [makeText("nex-n2.6")]);
+    const picker2 = makeEl("div", { "aria-label": "Model" }, [nexLabel]);
+    const other = makeEl("p", {}, [makeText("nex-n2.6 is fast")]);
+    const unknown = makeEl("span", {}, [makeText("gpt-5")]);
+    const picker3 = makeEl("div", { "aria-label": "Model" }, [unknown]);
+    runOneRule(makeEl("div", {}, [picker, sel, picker2, other, picker3]), "model-labels");
+    check("model-labels renames the picker display 'deepseek-v4.1-flash-free' to AgentX-1-Mini",
+      pickerLabel.textContent === "AgentX-1-Mini", `got ${pickerLabel.textContent}`);
+    check("model-labels renames the option display text but NOT the option value",
+      opt.textContent === "AgentX-1-Mini" && opt.getAttribute("value") === "deepseek-v4.1-flash-free",
+      `text=${opt.textContent} value=${opt.getAttribute("value")}`);
+    check("model-labels renames the picker display 'nex-n2.6' to AgentX-1",
+      nexLabel.textContent === "AgentX-1", `got ${nexLabel.textContent}`);
+    check("model-labels leaves the same model id outside the picker alone",
+      other.textContent === "nex-n2.6 is fast", `got ${other.textContent}`);
+    check("model-labels leaves an unmapped model label alone",
+      unknown.textContent === "gpt-5", `got ${unknown.textContent}`);
+  }
+
+  { // title-observer
+    const { doc } = runOneRule(makeEl("div", {}, []), "title-observer");
+    check("title-observer installs a watcher on the <title> element",
+      MockMutationObserver.instances.length === 1 &&
+      MockMutationObserver.instances[0].target === doc._titleEl,
+      `instances=${MockMutationObserver.instances.length}`);
+    doc.title = "Settings · QwenPaw";
+    if (MockMutationObserver.instances[0]) MockMutationObserver.instances[0].cb();
+    check("title-observer renames the title immediately (rule run, not only on mutation)",
+      doc.title === "Settings · AgentX", `got ${doc.title}`);
+  }
+
+  { // head-rebrand
+    const head = [
+      makeEl("meta", { property: "og:title", content: "QwenPaw Console" }, []),
+      makeEl("meta", { property: "twitter:description", content: "Chat with QwenPaw" }, []),
+      makeEl("meta", { property: "og:description", content: "Plain text" }, []),
+      makeEl("meta", { name: "application-name", content: "QwenPaw" }, []),
+      makeEl("link", { rel: "icon", href: "https://example.com/favicon.ico" }, []),
+      makeEl("link", { rel: "stylesheet", href: "https://example.com/app.css" }, []),
+    ];
+    runOneRule(makeEl("div", {}, []), "head-rebrand", { head });
+    check("head-rebrand renames the og:title meta content",
+      head[0].getAttribute("content") === "AgentX Console", `got ${head[0].getAttribute("content")}`);
+    check("head-rebrand renames the twitter:description meta content",
+      head[1].getAttribute("content") === "Chat with AgentX", `got ${head[1].getAttribute("content")}`);
+    check("head-rebrand leaves a meta without QwenPaw alone",
+      head[2].getAttribute("content") === "Plain text", `got ${head[2].getAttribute("content")}`);
+    check("head-rebrand renames the inline application-name meta (manifest name proxy)",
+      head[3].getAttribute("content") === "AgentX", `got ${head[3].getAttribute("content")}`);
+    check("head-rebrand sets the favicon to an inline data-URI AX mark",
+      (head[4].getAttribute("href") || "").indexOf("data:image/svg+xml,") === 0 &&
+      (head[4].getAttribute("href") || "").indexOf("AX") !== -1,
+      `got ${(head[4].getAttribute("href") || "").slice(0, 40)}`);
+    check("head-rebrand leaves a stylesheet link alone",
+      head[5].getAttribute("href") === "https://example.com/app.css", `got ${head[5].getAttribute("href")}`);
+  }
+
+  { // export-rebrand
+    const share = makeEl("button", {}, [makeText("Share to community")]);
+    const dlText = makeText("Download QwenPaw export");
+    const dl = makeEl("a", { href: "/x/qwenpaw-export.json", download: "qwenpaw-export.json" }, [dlText]);
+    const plain = makeEl("a", { href: "/x/other" }, [makeText("QwenPaw link")]);
+    runOneRule(makeEl("div", {}, [share, dl, plain]), "export-rebrand");
+    check("export-rebrand hides the 'Share to community' control",
+      share.style.display === "none", `display=${share.style.display}`);
+    check("export-rebrand rewrites the download link's DISPLAYED text only",
+      dl.textContent === "Download AgentX export", `got ${dl.textContent}`);
+    check("export-rebrand never touches the download href or filename",
+      dl.getAttribute("href") === "/x/qwenpaw-export.json" &&
+      dl.getAttribute("download") === "qwenpaw-export.json",
+      `href=${dl.getAttribute("href")} download=${dl.getAttribute("download")}`);
+    check("export-rebrand leaves a plain link's text alone (rename-text owns it in a full pass)",
+      plain.textContent === "QwenPaw link", `got ${plain.textContent}`);
+  }
+
+  { // hide-run-in
+    const run = makeEl("button", {}, [makeText("Run in QwenPaw")]);
+    const tests = makeEl("button", {}, [makeText("Run tests")]);
+    runOneRule(makeEl("div", {}, [run, tests]), "hide-run-in");
+    check("hide-run-in hides the 'Run in QwenPaw' button",
+      run.style.display === "none", `display=${run.style.display}`);
+    check("hide-run-in leaves a 'Run tests' button alone",
+      tests.style.display !== "none", `display=${tests.style.display}`);
+  }
+
+  { // auth-rebrand
+    const h1 = makeEl("h1", {}, [makeText("Sign in to QwenPaw")]);
+    const auth = makeEl("div", { class: "auth-page" }, [h1]);
+    const chat = makeEl("p", {}, [makeText("QwenPaw chat")]);
+    runOneRule(makeEl("div", {}, [auth, chat]), "auth-rebrand", { pathname: "/chat/abc" });
+    check("auth-rebrand renames QwenPaw on the sign-in screen",
+      h1.textContent === "Sign in to AgentX", `got ${h1.textContent}`);
+    check("auth-rebrand leaves chat text alone (scoped rule)",
+      chat.textContent === "QwenPaw chat", `got ${chat.textContent}`);
+  }
+
+  { // error-rebrand
+    const err = makeEl("span", {}, [makeText("QwenPaw failed to load")]);
+    const alert = makeEl("div", { role: "alert" }, [err]);
+    const chat = makeEl("p", {}, [makeText("QwenPaw chat")]);
+    runOneRule(makeEl("div", {}, [alert, chat]), "error-rebrand");
+    check("error-rebrand renames QwenPaw in error / toast text",
+      err.textContent === "AgentX failed to load", `got ${err.textContent}`);
+    check("error-rebrand leaves normal text alone (scoped rule)",
+      chat.textContent === "QwenPaw chat", `got ${chat.textContent}`);
+  }
+
+  { // hide-onboarding
+    const card = makeEl("div", { class: "onboarding-card" }, [makeEl("h2", {}, [makeText("Welcome to QwenPaw")])]);
+    const docs = makeEl("a", { href: "/docs/getting-started" }, [makeText("Getting started")]);
+    runOneRule(makeEl("div", {}, [card, docs]), "hide-onboarding");
+    check("hide-onboarding hides the first-run 'Welcome to QwenPaw' card",
+      card.style.display === "none", `display=${card.style.display}`);
+    check("hide-onboarding leaves a 'Getting started' docs link alone",
+      docs.style.display !== "none", `display=${docs.style.display}`);
+  }
+
+  { // hide-update-banner
+    const banner = makeEl("div", { class: "update-banner" }, [makeEl("span", {}, [makeText("Update available — QwenPaw v2.3.1")])]);
+    const note = makeEl("p", {}, [makeText("Updated 5 minutes ago")]);
+    runOneRule(makeEl("div", {}, [banner, note]), "hide-update-banner");
+    check("hide-update-banner hides the 'Update available' banner",
+      banner.style.display === "none", `display=${banner.style.display}`);
+    check("hide-update-banner leaves an 'Updated 5 minutes ago' note alone",
+      note.style.display !== "none", `display=${note.style.display}`);
+  }
+
+  { // hide-shortcuts-dialog
+    const row = makeEl("li", {}, [makeText("Keyboard shortcuts")]);
+    const btn = makeEl("button", {}, [makeText("Shortcuts")]);
+    const keys = makeEl("span", {}, [makeText("Shortcut keys")]);
+    runOneRule(makeEl("div", {}, [row, btn, keys]), "hide-shortcuts-dialog");
+    check("hide-shortcuts-dialog hides the 'Keyboard shortcuts' row",
+      row.style.display === "none", `display=${row.style.display}`);
+    check("hide-shortcuts-dialog hides the 'Shortcuts' trigger",
+      btn.style.display === "none", `display=${btn.style.display}`);
+    check("hide-shortcuts-dialog leaves a 'Shortcut keys' label alone",
+      keys.style.display !== "none", `display=${keys.style.display}`);
+  }
+
+  { // rename-attrs-v2 (merged into rename-attrs)
+    const tip = makeEl("button", { "data-tooltip": "QwenPaw settings" }, [makeText("S")]);
+    const altDiv = makeEl("div", { alt: "QwenPaw logo" }, []);
+    const img = makeEl("img", { alt: "QwenPaw" }, []);
+    runOneRule(makeEl("div", {}, [tip, altDiv, img]), "rename-attrs");
+    check("rename-attrs renames a data-tooltip with QwenPaw",
+      tip.getAttribute("data-tooltip") === "AgentX settings", `got ${tip.getAttribute("data-tooltip")}`);
+    check("rename-attrs renames alt on a non-img element",
+      altDiv.getAttribute("alt") === "AgentX logo", `got ${altDiv.getAttribute("alt")}`);
+    check("rename-attrs leaves img alt alone (the logo rule owns img attributes)",
+      img.getAttribute("alt") === "QwenPaw", `got ${img.getAttribute("alt")}`);
+  }
+
+  { // rename-logo-v2 (merged into rename-logo)
+    const imgTitle = makeEl("img", { title: "QwenPaw logo" }, []);
+    imgTitle.getBoundingClientRect = () => ({ width: 120, height: 40 });
+    const brand1 = makeEl("div", { class: "sidebar-brand" }, [imgTitle]);
+    runOneRule(makeEl("div", {}, [brand1]), "rename-logo");
+    check("rename-logo swaps an img matched by title='QwenPaw ...' for the AgentX label",
+      imgTitle.parentNode === null && brand1.textContent === "AgentX",
+      `brand=${brand1.textContent}`);
+    const imgAria = makeEl("img", { "aria-label": "QwenPaw" }, []);
+    imgAria.getBoundingClientRect = () => ({ width: 120, height: 40 });
+    const brand2 = makeEl("div", { class: "sidebar-brand" }, [imgAria]);
+    runOneRule(makeEl("div", {}, [brand2]), "rename-logo");
+    check("rename-logo swaps an img matched by aria-label='QwenPaw' for the AgentX label",
+      imgAria.parentNode === null && brand2.textContent === "AgentX",
+      `brand=${brand2.textContent}`);
+  }
+
+  { // thinking-text (merged into thinking-selector)
+    const smartBtn = makeEl("button", {}, [makeText("Smart Mode")]);
+    const thinkingNote = makeEl("span", {}, [makeText("QwenPaw thinking")]);
+    const toolbar = makeEl("div", { class: "composer-toolbar" }, [smartBtn, thinkingNote]);
+    const { doc } = runOneRule(makeEl("div", {}, [toolbar]), "thinking-selector", { pathname: "/chat/abc" });
+    check("thinking-selector creates the Thinking select in the composer toolbar",
+      toolbar.children.some((c) => c.getAttribute && c.getAttribute("data-agentx-thinking") === "1"),
+      "no select with data-agentx-thinking found in the toolbar");
+    check("thinking-selector renames QwenPaw text in its own toolbar (thinking-text merge)",
+      thinkingNote.textContent === "AgentX thinking", `got ${thinkingNote.textContent}`);
+  }
+
+  { // toast-text (covered by rename-text: toasts live inside document.body)
+    const toast = makeEl("div", { class: "toast" }, [makeText("QwenPaw error occurred")]);
+    runOneRule(makeEl("div", {}, [toast]), "rename-text");
+    check("rename-text renames QwenPaw text in an in-body toast container",
+      toast.textContent === "AgentX error occurred", `got ${toast.textContent}`);
+  }
 }
 
 console.log(`\n${passed} passed, ${failed.length} failed`);
