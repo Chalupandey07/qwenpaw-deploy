@@ -2237,6 +2237,42 @@ def t132():
         ["features/approval-ttl/test_approval_ttl.py"], 41)
 
 
+def t133():
+    """Ask-before-durable-write: high-stakes memory v2 facts need explicit accept (114).
+
+    Machine-free test (features/memory/durable-write/test_durable_write.py)
+    for the all-20 gap #20: gated_add() is the single entry point. A
+    rule-based classifier holds high-stakes facts in a pending_facts
+    table inside the same memory.db (no row in facts, not searchable);
+    routine facts write silently via facts.add_fact with provenance
+    gated:routine. propose / accept --id --why / reject --id --why /
+    list / check mirror the lessons.py API exactly, with its caps
+    reused: max 3 pending, 400 chars per field, --why required,
+    PF-001 ids from AUTOINCREMENT (never reused). Accept flushes into
+    memory v2 with provenance pending:PF-001; accepted: <why>; reject
+    never lands. Secrets are rejected, not scrubbed — and never held
+    (checked before any pending insert, re-checked at accept). A full
+    pending store refuses the 4th fact loudly and never falls back to
+    a routine write. High-stakes = kind preference, preference
+    phrasing, identity (name, timezone, contact handles, email, PII),
+    credentials-adjacent mentions without a secret value, durable
+    language ("from now on", "Always use..."), and identity-field
+    contradictions. Routine = measurements, plain observations,
+    ordinary updates. Fail-first proven: fails at import on pristine
+    code. DeepSeek design review changed the design in 4 places
+    (classify on phrasing not just kind; narrow contradiction
+    detection to identity fields only; leave facts.py untouched with
+    a wrapper CLI; pending table inside memory.db with
+    accept-writes-fact-first ordering). No regression: T117 41/41,
+    T118 40/40, lessons 45/45 still green. The live half (sync
+    durable_write.py to the machine's memory-tools, add the SKILL.md
+    routing line, live held-fact -> accept -> searchable round-trip)
+    is verified by Muse after deploy.
+    """
+    return _py_script_harness(
+        ["features/memory/durable-write/test_durable_write.py"], 114)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2758,6 +2794,7 @@ TESTS = [
     ("T130", "drex decision model: NACE endpoint configurable via env (arg > NACE_BASE_URL > default), decision_model slot fragment for both agents, live-test script fails closed without a key (harness)", "decisions", "protocol", t130),
     ("T131", "telegram full-feature bot: token-only setup (no numeric id), owner = first whitelist entry, guests read-only, strangers refused; new chat, list + preview + continue an existing console chat (task API); settings via button callbacks (model PATCH, approval PUT); menu grammar + token cache; outbound redaction + inbound untrusted wrapping; driver patch applies cleanly to the pinned v2.3.0 platform.py and reproduces the patched file byte-for-byte (selftest)", "telegram", "protocol", t131),
     ("T132", "approval TTL: pending approvals + secret requests expire — issue stamps expires_at (approval 24h, secret 1h, question never), read is pure and fails closed (expired reads as denied, reason 'timed out'), late answers refused with ExpiredError, sweep expires stale cards idempotently (never legacy, post-migration card with no expiry fails closed), fork-shaped audit rows, store survives reload, flock serialises every read-modify-write (selftest)", "approvals", "protocol", t132),
+    ("T133", "ask-before-durable-write: high-stakes memory v2 facts are held in a pending_facts table until explicit accept --id --why; routine facts write silently with provenance; secrets rejected, never held; caps mirror lessons.py (max 3 pending, --why required, PF-001 ids never reused) (selftest)", "memory", "protocol", t133),
 ]
 
 SKIP_NOTE = {
