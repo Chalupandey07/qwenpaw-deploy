@@ -40,9 +40,18 @@ python3 $CLI --db $DB search-history --history $HIST --query "<topic>" --limit 3
 # propose candidate facts from a transcript (proposes only, never writes)
 python3 $CLI --db $DB extract --transcript /tmp/turns.txt --session <id>
 # add a fact you judged salient (entities are auto-extracted from the
-# text when you do not supply them — people, projects, quoted names)
-python3 $CLI --db $DB add --text "<one sentence>" --kind decision \
-    --session <id> --importance 3
+# text when you do not supply them — people, projects, quoted names).
+# Route EVERY add through the durable-write gate, NOT `facts.py add`:
+# high-stakes facts (preferences, identity, credentials-adjacent
+# mentions, "from now on" language) are HELD for explicit accept and
+# never land unattended; routine facts write silently with provenance.
+# `facts.py add` is the raw low-level path — do not call it directly.
+python3 /app/working/memory-tools/durable_write.py --db $DB add-gated \
+    --text "<one sentence>" --kind decision --session <id> --importance 3
+# a held fact waits in the pending store until it is confirmed:
+python3 /app/working/memory-tools/durable_write.py --db $DB list
+python3 /app/working/memory-tools/durable_write.py --db $DB accept \
+    --id PF-001 --why "user confirmed"
 # what was true on a past date? (time travel: facts valid then)
 python3 $CLI --db $DB search --query "<topic>" --as-of 2026-11-15 --limit 5
 # end of a session: write the handoff for the next session
@@ -68,8 +77,15 @@ is no handoff yet (`found: false`), say so plainly and start fresh.
 
 When a decision is made, a preference is stated, a commitment is taken,
 or a measurement is verified, it is a fact worth keeping. Use `extract`
-on the recent turns to get candidates, review them, and `add` only the
-salient ones. One sentence per fact. Kinds:
+on the recent turns to get candidates, review them, and `add-gated`
+only the salient ones — through `durable_write.py add-gated`, never
+through `facts.py add`. The gate holds high-stakes facts (any
+`preference`, identity such as "My name is…", credentials-adjacent
+mentions, durable language such as "from now on") in a pending store
+until they are explicitly accepted (`accept --id PF-001 --why "user
+confirmed"`); routine facts write silently. A held fact is not
+searchable and not durable until accepted — never work around a hold
+by writing the fact directly. One sentence per fact. Kinds:
 
 - `decision` — a choice that was made ("We decided to fix the gate, then build the derived image.")
 - `preference` — a standing user preference ("DeepSeek is the coding model; use it at maximum context.")
