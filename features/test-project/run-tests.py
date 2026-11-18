@@ -2106,6 +2106,31 @@ def t127():
         ["features/checkpoints/test_checkpoints.py"], 48)
 
 
+def t128():
+    """MCP client: stdio + streamable HTTP, allowlist, namespacing (61).
+
+    Machine-free test (features/mcp-client/test_mcp_client.py) for the
+    MCP client (features/mcp-client/mcp_client.py): stdio + streamable
+    HTTP transports (JSON-RPC 2.0, protocol 2025-03-26), servers disabled
+    by default, per-server tool allowlist (default none, `*` rejected at
+    load), namespaced tools `mcp.<server>.<tool>`, HTTP egress limited to
+    declared hosts (redirects refused, env proxies ignored, private
+    addresses refused unless declared loopback), no auto-install. Proves
+    stdio connect/list/call, allowlist refusal naming server + tool with
+    the mock's call log proving the call never arrived, disabled-by-default
+    spawning no process, namespacing with two servers sharing a tool name,
+    HTTP egress refusals with zero requests reaching the listener, and
+    transport edge cases (timeout tears down, crash fails fast, 1 MB
+    stderr no deadlock, colliding server ping answered, out-of-order
+    replies correlated by id). Fail-first proven: 0 passed, 1 failed
+    (ModuleNotFoundError) before `mcp_client.py` existed. The live half
+    (a real MCP server connected, client wired into the agent loop through
+    the registry) is verified by Muse after sync.
+    """
+    return _py_script_harness(
+        ["features/mcp-client/test_mcp_client.py"], 61)
+
+
 def t131():
     """Telegram full-feature bot: token-only setup, menus, chats (66).
 
@@ -2650,6 +2675,7 @@ TESTS = [
     ("T125", "cost ledger with hard kill switch: per-run + cumulative tokens/cost from token_usage.json priced by a static table, /cost endpoint, alert at 80% and hard stop at 100% with pre-call reservations, budget raise unblocks (harness)", "cost-ledger", "protocol", t125),
     ("T126", "per-task cap + structured stop audit: task budget 60 total / 40 shell across turns, finalise flag, stop audit (harness)", "loop-gate", "protocol", t126),
     ("T127", "checkpoints + rollback: per-run workspace snapshot (tarball + manifest) tagged with run id, restore refuses on drift without --force, automatic pre-restore safety snapshot, list command (harness)", "checkpoints", "protocol", t127),
+    ("T128", "MCP client: stdio + streamable HTTP, servers disabled by default, per-server allowlist, namespaced tools mcp.<server>.<tool>, HTTP egress limited to declared hosts, no auto-install (harness)", "mcp-client", "protocol", t128),
     ("T131", "telegram full-feature bot: token-only setup (no numeric id), owner = first whitelist entry, guests read-only, strangers refused; new chat, list + preview + continue an existing console chat (task API); settings via button callbacks (model PATCH, approval PUT); menu grammar + token cache; outbound redaction + inbound untrusted wrapping; driver patch applies cleanly to the pinned v2.3.0 platform.py and reproduces the patched file byte-for-byte (selftest)", "telegram", "protocol", t131),
 ]
 
