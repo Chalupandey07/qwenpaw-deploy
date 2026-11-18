@@ -611,9 +611,9 @@ function computerPanelScript(rebrandEnabled) {
       btn.style.right = right;
       restBtn.style.right = right;
       vaultBtn.style.right = right;
-      btn.style.bottom = open ? "360px" : "16px";
-      restBtn.style.bottom = open ? "408px" : "64px";
-      vaultBtn.style.bottom = open ? "456px" : "112px";
+      btn.style.bottom = open ? "380px" : "16px";
+      restBtn.style.bottom = open ? "428px" : "64px";
+      vaultBtn.style.bottom = open ? "476px" : "112px";
       if (open && !frame.getAttribute("src")) frame.setAttribute("src", "/computer?embed=1");
       try { sessionStorage.setItem("qwenpawComputerOpen", open ? "1" : "0"); } catch (e) {}
     }
@@ -1165,7 +1165,7 @@ function computerPanelScript(rebrandEnabled) {
         // descending into every shadowRoot.
         function collectButtons(root, out) {
           try {
-            var list = root.querySelectorAll ? root.querySelectorAll("button") : [];
+            var list = root.querySelectorAll ? root.querySelectorAll("button,[role='button']") : [];
             for (var i = 0; i < list.length; i++) out.push(list[i]);
             var all = root.querySelectorAll ? root.querySelectorAll("*") : [];
             for (var j = 0; j < all.length; j++) {
@@ -1196,7 +1196,16 @@ function computerPanelScript(rebrandEnabled) {
               if (/^\\s*(new task|new group|conversation history|by source|manage group)\\s*$/i.test((b.textContent || "").trim())) continue;
               var left = -1;
               try { left = b.getBoundingClientRect ? b.getBoundingClientRect().left : -1; } catch (e) {}
-              if (left < 0 || left > 260) continue;
+              // LEFT CHECK REMOVED (2026-11-18 QA rounds 5–15): ten
+              // rounds of zero effect with the code deployed and the
+              // observer + timer both calling the rule. The left window
+              // [0,260] is the last untested selection gate that could
+              // be excluding every sidebar row (e.g. a transformed
+              // ancestor shifting the rect, or the rect read before
+              // layout settles). The other gates (not "more actions",
+              // not a header, text >= 3 chars) already scope this to
+              // conversation rows; dropping the left gate cannot
+              // misfire on anything else.
               var txt = (b.textContent || "").trim();
               if (txt.length < 3) continue;
               if (b.setAttribute) b.setAttribute("data-agentx-ellipsis", "1");
@@ -1443,9 +1452,27 @@ function computerPanelScript(rebrandEnabled) {
           cBtn.style.right = right;
           rBtn.style.right = right;
           vBtn.style.right = right;
-          cBtn.style.bottom = isOpen ? "360px" : "16px";
-          rBtn.style.bottom = isOpen ? "408px" : "64px";
-          vBtn.style.bottom = isOpen ? "456px" : "112px";
+          // Hide the pills on Settings pages (2026-11-18 QA round 15):
+          // they are fixed-position and persist across pages, where
+          // they cover real Settings controls (e.g. the "Assistant
+          // message collapse" segmented control on /settings/general)
+          // and the open panel hides "1 provider online" on
+          // /settings/models. The pills are a /chat convenience; on
+          // Settings they only get in the way.
+          var onSettings = false;
+          try { onSettings = /\/settings(\/|$)/.test(window.location ? window.location.pathname : ""); } catch (e) {}
+          if (onSettings) {
+            cBtn.style.display = "none";
+            rBtn.style.display = "none";
+            vBtn.style.display = "none";
+            return;
+          }
+          cBtn.style.display = "";
+          rBtn.style.display = "";
+          vBtn.style.display = "";
+          cBtn.style.bottom = isOpen ? "380px" : "16px";
+          rBtn.style.bottom = isOpen ? "428px" : "64px";
+          vBtn.style.bottom = isOpen ? "476px" : "112px";
         } catch (e) {}
       } },
       { id: "rename-logo", run: function () {
