@@ -1201,6 +1201,32 @@ function computerPanelScript(rebrandEnabled) {
                   if (tag === "SPAN") k.style.display = "block";
                 } catch (e) {}
               }
+              // The title itself is often a bare TEXT NODE directly
+              // inside the flex button (an anonymous flex item) — no
+              // element to style, so no CSS ellipsis can engage on it.
+              // Wrap the first substantial direct text node (the visible
+              // title; the duplicate is a later node for the tooltip) in
+              // a span that IS a real flex item and can truncate.
+              try {
+                var nodes = b.childNodes;
+                for (var n = 0; n < nodes.length; n++) {
+                  var tn = nodes[n];
+                  if (tn && tn.nodeType === 3 && tn.nodeValue && tn.nodeValue.trim().length >= 3) {
+                    var span = document.createElement("span");
+                    span.setAttribute("data-agentx-title-wrap", "1");
+                    span.style.display = "block";
+                    span.style.overflow = "hidden";
+                    span.style.textOverflow = "ellipsis";
+                    span.style.whiteSpace = "nowrap";
+                    span.style.minWidth = "0";
+                    span.style.flexShrink = "1";
+                    span.style.maxWidth = "100%";
+                    b.insertBefore(span, tn);
+                    span.appendChild(tn);
+                    break;
+                  }
+                }
+              } catch (e) {}
             } catch (e) {}
           }
         } catch (e) {}
@@ -1280,6 +1306,29 @@ function computerPanelScript(rebrandEnabled) {
             main.style.paddingBottom = "170px";
             main.style.boxSizing = "border-box";
           }
+        } catch (e) {}
+      } },
+      { id: "pill-positions", run: function () {
+        // Re-apply the floating-pill positions on every mutation.
+        // setOpen() sets them once when the Computer panel opens/closes,
+        // but a re-render can reset the inline styles back to the
+        // defaults (bottom 16/64/112) while the panel stays open — then
+        // the pills sit on the composer's Send button (QA round 8).
+        // This rule re-asserts the open/closed positions every time.
+        try {
+          var panel = document.getElementById("qwenpawComputerPanel");
+          var cBtn = document.getElementById("qwenpawComputerBtn");
+          var rBtn = document.getElementById("qwenpawRestBtn");
+          var vBtn = document.getElementById("qwenpawVaultBtn");
+          if (!panel || !cBtn || !rBtn || !vBtn) return;
+          var isOpen = panel.style.display === "flex";
+          var right = isOpen ? "332px" : "16px";
+          cBtn.style.right = right;
+          rBtn.style.right = right;
+          vBtn.style.right = right;
+          cBtn.style.bottom = isOpen ? "200px" : "16px";
+          rBtn.style.bottom = isOpen ? "248px" : "64px";
+          vBtn.style.bottom = isOpen ? "296px" : "112px";
         } catch (e) {}
       } },
       { id: "rename-logo", run: function () {
@@ -1409,6 +1458,7 @@ function computerPanelScript(rebrandEnabled) {
         agentxRunRuleNow("sidebar-ellipsis");
         agentxRunRuleNow("chat-input-fixes");
         agentxRunRuleNow("page-bottom-padding");
+        agentxRunRuleNow("pill-positions");
         agentxRunRules();
       });
       // characterData: React updates a text node in place (nodeValue)
