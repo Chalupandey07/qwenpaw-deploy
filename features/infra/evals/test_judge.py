@@ -465,6 +465,8 @@ def main() -> int:
     passed = sum(1 for _, ok, _ in CHECKS if ok)
     total = len(CHECKS)
     print(f"\n{passed}/{total} checks passed.")
+    # Harness-compatible tally line (run-tests.py parses "N passed, M failed").
+    print(f"{passed} passed, {total - passed} failed")
     print("Live-model agreement with the calibration set: NOT VERIFIED "
           "(needs `python3 test_judge.py --live` / "
           "`python3 judge.py --calibrate --live` once the machine is back).")
