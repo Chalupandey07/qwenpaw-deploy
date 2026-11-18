@@ -259,7 +259,12 @@ function computerPanelScript(rebrandEnabled) {
     document.body.appendChild(restBtn);
     document.body.appendChild(vaultBtn);
     vaultBtn.addEventListener("click", function () {
-      openVaultPopup();
+      // The floating Vault pill opens the full Vault page (where the
+      // user sees and manages existing keys), not the in-chat add-key
+      // dialog — QA round 3: the pill opening only an empty "Add a
+      // key" form read as the wrong destination. The add-key dialog
+      // stays reachable from the Vault menu item and from /vault.
+      window.open("/vault", "_blank", "noopener");
     });
 
     // ---- Vault add-key popup (in-chat) ----
@@ -595,10 +600,16 @@ function computerPanelScript(rebrandEnabled) {
       // pills (max z-index) would sit on top of it — the Computer pill
       // over the panel's own content. Shift the whole column left of
       // the panel while it is open, back to the edge when it closes.
+      // Also lift the column above the composer while the panel is open
+      // (QA round 3): at the bottom edge, shifted left, the pills sat
+      // on the composer's Send button and the toolbar's right end.
       var right = open ? "332px" : "16px";
       btn.style.right = right;
       restBtn.style.right = right;
       vaultBtn.style.right = right;
+      btn.style.bottom = open ? "140px" : "16px";
+      restBtn.style.bottom = open ? "188px" : "64px";
+      vaultBtn.style.bottom = open ? "236px" : "112px";
       if (open && !frame.getAttribute("src")) frame.setAttribute("src", "/computer?embed=1");
       try { sessionStorage.setItem("qwenpawComputerOpen", open ? "1" : "0"); } catch (e) {}
     }
