@@ -253,10 +253,17 @@ class DecisionClient:
         else:
             state_text = str(state)[:32000]
 
+        # NACE /v1/systemone requires "questions" to be an OBJECT keyed by
+        # question name (2026-11-18 live test: a list got HTTP 422
+        # "questions: must be an object"). The inner spec drops "name"
+        # (the key already carries it).
         body = {
             "model": self.model,
             "state": state_text,
-            "questions": [q.payload() for q in questions],
+            "questions": {
+                q.name: {k: v for k, v in q.payload().items() if k != "name"}
+                for q in questions
+            },
         }
         req = urllib.request.Request(
             f"{self.base}/v1/systemone",
@@ -526,6 +533,23 @@ def selftest() -> int:
            and p["prompt"] == "safe?", str(p))
     expect("box questions need no options", Question("w", "box").payload() ==
            {"name": "w", "kind": "box"}, str(Question("w", "box").payload()))
+    # Request body: NACE /v1/systemone requires "questions" as an OBJECT
+    # keyed by name (2026-11-18 live test: a list got HTTP 422 "questions:
+    # must be an object"). Build the body the way decide() does and check
+    # its shape without making a network call.
+    _qs = [Question("priority", "choice", options=["urgent", "routine"], prompt="p?"),
+           Question("wake", "box")]
+    _body_questions = {qq.name: {k: v for k, v in qq.payload().items() if k != "name"}
+                       for qq in _qs}
+    expect("request questions is an object keyed by name",
+           isinstance(_body_questions, dict)
+           and set(_body_questions) == {"priority", "wake"},
+           str(_body_questions))
+    expect("request question spec drops the redundant name",
+           "name" not in _body_questions["priority"]
+           and _body_questions["priority"]["kind"] == "choice"
+           and _body_questions["priority"]["options"] == ["urgent", "routine"],
+           str(_body_questions["priority"]))
 
     print("answer parsing tolerates provider shape differences")
     a, conf = DecisionClient._parse(
