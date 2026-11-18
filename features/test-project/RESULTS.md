@@ -3198,3 +3198,22 @@ Protocol run by the runner; browser / needs-token rows were recorded as skipped,
 | Test | Area | Method | Result | Evidence |
 |---|---|---|---|---|
 | T116 | tinyfish | protocol | PASS | skill selftest: features/tinyfish/test_tinyfish.py --selftest: exit=0 tally=108 passed, 0 failed \| search UI: features/tinyfish/test_search_settings_ui.mjs: exit=0 tally=34 passed, 0 failed tail=34 passed, 0 failed |
+
+## Round 105 — 2026-11-18T16:01:59Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: FAIL=1.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T116 | tinyfish | protocol | FAIL | skill selftest: features/tinyfish/test_tinyfish.py --selftest: exit=0 tally=108 passed, 0 failed \| search UI: features/tinyfish/test_search_settings_ui.mjs: exit=0 tally=36 passed, 0 failed tail=36 passed, 0 failed |
+
+### Notes (non-pass rows)
+- **T116** (FAIL): skill selftest: features/tinyfish/test_tinyfish.py --selftest: exit=0 tally=108 passed, 0 failed | search UI: features/tinyfish/test_search_settings_ui.mjs: exit=0 tally=36 passed, 0 failed tail=36 passed, 0 failed
+
+## Round 106 — 2026-11-18T16:02:12Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: PASS=1.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T116 | tinyfish | protocol | PASS | skill selftest: features/tinyfish/test_tinyfish.py --selftest: exit=0 tally=108 passed, 0 failed \| search UI: features/tinyfish/test_search_settings_ui.mjs: exit=0 tally=36 passed, 0 failed tail=36 passed, 0 failed |
