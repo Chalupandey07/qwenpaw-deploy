@@ -1,0 +1,69 @@
+--- a/src/qwenpaw/loop/gates/limits.py
++++ b/src/qwenpaw/loop/gates/limits.py
+@@ -444,13 +444,17 @@
+ # Task identity. An explicit task id wins when present (ctx["task_id"]
+ # or agent.state.task_id -- the client-side "new task" action, when one
+ # exists). Otherwise the task is derived from the latest user message
+-# in the context: a continuation-only message (empty, greeting,
+-# "continue" / "go on" / "yes" / "ok" / "thanks") resumes the current
+-# task; a different substantive message starts a new task (the old one
+-# is abandoned); any substantive message after finalisation starts a
+-# new task. The continuation rule is a small English-only heuristic
+-# (this deploy is English-only); it is the fallback, not the primary
+-# signal -- an explicit task id always wins.
++# in the context: a continuation message (empty, a greeting, "continue"
++# / "go on" / "yes" / "ok" / "thanks", or a message that STARTS with
++# one of those at a word boundary -- "hello, are you working?",
++# "Yes, continue from 21") resumes the current task; a different
++# substantive message starts a new task (the old one is abandoned);
++# any substantive message after finalisation starts a new task. The
++# continuation rule is a small English-only heuristic (this deploy is
++# English-only); it is the fallback, not the primary signal -- an
++# explicit task id always wins. (Gatefix6: the rule was exact-match
++# only, so real resume messages minted fresh tasks and the per-task
++# cap never accumulated -- see _is_continuation.)
+ #
+ # Repeat guard (DeepSeek review). A task that was finalised BY CAP
+ # leaves its fingerprint in the session's prior-task record. Re-issuing
+@@ -533,10 +537,39 @@
+ 
+ 
+ def _is_continuation(text: str | None) -> bool:
+-    """True when a user message is a bare greeting / nudge, not a task."""
++    """True when a user message is a greeting / nudge, not a task.
++
++    The message resumes the current task when it IS a continuation
++    phrase, or when it STARTS with one at a word boundary. Real
++    resume messages carry a detail after the nudge ("hello, are you
++    working?", "Yes, continue from 21") and an exact-match rule
++    treats those as new instructions, minting a fresh task budget
++    and abandoning the previous task -- which is how the per-task
++    cap failed live (gatefix6, browser task d0f77cb7): the echo task
++    (20 shell) was abandoned on "hello, are you working?", and
++    "Yes, continue from 21" minted a fresh task that ran 40 shell
++    (21-60) before finalising, for 60 shell across the chat. The
++    word boundary keeps "yesterday" / "history" / "surely" from
++    matching "yes" / "hi" / "sure". A message that starts with a
++    greeting but is really a new instruction ("hello, what is 2+2?")
++    is charged to the old task -- the same documented wart as
++    "ok now do X" (see _ensure_task); a genuinely new instruction
++    that does not start with a continuation word still mints a
++    fresh task.
++    """
+     if text is None:
+         return True
+-    return _normalize_instruction(text) in _CONTINUATION_TEXTS
++    normalized = _normalize_instruction(text)
++    if normalized in _CONTINUATION_TEXTS:
++        return True
++    for phrase in _CONTINUATION_TEXTS:
++        if not phrase:
++            continue
++        if normalized.startswith(phrase):
++            rest = normalized[len(phrase):]
++            if rest and rest[0] == " ":
++                return True
++    return False
+ 
+ 
+ def _user_text_of(message: Any) -> str:
