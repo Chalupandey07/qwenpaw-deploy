@@ -603,13 +603,17 @@ function computerPanelScript(rebrandEnabled) {
       // Also lift the column above the composer while the panel is open
       // (QA round 3): at the bottom edge, shifted left, the pills sat
       // on the composer's Send button and the toolbar's right end.
+      // Lifted to 200/248/296 (QA round 4): the 140/188/236 lift still
+      // left the bottom pill overlapping the blue banner and the
+      // input box's top-right corner (the composer is ~150px tall
+      // including the banner, so the pills must clear ~200px).
       var right = open ? "332px" : "16px";
       btn.style.right = right;
       restBtn.style.right = right;
       vaultBtn.style.right = right;
-      btn.style.bottom = open ? "140px" : "16px";
-      restBtn.style.bottom = open ? "188px" : "64px";
-      vaultBtn.style.bottom = open ? "236px" : "112px";
+      btn.style.bottom = open ? "200px" : "16px";
+      restBtn.style.bottom = open ? "248px" : "64px";
+      vaultBtn.style.bottom = open ? "296px" : "112px";
       if (open && !frame.getAttribute("src")) frame.setAttribute("src", "/computer?embed=1");
       try { sessionStorage.setItem("qwenpawComputerOpen", open ? "1" : "0"); } catch (e) {}
     }
@@ -1088,6 +1092,11 @@ function computerPanelScript(rebrandEnabled) {
         // and "1 providers online" — the count is 1 but the noun is
         // plural. Fix the singular forms in text nodes; other counts
         // ("2 steps", "3 providers") are already correct and untouched.
+        // Regex with \s+ (not a literal space): the DOM inspection
+        // showed the tree rendering "1providers online" with the space
+        // dropped, so the separator may be a non-breaking space or
+        // another whitespace character, and a literal "1 providers"
+        // split never matches it (QA round 4).
         // Split-node case (QA round 2): React renders the count and the
         // label in SEPARATE text nodes ("1" | " providers online"), so
         // a single-node "1 providers" never matches. Collect the text
@@ -1103,7 +1112,7 @@ function computerPanelScript(rebrandEnabled) {
               var n = nodes[i];
               var t = n.nodeValue;
               if (!t) continue;
-              var fixed = t.split("1 steps").join("1 step").split("1 providers").join("1 provider");
+              var fixed = t.replace(/1\s+steps/g, "1 step").replace(/1\s+providers/g, "1 provider");
               if (fixed !== t) { n.nodeValue = fixed; continue; }
               if (t.indexOf("providers") !== -1 && i > 0) {
                 var prev = nodes[i - 1];
@@ -1129,8 +1138,10 @@ function computerPanelScript(rebrandEnabled) {
         // which is a separate sibling that appears on hover). Give the
         // row buttons an ellipsis and right padding so the More actions
         // button has room and the cut reads as "…" instead of a clipped
-        // word. Sidebar rows live at x<260; the "More actions" button
-        // itself and the sidebar header buttons are excluded.
+        // word. The title text may live in a child span/div inside the
+        // button (the a11y tree lists no wrapper, but React usually
+        // wraps it), so the ellipsis goes on the button AND on any
+        // text-bearing child.
         try {
           var btns = document.querySelectorAll("button");
           for (var i = 0; i < btns.length; i++) {
@@ -1153,6 +1164,17 @@ function computerPanelScript(rebrandEnabled) {
               b.style.paddingRight = "30px";
               b.style.boxSizing = "border-box";
               b.style.maxWidth = "100%";
+              var kids = b.querySelectorAll ? b.querySelectorAll("span, div") : [];
+              for (var j = 0; j < kids.length; j++) {
+                try {
+                  var k = kids[j];
+                  if (!k.textContent || !k.textContent.trim()) continue;
+                  k.style.overflow = "hidden";
+                  k.style.textOverflow = "ellipsis";
+                  k.style.whiteSpace = "nowrap";
+                  k.style.maxWidth = "100%";
+                } catch (e) {}
+              }
             } catch (e) {}
           }
         } catch (e) {}
@@ -1163,18 +1185,19 @@ function computerPanelScript(rebrandEnabled) {
         // element — it is a bare text node + an info-circle img, both
         // direct children of <main>, directly above the input textbox,
         // with a 0–1 px rendered gap. There is no element to give a
-        // margin-bottom to, so the gap goes on the INPUT box instead:
-        // margin-top on the textbox (placeholder "for message
-        // navigation").
+        // margin-bottom to, so the gap goes on the INPUT box instead.
+        // The textbox found by placeholder may be an inner <textarea>
+        // inside a wrapper div, so the margin goes on the textbox AND
+        // on its parent, so whichever renders the box gets the gap.
         // (b) The "Context usage" control is a <button> with NO child
         // elements — its text ("Context usage 10%, cache hit rate 81%")
         // lives only in its accessible name / description, and the only
         // visible content is a 16–18 px circular ring. It is not
         // clipped by an overflow-hidden parent; the text is simply not
         // rendered. Inject a small visible percentage label into the
-        // button next to the ring.
+        // button next to the ring, and let the button grow to fit it.
         try {
-          var inputs = document.querySelectorAll("textarea, input[type='text'], [contenteditable='true'], [role='textbox']");
+          var inputs = document.querySelectorAll("[placeholder]");
           for (var i = 0; i < inputs.length; i++) {
             try {
               var inp = inputs[i];
@@ -1184,6 +1207,10 @@ function computerPanelScript(rebrandEnabled) {
               if (inp.getAttribute && inp.getAttribute("data-agentx-banner-gap")) continue;
               if (inp.setAttribute) inp.setAttribute("data-agentx-banner-gap", "1");
               inp.style.marginTop = "8px";
+              var parent = inp.parentElement;
+              if (parent && parent.tagName && /^(DIV|FORM)$/i.test(parent.tagName)) {
+                parent.style.marginTop = "8px";
+              }
             } catch (e) {}
           }
           var btns = document.querySelectorAll("button");
@@ -1200,10 +1227,14 @@ function computerPanelScript(rebrandEnabled) {
               if (!pct) continue;
               var span = document.createElement("span");
               span.textContent = pct;
-              span.style.cssText = "font-size:11px;line-height:1;color:#16a34a;font-weight:600;margin-left:4px;white-space:nowrap;";
+              span.style.cssText = "font-size:11px;line-height:1;color:#16a34a;font-weight:600;margin-left:4px;white-space:nowrap;flex:none;";
               b.appendChild(span);
               b.style.display = "inline-flex";
               b.style.alignItems = "center";
+              b.style.minWidth = "0";
+              b.style.width = "auto";
+              b.style.maxWidth = "none";
+              b.style.overflow = "visible";
             } catch (e) {}
           }
         } catch (e) {}
@@ -1314,8 +1345,28 @@ function computerPanelScript(rebrandEnabled) {
       }
     }
     /* AGENTX-REBRAND-END */
+    // Run one rule by id, synchronously and unthrottled. The three
+    // fragile fixes (grammar, sidebar ellipsis, chat input) fight React:
+    // React re-renders and reverts the DOM mutation, and the 400 ms
+    // throttle in agentxRunRules leaves a window where the unfixed text
+    // shows (QA round 4: "1 providers online" still plural after 5 s).
+    // Running them synchronously in the observer callback re-applies the
+    // fix on every mutation, so React never wins the race for long.
+    function agentxRunRuleNow(id) {
+      try {
+        for (var i = 0; i < AGENTX_RULES.length; i++) {
+          if (AGENTX_RULES[i].id === id) { AGENTX_RULES[i].run(); return; }
+        }
+      } catch (e) {}
+    }
     try {
-      var vaultMenuObserver = new MutationObserver(function () { addVaultMenuItem(); agentxRunRules(); });
+      var vaultMenuObserver = new MutationObserver(function () {
+        addVaultMenuItem();
+        agentxRunRuleNow("fix-grammar");
+        agentxRunRuleNow("sidebar-ellipsis");
+        agentxRunRuleNow("chat-input-fixes");
+        agentxRunRules();
+      });
       // characterData: React updates a text node in place (nodeValue)
       // when it re-renders — e.g. the Models page resetting "1 provider
       // online" back to "1 providers online". A childList-only observer
