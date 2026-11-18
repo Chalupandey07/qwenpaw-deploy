@@ -48,10 +48,21 @@
  *       icon-only button matched by its accessible name ("GitHub",
  *       "Documentation") is hidden as a whole button, a "QwenPaw" text
  *       node is renamed while a load-bearing node is left alone, an
- *       aria-label is renamed, a DashScope card is hidden, a DashScope
- *       card matched only by its aria-label is hidden as a whole card,
- *       an Aliyun card and a SiliconFlow card (name in an img alt) are
- *       hidden as whole cards, the About item ("About QwenPaw v2.3.0")
+ *       aria-label is renamed, and the China cards are hidden on the
+ *       REAL card DOM (hashed CSS-module classes from the live bundle:
+ *       a DashScope / SiliconFlow / ModelScope / Aliyun provider card
+ *       is hidden as a whole card, a DashScope card matched only by its
+ *       settings-button aria-label and a SiliconFlow card matched only
+ *       by its icon img alt are hidden as whole cards, a non-China
+ *       provider (OpenAI) is NOT hidden, the provider list container is
+ *       NOT hidden, a WeCom / DingTalk configured channel card and a
+ *       Feishu / QQ / WeChat available-channel button are hidden as
+ *       whole cards/buttons, a non-China channel (Telegram / Slack) is
+ *       NOT hidden, the channel grid is NOT hidden, and the China cards
+ *       are hidden when the provider list mounts after the initial pass
+ *       — the old mock used class "provider-card", which the real
+ *       bundle never emits, so it passed while the live rule hid the
+ *       whole list), the About item ("About QwenPaw v2.3.0")
  *       is renamed to "About AgentX v2.3.0" and clicking it opens our
  *       /status page, the sidebar logo img (alt "QwenPaw") is replaced
  *       by an "AgentX" text label, a title change is renamed
@@ -205,7 +216,7 @@ console.log("static: the rule table is data-driven and guarded");
     !rebrandSrc.includes('"Close QwenPaw?"'),
     "hiding them would suppress real safety prompts");
   check("the menu/China rules hide by accessible name, not just visible text",
-    /function agentxHideByName\(labels, itemSelector, containerSelector\)/.test(rebrandSrc) &&
+    /function agentxHideByName\(labels, itemSelector, containerSelector(, climbFn)?\)/.test(rebrandSrc) &&
     /aria-label/.test(rebrandSrc) &&
     /agentxHideByName\(AGENTX_MENU_LABELS/.test(rebrandSrc) &&
     /agentxHideByName\(AGENTX_CHINA_LABELS/.test(rebrandSrc),
@@ -214,6 +225,14 @@ console.log("static: the rule table is data-driven and guarded");
     /function agentxClimbToContainer\(el, containerSelector\)/.test(rebrandSrc) &&
     /el\.closest\(containerSelector\)/.test(rebrandSrc),
     "hiding only the name leaf leaves an unnamed icon-only shell");
+  check("the China climb is structural and never returns the list (2026-11-18 fix)",
+    /function agentxClimbToChinaCard\(el\)/.test(rebrandSrc) &&
+    /providercards/.test(rebrandSrc) && /availablegrid/.test(rebrandSrc) &&
+    /groupcardglass/.test(rebrandSrc) && /channelcard/.test(rebrandSrc),
+    "the old generic climb hid the whole provider list: [class*='card'] is case-sensitive and never matched the hashed groupCardGlass class, while [class*='provider'] matched the providerCards list container");
+  check("the hide-china rule uses the structural China climb, not the generic one",
+    /agentxHideByName\(AGENTX_CHINA_LABELS, "li, button, a, \[role='menuitem'\], \[role='listitem'\], span, div, h1, h2, h3, h4, img", null, agentxClimbToChinaCard\)/.test(rebrandSrc),
+    "the generic climb is what hid the whole list");
   check("the About click is a delegated capture listener with a prefix match",
     /agentxAboutInstalled/.test(rebrandSrc) &&
     /document\.addEventListener\("click", function \(ev\)/.test(rebrandSrc) &&
@@ -291,6 +310,12 @@ function makeEl(tag, attrs, children) {
     setAttribute(name, value) { this._attrs[name] = String(value); },
     addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); },
     dispatch(type, ev) { for (const fn of this._listeners[type] || []) fn(ev); },
+    appendChild(child) {
+      child.parentNode = this;
+      this.childNodes.push(child);
+      if (child.nodeType === 1) this.children.push(child);
+      return child;
+    },
     replaceChild(newChild, oldChild) {
       const idx = this.childNodes.indexOf(oldChild);
       if (idx === -1) throw new Error("NotFoundError: replaceChild of a non-child");
@@ -545,10 +570,25 @@ if (!rebrandSrc) {
     "a visible 'QwenPaw' text node is renamed to AgentX",
     "a load-bearing instruction is left alone (truthful, not renamed)",
     "an aria-label with QwenPaw is renamed",
-    "a DashScope provider card is hidden",
-    "a DashScope card matched only by its aria-label is hidden as a whole card",
-    "an Aliyun provider card is hidden as a whole card",
-    "a SiliconFlow card (name in an img alt) is hidden as a whole card",
+    "a DashScope provider card (real DOM) is hidden as a whole card",
+    "a SiliconFlow provider card (real DOM) is hidden as a whole card",
+    "a ModelScope provider card (real DOM) is hidden as a whole card",
+    "an Aliyun provider card (real DOM) is hidden as a whole card",
+    "an Alibaba Cloud card matched only by its settings-button aria-label (real DOM) is hidden as a whole card",
+    "a SiliconFlow card matched only by its icon img alt (real DOM) is hidden as a whole card",
+    "a non-China provider card (OpenAI, real DOM) is NOT hidden",
+    "a non-China provider card (DeepSeek, real DOM) is NOT hidden",
+    "a non-China provider card (Anthropic, real DOM) is NOT hidden",
+    "the provider list container is NOT hidden (no over-hide)",
+    "a WeCom configured channel card (real DOM) is hidden as a whole card",
+    "a DingTalk configured channel card (real DOM) is hidden as a whole card",
+    "a Feishu available-channel button (real DOM) is hidden as a whole button",
+    "a QQ available-channel button (real DOM) is hidden as a whole button",
+    "a WeChat available-channel button (real DOM) is hidden as a whole button",
+    "a non-China channel (Telegram configured, real DOM) is NOT hidden",
+    "a non-China channel (Slack available, real DOM) is NOT hidden",
+    "the channel grid is NOT hidden",
+    "China cards are hidden when the provider list mounts after the initial pass (async mount)",
     "the About item is renamed to AgentX (version kept)",
     "clicking About opens our /status page, not the upstream site",
     "the sidebar logo img is replaced by an 'AgentX' text label",
@@ -581,27 +621,102 @@ if (!rebrandSrc) {
   const greeting = makeEl("p", {}, [makeText("Hello! I'm QwenPaw. How can I help you?")]);
   const loadBearing = makeEl("p", {}, [makeText("Set QWENPAW_AUTH_ENABLED=true to use the QwenPaw terminal.")]);
   const ariaBtn = makeEl("button", { "aria-label": "QwenPaw menu" }, [makeText("Menu")]);
-  const card = makeEl("div", { class: "provider-card" }, [
-    makeEl("h3", {}, [makeText("DashScope")]),
-    makeEl("p", {}, [makeText("Alibaba Cloud model provider.")]),
+  // Real provider-card DOM (RemoteProviderCard-CFfBXPIy.js + the CSS module
+  // index.module-D02jL-aA.js, as served): the card is a motion div with the
+  // hashed class groupCardGlass, the name is a span.groupCardName, the list
+  // is a div.providerCards. The old mock used class "provider-card", which
+  // the real bundle never emits — it passed while the live rule hid the
+  // whole list (the case-sensitive [class*='card'] never matched
+  // groupCardGlass, while [class*='provider'] matched providerCards).
+  const CLS = {
+    list: "index-module__providerCards__fYCGM",
+    card: "index-module__groupCardGlass__-GYEf",
+    header: "index-module__groupCardHeader__gVMHN",
+    name: "index-module__groupCardName__ZaRnj",
+    content: "index-module__groupCardContent__-KLao",
+    actions: "index-module__groupCardActions__DhxKz",
+  };
+  function realProviderCard(providerName, opts = {}) {
+    const children = [];
+    children.push(makeEl("button", { "aria-label": `Settings: ${providerName}` }, [makeEl("svg", {}, [])]));
+    const headerChildren = [makeEl("span", { class: "index-module__providerIcon__x" }, [])];
+    if (!opts.nameInAltOnly && !opts.nameInAriaOnly) {
+      headerChildren.push(makeEl("span", { class: CLS.name }, [makeText(providerName)]));
+    }
+    if (opts.nameInAltOnly) {
+      headerChildren.push(makeEl("img", { alt: providerName }, []));
+    }
+    children.push(makeEl("div", { class: CLS.header }, headerChildren));
+    if (opts.free) children.push(makeEl("div", { class: "index-module__providerCardStatus__x" }, [makeText("FREE")]));
+    children.push(makeEl("div", { class: CLS.content }, [makeText("base URL …")]));
+    children.push(makeEl("div", { class: CLS.actions }, [makeEl("button", {}, [makeText("Configure")])]));
+    const card = makeEl("div", { class: CLS.card }, children);
+    card._providerName = providerName;
+    return card;
+  }
+  const cardOpenAI = realProviderCard("OpenAI");
+  const cardSiliconFlow = realProviderCard("SiliconFlow", { free: true });
+  const cardModelScope = realProviderCard("ModelScope");
+  const cardAliyun = realProviderCard("Aliyun");
+  const cardDashScope = realProviderCard("DashScope");
+  const cardAlibabaAria = realProviderCard("Alibaba Cloud", { nameInAriaOnly: true });
+  const cardSiliconFlowAlt = realProviderCard("SiliconFlow", { nameInAltOnly: true });
+  const cardDeepSeek = realProviderCard("DeepSeek");
+  const cardAnthropic = realProviderCard("Anthropic");
+  const providerList = makeEl("div", { class: CLS.list }, [
+    cardOpenAI, cardSiliconFlow, cardModelScope, cardAliyun, cardDashScope,
+    cardAlibabaAria, cardSiliconFlowAlt, cardDeepSeek, cardAnthropic,
   ]);
-  const cardAria = makeEl("div", { class: "provider-card", "aria-label": "DashScope" }, [
-    makeEl("svg", {}, []),
-    makeEl("button", {}, [makeText("Configure")]),
+  // Real channel-card DOM (from the live bundle): a configured channel card
+  // is a motion wrapper > div[role=button, aria-label=name,
+  // class=channelCard] > top / middle(cardTitle=name) / bottom(Configure);
+  // an available channel is a button.availableItem > icon +
+  // span.availableItemName + Configure. The grid is div.availableGrid.
+  const CH = {
+    grid: "index-module__availableGrid__UBOlC",
+    card: "index-module__channelCard__a6OxB",
+    title: "index-module__cardTitle__x1",
+    item: "index-module__availableItem__CoyUX",
+    itemName: "index-module__availableItemName__OJ3-I",
+  };
+  function realChannelCard(name) {
+    const title = makeEl("div", { class: CH.title }, [makeText(name)]);
+    const middle = makeEl("div", { class: "index-module__cardMiddleSection__x2" }, [title]);
+    const top = makeEl("div", { class: "index-module__cardTopSection__uQ2Up" }, [makeEl("div", { class: "index-module__channelIcon__rXEaM" }, [])]);
+    const bottom = makeEl("div", { class: "index-module__cardBottomSection__x4" }, [makeEl("span", { class: "index-module__configureAction__x6" }, [makeText("Configure")])]);
+    const card = makeEl("div", { role: "button", tabindex: "0", "aria-label": name, class: CH.card }, [top, middle, bottom]);
+    const wrapper = makeEl("div", { class: "index-module__channelSurface__x7" }, [card]);
+    wrapper._name = name; card._name = name;
+    return wrapper;
+  }
+  function realAvailableItem(name) {
+    const btn = makeEl("button", { type: "button", class: CH.item }, [
+      makeEl("span", { class: "index-module__availableItemIcon__x" }, []),
+      makeEl("span", { class: CH.itemName }, [makeText(name)]),
+      makeEl("span", { class: "index-module__availableItemAction__Et-aH" }, [makeText("Configure")]),
+    ]);
+    btn._name = name;
+    return btn;
+  }
+  const chanWeCom = realChannelCard("WeCom");
+  const chanTelegram = realChannelCard("Telegram");
+  const chanDingTalk = realChannelCard("DingTalk");
+  const itemFeishu = realAvailableItem("Feishu");
+  const itemSlack = realAvailableItem("Slack");
+  const itemQQ = realAvailableItem("QQ");
+  const itemWeChat = realAvailableItem("WeChat");
+  const channelGrid = makeEl("div", { class: CH.grid }, [
+    chanWeCom, chanTelegram, chanDingTalk, itemFeishu, itemSlack, itemQQ, itemWeChat,
   ]);
-  const cardAliyun = makeEl("div", { class: "provider-card" }, [
-    makeEl("h3", {}, [makeText("Aliyun")]),
-    makeEl("button", {}, [makeText("Configure")]),
-  ]);
-  const cardImg = makeEl("div", { class: "provider-card" }, [
-    makeEl("img", { alt: "SiliconFlow" }, []),
-    makeEl("button", {}, [makeText("Configure")]),
-  ]);
+  // Async mount: this list is empty on the first pass (the API has not
+  // returned yet); the cards mount afterwards and the observer's re-run
+  // must hide the China ones.
+  const asyncList = makeEl("div", { class: CLS.list }, []);
   const upstreamLink = makeEl("a", { href: "https://qwenpaw.agentscope.io/docs/intro?lang=en" }, [makeText("View guide")]);
   const normalLink = makeEl("a", { href: "/status" }, [makeText("Status")]);
   const root = makeEl("div", { id: "root" }, [
     menu, header, settingsMenu, aboutLi, brandDiv, greeting, loadBearing, ariaBtn,
-    card, cardAria, cardAliyun, cardImg, upstreamLink, normalLink,
+    providerList, channelGrid, asyncList, upstreamLink, normalLink,
   ]);
   const doc = makeDocument(root);
   const opened = [];
@@ -649,14 +764,60 @@ if (!rebrandSrc) {
   check("an aria-label with QwenPaw is renamed",
     ariaBtn.getAttribute("aria-label") === "AgentX menu",
     `got ${ariaBtn.getAttribute("aria-label")}`);
-  check("a DashScope provider card is hidden",
-    card.style.display === "none", `display=${card.style.display}`);
-  check("a DashScope card matched only by its aria-label is hidden as a whole card",
-    cardAria.style.display === "none", `display=${cardAria.style.display}`);
-  check("an Aliyun provider card is hidden as a whole card",
+  check("a DashScope provider card (real DOM) is hidden as a whole card",
+    cardDashScope.style.display === "none", `display=${cardDashScope.style.display}`);
+  check("a SiliconFlow provider card (real DOM) is hidden as a whole card",
+    cardSiliconFlow.style.display === "none", `display=${cardSiliconFlow.style.display}`);
+  check("a ModelScope provider card (real DOM) is hidden as a whole card",
+    cardModelScope.style.display === "none", `display=${cardModelScope.style.display}`);
+  check("an Aliyun provider card (real DOM) is hidden as a whole card",
     cardAliyun.style.display === "none", `display=${cardAliyun.style.display}`);
-  check("a SiliconFlow card (name in an img alt) is hidden as a whole card",
-    cardImg.style.display === "none", `display=${cardImg.style.display}`);
+  check("an Alibaba Cloud card matched only by its settings-button aria-label (real DOM) is hidden as a whole card",
+    cardAlibabaAria.style.display === "none", `display=${cardAlibabaAria.style.display}`);
+  check("a SiliconFlow card matched only by its icon img alt (real DOM) is hidden as a whole card",
+    cardSiliconFlowAlt.style.display === "none", `display=${cardSiliconFlowAlt.style.display}`);
+  check("a non-China provider card (OpenAI, real DOM) is NOT hidden",
+    cardOpenAI.style.display !== "none", `display=${cardOpenAI.style.display}`);
+  check("a non-China provider card (DeepSeek, real DOM) is NOT hidden",
+    cardDeepSeek.style.display !== "none", `display=${cardDeepSeek.style.display}`);
+  check("a non-China provider card (Anthropic, real DOM) is NOT hidden",
+    cardAnthropic.style.display !== "none", `display=${cardAnthropic.style.display}`);
+  check("the provider list container is NOT hidden (no over-hide)",
+    providerList.style.display !== "none", `display=${providerList.style.display}`);
+  check("a WeCom configured channel card (real DOM) is hidden as a whole card",
+    chanWeCom.style.display === "none", `display=${chanWeCom.style.display}`);
+  check("a DingTalk configured channel card (real DOM) is hidden as a whole card",
+    chanDingTalk.style.display === "none", `display=${chanDingTalk.style.display}`);
+  check("a Feishu available-channel button (real DOM) is hidden as a whole button",
+    itemFeishu.style.display === "none", `display=${itemFeishu.style.display}`);
+  check("a QQ available-channel button (real DOM) is hidden as a whole button",
+    itemQQ.style.display === "none", `display=${itemQQ.style.display}`);
+  check("a WeChat available-channel button (real DOM) is hidden as a whole button",
+    itemWeChat.style.display === "none", `display=${itemWeChat.style.display}`);
+  check("a non-China channel (Telegram configured, real DOM) is NOT hidden",
+    chanTelegram.style.display !== "none", `display=${chanTelegram.style.display}`);
+  check("a non-China channel (Slack available, real DOM) is NOT hidden",
+    itemSlack.style.display !== "none", `display=${itemSlack.style.display}`);
+  check("the channel grid is NOT hidden",
+    channelGrid.style.display !== "none", `display=${channelGrid.style.display}`);
+  // Async mount: the list was empty on the first pass; the cards mount
+  // afterwards (the API fetch resolves) and the observer's re-run must
+  // hide the China ones. This is the live failure mode: the list
+  // renders asynchronously, so a rule that only runs once never sees it.
+  // agentxRunRules throttles re-runs to 400 ms (with a trailing timer in
+  // the real browser), so wait out the window before the re-run — the
+  // sandbox's setTimeout is a stub that never fires, which is exactly
+  // why the wait has to be real time here.
+  const asyncChina = realProviderCard("ModelScope");
+  const asyncOk = realProviderCard("OpenAI");
+  asyncList.appendChild(asyncChina);
+  asyncList.appendChild(asyncOk);
+  await new Promise((r) => setTimeout(r, 450));
+  vm.runInContext("agentxRunRules()", sandbox);
+  check("China cards are hidden when the provider list mounts after the initial pass (async mount)",
+    asyncChina.style.display === "none" && asyncOk.style.display !== "none" &&
+    asyncList.style.display !== "none",
+    `china=${asyncChina.style.display} openai=${asyncOk.style.display} list=${asyncList.style.display}`);
   check("the About item is renamed to AgentX (version kept)",
     aboutLi.textContent === "About AgentX v2.3.0", `got ${aboutLi.textContent}`);
   // The About listener is delegated on document (capture): dispatch the
