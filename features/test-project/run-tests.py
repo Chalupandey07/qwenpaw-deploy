@@ -1825,8 +1825,8 @@ def t115():
 
 def t116():
     """TinyFish free search + fetch: Settings-based key, request-building,
-    fallback, feature flags, and the Settings "Your Keys" section (146 checks:
-    108 skill selftest + 38 UI harness).
+    fallback, feature flags, and the Settings "Your Keys" section (147 checks:
+    108 skill selftest + 39 UI harness).
 
     Machine-free selftest (features/tinyfish/test_tinyfish.py) for the
     tinyfish skill's rules. The key is an env var (TINYFISH_API_KEY) set
@@ -1872,7 +1872,7 @@ def t116():
     """
     s1, m1 = _py_script_harness(
         ["features/tinyfish/test_tinyfish.py", "--selftest"], 108)
-    s2, m2 = _harness("features/tinyfish/test_search_settings_ui.mjs", 38)
+    s2, m2 = _harness("features/tinyfish/test_search_settings_ui.mjs", 39)
     good = s1 == "PASS" and s2 == "PASS"
     return ("PASS" if good else "FAIL",
             f"skill selftest: {m1} | search UI: {m2}")
