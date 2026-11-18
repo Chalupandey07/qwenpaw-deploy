@@ -348,10 +348,23 @@ async function scheduledTick(env, ctx, cron) {
   // backup wake. Probe only when a routine is due within 15 minutes, or
   // when the next run is UNKNOWN (a definition without a parseable cron —
   // fail-awake, the old behaviour). Otherwise record a skip and stay quiet
-  // so the machine can sleep.
+  // so the machine can sleep. EXCEPTION (2026-11-18): the daily-summary
+  // slot ("30 1 * * *") always probes — at slot time the next-run pointer
+  // has already rolled to tomorrow, so the 15-min rule would skip the one
+  // backup wake that matters (verified live 2026-11-18 07:00 IST).
   const next = rtNextRoutine(active, now);
   const WAKE_WINDOW_MS = 15 * 60_000;
-  if (next !== null && next !== Infinity && next - now > WAKE_WINDOW_MS) {
+  // DAILY-SUMMARY SLOT EXCEPTION (2026-11-18): the "30 1 * * *" slot fires
+  // AT the routine time, but by then rtNextRoutine has already rolled to
+  // tomorrow, so the pointer says "nothing due for ~24h" and this branch
+  // would skip the probe — a silent miss if the keep-alive wake failed
+  // (verified live 2026-11-18 07:00 IST: both the 07:00:12 wake-tick and
+  // the 07:00:27 daily-summary-slot recorded "skipped"). The slot is the
+  // backup wake for the one routine that matters today, so it always
+  // probes. Cost: one probe/day. The 30-min wake-ticks keep skipping, so
+  // sleep is unaffected. The no-active-routines skip below still applies.
+  const isDailySummarySlot = cron === "30 1 * * *";
+  if (!isDailySummarySlot && next !== null && next !== Infinity && next - now > WAKE_WINDOW_MS) {
     const entry = {
       at: new Date().toISOString(),
       kind: cron === "30 1 * * *" ? "daily-summary-slot" : "wake-tick",
