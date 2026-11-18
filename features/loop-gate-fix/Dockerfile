@@ -8,13 +8,22 @@ FROM agentscope/qwenpaw:v2.3.0@sha256:46a782f4b39b673eac399c90294244e348e71a01bd
 
 COPY qwenpaw-loop-gate-fix.patch /tmp/qwenpaw-loop-gate-fix.patch
 
-# Apply the patch from /app (patch paths are src/qwenpaw/...), then
-# byte-compile the three patched modules so a stale .pyc can never win.
-# The build FAILS here if the patch does not apply cleanly.
+# Apply the patch in BOTH places the code lives. The package is installed
+# in site-packages (that is what Python imports at runtime); /app/src is
+# the source tree the install was built from. Both copies are byte-identical
+# upstream, so the same patch applies to both: -p1 from /app patches
+# src/qwenpaw/..., -p2 from site-packages patches qwenpaw/....
+# Then byte-compile all six patched modules so a stale .pyc can never win.
+# The build FAILS here if the patch does not apply cleanly to either copy.
 RUN cd /app \
     && patch -p1 < /tmp/qwenpaw-loop-gate-fix.patch \
+    && cd /app/venv/lib/python3.11/site-packages \
+    && patch -p2 < /tmp/qwenpaw-loop-gate-fix.patch \
     && rm /tmp/qwenpaw-loop-gate-fix.patch \
     && python3 -m py_compile \
-        src/qwenpaw/loop/gates/limits.py \
-        src/qwenpaw/modes/default/mode.py \
-        src/qwenpaw/config/config.py
+        /app/src/qwenpaw/loop/gates/limits.py \
+        /app/src/qwenpaw/modes/default/mode.py \
+        /app/src/qwenpaw/config/config.py \
+        /app/venv/lib/python3.11/site-packages/qwenpaw/loop/gates/limits.py \
+        /app/venv/lib/python3.11/site-packages/qwenpaw/modes/default/mode.py \
+        /app/venv/lib/python3.11/site-packages/qwenpaw/config/config.py
