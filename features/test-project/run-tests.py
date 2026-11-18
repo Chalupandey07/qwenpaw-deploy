@@ -1788,6 +1788,29 @@ def t114():
     return _harness("features/rebrand/harness-rebrand.mjs", 93)
 
 
+def t115():
+    """Loop-gate fix: tool-call budget counts once, applies by default.
+
+    Machine-free unit test (features/loop-gate-fix/test_gate.py, 14
+    checks) for ToolCallBudgetGate. It builds a minimal fake qwenpaw
+    package and drives the gate with fake agents whose context mimics
+    the parent's merged-message behaviour. The old gate added the
+    latest (cumulative) message to its total once per round, so the
+    reported total inflated 50 -> 150 -> 300 and it fired with a wrong
+    count; a stale last_iteration could skip a count entirely. The fix
+    recomputes the turn total from the reply-scoped blocks on every
+    check. Fail-first proven: against src/pristine/limits.py it fails
+    4/14 (A2 total=150, A3 total=300, E1 BYPASS, E2 total=0) -- A2
+    reproduces the exact live "(150 calls)" from the 2026-11-18 test;
+    against src/patched/limits.py it passes 14/14. The default-chain
+    wiring (mode.py + config.py) is verified inside the derived image
+    before deploy, not here. The live half (a real browser, fresh
+    ordinary chat, no /guarded: echo 1-200 stops after ~50 executed
+    calls, one batch, not 30) is verified by Muse after deploy.
+    """
+    return _py_harness("features/loop-gate-fix/test_gate.py", 14)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2291,6 +2314,7 @@ TESTS = [
     ("T112", "screen retry on failure (B-47): failed branch retries through bounded single-flight scheduleReconnect (harness)", "computer", "protocol", t112),
     ("T113", "routines daily-summary slot always probes (B-47 follow-up): slot bypasses the 15-min skip, wake-ticks still skip (harness)", "routines", "protocol", t113),
     ("T114", "AgentX rebrand (DOM injection): shim stubs PyPI + swallows upstream opens, 13-rule observer renames/hides by accessible name, About delegated to /status, logo replaced, title watcher, /status note AgentX (harness)", "rebrand", "protocol", t114),
+    ("T115", "loop-gate fix: tool-call budget counts once per turn (reply-scoped recompute, no double-count, no stale-iteration skip) and applies by default (harness)", "loop-gate", "protocol", t115),
 ]
 
 SKIP_NOTE = {
