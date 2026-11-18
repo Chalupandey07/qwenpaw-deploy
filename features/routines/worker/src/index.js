@@ -234,7 +234,7 @@ async function probeQwenPaw(env) {
   const httpStatus = res.status;
   await res.body?.cancel().catch(() => {});
   if ((httpStatus >= 200 && httpStatus < 400) || httpStatus === 401) {
-    return { status: "up", httpStatus, note: "QwenPaw console answered" };
+    return { status: "up", httpStatus, note: "AgentX console answered" };
   }
   if (httpStatus === 503) {
     return { status: "waking", httpStatus, note: "InstaBox waking/paused (503); keepalive retries every 5 min; native cron jobs have a 600s misfire grace" };
@@ -403,7 +403,7 @@ async function scheduledTick(env, ctx, cron) {
     activeRoutines: active.map((r) => r.id),
     // The Worker wakes; the native cron jobs do the work. If QwenPaw is
     // up, any due native job runs in-process on the machine.
-    deliveredBy: "native qwenpaw cron jobs (jobs.json) / heartbeat",
+    deliveredBy: "native AgentX cron jobs (jobs.json) / heartbeat",
   };
   ctx.waitUntil(pushHistory(env, entry));
   return entry;
@@ -417,17 +417,17 @@ function statusPage(defs, hist, pending, qwenpawUrl) {
   const defRows = defs.map((r) => `<tr><td>${esc(r.id)}</td><td>${esc(r.name)}</td><td>${esc(r.scheduleNote || "")}</td><td>${esc(r.active ? "active" : "paused")}</td></tr>`).join("");
   const pendRows = pending.map((p) => `<tr><td>${esc(p.at)}</td><td>${esc(p.routineId || "-")}</td><td>${esc(p.status)}</td></tr>`).join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>QwenPaw Routines</title><style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2em auto;padding:0 1em}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left;font-size:14px}code{background:#f2f2f2;padding:1px 4px}</style></head><body>
-<h1>QwenPaw Routines</h1>
-<p>Wake + history layer for QwenPaw on InstaBox Free. The scheduler of record is QwenPaw's <b>native cron system</b> (<code>POST /api/cron/jobs</code>, stored in <code>jobs.json</code> v2). This Worker wakes the machine every 30 min and at 07:00 IST daily so native jobs can fire despite the 30-min idle pause.</p>
+<title>AgentX Routines</title><style>body{font-family:system-ui,sans-serif;max-width:900px;margin:2em auto;padding:0 1em}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left;font-size:14px}code{background:#f2f2f2;padding:1px 4px}</style></head><body>
+<h1>AgentX Routines</h1>
+<p>Wake + history layer for AgentX on InstaBox Free. The scheduler of record is AgentX's <b>native cron system</b> (<code>POST /api/cron/jobs</code>, stored in <code>jobs.json</code> v2). This Worker wakes the machine every 30 min and at 07:00 IST daily so native jobs can fire despite the 30-min idle pause.</p>
 <p>Console: <a href="${esc(qwenpawUrl)}">${esc(qwenpawUrl)}</a> &middot; <a href="/api/status">JSON status</a> &middot; <a href="/api/history">JSON history</a></p>
 <h2>Routines (registry in KV, key <code>routines:definitions</code>)</h2>
 <table><tr><th>ID</th><th>Name</th><th>Schedule</th><th>State</th></tr>${defRows || "<tr><td colspan=4>No routines defined yet.</td></tr>"}</table>
 <h2>Pending manual triggers</h2>
 <table><tr><th>At</th><th>Routine</th><th>Status</th></tr>${pendRows || "<tr><td colspan=3>None pending.</td></tr>"}</table>
-<p>Pending prompts are <b>not</b> delivered automatically: this Worker holds no QwenPaw login. Paste the prompt in the console, or turn it into a native cron job (see the repo README).</p>
+<p>Pending prompts are <b>not</b> delivered automatically: this Worker holds no AgentX login. Paste the prompt in the console, or turn it into a native cron job (see the repo README).</p>
 <h2>Recent wake ticks (newest first)</h2>
-<table><tr><th>At (UTC)</th><th>Kind</th><th>QwenPaw</th><th>Note</th><th>Active routines</th></tr>${rows || "<tr><td colspan=5>No ticks recorded yet.</td></tr>"}</table>
+<table><tr><th>At (UTC)</th><th>Kind</th><th>AgentX</th><th>Note</th><th>Active routines</th></tr>${rows || "<tr><td colspan=5>No ticks recorded yet.</td></tr>"}</table>
 </body></html>`;
 }
 
@@ -790,7 +790,7 @@ export default {
       return json({
         worker: "qwenpaw-routines", qwenpaw: probe,
         routines: defs.map(publicRoutine), schedulerOfRecord: "qwenpaw native cron (POST /api/cron/jobs, jobs.json v2)",
-        note: "This Worker wakes QwenPaw and records history. It does not deliver prompts (no QwenPaw login stored).",
+        note: "This Worker wakes AgentX and records history. It does not deliver prompts (no AgentX login stored).",
       });
     }
 
@@ -877,7 +877,7 @@ export default {
       const entry = {
         id, at: new Date().toISOString(), routineId: body.routine_id || null,
         prompt, status: "pending", qwenpaw: probe.status, httpStatus: probe.httpStatus,
-        note: "Recorded only. Run this prompt in the QwenPaw console, or create a native cron job for it. This Worker holds no QwenPaw login and cannot deliver prompts.",
+        note: "Recorded only. Run this prompt in the AgentX console, or create a native cron job for it. This Worker holds no AgentX login and cannot deliver prompts.",
       };
       // Essential (token-gated user action) — but if the write is refused
       // the trigger is NOT recorded, so answer 503 instead of claiming 202.
