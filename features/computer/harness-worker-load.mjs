@@ -119,7 +119,7 @@ console.log("worker: the console proxy still works");
     !html.includes("/desktop/__") && !html.includes("/desktop/__screen"),
     "those routes went away with the computer rebuild");
   check("Referrer-Policy is set (query-token leak mitigation)",
-    res.headers.get("Referrer-Policy") === "same-origin",
+    res.headers.get("Referrer-Policy") === "no-referrer",
     String(res.headers.get("Referrer-Policy")));
   check("HTML is not frameable cross-origin",
     res.headers.get("X-Frame-Options") === "SAMEORIGIN",
