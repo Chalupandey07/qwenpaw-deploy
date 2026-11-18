@@ -1791,7 +1791,7 @@ def t114():
 def t115():
     """Loop-gate fix: tool-call budget counts once, applies by default.
 
-    Machine-free unit test (features/loop-gate-fix/test_gate.py, 14
+    Machine-free unit test (features/loop-gate-fix/test_gate.py, 47
     checks) for ToolCallBudgetGate. It builds a minimal fake qwenpaw
     package and drives the gate with fake agents whose context mimics
     the parent's merged-message behaviour. The old gate added the
@@ -1799,16 +1799,139 @@ def t115():
     reported total inflated 50 -> 150 -> 300 and it fired with a wrong
     count; a stale last_iteration could skip a count entirely. The fix
     recomputes the turn total from the reply-scoped blocks on every
-    check. Fail-first proven: against src/pristine/limits.py it fails
-    4/14 (A2 total=150, A3 total=300, E1 BYPASS, E2 total=0) -- A2
-    reproduces the exact live "(150 calls)" from the 2026-11-18 test;
-    against src/patched/limits.py it passes 14/14. The default-chain
-    wiring (mode.py + config.py) is verified inside the derived image
-    before deploy, not here. The live half (a real browser, fresh
-    ordinary chat, no /guarded: echo 1-200 stops after ~50 executed
-    calls, one batch, not 30) is verified by Muse after deploy.
+    check. Round 2: the gate also expands a run_tool_batch call into
+    its sub-calls (from its arguments, inline actions or the JSON batch
+    file) and counts a completed batch from its result JSON when its
+    call could not be expanded, so the batch runner cannot bypass the
+    budget. Round 3: the budget is enforced at execution time
+    (try_reserve_execution, called from ReactAgent._execute_tool_call
+    before the first await), so a single response carrying 200 direct
+    parallel calls executes only the first 20 (per-tool shell cap) or
+    30 (total cap) and refuses the rest -- the gate alone cannot stop
+    a single-response burst because its TERMINATE is deferred. Fail-
+    first proven: against src/pristine/limits.py it fails 29/47;
+    against src/gatefix1/limits.py it fails 25/47 (H + I); against
+    src/gatefix2/limits.py it fails 11/47 (only I -- the live
+    single-response burst, 200 executed); against
+    src/patched/limits.py it passes 47/47. The default-chain wiring
+    (mode.py + config.py) and the react_agent.py funnel change are
+    verified inside the derived image before deploy, not here. The
+    live half (a real browser, fresh ordinary chat, no /guarded: echo
+    1-200 stops after ~20 executed calls, the per-tool shell cap, not
+    200) is verified by Muse after deploy.
     """
-    return _py_harness("features/loop-gate-fix/test_gate.py", 14)
+    return _py_harness("features/loop-gate-fix/test_gate.py", 47)
+
+
+def t116():
+    """TinyFish free search + fetch: request-building and fallback (52 checks).
+
+    Machine-free selftest (features/tinyfish/test_tinyfish.py) for the
+    tinyfish skill's rules. It builds the TinyFish search URL (root path
+    on api.search.tinyfish.ai, the path the official SDK uses) and the
+    fetch body (1-10 urls, markdown/html/json), the DuckDuckGo Instant
+    Answer url (the only DDG surface that works from this box — the HTML
+    and lite endpoints are anomaly-blocked), the broker /run argv (sh -c
+    so $TINYFISH expands), the fallback decision (tinyfish item present
+    -> TinyFish, absent -> built-in web_search/web_fetch exactly as now),
+    and the error mapping (401/402/429/404/5xx). No network: it only
+    builds requests and decides. The live half (a real TinyFish call)
+    needs a real key in the vault and is NOT verified here.
+    """
+    return _py_script_harness(
+        ["features/tinyfish/test_tinyfish.py", "--selftest"], 52)
+
+
+def t117():
+    """Memory facts: compact fact store + session handoff (41 checks).
+
+    Machine-free selftest (features/memory/test_facts.py) for the
+    Mem0-style extract-and-retrieve store (features/memory/facts.py).
+    It builds a throwaway memory.db and asserts: extraction proposes the
+    salient facts from a sample conversation (decision, preference, task,
+    measurement, the TinyFish key rule) and skips trivia/tool noise;
+    retrieval ranks the relevant fact first, runs in < 100 ms, and costs
+    <= 500 tokens for 5 facts (and < 10% of the full history text);
+    a handoff written by session A is read by session B with the open
+    tasks + where A left off, in <= 300 tokens; adding the same fact
+    twice returns the same id (add-only dedup); superseding marks the
+    old row and never deletes it, and search excludes it by default;
+    a fact containing a credential is rejected with no row written;
+    universal search returns facts AND reaches back into history.db
+    read-only. Fail-first proven: the test fails with ModuleNotFoundError
+    before facts.py exists. The live half (store created on the machine,
+    a fact written and retrieved, a handoff written by one session and
+    read by the next) is verified by Muse from the machine after sync.
+    """
+    return _py_script_harness(
+        ["features/memory/test_facts.py", "--selftest"], 41)
+
+
+def t118():
+    """Bloat win-win: Alibaba telemetry phone-home removed (26 checks).
+
+    Machine-free test (features/bloat-winwin/test_bloat_winwin.py) for
+    the telemetry removal. The patch replaces qwenpaw/utils/telemetry.py
+    and qwenpaw/utils/daily_telemetry.py with stubs that keep every
+    public name the rest of the codebase imports, as safe no-ops, with
+    no endpoint constant, no network code, no sender thread, and no disk
+    writes. Asserts the stubs load standalone (stdlib-only), expose the
+    same public names, never reference the telemetry endpoint or httpx,
+    and never start a thread or write a file. Fail-first proven: the
+    pristine upstream files import ..__version__ / ..constant / httpx
+    relatively and cannot even load standalone, which the test records
+    as failed checks. The live half (the derived image
+    qwenpaw-agentx:2.3.0-bloatwinwin1 built from gatefix3, telemetry
+    endpoint hits 0, no telemetry thread, console 200) is verified by
+    Muse after deploy.
+    """
+    return _py_script_harness(
+        ["features/bloat-winwin/test_bloat_winwin.py"], 26)
+
+
+def t119():
+    """Bloat win-win data layer: VACUUM, WAL checkpoint, PNG, log rotate (15).
+
+    Machine-free test (features/bloat-winwin/test_bloat_winwin_data.py)
+    for the data-layer work done on the live machine 2026-11-18 with no
+    source change. Runs against temporary test databases / files only;
+    it never touches the live working tree. Asserts VACUUM preserves
+    every row and the FTS index (and that a freelist-0 database barely
+    shrinks, so the history file IS the history), WAL checkpointing
+    reclaims the WAL, PRAGMA journal_size_limit is per-connection (a
+    fresh connection reads -1, so it does not bound future WAL growth),
+    PNG recompression is lossless (pixel-identical), and log rotation
+    verifies the archive before truncating (a failed archive leaves the
+    live log untouched). The live measurements (history.db 980 rows
+    preserved, ~8.9 MB reclaimed, the log-loss incident) are recorded
+    in features/bloat-winwin/DATA_LAYER.md.
+    """
+    return _py_script_harness(
+        ["features/bloat-winwin/test_bloat_winwin_data.py"], 15)
+
+
+def t120():
+    """Memory facts v2: multi-signal retrieval, entities, time travel (40).
+
+    Machine-free test (features/memory/test_facts_v2.py) for the v2
+    memory store (features/memory/facts.py). Multi-signal retrieval
+    (BM25 + entity overlap + importance, weighted reciprocal rank
+    fusion) so a fact about the same project or person ranks up even
+    when the keywords are thin; rule-based entity extraction (stdlib
+    only, auto-populated on add, backfill-entities for older facts);
+    temporal validity windows (valid_from / valid_to, search --as-of
+    DATE). Asserts the entity boost, the RRF fusion, the temporal
+    queries, and the v1 -> v2 migration (schema 2, valid_from
+    backfilled, no fact or handoff lost). Fail-first proven: against
+    the v1 facts.py it fails with AttributeError (no extract_entities).
+    Deliberately NOT added: semantic/vector search (needs an embedding
+    model/key — a user decision), sleep-time consolidation, a graph DB.
+    The live half (live memory.db migrated v1 -> v2, search returns
+    fused_score + entity_overlap in 0.22 ms) is verified by Muse after
+    sync.
+    """
+    return _py_script_harness(
+        ["features/memory/test_facts_v2.py"], 40)
 
 
 def t104():
@@ -2315,6 +2438,11 @@ TESTS = [
     ("T113", "routines daily-summary slot always probes (B-47 follow-up): slot bypasses the 15-min skip, wake-ticks still skip (harness)", "routines", "protocol", t113),
     ("T114", "AgentX rebrand (DOM injection): shim stubs PyPI + swallows upstream opens, 13-rule observer renames/hides by accessible name, About delegated to /status, logo replaced, title watcher, /status note AgentX (harness)", "rebrand", "protocol", t114),
     ("T115", "loop-gate fix: tool-call budget counts once per turn (reply-scoped recompute, no double-count, no stale-iteration skip) and applies by default (harness)", "loop-gate", "protocol", t115),
+    ("T116", "tinyfish: free search + fetch request-building, vault_run sh -c expansion, fallback to built-in search when no key, error mapping (selftest)", "tinyfish", "protocol", t116),
+    ("T117", "memory facts: compact fact store + session handoff — extraction candidates, FTS5 retrieval ranked + token-budgeted, handoff written by session A read by session B, add-only dedup, supersede without deletion, secret rejection, universal search (selftest)", "memory", "protocol", t117),
+    ("T118", "bloat win-win: Alibaba telemetry phone-home removed — telemetry.py + daily_telemetry.py are no-op stubs, no endpoint, no httpx, no thread, no disk writes (harness)", "bloat-winwin", "protocol", t118),
+    ("T119", "bloat win-win data layer: history/audit DB VACUUM + WAL checkpoint preserve every row, journal_size_limit is per-connection, PNG recompression lossless, log rotation verifies the archive before truncating (harness)", "bloat-winwin", "protocol", t119),
+    ("T120", "memory facts v2: multi-signal retrieval (BM25 + entity overlap + importance, weighted RRF), rule-based entity extraction, temporal validity windows + search --as-of, v1 -> v2 migration preserves every fact (selftest)", "memory", "protocol", t120),
 ]
 
 SKIP_NOTE = {
