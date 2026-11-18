@@ -611,9 +611,9 @@ function computerPanelScript(rebrandEnabled) {
       btn.style.right = right;
       restBtn.style.right = right;
       vaultBtn.style.right = right;
-      btn.style.bottom = open ? "200px" : "16px";
-      restBtn.style.bottom = open ? "248px" : "64px";
-      vaultBtn.style.bottom = open ? "296px" : "112px";
+      btn.style.bottom = open ? "360px" : "16px";
+      restBtn.style.bottom = open ? "408px" : "64px";
+      vaultBtn.style.bottom = open ? "456px" : "112px";
       if (open && !frame.getAttribute("src")) frame.setAttribute("src", "/computer?embed=1");
       try { sessionStorage.setItem("qwenpawComputerOpen", open ? "1" : "0"); } catch (e) {}
     }
@@ -1233,34 +1233,33 @@ function computerPanelScript(rebrandEnabled) {
                 }
               } catch (e) {}
               try {
-                // Only truncate when the row actually overflows; short
-                // titles are left alone. The sidebar is ~228px wide and
-                // the title starts at ~x31, so ~170px fits ~24 chars.
-                var over = false;
-                try { over = b.scrollWidth > b.clientWidth + 1; } catch (e) {}
-                if (over) {
-                  var tNodes = b.childNodes;
-                  for (var m = 0; m < tNodes.length; m++) {
-                    var t2 = tNodes[m];
-                    var val = "";
-                    if (t2 && t2.nodeType === 3) val = t2.nodeValue || "";
-                    else if (t2 && t2.textContent) {
-                      // A wrapped title span: truncate its text node.
-                      var inner = t2.childNodes;
-                      for (var q = 0; q < inner.length; q++) {
-                        if (inner[q] && inner[q].nodeType === 3 && (inner[q].nodeValue || "").trim().length >= 3) {
-                          var v = inner[q].nodeValue;
-                          if (v.length > 25 && v.indexOf("…") === -1) {
-                            inner[q].nodeValue = v.slice(0, 22).replace(/\s+$/, "") + "…";
-                          }
-                          break;
-                        }
-                      }
-                      continue;
-                    }
-                    if (val.trim().length >= 3 && val.length > 25 && val.indexOf("…") === -1) {
-                      t2.nodeValue = val.slice(0, 22).replace(/\s+$/, "") + "…";
+                // Truncate by LENGTH, not by measured overflow: the
+                // clipping happens at a parent container (the button
+                // itself reports no overflow — scrollWidth equals
+                // clientWidth — so an overflow check never fires, which
+                // is why rounds 5–10 never truncated). The sidebar is
+                // ~228px wide and the title starts at ~x31, so ~170px
+                // fits ~24 chars; anything longer is cut, so cut it in
+                // the text with a real "…".
+                var tNodes = b.childNodes;
+                for (var m = 0; m < tNodes.length; m++) {
+                  var t2 = tNodes[m];
+                  if (t2 && t2.nodeType === 3) {
+                    var val = t2.nodeValue || "";
+                    if (val.trim().length >= 3 && val.length > 24 && val.indexOf("…") === -1) {
+                      t2.nodeValue = val.slice(0, 22).replace(/\\s+$/, "") + "…";
                       break;
+                    }
+                  } else if (t2 && t2.textContent) {
+                    var inner = t2.childNodes;
+                    for (var q = 0; q < inner.length; q++) {
+                      if (inner[q] && inner[q].nodeType === 3 && (inner[q].nodeValue || "").trim().length >= 3) {
+                        var v = inner[q].nodeValue;
+                        if (v.length > 24 && v.indexOf("…") === -1) {
+                          inner[q].nodeValue = v.slice(0, 22).replace(/\\s+$/, "") + "…";
+                        }
+                        break;
+                      }
                     }
                   }
                 }
@@ -1373,9 +1372,9 @@ function computerPanelScript(rebrandEnabled) {
           cBtn.style.right = right;
           rBtn.style.right = right;
           vBtn.style.right = right;
-          cBtn.style.bottom = isOpen ? "200px" : "16px";
-          rBtn.style.bottom = isOpen ? "248px" : "64px";
-          vBtn.style.bottom = isOpen ? "296px" : "112px";
+          cBtn.style.bottom = isOpen ? "360px" : "16px";
+          rBtn.style.bottom = isOpen ? "408px" : "64px";
+          vBtn.style.bottom = isOpen ? "456px" : "112px";
         } catch (e) {}
       } },
       { id: "rename-logo", run: function () {
