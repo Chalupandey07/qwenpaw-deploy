@@ -1719,7 +1719,7 @@ def t113():
 
 
 def t114():
-    """AgentX rebrand (DOM injection, 69 checks).
+    """AgentX rebrand (DOM injection, 86 checks).
 
     Machine-free harness (features/rebrand/harness-rebrand.mjs) for the
     AgentX rebrand (features/rebrand/README.md). Static checks on the real
@@ -1731,7 +1731,11 @@ def t114():
     ?rebrand=0 at runtime); the rule table has 13 rules and each runs in
     its own try/catch with a console.debug naming the rule; the menu/China
     rules hide by accessible name (aria-label/title/alt) and climb to the
-    whole button/card container; the About click is a delegated capture
+    whole button/card container; the China climb is structural and never
+    returns the list container (agentxClimbToChinaCard: the card is the
+    direct child of the provider list / channel grid, or the first
+    ancestor whose lowercased class names the card itself) and the
+    hide-china rule uses it; the About click is a delegated capture
     listener with a prefix match that opens /status; the title is watched
     by its own MutationObserver on the <title> element; the logo rule
     replaces the QwenPaw img with an AgentX text label; the CSP-Report-Only
@@ -1747,21 +1751,33 @@ def t114():
     mock DOM) rename the title and a visible text node, hide a Tutorial
     and a GitHub menu item (but not Settings), hide icon-only buttons
     matched by accessible name as whole buttons, leave a load-bearing
-    instruction alone, rename an aria-label, hide a DashScope card, hide
-    a DashScope card matched only by its aria-label and an Aliyun card and
-    a SiliconFlow card (name in an img alt) as whole cards, rename the
-    About item ("About QwenPaw v2.3.0" → "About AgentX v2.3.0") and make
-    clicking it open /status, replace the sidebar logo img with an
-    "AgentX" text label, rename a title change immediately via the title
-    observer, and block an upstream link click while letting a same-origin
-    link through. Fail-first proven: against the unmodified _worker.js it
-    fails 49/51 (the 2 that pass check for the absence of a rebrand
-    section, vacuously true on the original file); after the 2026-11-18
-    browser-verification fixes, the extended harness fails 22/69 against
-    the pre-fix code and passes 69/69 after. The live half (a real
-    browser on the deployed console) is verified by Muse after deploy.
+    instruction alone, rename an aria-label, hide the China cards on the
+    REAL card DOM (hashed CSS-module classes from the live bundle: a
+    DashScope / SiliconFlow / ModelScope / Aliyun provider card as a whole
+    card, an Alibaba Cloud card matched only by its settings-button
+    aria-label and a SiliconFlow card matched only by its icon img alt,
+    a WeCom / DingTalk configured channel card and a Feishu / QQ / WeChat
+    available-channel button), do NOT hide a non-China provider (OpenAI,
+    DeepSeek, Anthropic) or a non-China channel (Telegram, Slack), do NOT
+    hide the provider list container or the channel grid, and hide the
+    China cards when the provider list mounts after the initial pass
+    (async mount), rename the About item ("About QwenPaw v2.3.0" →
+    "About AgentX v2.3.0") and make clicking it open /status, replace the
+    sidebar logo img with an "AgentX" text label, rename a title change
+    immediately via the title observer, and block an upstream link click
+    while letting a same-origin link through. Fail-first proven: against
+    the unmodified _worker.js it fails 49/51 (the 2 that pass check for
+    the absence of a rebrand section, vacuously true on the original
+    file); after the 2026-11-18 browser-verification fixes, the extended
+    harness fails 22/69 against the pre-fix code and passes 69/69 after;
+    after the 2026-11-18 China-card fix, the extended harness fails 13/86
+    against the pre-fix code (the 2 static China-climb checks, the 6
+    provider-card hides, the list over-hide, the 3 available-channel
+    buttons, the async mount) and passes 86/86 after. The live half (a
+    real browser on the deployed console) is verified by Muse after
+    deploy.
     """
-    return _harness("features/rebrand/harness-rebrand.mjs", 69)
+    return _harness("features/rebrand/harness-rebrand.mjs", 86)
 
 
 def t104():
