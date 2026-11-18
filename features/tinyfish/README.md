@@ -1,6 +1,6 @@
-# TinyFish free web search + fetch (with DuckDuckGo, vault key, built-in fallback)
+# TinyFish free web search + fetch (with DuckDuckGo, Settings key, built-in fallback)
 
-**Status: skill complete and installed on the machine, enabled.
+**Status: skill rewritten 2026-11-18 (v2.0) for a Settings-based key.
 TinyFish path NOT live-tested — no TinyFish API key has been entered yet.
 Fallback path (built-in search/fetch) verified by construction, not by a
 live agent run.**
@@ -11,13 +11,85 @@ A QwenPaw skill (`tinyfish`) that gives the agent two free TinyFish
 endpoints — Web Search and Fetch — combined with DuckDuckGo, with the
 user's key design:
 
-- **User enters the key.** The TinyFish API key is entered by the user in
-  the vault (one item, named `tinyfish`). It is never auto-provisioned,
-  never hardcoded, never invented.
-- **No key = normal search like now.** When no `tinyfish` item is in the
-  vault, the agent uses the built-in `web_search` (AnySearch by default)
+- **User enters the key in Settings.** The TinyFish API key is an
+  environment variable, `TINYFISH_API_KEY`, set by the user in Console
+  → Settings → Environments. It is never auto-provisioned, never
+  hardcoded, never invented.
+- **No key = normal search like now.** When no `TINYFISH_API_KEY` is
+  set, the agent uses the built-in `web_search` (AnySearch by default)
   and `web_fetch` (direct HTTP GET + HTML-to-Markdown) exactly as before.
   Nothing about the current behaviour changes.
+
+## The key design (Settings env var — v2.0, 2026-11-18)
+
+This replaced the v1.0 vault design. The vault holds ONLY connectors
+now (user rule, 2026-11-18 ~14:35 IST), so a provider/service key like
+this one belongs in Settings, not the vault.
+
+- **The mechanism is QwenPaw's own skill-env pipeline** (verified in
+  the upstream v2.3.0.post1 source): a skill declares env vars in its
+  `SKILL.md` frontmatter (`metadata.requires.env` → `require_envs`);
+  the engine looks them up in `QWENPAW_SECRET_DIR/envs.json` and
+  injects them into the skill's execution environment. The console's
+  Settings → Environments page (and `PATCH /api/envs`) writes
+  `envs.json` — values encrypted, file mode 600 — and syncs the
+  running process environment at once, so no restart is needed after
+  the user saves a key.
+- **The key is deliberately NOT declared in `require_envs`.**
+  `resolve_effective_skills` SKIPS a skill whose declared
+  `require_envs` are unmet, so declaring `TINYFISH_API_KEY` required
+  would disable this skill whenever no key is set — and the skill must
+  keep working without a key (built-in fallback). The key and the
+  feature flags are OPTIONAL env vars, read from `os.environ` with
+  safe defaults. The frontmatter declares only `bins: ["python3"]`.
+- **The skill calls TinyFish with python3 (stdlib urllib), not curl.**
+  A curl header built from a shell variable would put the expanded key
+  in curl's argument list (visible in `/proc`). Python reads the key
+  from `os.environ` inside the python process, so the key never appears
+  in any command string, argument list, or log.
+- **The key is never printed, logged, or echoed.** Only the name
+  (`TINYFISH_API_KEY`) may be mentioned, never the value, a prefix, or
+  a length.
+
+## The Search section (Settings)
+
+A "Search" section is injected into the console Settings page. It has
+a key field (password input, never displays the value — only whether a
+key is saved) and three checkboxes: TinyFish search, TinyFish fetch,
+DuckDuckGo Instant Answer. It saves through the console's own env
+endpoint:
+
+- **Load:** `GET /api/envs` (returns the vars; the section uses it only
+  for presence of the key and the flag values — it never renders the
+  key value).
+- **Save:** `PATCH /api/envs` with a JSON body of the variables to set
+  (`TINYFISH_API_KEY`, `TINYFISH_SEARCH`, `TINYFISH_FETCH`,
+  `TINYFISH_DDG_IA`). PATCH merges — it only touches the variables it
+  sends. Never PUT, which would replace ALL environment variables.
+- **Remove the key:** `DELETE /api/envs/TINYFISH_API_KEY`.
+- The endpoint paths are verified in the upstream v2.3.0.post1 source
+  (`src/qwenpaw/app/routers/envs.py`, mounted under `/api` in
+  `src/qwenpaw/app/_app.py`). The section calls the console backend
+  through the Pages proxy — the same path the console's own
+  Environments page uses, so no new broker and no new Pages route are
+  needed. (A Pages Worker cannot reach the machine's private broker
+  addresses; the reset feature's Pages→broker path is unproven for
+  exactly this reason. This design does not repeat that mistake.)
+
+### Feature flags
+
+| Env var | Meaning | Default when absent |
+|---|---|---|
+| `TINYFISH_API_KEY` | the TinyFish API key | (none — no key) |
+| `TINYFISH_SEARCH` | use TinyFish for search | `1` (on) |
+| `TINYFISH_FETCH` | use TinyFish for fetch | `1` (on) |
+| `TINYFISH_DDG_IA` | complement with DuckDuckGo Instant Answer | `1` (on) |
+
+A flag is off only when its value is `0`, `false`, `no`, or `off`
+(any case). Absent or empty means on. **The built-in search is NOT a
+flag and can never be turned off** — it is the fallback, and the
+fallback must always exist. The skill respects the flags even when a
+key is set: `TINYFISH_SEARCH=0` means built-in search despite a key.
 
 ## The two endpoints (free tier)
 
@@ -76,29 +148,10 @@ proves the path.
   hit the same anomaly block (it uses the same DDG endpoints), so it was
   not installed.
 
-## Key design (vault)
-
-- ONE vault item, named `tinyfish`. The user pastes the TinyFish API key
-  once (from agent.tinyfish.ai, the API Keys page). The same key works
-  for both hosts, which is why the skill calls both through the broker's
-  `/run` endpoint (one item, both hosts) instead of `/request` (which
-  pins one origin per item — that would need the key pasted twice).
-- The skill calls the broker's `/run` with `argv: ["sh", "-c", "curl
-  ..."]` so the shell expands `$TINYFISH` (a bare argv list does NOT
-  expand environment variables). The broker exports the key as
-  `$TINYFISH`, runs curl on the host, and redacts the key from the
-  output. The agent never sees the value.
-- Vault item setup (user, via `/vault` or the in-chat popup): pick
-  **Custom**, name `tinyfish`, kind `header`, header name `X-API-Key`,
-  origin `https://api.search.tinyfish.ai`, paste the key.
-- The vault provider presets do NOT include TinyFish yet (the list is
-  Cloudflare, DeepSeek, GitHub, Google Gemini, Groq, Hugging Face,
-  Mistral, OpenAI, OpenRouter, Slack, xAI, Custom). Adding a TinyFish
-  preset to `_worker.js` + `vault.js` is a small follow-up, not done here.
-
 ## Error handling (in the skill)
 
-- `401` — key invalid; tell the user to check/re-enter it; fall back.
+- `401` — key invalid; tell the user to check/re-enter it in Settings →
+  Environments; fall back.
 - `402` — daily free allowance used (resets 00:00 UTC); tell the user;
   fall back; do NOT retry.
 - `429` — per-minute limit or allowance exhausted; fall back; at most
@@ -111,29 +164,41 @@ proves the path.
 
 | File | What it is |
 |---|---|
-| `features/tinyfish/SKILL.md` | The skill (installed on the machine). |
+| `features/tinyfish/SKILL.md` | The skill (v2.0, Settings-based key). |
 | `features/tinyfish/README.md` | This file. |
-| `features/tinyfish/test_tinyfish.py` | Machine-free selftest (T85): request-building, URL/param encoding, fallback decision, error mapping. Mocks the HTTP layer — never calls the live API. |
+| `features/tinyfish/test_tinyfish.py` | Machine-free selftest (T116): request-building, python request construction, env-based fallback decision, feature flags, error mapping, SKILL.md doc checks. Mocks the HTTP layer — never calls the live API. |
+| `pages/public/search-settings-ui.js` | The injected Search section (Settings page): key field + 3 checkboxes, loads via `GET /api/envs`, saves via `PATCH /api/envs`, removes the key via `DELETE /api/envs/TINYFISH_API_KEY`, self-mounts with a throttled MutationObserver. Served as a Pages static asset (routed explicitly in `pages/public/_worker.js` — an unrouted `<script src>` would fall through to the console proxy and parse as nothing, B-35). |
+| `features/tinyfish/test_search_settings_ui.mjs` | Node harness for the Search section (27 checks): pure functions, mount behaviour with a DOM mock + fetch mock, self-mount + throttling, and the `_worker.js` wiring (asset route + script injection). Run: `node features/tinyfish/test_search_settings_ui.mjs`. |
 
 Machine paths: skill installed at
 `/data/home/qwenpaw/working/workspaces/default/skills/tinyfish/SKILL.md`,
 enabled via `docker exec qwenpaw qwenpaw skills enable tinyfish`.
+(The v2.0 skill doc must be re-synced to the machine after this commit;
+the parent does that. The skill name and enablement are unchanged.)
 
 ## What was verified, and what was not
 
-Verified live (2026-11-18):
+Verified (2026-11-18, from the upstream v2.3.0.post1 source + the repo):
+- The env-var mechanism: `metadata.requires.env` → `require_envs`
+  (`src/qwenpaw/agents/skill_system/store.py: parse_skill_requirements`);
+  envs.json values are encrypted, mode 600, loaded into `os.environ`
+  at startup and synced at once on save
+  (`src/qwenpaw/envs/store.py: load_envs_into_environ, _save_envs_unlocked,
+  _sync_environ`); the console env endpoints are `GET/PATCH/PUT/DELETE
+  /api/envs` (`src/qwenpaw/app/routers/envs.py`, mounted under `/api`).
+- The gating rule that forces the key to stay OUT of `require_envs`:
+  `resolve_effective_skills` skips a skill whose `require_envs` are
+  unmet (`src/qwenpaw/agents/skill_system/registry.py`).
+- Env key names (`TINYFISH_API_KEY`, `TINYFISH_SEARCH`,
+  `TINYFISH_FETCH`, `TINYFISH_DDG_IA`) all match QwenPaw's key rule
+  `^[A-Za-z_][A-Za-z0-9_]*$` and are not protected/internal keys
+  (`src/qwenpaw/envs/registry.py`).
 - TinyFish `/free/search` and `/free/fetch` on `api.search.tinyfish.ai`
   return 401 `MISSING_API_KEY` without a key (a key IS required even
   for the free tier). A bogus path also returns 401, so this proves the
   auth gate, not the path.
 - DuckDuckGo Instant Answer API works from the container (returns an
   `Abstract`). DDG HTML/lite are anomaly-blocked (0 results).
-- Vault broker `/list` shows only the `github` item — no `tinyfish`
-  item exists yet, so the TinyFish path cannot be live-tested until the
-  user enters a key.
-- The broker's `/run` exports a named vault item as `$VAR` and runs the
-  command (verified with the `github` item: the key length is visible to
-  the child, the value is redacted from the output).
 - The built-in `web_search` default is AnySearch and `web_fetch` is a
   direct GET (read from the container source).
 - The official TinyFish SDK (v0.11.0) uses root `/` on each product
@@ -142,12 +207,15 @@ Verified live (2026-11-18):
 NOT verified:
 - **The TinyFish path with a real key.** No key has been entered. The
   search/fetch calls, the response parsing, and the root-vs-`/free/`
-  path question are unproven until the user enters a `tinyfish` key and
-  the agent runs a real search + fetch.
+  path question are unproven until the user enters a `TINYFISH_API_KEY`
+  in Settings and the agent runs a real search + fetch.
 - **A live agent run using the skill.** The skill is installed and
   enabled, but no agent conversation has used it yet. That needs a
   browser test (parent) after the key is entered.
-- The machine-free selftest (T85) passes, but it mocks HTTP — it proves
+- **The Search section in a real browser.** The injection + the
+  `PATCH /api/envs` save path are tested against mocks only; the live
+  Settings page DOM and the real endpoint need a browser check (parent).
+- The machine-free selftest (T116) passes, but it mocks HTTP — it proves
   the request-building and fallback logic, not the live API.
 
 ## Deliberately not done
@@ -155,8 +223,12 @@ NOT verified:
 - **No Monid gateway.** Monid routes the same endpoints as PAID calls
   ($0.0050/search, $0.0010/fetch result). This skill uses the DIRECT
   TinyFish free endpoints only.
-- **No TinyFish preset in the vault UI.** Custom covers it; a preset is
-  a follow-up.
+- **No vault use.** The vault holds only connectors. This key lives in
+  Settings (an env var). No TinyFish vault preset, no vault item.
+- **No new broker.** The Search section uses the console's own
+  `/api/envs` endpoint through the Pages proxy — the same path the
+  console's Environments page uses. A Pages Worker cannot reach a
+  machine-side broker at a private address, so no broker was built.
 - **No `ddgs` install.** It would hit the same DDG anomaly block.
 - **No change to the built-in `web_search` / `web_fetch` tools.** The
   fallback is the existing tools, untouched.
