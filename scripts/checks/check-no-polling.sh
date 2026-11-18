@@ -39,6 +39,19 @@
 #     sticks). Client-side only, runs only while the user has the console
 #     open, makes no network calls and writes no data — it only
 #     re-truncates sidebar title text nodes. Not a server poll loop.
+#   UI-TIMER-ALLOWLIST: waking page progress tick (Smart Sleep/Wake Part 2,
+#     2026-11-19) — the waking page served by _worker.js updates the
+#     displayed elapsed time and the determinate bar every 1 s while the
+#     user watches the machine wake. Same documented mechanism as the
+#     getElementById('elapsed') entry above; the 5 s console poll is a
+#     setTimeout chain, not an interval. A UI timer inside a served page,
+#     not a poll in the proxy itself.
+#   UI-TIMER-ALLOWLIST: cooldown bar and countdown tick (Smart Sleep/Wake
+#     Part 2, 2026-11-19) — the cooldown page served by _worker.js updates
+#     the determinate bar and the remaining-minutes text every 1 s while
+#     the user watches the cooldown end, and reloads once at the end
+#     (guarded to one auto-reload per 30 s per tab). A UI timer inside a
+#     served page, not a poll in the proxy itself.
 #
 # Usage: check-no-polling.sh [ROOT]
 #   ROOT defaults to the repo root (parent of scripts/). Exits 0 if no
