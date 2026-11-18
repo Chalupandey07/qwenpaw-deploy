@@ -18,7 +18,8 @@ Built by Muse (code) from the DeepSeek research report. Files:
 `pages/public/{reset/index.html, vault/ui.html, status-page.html,
 computer/router.js, computer/ui.html, vault/router.js, reset/ui.js}`,
 `features/rebrand/` (this README + harness). Tests: T114
-(harness-rebrand.mjs, 93 checks), PASS; fail-first proven (against the
+(harness-rebrand.mjs, **174 checks** — 93 before Part 3 below, 174 after),
+PASS; fail-first proven (against the
 unmodified `_worker.js` it fails 49/51 — the 2 that pass check for the
 ABSENCE of a rebrand section, which is vacuously true on the original
 file; after the browser-verification fixes below, the extended harness
@@ -26,7 +27,8 @@ fails 22/69 against the pre-fix code and passes 69/69 after; after the
 China-card fix below, the extended harness fails 13/86 against the
 pre-fix code and passes 86/86 after; after the XiaoYi/Yuanbao channel
 fix below, the extended harness fails 7/93 against the pre-fix code
-and passes 93/93 after). Full machine-free suite 21 PASS /
+and passes 93/93 after; after Part 3 below, the extended harness fails
+54/174 against the pre-Part-3 code and passes 174/174 after). Full machine-free suite 21 PASS /
 4 known NEEDS-REBUILD. Secret-scan clean. The rebrand v1 + the first two
 fix rounds ARE deployed and live-verified (see below); only THIS commit
 (the XiaoYi/Yuanbao channel fix) is not deployed yet — the parent
@@ -268,6 +270,156 @@ heading's DOM structure cannot be grounded in the bundle, and a blind
 rewrite risks corrupting the heading. Cosmetic only (it only disagrees
 while searching for a hidden provider); the cards themselves are
 correctly hidden. Not chased.
+
+## Part 3 rebrand gaps (2026-11-19, code + tests only — NOT deployed, NOT live-verified)
+
+The machine is suspended and Cloudflare Workers are down (1027 daily
+quota, reset 05:30 IST 2026-11-19), so this round is code + harness
+only: 22 new rules (the task brief said "18 net new" but enumerates
+22 — all 22 were built; the rule table is now 19 + 22 = 41 rules),
+four merges into existing rules, and T114 grew 93 → 174 checks
+(fail-first 54/174 against the pre-Part-3 code, 174/174 after).
+Baseline note: the pre-Part-3 harness in this repo was 89/93, not
+93/93 — three of its static checks had gone stale (rule count said 13
+while the table already had 19, the observer pattern had changed to
+`vaultMenuObserver`, and the logo mock gave the img no width so the
+size gate never fired). Those checks and the mock were fixed in this
+round; they are harness fixes, not product changes.
+
+New rules (all in `pages/public/_worker.js`, helpers +
+`AGENTX_RULES`; all React-safe — text-node values only or
+`display:none` on a specific row/card, never moving/creating/removing
+nodes inside React-owned subtrees):
+
+- **footer-rebrand** — renames QwenPaw text in `<footer>` /
+  `[role='contentinfo']` only (text nodes).
+- **block-links-v2** — extends `agentxBlockUpstreamLinks`: the click
+  guard now matches by host substring (`AGENTX_UPSTREAM_HOSTS`:
+  qwenpaw.com, qwenlm.github.io, github.com/QwenLM, discord.gg,
+  alibabacloud.com, dashscope.aliyuncs.com, chat.qwen.ai, plus the two
+  hosts the old prefix check covered: qwenpaw.agentscope.io,
+  github.com/agentscope-ai) and checks href AND data-url AND
+  data-href AND form action — a link can show a harmless href while
+  its data-url points upstream. Same-origin links and the deploy repo
+  (github.com/Ratulbaba7) are not blocked. Install-once, shared with
+  the existing block-links rule.
+- **hide-powered-by** — hides "Powered by QwenPaw" / "Powered by
+  AgentX" badges (whole container). Both spellings are listed because
+  rename-text runs first and already made it "AgentX".
+- **hide-feedback** — hides Feedback / "Send feedback" affordances
+  (exact accessible-name match, so prose mentioning feedback stays).
+- **settings-about** — renames "About QwenPaw" rows to "About AgentX"
+  inside Settings (pathname `/settings`, else a Settings-marked
+  ancestor). The hide-about capture listener (click → /status) is
+  untouched.
+- **settings-language** — hides a Settings row whose visible label is
+  exactly "Language" (broader than hide-language's aria-label/title
+  match; "Language: English" stays).
+- **settings-providers** — renames QwenPaw provider/section labels in
+  Settings > Models (text only; never provider IDs or API values).
+- **settings-integrations** — renames QwenPaw mentions in Settings >
+  Integrations (text only).
+- **hide-upgrade** — hides Upgrade / "Upgrade to Pro" buttons and
+  upsell cards.
+- **account-card** — renames QwenPaw mentions in the account/user card
+  (text only; the satwik username and avatar are never touched).
+- **workspace-switcher** — renames QwenPaw in the workspace switcher
+  (text only).
+- **sidebar-help** — hides sidebar Help/docs links that point upstream
+  (reuses the block-links host list); same-origin sidebar links stay,
+  and upstream links outside the sidebar stay visible here
+  (block-links still blocks their clicks).
+- **model-labels** — DISPLAY-ONLY text map to AgentX-1 / AgentX-1-Mini
+  (see the mapping judgment call below). Only text nodes inside the
+  model picker/composer (ancestor must carry a model/picker/composer
+  marker); never option value attributes, never input values, never
+  anything sent to the API. A label matching neither mapping is left
+  alone.
+- **title-observer** — wires the existing `agentxWatchTitle()` into a
+  rule (install once + rename the title immediately); no second
+  observer is ever installed.
+- **head-rebrand** — renames og:title / twitter:title / og:description
+  / twitter:description meta content, renames the inline
+  application-name meta, and sets the favicon
+  (`link[rel~="icon"]`) href to an inline data-URI SVG with the "AX"
+  mark (no external URL). Manifest note below.
+- **export-rebrand** — hides community-share / "Share to community"
+  controls; for `a[download]` links rewrites the DISPLAYED text only,
+  never the href or download filename.
+- **hide-run-in** — hides "Run in QwenPaw" / "Open in QwenPaw"
+  buttons (both QwenPaw and AgentX spellings, as with
+  hide-powered-by).
+- **auth-rebrand** — renames QwenPaw on sign-in/auth screens (text
+  only; never tokens, inputs, or form actions).
+- **error-rebrand** — renames QwenPaw in error boundary / error toast
+  text (text only, scoped to error/toast/alert containers).
+- **hide-onboarding** — hides first-run onboarding / tutorial overlay
+  cards ("Getting started" docs links stay).
+- **hide-update-banner** — hides the "update available" banner (the
+  pinned-version shim already answers the version check; "Updated …"
+  notes stay).
+- **hide-shortcuts-dialog** — hides the keyboard-shortcuts dialog
+  trigger/row in help menus. Only the trigger UI is hidden — the
+  shortcuts themselves (key handlers) are never touched, so every
+  shortcut keeps working.
+
+Merges (edits to existing rules, no separate rules):
+
+- **thinking-text → thinking-selector**: the selector's toolbar text
+  renames live inside the thinking-selector rule
+  (`agentxRenameTextIn(toolbar)`).
+- **toast-text → rename-text**: verified — toasts live inside
+  `document.body` (Ant Design mounts its message/toast container
+  under the body), so rename-text's `createTreeWalker(document.body)`
+  already covers them; no root extension was needed. NOT live-verified
+  against this console (machine down at build time); if a toast ever
+  renders outside the body, rename-text's root must be extended.
+  error-rebrand adds scoped coverage for `role="alert"` toasts.
+- **rename-attrs-v2 → rename-attrs**: now also covers `alt` and
+  `data-tooltip` (in addition to aria-label, placeholder, title).
+  Ownership split, and why: `img` elements are SKIPPED by
+  rename-attrs — the logo rule owns img attributes. If rename-attrs
+  renamed the logo img's alt first, rename-logo's
+  `img[alt*="QwenPaw"]` selector would never match and the logo would
+  never be swapped for the wordmark.
+- **rename-logo-v2 → rename-logo**: also matches
+  `img[title*="QwenPaw"]` and `img[aria-label*="QwenPaw"]` with the
+  same displayed-width size gate; non-img elements matched by
+  title/aria-label get an attribute rename only (no swap).
+
+Shared helpers added: `agentxIsUpstreamHref`,
+`agentxHideRowByText` (LEAF-ONLY — an element with element children
+is skipped, so a big container whose text merely contains the label is
+never hidden; multi-word labels match as substrings, single-word
+labels must match the whole trimmed text, so "Upgrades" never matches
+"Upgrade"), `agentxRenameScoped` / `agentxRenameNeedleInBody`
+(text-node renames with a scope marker), `agentxScopeMarker`
+(class/aria-label/title only — deliberately NOT textContent: a shared
+ancestor's text contains every label in its subtree, so a menu that
+also holds an About row would false-positive on "Settings"; this was
+caught by the harness — the first version used a textContent heading
+check and renamed the About row outside Settings too).
+
+### Model-labels mapping — documented judgment call, needs user confirmation
+
+`deepseek-v4.1-flash-free` display text → **AgentX-1-Mini**;
+`nex-n2.6` display text → **AgentX-1**. Reasoning: flash = small/fast
+tier, so it maps to the Mini tier; nex-n2.6 is the full serving model,
+so it maps to the base tier. This is a naming guess, not a measured
+fact — the real model ids are unchanged upstream and nothing sent to
+the API changes. Rohan should confirm (or rename) the mapping; until
+then the rule ships with these two pairs and leaves every other label
+alone.
+
+### Head-rebrand manifest — no-op, documented
+
+`link[rel="manifest"]` points at an EXTERNAL file, so the rule does
+NOT fetch it (fetching a manifest to rewrite it would be a network
+request on every console load, and the file is served from the origin
+bundle). The only inline renames are the meta contents and the
+application-name meta; if no inline name exists, the manifest part is
+a no-op. Renaming the external manifest file itself is a separate
+decision (it lives in the upstream bundle).
 
 ## Live verification (deployed 83c3003; this commit NOT yet deployed)
 
