@@ -193,6 +193,45 @@ so a turn retrieves a few hundred tokens of relevant facts instead of
 the whole history — and a new session reads the previous session's
 handoff instead of starting cold.
 
+**v2 (2026-11-18) — trending-architecture upgrade, same constraints.**
+The user asked for memory search that costs fewer tokens, is super
+fast, and is built on the latest trending GitHub memory architecture
+(Mem0 ~68K stars, Zep/Graphiti ~32K, Letta ~25K, Supermemory ~31K,
+Hindsight 91.4% LongMemEval). What v2 takes from them, without a new
+database, a managed service, embeddings, or a new key:
+
+- **Multi-signal retrieval (Mem0).** v1 was BM25 only. v2 fuses three
+  signals by weighted reciprocal rank fusion (RRF, k=10): BM25 over the
+  FTS5 index (weight 1), **entity overlap** (weight 2 — a fact sharing
+  a person/project/tool with the query ranks up), and **importance**
+  (weight 2). Entities are extracted rule-based and stdlib-only
+  (quoted names, a known-name lexicon, CamelCase/acronyms, capitalised
+  phrases) and auto-populated on `add`; `backfill-entities` fills them
+  for older facts. A query with no entities degrades gracefully to
+  BM25 + importance. Each result reports `entity_overlap` and
+  `fused_score`.
+- **Temporal validity windows (Zep/Graphiti).** Facts now carry
+  `valid_from` / `valid_to`. Superseding a fact closes its window
+  (sets `valid_to`), it never deletes the row. `search --as-of
+  YYYY-MM-DD` is time travel: the facts that were valid then, including
+  ones superseded since. Schema v1 -> v2 migrates on open (adds the
+  columns, backfills `valid_from` from `created_at`); existing rows are
+  never rewritten or deleted.
+- **Tiered memory (Letta).** Already the shape here: the handoff is
+  the always-in-context core (summary + open tasks + where it left
+  off, ≤ 300 tokens) and the facts are the archival store retrieved on
+  demand. v2 does not change that; it makes the retrieval smarter.
+
+Deliberately NOT added (and why): **semantic/vector search** needs an
+embedding model — none is configured, local models are forbidden, and
+no cloud embedding key exists, so the lexical path is the only honest
+one today. **Sleep-time consolidation** (Letta/Mem0 Dream) needs a
+background agent while idle; `consolidate.py` is the manual version and
+an idle-time run is a follow-up. **A graph database** (Neo4j/FalkorDB
+for Graphiti) is heavy and violates "no heavy new database" — the
+validity windows + entity overlap give the temporal + entity benefits
+without one.
+
 ```bash
 DB=/data/home/qwenpaw/working/workspaces/default/memory.db
 HIST=/data/home/qwenpaw/working/workspaces/default/history.db
@@ -201,6 +240,8 @@ python3 facts.py --db $DB check
 python3 facts.py --db $DB add --text "DeepSeek is the coding model." \
     --kind preference --session sess-a --importance 3
 python3 facts.py --db $DB search --query "loop gate" --limit 5
+python3 facts.py --db $DB search --query "loop gate" --as-of 2026-11-15
+python3 facts.py --db $DB backfill-entities
 python3 facts.py --db $DB extract --transcript turns.txt --session sess-a
 python3 facts.py --db $DB handoff-write --session sess-a \
     --summary "Fixed the gate design." \
@@ -210,15 +251,22 @@ python3 facts.py --db $DB handoff-read        # latest handoff
 python3 facts.py --db $DB search-history --history $HIST --query "gate"
 ```
 
-Guarantees, all covered by `test_facts.py` (T117, 41 checks):
+Guarantees, all covered by `test_facts.py` (T117, 41 checks) and
+`test_facts_v2.py` (T118, 40 checks):
 
 - **Add-only.** Adding the same fact twice returns the same id (content-hash
   dedup). A fact that changes is SUPERSEDED, never deleted — the old row
   stays, marked, so "what was true then" stays answerable. Search excludes
   superseded rows by default.
-- **Token-budgeted retrieval.** FTS5 + BM25, default limit 5, default budget
-  500 tokens, hard cap 1000. The test measures the win: the retrieved set
-  costs < 10% of the full history text, and the FTS query runs in < 100 ms.
+- **Token-budgeted retrieval.** Multi-signal (BM25 + entity overlap +
+  importance, RRF-fused), default limit 5, default budget 500 tokens,
+  hard cap 1000. The test measures the win: the retrieved set costs
+  < 10% of the full history text, and the FTS query runs in < 100 ms.
+- **Temporal validity.** Superseding closes the old fact's validity
+  window (`valid_to`); `search --as-of DATE` returns the facts valid
+  then. The v1 -> v2 migration (new columns, backfilled from
+  `created_at`) is add-only and covered by a test that builds a real
+  v1 database and opens it with the v2 code.
 - **Handoff.** A handoff written by session A is read by session B and
   carries the open tasks + where A left off, in ≤ 300 tokens.
 - **Secrets are rejected, not scrubbed** (like `lessons.py`): a fact
@@ -245,6 +293,7 @@ follows it by convention. The skill is installed on the machine at
 python3 features/memory/test_recall.py     # 44 checks
 python3 features/memory/test_lessons.py    # 45 checks
 python3 features/memory/test_facts.py      # 41 checks
+python3 features/memory/test_facts_v2.py   # 40 checks (entity boost, RRF, temporal validity, v1->v2 migration)
 python3 features/memory/reme_doctor.py --selftest   # 11 checks
 ```
 
