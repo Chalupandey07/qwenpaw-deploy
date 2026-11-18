@@ -5,14 +5,21 @@
 #              the profile this renders; the numbers must match)
 #   egress   — the allowlist proxy (features/sandbox/egress_proxy.py)
 #
-# The bridge is INTERNAL except for the proxy's outbound route: the
-# sandbox has no route to the internet and no route to the main
-# bridge gateway (172.18.0.1:8896 vault broker / :8898 MCP proxy).
-# That gateway isolation is enforced by the DOCKER-USER iptables
-# rule in the deploy notes (README.md §5) — compose alone cannot
-# express "this bridge may not reach that gateway", so the rule is a
-# deploy step, NOT a property of this file. Until the rule is live
-# and a container run proves it, the isolation is UNVERIFIED.
+# The bridge is INTERNAL except for the proxy's outbound route — NO,
+# that is not true of a plain bridge, measured 2026-11-19: a plain
+# Docker bridge NATs direct egress, so the sandbox DOES have a direct
+# route to the internet until an egress-default-deny rule lands (see
+# README.md §5 / DONE vs REMAINING). The proxy is the only *intended*
+# route, not the only route. The sandbox has no route to the main
+# bridge gateway (172.18.0.1:8896 vault broker / :8898 MCP proxy):
+# that gateway isolation is enforced by TWO iptables rules
+# (DOCKER-USER + INPUT) in the deploy notes (README.md §5) — compose
+# alone cannot express "this bridge may not reach that gateway", so
+# the rules are deploy steps, NOT properties of this file. The
+# DOCKER-USER rule alone does NOT block the gateway (host-bound
+# INPUT traffic); the INPUT rule is the enforcing one. Until the
+# rules are live and a container run proves them, the isolation is
+# UNVERIFIED.
 #
 # The <JOB_WORKSPACE> and <JOB_ID> placeholders are filled by the
 # runner per job (dispatch.py routes, sandbox.py builds the profile).
@@ -96,5 +103,8 @@ networks:
     internal: false
     # NOTE: `internal: true` would also block the proxy's own outbound
     # route, so it is false here and the gateway isolation is done by
-    # the DOCKER-USER rule instead (README.md §5). Do NOT flip this
-    # without re-reading that section.
+    # the TWO iptables rules (DOCKER-USER + INPUT) instead (README.md
+    # §5). Do NOT flip this without re-reading that section. And
+    # `internal: false` means direct egress from the bridge is OPEN
+    # (plain NAT, measured 2026-11-19) — the egress-default-deny
+    # follow-up is what closes it, not this flag.
