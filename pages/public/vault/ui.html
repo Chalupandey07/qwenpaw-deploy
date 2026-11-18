@@ -6,9 +6,10 @@
 <title>Vault — AgentX</title>
 <style>
   body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; background: #0f1115; color: #e5e7eb; }
-  header { padding: 16px 20px; border-bottom: 1px solid #262b33; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  header { padding: 16px 20px; border-bottom: 1px solid #262b33; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
   header h1 { font-size: 18px; margin: 0; }
   header p { margin: 0; color: #9ca3af; font-size: 13px; }
+  header a.back { color: #86efac; text-decoration: none; font-size: 13px; }
   main { max-width: 860px; margin: 0 auto; padding: 16px 20px 40px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   input, select, textarea { background: #171a21; color: #e5e7eb; border: 1px solid #2b303a; border-radius: 6px; padding: 8px 10px; font: inherit; }
@@ -20,7 +21,7 @@
   .card { border: 1px solid #262b33; border-radius: 8px; padding: 12px 14px; margin: 10px 0; background: #14171d; }
   .card h3 { margin: 0 0 4px; font-size: 15px; }
   .meta { color: #9ca3af; font-size: 13px; }
-  .tag { display: inline-block; background: #1f2937; border-radius: 4px; padding: 1px 7px; font-size: 12px; margin-right: 6px; }
+  .tag { display: inline-block; background: #1f2937; border-radius: 4px; padding: 1px 7px; font-size: 12px; margin-left: 6px; margin-right: 6px; }
   .tag.off { background: #7f1d1d; }
   .err { color: #fca5a5; }
   .ok { color: #86efac; }
@@ -37,6 +38,7 @@
 </head>
 <body>
 <header>
+  <a class="back" href="/">← Back to console</a>
   <h1>Vault</h1>
   <p>Keys the agent can use but never see. Values are decrypted only inside the server; the list below shows metadata only.</p>
 </header>
