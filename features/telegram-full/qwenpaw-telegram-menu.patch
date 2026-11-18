@@ -1,0 +1,132 @@
+--- a/qwenpaw_channel_telegram/platform.py
++++ b/qwenpaw_channel_telegram/platform.py
+@@ -938,7 +938,7 @@
+                 side_effect_possible=True,
+             ) from exc
+ 
+-    async def _send_text(self, route, text):
++    async def _send_text(self, route, text, reply_markup=None):
+         bot = self.bot
+         kwargs = self._kwargs(route)
+         if _can_send_rich_message(text):
+@@ -959,13 +959,18 @@
+                     side_effect_possible=True,
+                 ) from exc
+         sent = []
+-        for chunk in _api_chunks(text):
++        chunks = _api_chunks(text)
++        for index, chunk in enumerate(chunks):
+             rendered = markdown_to_telegram_html(chunk)
++            markup = (reply_markup
++                      if index == len(chunks) - 1 else None)
+             try:
+                 value = await bot.send_message(
+                     **kwargs,
+                     text=rendered,
+                     parse_mode=ParseMode.HTML,
++                    **({"reply_markup": markup}
++                       if markup is not None else {}),
+                 )
+             except BadRequest as exc:
+                 if sent or not _format_rejection(exc):
+@@ -975,7 +980,12 @@
+                     ) from exc
+                 plain = html.unescape(re.sub(r"<[^>]+>", "", rendered))
+                 value = await self._effect(
+-                    bot.send_message(**kwargs, text=plain),
++                    bot.send_message(
++                        **kwargs,
++                        text=plain,
++                        **({"reply_markup": markup}
++                           if markup is not None else {}),
++                    ),
+                 )
+             except asyncio.CancelledError:
+                 raise
+@@ -1065,7 +1075,8 @@
+             getattr(bot, method_name)(**kwargs, **{payload_name: value}),
+         )
+ 
+-    async def send_parts(self, route, parts, source=None):
++    async def send_parts(self, route, parts, source=None, *,
++                         reply_markup=None):
+         text = "\n".join(p["text"] for p in parts if p["type"] == "text")
+         media = [p for p in parts if p["type"] != "text"]
+         if source is ContentSource.CONTENT_PARTS:
+@@ -1081,7 +1092,8 @@
+         sent = []
+         try:
+             if text:
+-                sent.extend(await self._send_text(route, text))
++                sent.extend(await self._send_text(
++                    route, text, reply_markup=reply_markup))
+             for part in media:
+                 kind = part["type"]
+                 endpoint, locator, payload = {
+@@ -1360,6 +1372,7 @@
+ 
+         parsed = _parse_callback_data(query.data or "")
+         if parsed is None:
++            await self._handle_menu_callback(query)
+             return
+         cached = self._cards._get_request_context(parsed["request_id"])
+         binding = cached.get("binding") if cached else None
+@@ -1433,6 +1446,58 @@
+                 ],
+             },
+         )
++
++    async def _handle_menu_callback(self, query):
++        """Route a Telegram menu tap to the agent.
++
++        Upstream drops every non-approval callback silently. A tap
++        whose data matches the menu grammar (``ui:`` / ``act:``, see
++        cards/menu.py — the byte-identical copy of
++        features/telegram-full/menu.py) is admitted as a callback
++        event with the text ``/tgmenu <payload>`` so the agent (with
++        the ``telegram`` skill) can route it through
++        features/telegram-full/tg.py. Anything else is still dropped,
++        exactly as before. The spinner is always cleared first.
++        """
++        from .cards.menu import valid_callback
++
++        data = query.data or ""
++        if not valid_callback(data):
++            return
++        try:
++            await query.answer()
++        except Exception:
++            logger.debug("Telegram menu callback toast failed")
++        message, actor = query.message, query.from_user
++        chat_id = str(message.chat.id) if message is not None else ""
++        sender_id = str(actor.id) if actor is not None else chat_id
++        meta = {
++            "chat_id": chat_id,
++            "user_id": sender_id,
++            "message_thread_id": (
++                message.message_thread_id if message is not None else None
++            ),
++            "is_group": bool(message is not None
++                             and message.chat.type != "private"),
++            "username": ((actor.username or actor.first_name or sender_id)
++                         if actor is not None else sender_id),
++            "bot_mentioned": True,
++            "has_bot_command": True,
++        }
++        await self.on_callback(
++            {
++                "event_id": "callback:" + query.id,
++                "event_kind": "callback",
++                "sender_id": sender_id,
++                "acl_sender_id": sender_id,
++                "user_id": sender_id,
++                "session_id": "telegram:" + chat_id,
++                "meta": meta,
++                "content_parts": [
++                    {"type": "text", "text": "/tgmenu " + data},
++                ],
++            },
++        )
+ 
+     async def resolve_approval(self, route, params):
+         from .cards.tool_guard import build_resolved_text
