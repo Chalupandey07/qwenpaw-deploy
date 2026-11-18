@@ -7,10 +7,12 @@
 # the default loop chain so the cap applies to every chat, enforces
 # the budget at execution time (round 3) so a single response carrying
 # 200 direct parallel calls cannot execute them all before the gate's
-# deferred stop applies, and adds a per-task cap with a structured
-# stop audit (round 4) so a task cannot creep across turns by resuming.
-# Nothing else is changed.
-# Tag: qwenpaw-agentx:2.3.0-gatefix4.
+# deferred stop applies, adds a per-task cap with a structured
+# stop audit (round 4) so a task cannot creep across turns by resuming,
+# and persists the task budget through the session-state round-trip
+# (round 5) so the per-task cap survives the runtime rebuilding the
+# agent object for every user turn. Nothing else is changed.
+# Tag: qwenpaw-agentx:2.3.0-gatefix5.
 FROM agentscope/qwenpaw:v2.3.0@sha256:46a782f4b39b673eac399c90294244e348e71a01bdf032f8e78b00776be3c87d
 
 COPY qwenpaw-loop-gate-fix.patch /tmp/qwenpaw-loop-gate-fix.patch
