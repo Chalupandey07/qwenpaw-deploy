@@ -104,7 +104,7 @@ async function probeQwenPaw(env, { allowRetry = true } = {}) {
     const httpStatus = res.status;
     if ((httpStatus >= 200 && httpStatus < 400) || httpStatus === 401) {
       await res.body?.cancel().catch(() => {});
-      return { status: "up", httpStatus, note: "QwenPaw console answered" };
+      return { status: "up", httpStatus, note: "AgentX console answered" };
     }
     if (httpStatus === 503) {
       const body = await readSmallText(res);
