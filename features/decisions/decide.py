@@ -256,14 +256,24 @@ class DecisionClient:
         # NACE /v1/systemone requires "questions" to be an OBJECT keyed by
         # question name (2026-11-18 live test: a list got HTTP 422
         # "questions: must be an object"). The inner spec drops "name"
-        # (the key already carries it).
+        # (the key already carries it). The spec field is "type", not
+        # "kind" (live 422: "questions.priority.type: must be 'noul',
+        # 'choice', or 'score'"), and NACE has no "box" type — a box
+        # (true/false) is sent as a choice with ["true","false"] options.
+        def _spec(q: Question) -> dict[str, Any]:
+            p = {k: v for k, v in q.payload().items() if k != "name"}
+            kind = p.pop("kind")
+            if kind == "box":
+                p["type"] = "choice"
+                p["options"] = ["true", "false"]
+            else:
+                p["type"] = kind
+            return p
+
         body = {
             "model": self.model,
             "state": state_text,
-            "questions": {
-                q.name: {k: v for k, v in q.payload().items() if k != "name"}
-                for q in questions
-            },
+            "questions": {q.name: _spec(q) for q in questions},
         }
         req = urllib.request.Request(
             f"{self.base}/v1/systemone",
@@ -535,21 +545,38 @@ def selftest() -> int:
            {"name": "w", "kind": "box"}, str(Question("w", "box").payload()))
     # Request body: NACE /v1/systemone requires "questions" as an OBJECT
     # keyed by name (2026-11-18 live test: a list got HTTP 422 "questions:
-    # must be an object"). Build the body the way decide() does and check
+    # must be an object"), the spec field is "type" not "kind" (live 422:
+    # "questions.priority.type: must be 'noul', 'choice', or 'score'"),
+    # and NACE has no "box" type — a box is sent as a choice with
+    # ["true","false"]. Build the body the way decide() does and check
     # its shape without making a network call.
+    def _spec(qq):
+        pp = {k: v for k, v in qq.payload().items() if k != "name"}
+        kk = pp.pop("kind")
+        if kk == "box":
+            pp["type"] = "choice"
+            pp["options"] = ["true", "false"]
+        else:
+            pp["type"] = kk
+        return pp
+
     _qs = [Question("priority", "choice", options=["urgent", "routine"], prompt="p?"),
            Question("wake", "box")]
-    _body_questions = {qq.name: {k: v for k, v in qq.payload().items() if k != "name"}
-                       for qq in _qs}
+    _body_questions = {qq.name: _spec(qq) for qq in _qs}
     expect("request questions is an object keyed by name",
            isinstance(_body_questions, dict)
            and set(_body_questions) == {"priority", "wake"},
            str(_body_questions))
-    expect("request question spec drops the redundant name",
+    expect("request question spec drops the redundant name and uses type",
            "name" not in _body_questions["priority"]
-           and _body_questions["priority"]["kind"] == "choice"
+           and "kind" not in _body_questions["priority"]
+           and _body_questions["priority"]["type"] == "choice"
            and _body_questions["priority"]["options"] == ["urgent", "routine"],
            str(_body_questions["priority"]))
+    expect("box is sent as a true/false choice (NACE has no box type)",
+           _body_questions["wake"] == {"type": "choice",
+                                        "options": ["true", "false"]},
+           str(_body_questions["wake"]))
 
     print("answer parsing tolerates provider shape differences")
     a, conf = DecisionClient._parse(
