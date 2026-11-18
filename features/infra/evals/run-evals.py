@@ -46,7 +46,10 @@ import urllib.request
 
 DEFAULT_BASE = "https://qwenpawx.pages.dev"
 POLL_INTERVAL = 5
-MAX_POLLS = 72  # 72 * 5s = 6 min per case, plus task timeout
+MAX_POLLS = 180  # 180 * 5s = 15 min per case, plus task timeout.
+# Was 72 (6 min): live calibration run 1 (2026-11-19) timed out 9/12
+# cases at 360s because a live agent turn takes ~6 min. Keep in sync
+# with judge.py.
 
 
 def redact(text):
