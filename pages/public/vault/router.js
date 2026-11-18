@@ -228,7 +228,7 @@ export async function handleVault(request, env, url, origin) {
       return json({
         error: "auth_required",
         reason: session.reason,
-        detail: "Open the QwenPaw console and sign in, then reload this page.",
+        detail: "Open the AgentX console and sign in, then reload this page.",
       }, 401);
     }
   }
