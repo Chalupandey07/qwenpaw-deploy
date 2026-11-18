@@ -1182,6 +1182,16 @@ function computerPanelScript(rebrandEnabled) {
           for (var i = 0; i < btns.length; i++) {
             try {
               var b = btns[i];
+              // PROBE (2026-11-18 QA round 16 diagnostic, TEMPORARY):
+              // 11 rounds, zero effect. Set a visible marker on EVERY
+              // button this rule sees, before any selection gate, so the
+              // QA can prove whether the rule runs at all. If ANY button
+              // on the page gets a magenta outline, the rule executes;
+              // if the sidebar rows specifically get it, the rule
+              // reaches them and the truncation itself is the problem;
+              // if nothing gets it, the rule never runs. Remove after
+              // diagnosis.
+              try { b.style.outline = "2px solid #ff00ff"; } catch (e) {}
               // NO early skip on data-agentx-ellipsis (2026-11-18 QA
               // rounds 5–12): React re-renders and RESETS the text
               // node to the full title, but the attribute survives (it
@@ -1196,16 +1206,6 @@ function computerPanelScript(rebrandEnabled) {
               if (/^\\s*(new task|new group|conversation history|by source|manage group)\\s*$/i.test((b.textContent || "").trim())) continue;
               var left = -1;
               try { left = b.getBoundingClientRect ? b.getBoundingClientRect().left : -1; } catch (e) {}
-              // LEFT CHECK REMOVED (2026-11-18 QA rounds 5–15): ten
-              // rounds of zero effect with the code deployed and the
-              // observer + timer both calling the rule. The left window
-              // [0,260] is the last untested selection gate that could
-              // be excluding every sidebar row (e.g. a transformed
-              // ancestor shifting the rect, or the rect read before
-              // layout settles). The other gates (not "more actions",
-              // not a header, text >= 3 chars) already scope this to
-              // conversation rows; dropping the left gate cannot
-              // misfire on anything else.
               var txt = (b.textContent || "").trim();
               if (txt.length < 3) continue;
               if (b.setAttribute) b.setAttribute("data-agentx-ellipsis", "1");
