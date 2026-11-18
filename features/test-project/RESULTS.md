@@ -1582,3 +1582,191 @@ Protocol run by the runner; browser / needs-token rows were recorded as skipped,
 - **T47** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
 - **T48** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
 - **T75** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+
+## Round 37 — 2026-11-18T06:24:19Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: PASS=1.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T114 | rebrand | protocol | PASS | features/rebrand/harness-rebrand.mjs: exit=0 tally=93 passed, 0 failed tail=93 passed, 0 failed |
+
+## Round 38 — 2026-11-18T06:24:27Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: NEEDS-REBUILD=4, PASS=15.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T46 | harness | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T47 | harness | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T48 | harness | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T62 | storage | protocol | PASS | features/storage/harness-store.mjs: exit=0 tally=42 passed, 0 failed tail=42 passed, 0 failed |
+| T70 | memory | protocol | PASS | features/memory/test_recall.py: exit=0 tally=44 passed, 0 failed tail=44 passed, 0 failed (44 checks) |
+| T71 | memory | protocol | PASS | features/memory/test_lessons.py: exit=0 tally=45 passed, 0 failed tail=45 passed, 0 failed (45 checks) |
+| T72 | memory | protocol | PASS | reme_doctor --selftest: exit=0 tally=11 passed, 0 failed |
+| T73 | memory | protocol | PASS | features/memory/test_install_ripwire.py: exit=0 tally=49 passed, 0 failed tail=49 passed, 0 failed (49 checks) |
+| T74 | keepalive | protocol | PASS | worker/harness-keepalive.mjs: exit=0 tally=19 passed, 0 failed tail=19 passed, 0 failed (19 checks) |
+| T75 | desktop | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T76 | codemode | protocol | PASS | features/codemode/harness-codemode.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+| T77 | cost | protocol | PASS | features/board/pricing.py --selftest: exit=0 tally=20 passed, 0 failed |
+| T78 | routing | protocol | PASS | features/routing/policy.py --selftest: exit=0 tally=27 passed, 0 failed |
+| T79 | docs | protocol | PASS | check-links.py exit=0 tail=all links and paths resolve |
+| T80 | storage | protocol | PASS | features/storage/test_schema.py: exit=0 tally=15 passed, 0 failed tail=15 passed, 0 failed (15 checks) |
+| T81 | infra | protocol | PASS | features/infra/workers/email-router/harness-email-router.mjs: exit=0 tally=24 passed, 0 failed tail=24 passed, 0 failed (24 checks) |
+| T82 | groupchat | protocol | PASS | features/groupchat/harness-groupchat-cors.mjs: exit=0 tally=13 passed, 0 failed tail=13 passed, 0 failed (13 checks) |
+| T83 | memory | protocol | PASS | consolidate --selftest: exit=0 tally=27 passed, 0 failed |
+| T84 | decisions | protocol | PASS | decisions --selftest: exit=0 tally=33 passed, 0 failed |
+
+### Notes (non-pass rows)
+- **T46** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T47** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T48** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T75** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+
+## Round 39 — 2026-11-18T06:27:29Z (UTC), `run-tests.py`
+
+Protocol run by the runner; browser / needs-token rows were recorded as skipped, not run. Summary: FAIL=6, PASS=73, NEEDS-REBUILD=24, KNOWN-GAP=1, NEEDS-TOKEN=4.
+
+| Test | Area | Method | Result | Evidence |
+|---|---|---|---|---|
+| T01 | console | protocol | FAIL | HTTP 200 size=93047 markers=['qwenpawComputerBtn', 'qwenpawComputerPanel', 'qwenpawVaultBtn'] vaultmenu=True vaultpopup=True vaultprovider=True vaultpage=200 vaultpageprovider=True |
+| T02 | console | protocol | FAIL | HTTP 200 size=5580 title=False |
+| T03 | console | protocol | PASS | HTTP 200 body={"enabled":true,"has_users":true} |
+| T04 | console | protocol | PASS | HTTP 401 auth_required=True leaked_state=False |
+| T05 | console | protocol | PASS | takeover HTTP 401 lease=False; session HTTP 401 policy=False |
+| T06 | console | protocol | PASS | HTTP 200 type=application/javascript; charset=utf-8 size=283218 |
+| T07 | desktop | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T08 | desktop | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T09 | desktop | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T10 | mcp | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T11 | mcp | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T12 | mcp | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T13 | desktop | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T14 | desktop | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T15 | desktop | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T16 | desktop | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T17 | screenshot | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T18 | bridge | protocol | PASS | /health={"ok": true, "browser_alive": true, "title": "Satwik Samanta (@0xSatwik) / X", "url": "https://x.com/0xsatwik"} |
+| T19 | bridge | protocol | PASS | url=https://x.com/0xsatwik title=Satwik Samanta (@0xSatwik) / X (token never recorded) |
+| T20 | bridge | protocol | PASS | /desktop-open={"ok": true, "url": "https://wordsolverx.com", "display": ":1", "agent": "default", "note": "opened on the InstaBox desktop (display :1)"} (token never recorded) |
+| T21 | routines | protocol | FAIL | / HTTP 200; /api/status HTTP 200 qwenpaw={'status': 'up', 'httpStatus': 200, 'note': 'AgentX console answered'} routines=['daily-summary', 'inbox-check-30m'] |
+| T22 | routines | protocol | PASS | schedules=['*/30 * * * *', '30 1 * * *'] |
+| T23 | routines | protocol | PASS | POST /trigger no token -> HTTP 401 body={ "error": "unauthorized" } |
+| T24 | routines | protocol | FAIL | recent kinds=['wake-tick'] wake-tick=2026-11-17T17:00:12.983Z daily=None |
+| T25 | groupchat | protocol | PASS | HTTP 200 body={"service":"qwenpaw-groupchat","thread":"one shared thread for QwenPaw agents default + QwenPaw_QA_Agent_0.2","store":"durable-object (sqlite)","auth_required":true,"endpoints":["GET /thread[?since=<s |
+| T26 | groupchat | protocol | PASS | POST /thread/message HTTP 401 {"error":"unauthorized"}; GET /thread HTTP 401 {"error":"unauthorized"} |
+| T27 | board | protocol | PASS | / HTTP 200; /health HTTP 200 body={"ok":true,"worker":"qwenpaw-board","store":"d1"} |
+| T28 | board | protocol | PASS | GET /api/tickets no key -> HTTP 401 body={"error":"unauthorized — send the board key as ?key= or X-Board-Key header"} |
+| T29 | botpages | protocol | PASS | HTTP 200 size=1293 |
+| T30 | botpages | protocol | PASS | HTTP 200 size=9831 |
+| T31 | skills | protocol | FAIL | Showing: 21 of 21 skills, 21 enabled, 0 disabled rows=21 |
+| T32 | skills | protocol | PASS | present+enabled: {'delegate': True, 'github': True, 'build-page': True} |
+| T33 | mailbox | protocol | KNOWN-GAP | mailbox row present; mcp.clients={'anysearch': {'name': 'anysearch_mcp', 'description': 'AnySearch web search via MCP', 'enabled': False, 'transport': 's; log mentions qwenpawmail: False (Gmail MCP never configured) |
+| T34 | heartbeat | protocol | PASS | heartbeat defaults: {'enabled': False, 'every': '6h', 'target': 'main', 'timeoutSeconds': 300, 'activeHours': None} (record only; do NOT enable) |
+| T35 | approvals | protocol | PASS | default approval_level=AUTO (SMART patch is NOT applied) |
+| T36 | approvals | protocol | PASS | effect allow occurrences=2 parse=True last_error_line=2577 last_refresh_line=2817. |
+| T37 | approvals | protocol | PASS | approval-pending count before=7 after list_apps=7 |
+| T38 | fleet | protocol | PASS | fleet list exit ok; agents listed: True; head=active agent : default agent order : ['default'] active model : {"provider_id": "mosicn", "model": "nex-n2.6"} heartbeat : {"enabled": false, "every": "6h", "target": "main", "timeoutSeconds": 300, "activeHours": null} I |
+| T39 | evals | protocol | PASS | cases v1 ['identity-en', 'english-only', 'no-china-endpoint', 'timezone-awareness', 'destructive-refusal']; prompts/v1=['AGENTS.md', 'HEARTBEAT.md', 'PROFILE.md', 'README.md', 'SOUL.md'] |
+| T40 | evals | protocol | PASS | exit=0 dry-run=True tail=POST {BASE}/api/console/chat/task, then poll GET {BASE}/api/console/chat/task/{task_id}. |
+| T41 | import-export | protocol | PASS | exported 12 files (agent=QwenPaw_QA_Agent_0.2) -> /tmp/tp-qa-export.tgz excluded by design: history.db*, sessions/, checkpoints/, state/, memory/, mem_*, media/, resource/, drivers/, digest/ EXPORT_EXIT=0 verify OK: 12 files, agent=QwenPaw_QA_Agent_0.2 VERIFY_EXIT=0 |
+| T42 | import-export | protocol | PASS | import=True agent.json hashes match=True files=True raw=imported agent=QwenPaw_QA_Agent_0.2 -> /tmp/tp-qa-restore NOTE: a new workspace is only picked up by QwenPaw at startup; registering it in config.json agents.profiles is a separate, approved step (see 11-fleet-manager.md |
+| T43 | keepalive | protocol | PASS | HTTP 200 status=up httpStatus=200 failures=0 source=cron:*/5 * * * * |
+| T44 | keepalive | protocol | PASS | HTTP 200 status=up source=manual-ping |
+| T45 | keepalive | protocol | PASS | backup root=200 status=200 auth=200 body={"enabled":true,"has_users":true} |
+| T46 | harness | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T47 | harness | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T48 | harness | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T49 | lease | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T50 | desktop | browser | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T51 | desktop | browser | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T52 | desktop | browser | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T53 | desktop | browser | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T54 | desktop | browser | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T55 | desktop | browser | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T56 | desktop | browser | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T57 | screenshot | browser | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T58 | console | needs-token | NEEDS-TOKEN | needs a user-held secret — never invented; see TESTS.md |
+| T59 | groupchat | needs-token | NEEDS-TOKEN | needs a user-held secret — never invented; see TESTS.md |
+| T60 | board | needs-token | NEEDS-TOKEN | needs a user-held secret — never invented; see TESTS.md |
+| T61 | evals | needs-token | NEEDS-TOKEN | needs a user-held secret — never invented; see TESTS.md |
+| T62 | storage | protocol | PASS | features/storage/harness-store.mjs: exit=0 tally=42 passed, 0 failed tail=42 passed, 0 failed |
+| T63 | board | protocol | PASS | attempt 1: 401=30 429=5 follow-up retry-after=13 (machine burst, stable IP) |
+| T70 | memory | protocol | PASS | features/memory/test_recall.py: exit=0 tally=44 passed, 0 failed tail=44 passed, 0 failed (44 checks) |
+| T71 | memory | protocol | PASS | features/memory/test_lessons.py: exit=0 tally=45 passed, 0 failed tail=45 passed, 0 failed (45 checks) |
+| T72 | memory | protocol | PASS | reme_doctor --selftest: exit=0 tally=11 passed, 0 failed |
+| T73 | memory | protocol | PASS | features/memory/test_install_ripwire.py: exit=0 tally=49 passed, 0 failed tail=49 passed, 0 failed (49 checks) |
+| T74 | keepalive | protocol | PASS | worker/harness-keepalive.mjs: exit=0 tally=19 passed, 0 failed tail=19 passed, 0 failed (19 checks) |
+| T75 | desktop | protocol | NEEDS-REBUILD | the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/) |
+| T76 | codemode | protocol | PASS | features/codemode/harness-codemode.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+| T77 | cost | protocol | PASS | features/board/pricing.py --selftest: exit=0 tally=20 passed, 0 failed |
+| T78 | routing | protocol | PASS | features/routing/policy.py --selftest: exit=0 tally=27 passed, 0 failed |
+| T79 | docs | protocol | PASS | check-links.py exit=0 tail=all links and paths resolve |
+| T80 | storage | protocol | PASS | features/storage/test_schema.py: exit=0 tally=15 passed, 0 failed tail=15 passed, 0 failed (15 checks) |
+| T81 | infra | protocol | PASS | features/infra/workers/email-router/harness-email-router.mjs: exit=0 tally=24 passed, 0 failed tail=24 passed, 0 failed (24 checks) |
+| T82 | groupchat | protocol | PASS | features/groupchat/harness-groupchat-cors.mjs: exit=0 tally=13 passed, 0 failed tail=13 passed, 0 failed (13 checks) |
+| T83 | memory | protocol | PASS | consolidate --selftest: exit=0 tally=27 passed, 0 failed |
+| T84 | decisions | protocol | PASS | decisions --selftest: exit=0 tally=33 passed, 0 failed |
+| T85 | skills | protocol | PASS | skills/scan --selftest: exit=0 tally=41 passed, 0 failed |
+| T86 | computer | protocol | PASS | features/computer/harness-computer.mjs: exit=0 tally=88 passed, 0 failed tail=88 passed, 0 failed (88 checks) |
+| T87 | computer | protocol | PASS | preview-uploader --selftest: exit=0 tally=12 passed, 0 failed |
+| T88 | computer | protocol | FAIL | features/computer/harness-worker-load.mjs: exit=1 tally=87 passed, 1 failed tail=failed: Referrer-Policy is set (query-token leak mitigation) |
+| T89 | computer | protocol | PASS | features/computer/harness-rate-limit.mjs: exit=0 tally=28 passed, 0 failed tail=28 passed, 0 failed (28 checks) |
+| T90 | computer | protocol | PASS | features/computer/harness-preview-refetch.mjs: exit=0 tally=29 passed, 0 failed tail=29 passed, 0 failed (29 checks) |
+| T91 | routines | protocol | PASS | features/routines/harness-routines-history.mjs: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T92 | computer | protocol | PASS | features/computer/harness-terminal.mjs: exit=0 tally=39 passed, 0 failed tail=39 passed, 0 failed (39 checks) |
+| T93 | computer | protocol | PASS | features/computer/harness-teach.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+| T94 | codemode | protocol | PASS | features/codemode/vm/codemode-runner.py --selftest: exit=0 tally=196 passed, 0 failed |
+| T95 | codemode | protocol | PASS | features/codemode/vm/test_mcp.py: exit=0 tally=31 passed, 0 failed tail=31 passed, 0 failed (31 checks) |
+| T96 | codemode | protocol | PASS | features/codemode/vm/test_e2e.py: exit=0 tally=53 passed, 0 failed tail=53 passed, 0 failed (53 checks) |
+| T97 | computer | protocol | PASS | features/computer/harness-screen-upgrade.mjs: exit=0 tally=22 passed, 0 failed tail=22 passed, 0 failed (22 checks) |
+| T98 | computer | protocol | PASS | features/computer/harness-screen-cors.mjs: exit=0 tally=36 passed, 0 failed tail=36 passed, 0 failed (36 checks) |
+| T99 | computer | protocol | PASS | features/computer/harness-terminal-proxy.mjs: exit=0 tally=68 passed, 0 failed tail=68 passed, 0 failed (68 checks) |
+| T100 | computer | protocol | PASS | features/computer/harness-preview-asleep.mjs: exit=0 tally=21 passed, 0 failed tail=21 passed, 0 failed (21 checks) |
+| T101 | machine | protocol | PASS | features/machine/harness-machine-rest.mjs: exit=0 tally=66 passed, 0 failed tail=66 passed, 0 failed (66 checks) |
+| T102 | computer | protocol | PASS | features/computer/test_terminal_input.py: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T103 | computer | protocol | PASS | features/computer/harness-terminal-browser.mjs: exit=0 tally=17 passed, 0 failed tail=17 passed, 0 failed (17 checks) |
+| T104 | computer | protocol | PASS | features/computer/harness-rail-reachable.mjs: exit=0 tally=25 passed, 0 failed tail=25 passed, 0 failed (25 checks) |
+| T105 | computer | protocol | PASS | features/computer/harness-terminal-served.mjs: exit=0 tally=52 passed, 0 failed tail=52 passed, 0 failed (52 checks) |
+| T106 | vault | protocol | PASS | features/vault/harness-vault.mjs: exit=0 tally=63 passed, 0 failed tail=vault: 63 passed, 0 failed |
+| T107 | vault | protocol | PASS | features/vault/vault-broker.py --selftest: exit=0 tally=19 passed, 0 failed |
+| T108 | sleepwake | protocol | PASS | features/sleepwake/harness-sleepwake.mjs: exit=0 tally=47 passed, 0 failed tail=sleepwake harness: 47 passed, 0 failed |
+| T109 | sleepwake | protocol | PASS | features/sleepwake/reporter.py --selftest: exit=0 tally=12 passed, 0 failed |
+| T110 | reset | protocol | PASS | features/reset/harness-reset.mjs: exit=0 tally=43 passed, 0 failed tail=reset: 43 passed, 0 failed |
+| T111 | reset | protocol | PASS | features/reset/reset-broker.py --selftest: exit=0 tally=20 passed, 0 failed |
+| T112 | computer | protocol | PASS | features/computer/harness-screen-retry.mjs: exit=0 tally=17 passed, 0 failed tail=17 passed, 0 failed |
+| T113 | routines | protocol | PASS | features/routines/harness-routines-slot.mjs: exit=0 tally=9 passed, 0 failed tail=9 passed, 0 failed |
+| T114 | rebrand | protocol | PASS | features/rebrand/harness-rebrand.mjs: exit=0 tally=93 passed, 0 failed tail=93 passed, 0 failed |
+
+### Notes (non-pass rows)
+- **T01** (FAIL): HTTP 200 size=93047 markers=['qwenpawComputerBtn', 'qwenpawComputerPanel', 'qwenpawVaultBtn'] vaultmenu=True vaultpopup=True vaultprovider=True vaultpage=200 vaultpageprovider=True
+- **T02** (FAIL): HTTP 200 size=5580 title=False
+- **T07** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T08** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T09** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T10** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T11** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T12** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T13** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T14** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T15** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T16** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T17** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T21** (FAIL): / HTTP 200; /api/status HTTP 200 qwenpaw={'status': 'up', 'httpStatus': 200, 'note': 'AgentX console answered'} routines=['daily-summary', 'inbox-check-30m']
+- **T24** (FAIL): recent kinds=['wake-tick'] wake-tick=2026-11-17T17:00:12.983Z daily=None
+- **T31** (FAIL): Showing: 21 of 21 skills, 21 enabled, 0 disabled rows=21
+- **T33** (KNOWN-GAP): mailbox row present; mcp.clients={'anysearch': {'name': 'anysearch_mcp', 'description': 'AnySearch web search via MCP', 'enabled': False, 'transport': 's; log mentions qwenpawmail: False (Gmail MCP never configured)
+- **T46** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T47** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T48** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T49** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T50** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T51** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T52** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T53** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T54** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T55** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T56** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T57** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T75** (NEEDS-REBUILD): the computer was REMOVED 2026-11-15 and is being rebuilt from Rakazo's design; this test is its acceptance criterion and is expected to pass again once the rebuild lands (features/computer/)
+- **T88** (FAIL): features/computer/harness-worker-load.mjs: exit=1 tally=87 passed, 1 failed tail=failed: Referrer-Policy is set (query-token leak mitigation)
