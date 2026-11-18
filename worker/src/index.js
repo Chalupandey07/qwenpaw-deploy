@@ -5,6 +5,7 @@
 // Secrets (sleep/wake): REPORTER_TOKEN (POST /report auth), SLEEP_TOKEN (POST /api/machine/sleep on Pages)
 // Secret (required for /wake): WAKE_TOKEN — POST /wake requires header
 // X-Wake-Token to match; when unset, /wake returns 503 (fail closed).
+// WAKE_TOKEN also gates POST /keepalive (Authorization: Bearer header).
 // GET /ping stays the public wake path: it probes the public console URL,
 // which wakes a paused box on request by InstaBox design — the Pages
 // status page and the activity-feed Wake button use /ping, never /wake.
@@ -338,6 +339,13 @@ async function manualRestInEffect(env) {
 //   sleepwake:state     {mode, since, reason, lastWakeAt, lastSleepAt}
 //   sleepwake:last-visit  epoch ms of the last console visit (Pages writes)
 //   routines:definitions  routine registry (cron + timezone per routine)
+//   keepalive:enabled   '1' (ON) | '0' (OFF); absent = ON. POST /keepalive
+//                       (Bearer WAKE_TOKEN) flips it; the cron tick reads
+//                       it first and skips entirely when OFF. See
+//                       features/smart-sleep/README.md.
+// Max-run guard: decideSleepWake sleeps at 7h uptime even when the
+// machine is busy — a busy machine otherwise runs the full ~8h max run
+// and then takes a forced ~2h cooldown. See features/smart-sleep/README.md.
 // Fail CLOSED throughout: an unknown next-routine, a stale reporter, or
 // an unreadable store means HOLD (stay awake), never sleep. A machine
 // that is asleep is woken only by a due routine or a real visit — the
@@ -355,6 +363,7 @@ const SW_MIN_UPTIME_MS = 15 * SW_MIN;       // machine must have been up 15 min
 const SW_MIN_AWAKE_AFTER_WAKE_MS = 20 * SW_MIN; // deadband > lookahead: kills sleep-wake-sleep flap
 const SW_REPORTER_STALE_MS = 10 * SW_MIN;   // reporter older than this -> unknown
 const SW_LAST_VISIT_WRITE_MS = 5 * SW_MIN;  // Pages throttles last-visit writes to this
+const SW_MAX_RUN_MIN = 420;                 // max-run guard: sleep at 7h uptime, 1h before InstaBox's ~8h max run forces a ~2h cooldown
 
 // --- cron next-run (no libraries; Asia/Kolkata has no DST, but this
 // never assumes a constant offset — it asks Intl for local fields at
@@ -473,6 +482,21 @@ function decideSleepWake(inp, now = Date.now()) {
     return { action: "hold", reason: "nextRoutineAt unknown -> fail-awake" };
   }
 
+  // MAX-RUN GUARD (2026-11-19): a machine that stays busy never passes
+  // the idle guards (recent visit / agent activity), so it runs the full
+  // ~8h max run and then takes a forced ~2h cooldown. At 7h uptime,
+  // sleep anyway: the 1h buffer is before the 8h wall, a 7h sleep takes
+  // a much shorter cooldown, and the user wakes the machine immediately
+  // on visit. WAKE still wins (the branch above already returned) and a
+  // manual rest still wins. Recent visit / agent activity deliberately
+  // do NOT block this — that is the point. Reporter staleness does not
+  // block it either: uptimeMin is a lower bound in both cases (reporter
+  // uptimeSec when fresh, else the stored lastUpAt), and unknown uptime
+  // is 0, which fails the 420 threshold (fail closed).
+  if (uptimeMin >= SW_MAX_RUN_MIN && machineUp === true && sleepState === "running" && restActive === false) {
+    return { action: "sleep", reason: "max_run_guard" };
+  }
+
   const sinceWake = lastWakeAt == null ? Infinity : now - lastWakeAt;
   const guards = {
     routineBeyondWindow: untilRoutine > SW_WAKE_LOOKAHEAD_MS,
@@ -505,6 +529,41 @@ async function swMetaPut(db, key, value) {
       .bind(key, value).run();
     return true;
   } catch { return false; }
+}
+
+// --- keep-alive ON/OFF toggle (2026-11-19) ---------------------------
+// D1 meta key `keepalive:enabled` = '1' (ON) | '0' (OFF). Absent = ON.
+// Unlike swMetaGet (which swallows errors and returns null), this
+// distinguishes absent / '0' / '1' / invalid / thrown error, because
+// the tick gate must HOLD (fail closed) when the toggle is unreadable,
+// never assume ON. Returns the raw stored value, or null when absent.
+// THROWS on a read error; the caller maps that to HOLD. An invalid
+// value is returned as-is so the caller can HOLD on it too.
+async function readKeepAliveEnabled(db) {
+  const row = await db.prepare("SELECT value FROM meta WHERE key = ?").bind("keepalive:enabled").first();
+  return row ? row.value : null;
+}
+
+// Public display value for GET /status and GET /sleepwake/state.
+// Absent = "on"; an unreadable store or an invalid value is "unknown"
+// (never guessed). keepAliveUpdatedAt is the ISO timestamp of the last
+// POST /keepalive flip, or null.
+async function readKeepAlivePublic(db) {
+  let raw = null;
+  let updated = null;
+  try {
+    const row = await db.prepare("SELECT value FROM meta WHERE key = ?").bind("keepalive:enabled").first();
+    raw = row ? row.value : null;
+    const row2 = await db.prepare("SELECT value FROM meta WHERE key = ?").bind("keepalive:updated").first();
+    updated = row2 ? row2.value : null;
+  } catch {
+    return { keepAlive: "unknown", keepAliveUpdatedAt: null };
+  }
+  let keepAlive = "unknown";
+  if (raw === null || raw === "1") keepAlive = "on";
+  else if (raw === "0") keepAlive = "off";
+  const ts = updated && Number.isFinite(Date.parse(updated)) ? updated : null;
+  return { keepAlive, keepAliveUpdatedAt: ts };
 }
 
 async function readSleepState(db) {
@@ -617,6 +676,29 @@ async function keepAliveTick(env, source) {
     const saved = await saveStatus(env, { ...result, source });
     console.log(`[keepalive:${source}]`, result.status, result.httpStatus, result.note || "", "(no D1: legacy probe)");
     return saved || result;
+  }
+
+  // Keep-alive ON/OFF toggle (2026-11-19): gates ONLY this cron tick.
+  // Read first, alongside the other decision inputs in the same D1
+  // meta reads (0 extra Worker requests — D1 queries are not requests).
+  // OFF -> skip with no probe, no wake, no sleep, no state write.
+  // Unreadable or invalid -> HOLD, fail closed. Absent = ON.
+  // The no-D1 legacy-probe branch above is unchanged: the toggle
+  // requires D1, which is the deployed configuration (USE_D1=1).
+  let ka;
+  try {
+    ka = await readKeepAliveEnabled(db);
+  } catch {
+    console.log(`[keepalive:${source}] hold (keep-alive toggle unreadable)`);
+    return { action: "hold", reason: "keepalive-read-error" };
+  }
+  if (ka !== null && ka !== "0" && ka !== "1") {
+    console.log(`[keepalive:${source}] hold (keep-alive toggle invalid: ${ka})`);
+    return { action: "hold", reason: "keepalive-read-error" };
+  }
+  if (ka === "0") {
+    console.log(`[keepalive:${source}] skip (keep-alive off)`);
+    return { action: "skip", reason: "keepalive-off" };
   }
 
   // Read all decision inputs BEFORE probing (the probe itself wakes the machine).
@@ -1008,18 +1090,41 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
 
     if (path === "/") {
-      return json({ service: "qwenpaw-keepalive", endpoints: ["/status", "/ping", "/wake"], qwenpawUrl: env.QWENPAW_URL || null });
+      return json({ service: "qwenpaw-keepalive", endpoints: ["/status", "/ping", "/wake", "/report", "/keepalive", "/sleepwake/state"], qwenpawUrl: env.QWENPAW_URL || null });
     }
 
     if (path === "/status" && request.method === "GET") {
+      // Keep-alive toggle state (2026-11-19): public read-only fields,
+      // read from D1 in this handler (no extra client request). Omitted
+      // when D1 is unavailable.
+      const db = env.QWENPAW_DB && env.USE_D1 === "1" ? env.QWENPAW_DB : null;
+      const kaFields = db ? await readKeepAlivePublic(db) : null;
+      // Next scheduled run (2026-11-19): the status page shows it from
+      // /status sleepwake.nextRoutineAt. Same computeNextRoutine the cron
+      // tick uses — the stored status never carried a sleepwake field
+      // (the tick's hold-sleeping branch returns it without saving), so
+      // before this fix the page always showed "Not scheduled". /status
+      // is user-paced (one GET on load + Refresh clicks), so the extra
+      // D1 reads are proportional to user action. Omitted when D1 is
+      // unavailable. Infinity (no routines) and null (unknown) both
+      // serialize as null, which the page renders as "Not scheduled".
+      let swFields = null;
+      if (db) {
+        try {
+          const report = await readReport(db);
+          const nextRoutine = await computeNextRoutine(db, report, Date.now());
+          swFields = { sleepwake: { nextRoutineAt: Number.isFinite(nextRoutine.at) ? nextRoutine.at : null, nextRoutineSource: nextRoutine.source } };
+        } catch { swFields = null; }
+      }
+      const withKa = (obj) => ({ ...obj, ...(kaFields || {}), ...(swFields || {}) });
       if (url.searchParams.get("live") === "1") {
         const live = await probeQwenPaw(env, { allowRetry: false });
         const saved = await saveStatus(env, { ...live, source: "status-live" });
-        return json({ ...saved, consoleUrl: env.QWENPAW_URL || null });
+        return json(withKa({ ...saved, consoleUrl: env.QWENPAW_URL || null }));
       }
       const cached = await loadStatus(env);
-      if (!cached) return json({ status: "unknown", note: "No ping has run yet — wait for the next cron tick, or call /ping.", consoleUrl: env.QWENPAW_URL || null });
-      return json({ ...cached, consoleUrl: env.QWENPAW_URL || null });
+      if (!cached) return json(withKa({ status: "unknown", note: "No ping has run yet — wait for the next cron tick, or call /ping.", consoleUrl: env.QWENPAW_URL || null }));
+      return json(withKa({ ...cached, consoleUrl: env.QWENPAW_URL || null }));
     }
 
     if (path === "/ping") {
@@ -1095,6 +1200,43 @@ export default {
       return json({ ok: true, stored: report });
     }
 
+    // POST /keepalive: flip the keep-alive cron ON/OFF (2026-11-19).
+    // Auth: header `Authorization: Bearer <WAKE_TOKEN>` ONLY (never a
+    // ?token= query — tokens in URLs leak in logs/Referer). WAKE_TOKEN
+    // is already a Worker secret; no new secret is invented. The token
+    // comparison copies the /report handler's length + charCodeAt loop.
+    // On success writes exactly two D1 meta rows (keepalive:enabled
+    // '1'/'0' + keepalive:updated ISO timestamp). Does NOT sleep, wake,
+    // or probe — it only flips the toggle the next cron tick reads.
+    // Non-POST -> 405 with Allow: POST.
+    if (path === "/keepalive") {
+      if (request.method !== "POST") {
+        return new Response(null, { status: 405, headers: { ...CORS, Allow: "POST" } });
+      }
+      if (!env.WAKE_TOKEN) {
+        return json({ error: "keepalive_unconfigured", detail: "WAKE_TOKEN secret is not set." }, 503);
+      }
+      const auth = request.headers.get("Authorization") || "";
+      const supplied = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7) : "";
+      let ok = supplied.length === env.WAKE_TOKEN.length;
+      if (ok) {
+        for (let i = 0; i < supplied.length; i++) ok = ok && supplied.charCodeAt(i) === env.WAKE_TOKEN.charCodeAt(i);
+      }
+      if (!ok) return json({ error: "unauthorized" }, 401);
+      let body = null;
+      try { body = await request.json(); } catch { return json({ error: "bad_json" }, 400); }
+      if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.enabled !== "boolean") {
+        return json({ error: "bad_body", detail: "body must be a JSON object with boolean `enabled`." }, 400);
+      }
+      const db = env.QWENPAW_DB && env.USE_D1 === "1" ? env.QWENPAW_DB : null;
+      if (!db) return json({ error: "store_unavailable" }, 503);
+      const updatedAt = new Date().toISOString();
+      const w1 = await swMetaPut(db, "keepalive:enabled", body.enabled ? "1" : "0");
+      const w2 = w1 ? await swMetaPut(db, "keepalive:updated", updatedAt) : false;
+      if (!w1 || !w2) return json({ error: "store_unavailable" }, 503);
+      return json({ ok: true, enabled: body.enabled, updatedAt });
+    }
+
     // GET /sleepwake/state: public read of the sleep/wake decision inputs
     // (mode, next routine, last visit/activity, reporter freshness). No
     // secrets, no values — safe to expose for the status page / debugging.
@@ -1114,6 +1256,7 @@ export default {
         reason: state.reason || null,
         lastWakeAt: state.lastWakeAt || null,
         lastSleepAt: state.lastSleepAt || null,
+        keepAlive: (await readKeepAlivePublic(db)).keepAlive,
         nextRoutineAt: nextRoutine.at,
         nextRoutineSource: nextRoutine.source,
         lastVisitAt: lastVisit,
@@ -1127,7 +1270,7 @@ export default {
       });
     }
 
-    return json({ error: "not found", endpoints: ["/status", "/ping", "/wake", "/report", "/sleepwake/state"] }, 404);
+    return json({ error: "not found", endpoints: ["/status", "/ping", "/wake", "/report", "/keepalive", "/sleepwake/state"] }, 404);
   },
 
   async scheduled(event, env, ctx) {
@@ -1138,4 +1281,4 @@ export default {
 
 // Named exports for the harness (features/sleepwake/harness-sleepwake.mjs).
 // The Worker runtime only uses the default export; these are inert there.
-export { decideSleepWake, nextRun };
+export { decideSleepWake, nextRun, readKeepAliveEnabled };
