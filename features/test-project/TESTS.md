@@ -598,6 +598,12 @@ the parent runs them and pastes the outcome into RESULTS.md.
 - Expected: 17 passed, 0 failed.
 - History: added 2026-11-18 with the B-47 fix. The live half (leave the page open past 10 minutes, trigger a reconnect, confirm the error is gone) is run by Muse in a real browser — see `BUGS.md` B-47.
 
+### T113 — routines daily-summary slot always probes (harness)
+- Area: `routines` · Method: `protocol`
+- Check: `node features/routines/harness-routines-slot.mjs` (9 checks). Replays the exact live instant from 2026-11-18 07:00:27 IST against the real routines worker module. Asserts: the daily-summary slot at 07:00:27 probes (machine up, HTTP 200, one fetch), its kind is daily-summary-slot; the wake-tick at the same instant still skips (zero fetches); a wake-tick 15 min before the routine still probes; a slot with no routines still skips (zero fetches). Fail-first proven: with the fix stashed it fails 3/9 and reproduces the exact live "skipped" entry.
+- Expected: 9 passed, 0 failed.
+- History: added 2026-11-18 with the daily-summary slot fix (B-47 follow-up). The live half (tomorrow's 07:00 slot must show the daily-summary slot probing, not "skipped") is verified by Muse from /api/history after deploy.
+
 ---
 
 ## Out of scope for this catalogue (do not add tests here without a new decision)
