@@ -374,8 +374,9 @@ ok = sum(1 for _ in range(200)
 print('executed:', ok, '(expect 20)')
 "
 # Start it briefly on a scratch port and confirm the console serves
-# (do NOT point it at the live data dir for this check)
-docker run -d --name gatefix-smoke -p 18099:8080 \
+# (do NOT point it at the live data dir for this check). The server
+# listens on 8088 inside the container (compose maps 127.0.0.1:8088).
+docker run -d --name gatefix-smoke -p 18099:8088 \
   qwenpaw-agentx:2.3.0-gatefix3
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:18099/
 docker rm -f gatefix-smoke
