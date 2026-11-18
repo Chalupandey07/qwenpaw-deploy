@@ -449,7 +449,8 @@ def main() -> int:
           refused)
     import os
     saved = {k: os.environ.pop(k, None)
-             for k in ("QWENPAW_USER", "QWENPAW_PASS", "QWENPAW_BASE_URL")}
+             for k in ("QWENPAW_USER", "QWENPAW_PASS", "QWENPAW_TOKEN",
+                       "QWENPAW_BASE_URL")}
     try:
         v = judge.judge_reply("Some reply.", FAKE_RUBRIC, FAKE_TASK)
         no_creds = (v["pass"] is False and v["qualified"] is False
@@ -461,6 +462,75 @@ def main() -> int:
     check("F4 with no transport and no credentials, judge_reply fails "
           "closed (unqualified) without attempting a network call",
           no_creds)
+
+    # F5: a supplied QWENPAW_TOKEN skips the login call entirely and
+    # is sent as the Bearer token on the chat-task submit.
+    saved5 = {k: os.environ.pop(k, None)
+              for k in ("QWENPAW_USER", "QWENPAW_PASS", "QWENPAW_TOKEN",
+                        "QWENPAW_BASE_URL")}
+    os.environ["QWENPAW_TOKEN"] = "tok-test-123"
+    calls5: list = []
+    real_request = judge._request
+
+    def fake_request(method, url, token=None, payload=None, timeout=30):
+        calls5.append((method, url, token))
+        if url.endswith("/api/console/chat/task"):
+            return 200, {"task_id": "task-1"}
+        if "/api/console/chat/task/task-1" in url:
+            return 200, {"status": "done",
+                         "result": verdict_json(True)}
+        raise AssertionError(f"unexpected call {method} {url}")
+
+    judge._request = fake_request
+    try:
+        t5 = judge.ConsoleJudgeTransport(base="https://example.invalid")
+        out5 = t5("grade this", "case1")
+        no_login5 = not any(u.endswith("/api/auth/login")
+                            for _, u, _ in calls5)
+        used_token5 = any(tok == "tok-test-123" for _, _, tok in calls5)
+        ok5 = no_login5 and used_token5 and "<verdict>" in out5
+    finally:
+        judge._request = real_request
+        for k, val in saved5.items():
+            if val is not None:
+                os.environ[k] = val
+            else:
+                os.environ.pop(k, None)
+    check("F5 a supplied QWENPAW_TOKEN skips the login call and is "
+          "sent as the Bearer token on the chat-task submit", ok5)
+
+    # F6: a 401 with a supplied token is an infra failure, never a
+    # re-login (a dead token has no credentials behind it).
+    saved6 = {k: os.environ.pop(k, None)
+              for k in ("QWENPAW_USER", "QWENPAW_PASS", "QWENPAW_TOKEN",
+                        "QWENPAW_BASE_URL")}
+    os.environ["QWENPAW_TOKEN"] = "tok-dead-456"
+    calls6: list = []
+
+    def fake_request6(method, url, token=None, payload=None, timeout=30):
+        calls6.append((method, url))
+        raise judge.ApiError(401, "unauthorized")
+
+    judge._request = fake_request6
+    try:
+        t6 = judge.ConsoleJudgeTransport(base="https://example.invalid")
+        try:
+            t6("grade this", "case2")
+            refused6 = False
+        except judge.JudgeError as exc:
+            refused6 = (exc.kind == "infra")
+        no_login6 = not any(u.endswith("/api/auth/login")
+                            for _, u in calls6)
+        ok6 = refused6 and no_login6
+    finally:
+        judge._request = real_request
+        for k, val in saved6.items():
+            if val is not None:
+                os.environ[k] = val
+            else:
+                os.environ.pop(k, None)
+    check("F6 a 401 with a supplied token fails as infra without "
+          "attempting a login (a dead token is never re-logged-in)", ok6)
 
     passed = sum(1 for _, ok, _ in CHECKS if ok)
     total = len(CHECKS)
@@ -507,10 +577,11 @@ def old_grader_mode(examples, legacy_by_id) -> int:
 def live_mode(examples) -> int:
     """--live: run the real console judge over the calibration set."""
     import os
-    if not os.environ.get("QWENPAW_USER") or not os.environ.get(
-            "QWENPAW_PASS"):
-        print("LIVE SKIPPED: QWENPAW_USER/QWENPAW_PASS not in the "
-              "environment. Live agreement NOT VERIFIED.")
+    if not os.environ.get("QWENPAW_TOKEN") and not (
+            os.environ.get("QWENPAW_USER") and os.environ.get(
+                "QWENPAW_PASS")):
+        print("LIVE SKIPPED: QWENPAW_TOKEN or QWENPAW_USER/QWENPAW_PASS "
+              "not in the environment. Live agreement NOT VERIFIED.")
         return 2
     rubric_text, _, _ = judge.load_rubric(RUBRIC)
     agree = 0
