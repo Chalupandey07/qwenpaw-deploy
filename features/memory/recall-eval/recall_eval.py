@@ -20,14 +20,16 @@ the query must surface):
   - latency_ms / tokens per query (informational; the token budget is
     asserted separately by the test, not thresholded here).
 
-Thresholds (measured baseline, 2026-11-18 probe — see README):
-  hit@1 >= 0.8, hit@3 == 1.0, MRR >= 0.9, false_top_rate <= 1/6,
+Thresholds (measured baseline, 2026-11-18 probe — see README;
+re-baselined 2026-11-19 after the T137 hyphen fix in facts.py:
+hit@1 1.0, false-top 0):
+  hit@1 == 1.0, hit@3 == 1.0, MRR >= 0.9, false_top_rate == 0,
   pool_hit_rate == 1.0. n=6, so every threshold moves in 1/6 steps;
-  that coarseness is declared, not hidden. hit@1 allows exactly one
-  miss: the loop-gate query, where the hyphenated target loses the
-  entity signal to a space-spelled distractor (diagnosed in README,
-  deliberately NOT fixed here — facts.py is owned by the gap #20
-  build in parallel).
+  that coarseness is declared, not hidden. The loop-gate query used
+  to miss at rank 1 (hyphenated target lost the entity signal to a
+  space-spelled distractor); facts.py now normalises hyphens to
+  spaces before lexicon matching, and the eval thresholds were
+  tightened to the new measured baseline so a regression fails loudly.
 
 Staleness (run_staleness): the superseded fact must be absent from
 default search while the current fact ranks #1; --as-of inside the
@@ -72,10 +74,10 @@ import judge_wiring as JW  # noqa: E402
 
 # Thresholds for the verdict. n=6 recall queries: each step is 1/6.
 THRESHOLDS = {
-    "hit_at_1": 0.8,
+    "hit_at_1": 1.0,
     "hit_at_3": 1.0,
     "mrr": 0.9,
-    "false_top_rate_max": 1 / 6,
+    "false_top_rate_max": 0.0,
     "pool_hit_rate": 1.0,
 }
 
