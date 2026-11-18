@@ -132,7 +132,8 @@ def main() -> int:
               daily.DailyTelemetry(directory=Path("/tmp")) is not None)
 
     passed = sum(1 for _, ok, _ in CHECKS if ok)
-    print(f"\n{passed}/{len(CHECKS)} checks passed")
+    failed = len(CHECKS) - passed
+    print(f"\n{passed} passed, {failed} failed")
     return 0 if passed == len(CHECKS) else 1
 
 
