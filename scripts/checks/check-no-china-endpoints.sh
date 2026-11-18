@@ -30,6 +30,13 @@
 #     no fetch, no data sent. The deployed image already contains them
 #     (they are upstream code, not ours); this patch does not touch
 #     those lines. Do not delete the copies (the patch needs them).
+#   pages/public/_worker.js AGENTX_UPSTREAM_HOSTS blocklist (one line) —
+#     the rebrand's upstream-host list, matched ONLY to preventDefault /
+#     block navigation and fetch to those hosts (block-links-v2). The
+#     code never fetches, posts, or sends data to them; the strings ARE
+#     the blocklist, not endpoints the code calls. The filter matches
+#     only the definition line (`AGENTX_UPSTREAM_HOSTS = [`), so any
+#     other China endpoint string anywhere else in _worker.js still fails.
 #   scripts/checks/check-no-china-endpoints.sh — this file itself. Its
 #     header documents the endpoint examples and its PATTERN variable
 #     contains the host patterns; those are the check's own definitions,
@@ -57,6 +64,7 @@ hits="$(grep -rniE "$PATTERN" \
     | grep -v 'features/model-identity/src/pristine/agents.py' \
     | grep -v 'features/model-identity/src/patched/agents.py' \
     | grep -v 'scripts/checks/check-no-china-endpoints.sh' \
+    | grep -v 'AGENTX_UPSTREAM_HOSTS = \[' \
     || true)"
 
 if [ -z "$hits" ]; then
