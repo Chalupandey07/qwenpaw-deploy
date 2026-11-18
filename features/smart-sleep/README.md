@@ -1,0 +1,174 @@
+# Smart sleep/wake, part 1: keep-alive ON/OFF toggle + max-run guard (2026-11-19)
+
+Two additions to the intelligent sleep/wake system in `worker/src/index.js`
+(see `features/sleepwake/README.md` for the base design). Both are code +
+machine-free harness only — NOT verified live (deploy + browser blocked by
+the Cloudflare 1027 Workers outage and the machine cooldown until 05:30 IST
+2026-11-19).
+
+## 1. Keep-alive ON/OFF toggle
+
+### Storage
+D1 `meta` table, two keys:
+- `keepalive:enabled` — `'1'` (ON) | `'0'` (OFF). **Absent = ON.**
+- `keepalive:updated` — ISO timestamp of the last flip.
+
+No seed row was added, deliberately: `features/storage/schema.sql`
+predates the `meta` table entirely (it has no `meta` table and no seed
+for it — the live `meta` table was created via the D1 API, see
+`features/storage/SCHEMA.md`), so there is no migration/seed file for
+this key to live in. Absent = ON makes a seed unnecessary for the live
+DB: a database that has never seen a flip behaves exactly as today.
+
+### Endpoint: POST /keepalive
+- Auth: header `Authorization: Bearer <WAKE_TOKEN>` **only** — never
+  `?token=` (tokens in URLs leak in logs/Referer). The token is
+  `WAKE_TOKEN`, already a Worker secret; **no new secret was invented**.
+  The comparison copies the `/report` handler's length + `charCodeAt`
+  loop pattern.
+- Body: a JSON object with boolean `enabled` (`{"enabled": false}`).
+- Success: `200 {ok: true, enabled: boolean, updatedAt: ISO}` and
+  exactly **2 D1 meta writes** (`keepalive:enabled` + `keepalive:updated`).
+  It does NOT sleep, wake, or probe — it only flips the toggle the next
+  cron tick reads.
+- Errors: `400` bad body (not JSON, not an object, or `enabled` not a
+  boolean — no writes); `401` bad/missing token (no writes);
+  `503` not-configured (`WAKE_TOKEN` unset) or storage failure (no D1 /
+  write failed); `405` for non-POST (`GET /keepalive` -> 405 with
+  `Allow: POST`).
+
+### Tick gate (in `keepAliveTick`)
+At the VERY TOP of the D1 branch — before any probe, wake, sleep, or
+state write, but AFTER the no-D1 legacy-probe branch, which is
+unchanged: the toggle requires D1, which is the deployed configuration
+(`USE_D1=1`); a Worker without D1 keeps the old probe behaviour and the
+toggle simply does not apply there.
+
+The toggle is read with the new exported `readKeepAliveEnabled(db)`,
+folded into the same D1 meta reads as the other decision inputs (0 extra
+Worker requests — D1 queries are not requests). It does NOT reuse
+`swMetaGet`, which swallows errors and returns null: the gate must be
+able to tell "absent" (ON) from "unreadable" (HOLD). The function
+returns the raw value (`null` absent, `'0'`, `'1'`, or any invalid value
+as-is) and THROWS on a read error; the tick maps both error cases to
+HOLD:
+
+| Toggle value | Tick result |
+|---|---|
+| `'1'` or absent | Falls through to `decideSleepWake` exactly as today |
+| `'0'` | `{action: 'skip', reason: 'keepalive-off'}` — no probe, no wake, no sleep, no state write |
+| read throws | `{action: 'hold', reason: 'keepalive-read-error'}` — ZERO fetches, ZERO writes |
+| anything else (e.g. `'yes'`) | Same HOLD as a read error |
+
+Fail-closed throughout: an unreadable or invalid toggle never assumes
+ON (which would keep waking a machine the user switched off) and never
+assumes OFF (which would silently stop waking for routines).
+
+### Status fields
+- `GET /status` gains public read-only `keepAlive` (`"on" | "off" |
+  "unknown"`) and `keepAliveUpdatedAt` (ISO string or null), read from D1
+  in the handler — no extra client request. If D1 is unavailable the
+  fields are omitted. Absent = `"on"`; unreadable or invalid = `"unknown"`.
+- `GET /status` also gains `sleepwake: {nextRoutineAt, nextRoutineSource}`
+  — the next scheduled run, computed with the same `computeNextRoutine`
+  the cron tick uses. Fix 2026-11-19 (found in integration review): the
+  stored status never carried a `sleepwake` field — the tick's
+  hold-sleeping branch returns it without saving — so the status page's
+  "next scheduled run" always showed "Not scheduled". `nextRoutineAt` is
+  a finite ms epoch when a routine exists, else `null` (no routines and
+  unknown both render as "Not scheduled"). `/status` is user-paced (one
+  GET on load + Refresh clicks), so the extra D1 reads are proportional
+  to user action.
+- `GET /sleepwake/state` gains `keepAlive` (same `"on" | "off" |
+  "unknown"` string).
+
+### Bypass list — the toggle does NOT affect these
+- `POST /wake` (manual wake, `X-Wake-Token`).
+- Pages-visit auto-wake (visiting the console wakes the machine).
+- The Rest button (manual rest / suspend via Pages).
+- The routines Worker's scheduled wake (a separate worker; its own
+  30-min tick and 07:00 slot keep working — a routine due while the
+  toggle is OFF is still woken by the routines Worker, just not by the
+  keep-alive cron).
+
+The toggle gates ONLY the keep-alive cron tick.
+
+### Quota
+- Toggle OFF saves up to **288 requests/day** (the cron tick's probes:
+  12 ticks/hour x 24h; each tick that would have probed now does nothing).
+- A flip costs **1 request + 2 D1 writes**.
+- The tick reads the toggle batched with the other meta reads: **0 extra
+  requests** per tick. D1 row reads are 5,000,000/day free; one extra
+  meta read per tick (288/day) is noise.
+
+## 2. Max-run guard
+
+### Why
+Found 2026-11-18/19: the machine was busy all evening, so it never
+qualified as idle (recent visit / recent agent activity kept failing
+the idle guards), ran the full ~8h max run, and hit a forced ~2h
+cooldown during which wakes are refused. The idle guards are correct
+for a quiet machine and useless for a busy one — a busy machine needs a
+time-based escape hatch, not an activity-based one.
+
+### Rule (in `decideSleepWake`, after the WAKE branch and after the
+`!known` fail-awake hold)
+```
+if (uptimeMin >= 420 && machineUp === true && sleepState === "running" && restActive === false)
+  -> {action: 'sleep', reason: 'max_run_guard'}
+```
+- **Why 7h (420 min):** InstaBox's wall is ~8h. The 7h threshold leaves
+  a 1h buffer before the wall. A sleep at 7h takes a much shorter
+  cooldown than the forced ~2h cooldown after a full 8h run, and the
+  user wakes the machine immediately on visit anyway — so sleeping an
+  hour early costs almost nothing and avoids the worst outcome.
+- **Why it overrides recent activity:** that is the point. A busy
+  machine that hits 8h takes a forced ~2h cooldown; a 7h sleep does
+  not. Recent visits and recent agent activity deliberately do NOT block
+  the guard.
+- **Uptime source:** the EXISTING `uptimeMin` — reporter `uptimeSec`
+  when fresh, else the stored `lastUpAt` lower bound, else 0. No new
+  uptime source was invented. Unknown uptime yields `uptimeMin` 0,
+  which fails the 420 threshold, so the fail-closed property holds
+  automatically. Reporter staleness does not block the guard: both
+  uptime sources are lower bounds, so a 420-min reading is real either
+  way.
+- **Precedence:** WAKE still wins — a routine due within the lookahead
+  returns from the earlier branch first (wake if down, hold if up), so
+  the guard can never sleep past a routine. Manual rest still wins
+  (`restActive` check). The guard respects the toggle automatically:
+  the tick early-returns before `decideSleepWake` when OFF.
+
+### The 10-min wake lookahead is deliberately KEPT
+Do NOT tighten it to 5 min. The cron runs every 5 min, so a 5-min
+lookahead could miss the window entirely (a routine due in 6 min at
+tick time would not be "due" until the next tick, when it is due in
+1 min — still inside 5 min, but a wake takes minutes and the margin
+evaporates; with any tick jitter the routine starts late). The 10-min
+lookahead (5 min lead + wake buffer) is the margin that makes the
+5-min cron reliable.
+
+## Files
+- `worker/src/index.js` — `readKeepAliveEnabled` + `readKeepAlivePublic`,
+  tick gate, `POST /keepalive`, `/status` + `/sleepwake/state` fields,
+  `SW_MAX_RUN_MIN = 420` guard in `decideSleepWake`.
+- `features/smart-sleep/harness-smart-sleep.mjs` — 68 checks, node stdlib
+  only, real Worker module + mock D1 + mock fetch that counts every call.
+  Fail-first run against the pre-change module: 23 passed, 45 failed
+  (toggle endpoint 404, guard absent, gate absent). Post-change: 68/68.
+- `features/smart-sleep/README.md` — this file.
+
+## Tests
+```bash
+node features/smart-sleep/harness-smart-sleep.mjs   # 68/68
+node features/sleepwake/harness-sleepwake.mjs       # 47/47 (regression)
+node --input-type=module -e "import('./worker/src/index.js')"  # import smoke test
+```
+
+## NOT verified live (do not claim done until seen)
+- Deploy of the new Worker code (blocked: Cloudflare 1027 quota until
+  05:30 IST 2026-11-19; machine suspended until ~03:04 IST).
+- A real `POST /keepalive` flip against the live Worker + a tick that
+  skips, and a flip back that resumes.
+- A real max-run-guard sleep at ~7h uptime (needs a busy 7h run).
+- `GET /status` / `/sleepwake/state` showing `keepAlive` in a browser.
