@@ -2223,9 +2223,10 @@ def t131():
 
 
 def t132():
-    """Approval TTL: pending approvals + secret requests expire (41).
+    """Approval TTL: pending approvals + secret requests expire (41 + 28).
 
-    Machine-free test (features/approval-ttl/test_approval_ttl.py)
+    Machine-free tests (features/approval-ttl/test_approval_ttl.py,
+    41 checks, and features/approval-ttl/test_wiring.py, 28 checks)
     for the port of gogibeta/rakazo PR #50 (F6): issue stamps
     expires_at (approval 24h, secret 1h, question never), env
     overrides with the fork's fallback rule (bad values fall back to
@@ -2245,13 +2246,27 @@ def t132():
     empty dir. DeepSeek review 2026-11-18: 6 findings, all fixed
     (endpoint as the single gate, flock + re-read, sticky terminal
     state, pure read, legacy keyed on the missing ttl_version, env
-    validated at issue time). The live half (module synced to the
-    machine, sweep timer, derived-image wiring of the approve/deny
-    handlers + GET /list, browser check of an expired card and a
+    validated at issue time). The wiring half (test_wiring.py) proves
+    the derived-image patch applies cleanly with -p1 and -p2,
+    reproduces the patched files byte-for-byte, the patched files
+    compile, the approve/deny handlers call ttl_answer() first and
+    refuse an expired card with 409 approval_expired, GET /list
+    annotates expired cards via ttl_read(), both creation paths stamp
+    the expiry via ttl_issue(), and the TTL helpers behave against
+    the real ttl.py (loader, issue, answer ok/expired/unknown/
+    answered, read incl. terminal-expired normalization). The live
+    half (image built + deployed, module synced to the machine,
+    sweep timer installed, browser check of an expired card and a
     refused late approve) is verified by Muse after deploy.
     """
-    return _py_script_harness(
-        ["features/approval-ttl/test_approval_ttl.py"], 41)
+    results = []
+    for script, expect in (
+            ("features/approval-ttl/test_approval_ttl.py", 41),
+            ("features/approval-ttl/test_wiring.py", 28)):
+        results.append(_py_script_harness([script], expect))
+    good = all(status == "PASS" for status, _ in results)
+    return ("PASS" if good else "FAIL",
+            "; ".join(detail for _, detail in results))
 
 
 def t133():
@@ -3182,7 +3197,7 @@ TESTS = [
     ("T129", "skills as progressive-disclosure packages: frontmatter schema + tool-scope enforcement, index-only default load, self-written skill writer with secret/China/unbounded refusals, mechanical converter", "skills", "protocol", t129),
     ("T130", "drex decision model: NACE endpoint configurable via env (arg > NACE_BASE_URL > default), decision_model slot fragment for both agents, live-test script fails closed without a key (harness)", "decisions", "protocol", t130),
     ("T131", "telegram full-feature bot: token-only setup (no numeric id), owner = first whitelist entry, guests read-only, strangers refused; new chat, list + preview + continue an existing console chat (task API); settings via button callbacks (model PATCH, approval PUT); menu grammar + token cache; outbound redaction + inbound untrusted wrapping; driver patch applies cleanly to the pinned v2.3.0 platform.py and reproduces the patched file byte-for-byte (selftest)", "telegram", "protocol", t131),
-    ("T132", "approval TTL: pending approvals + secret requests expire — issue stamps expires_at (approval 24h, secret 1h, question never), read is pure and fails closed (expired reads as denied, reason 'timed out'), late answers refused with ExpiredError, sweep expires stale cards idempotently (never legacy, post-migration card with no expiry fails closed), fork-shaped audit rows, store survives reload, flock serialises every read-modify-write (selftest)", "approvals", "protocol", t132),
+    ("T132", "approval TTL: pending approvals + secret requests expire — issue stamps expires_at (approval 24h, secret 1h, question never), read is pure and fails closed (expired reads as denied, reason 'timed out'), late answers refused with ExpiredError, sweep expires stale cards idempotently (never legacy, post-migration card with no expiry fails closed), fork-shaped audit rows, store survives reload, flock serialises every read-modify-write (selftest) + derived-image wiring test: the patch applies cleanly -p1/-p2, reproduces the patched files byte-for-byte, the approve/deny handlers call ttl_answer() first (409 approval_expired), GET /list annotates via ttl_read(), both creation paths call ttl_issue() (selftest)", "approvals", "protocol", t132),
     ("T133", "ask-before-durable-write: high-stakes memory v2 facts are held in a pending_facts table until explicit accept --id --why; routine facts write silently with provenance; secrets rejected, never held; caps mirror lessons.py (max 3 pending, --why required, PF-001 ids never reused) (selftest)", "memory", "protocol", t133),
     ("T134", "serving-model identity note: per-attempt note stamped at the model-wrapper dispatch boundary (plain when serving == configured) + {from,to,reason} switch log in PATCH model-settings; discrepancy verdict derived from repo evidence (mosicn/nex-n2.6 is the source of truth, xingchiapi/gpt-6-astra is a stale snapshot) (selftest)", "model-identity", "protocol", t134),
     ("T135", "bot-built Pages 2nd gen: routine fires -> re-read state -> pure-render <pages>/<slug>/index.html -> redeploy via deploy-page.py; idempotent (unchanged state = byte-identical file, deploy skipped); fail-closed publish allowlist with state outside the pages tree; deploy failure leaves the last good page + records it (selftest)", "botpages", "protocol", t135),
