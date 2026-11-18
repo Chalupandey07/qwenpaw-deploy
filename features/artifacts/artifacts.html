@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QwenPaw — Artifacts Library</title>
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0f172a;color:#e2e8f0}
+header{padding:16px 20px;background:#1e293b}
+header h1{font-size:20px;margin:0}
+header p{margin:4px 0 0;color:#94a3b8;font-size:13px}
+main{padding:16px 20px;max-width:1000px}
+input{width:100%;max-width:480px;padding:8px 10px;font-size:15px;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;margin-bottom:12px}
+table{border-collapse:collapse;font-size:13px;width:100%}
+td,th{border:1px solid #475569;padding:4px 8px;text-align:left}
+code{background:#0f172a;padding:1px 4px;border-radius:4px}
+.muted{color:#94a3b8;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <h1>QwenPaw — Artifacts Library</h1>
+  <p>Snapshot generated 2026-11-18T09:58:21.680719+00:00 (UTC). Not live: re-run
+  <code>python3 artifacts.py index --workspace &lt;dir&gt; --db artifacts.db &amp;&amp; python3 artifacts.py render --db artifacts.db</code>
+  to refresh. Open-work list (already exists, snapshot): <a href="../board/open-work.html" style="color:#38bdf8">open-work.html</a></p>
+  <p id="count" class="muted">0 artifact(s) indexed.</p>
+</header>
+<main>
+  <input id="q" type="search" placeholder="Search name, path, type or source…" aria-label="Search artifacts">
+  <table><thead><tr><th>Name</th><th>Slug</th><th>Date</th><th>Size (B)</th><th>Type</th><th>Source</th><th>Path</th></tr></thead>
+  <tbody id="rows"></tbody></table>
+  <p class="muted">Sources: workspace = found by walking the workspace;
+  sent = listed in sent-file metadata; history = path mentioned in
+  history.db (read-only, metadata only). history.db is never written to.</p>
+</main>
+<script>
+const DATA = [];
+const esc = (s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+document.getElementById("q").addEventListener("input", (e)=>{
+  const q = e.target.value.toLowerCase().trim();
+  const toks = q.split(/\s+/).filter(Boolean);
+  const hits = DATA.filter(r=>toks.every(t=>
+    (r.name+" "+r.path+" "+r.type+" "+r.source+" "+r.slug).toLowerCase().includes(t)));
+  document.getElementById("rows").innerHTML = hits.map(r=>
+    "<tr><td>"+esc(r.name)+"</td><td><code>"+esc(r.slug)+"</code></td><td>"+esc(r.date)+"</td><td>"+r.size_bytes+"</td><td>"+esc(r.type)+"</td><td>"+esc(r.source)+"</td><td><code>"+esc(r.path)+"</code></td></tr>").join("");
+  document.getElementById("count").textContent = hits.length + " artifact(s) shown of " + DATA.length + ".";
+});
+</script>
+</body>
+</html>
