@@ -29,6 +29,7 @@
 #   install -d -m 0755 /data/home/qwenpaw/vault
 #   cp features/vault/vault-broker.py /data/home/qwenpaw/vault/
 #   cp features/vault/redact.py       /data/home/qwenpaw/vault/
+#   cp features/sandbox/vault_tokens.py /data/home/qwenpaw/vault/
 #   cp features/vault/qwenpaw-vault-broker.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now qwenpaw-vault-broker
 #
