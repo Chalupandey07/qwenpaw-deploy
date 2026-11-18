@@ -2414,6 +2414,55 @@ def t136():
         ["features/infra/evals/test_judge.py"], 44)
 
 
+def t137():
+    """Memory-recall eval: Layer-1 baseline measured, integrity half staged (64).
+
+    Machine-free test (features/memory/recall-eval/test_recall_eval.py)
+    for the all-20 gap #19. Recall half — DONE, measured baseline
+    (the first ever for memory v2): deterministic, no judge, no model
+    call, scratch DBs only. recall_eval.py seeds 12 fixture facts (6
+    targets, 5 keyword-identical near-miss distractors, 1 superseded
+    pair) and runs 6 recall queries through the real facts.py search:
+    hit@1 0.833 (5/6), hit@3 1.0, hit@5 1.0, MRR 0.917, mean rank 1.17,
+    candidate-pool hit rate 1.0, false-top 1/6, max latency 1.17 ms,
+    max tokens 38/query. Staleness: the superseded fact is absent by
+    default, the current fact ranks 1; as-of 2026-11-05 returns old,
+    2026-11-15 returns new, 2026-10-01 returns neither. Abstention: a
+    nonsense query returns 0 results; the paraphrase canary returns 0
+    results; an empty query raises FactError. The eval is proven
+    sensitive: removing a target fact flips its verdict to FAIL. Real
+    finding (measured, NOT fixed): the loop-gate query ranks the
+    distractor #1 (fused 0.439 vs 0.432) because the hyphenated target
+    loop-gate misses the lexicon entity regex \\bloop gate\\b
+    (entity_overlap 0 vs 1); the answer is still rank 2 and hit@3 is
+    unaffected. Not fixed here — facts.py is owned by the parallel gap
+    #20 build, and the eval's job is to measure. Integrity half —
+    STAGED, NOT graded: 4 fixtures (2 contradiction, 2 tool-failure,
+    fork PR #57 style), all grading: "judge", rubric pinned to
+    rubrics/v1.md. judge_wiring.py calls the judge's real API —
+    verified against the landed T136 module, not just a stub: it
+    resolves grade_case, and with no transport/creds the judge returns
+    unqualified, which the wiring maps to skip / pending-judge (CLI
+    exit 3). The unqualified trap is handled explicitly: the judge
+    returns pass: False for unqualified verdicts, so the wiring checks
+    qualified first — otherwise a harness failure would misreport as a
+    case failure. No substring fallback anywhere (a reply a substring
+    check would pass still skips with no judge). To finish: set
+    QWENPAW_USER/QWENPAW_PASS when the machine is back and run
+    --grade-integrity per case; no fixture change needed. Fail-first
+    proven: first run failed with ModuleNotFoundError (no module yet).
+    DeepSeek design review applied (1,160 prompt + 3,442 completion
+    tokens): pool-hit metric, false-top rate, determinism, as-of
+    boundaries, and the paraphrase canary as an expected-zero check all
+    came from it. The live half (the 3 live cases.json cases are smoke
+    checks only; the offline harness is authoritative; seeding live
+    memory needs approval; the eval refuses to open the live memory.db
+    without --allow-live-path) is verified by Muse after deploy.
+    """
+    return _py_script_harness(
+        ["features/memory/recall-eval/test_recall_eval.py"], 64)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2939,6 +2988,7 @@ TESTS = [
     ("T134", "serving-model identity note: per-attempt note stamped at the model-wrapper dispatch boundary (plain when serving == configured) + {from,to,reason} switch log in PATCH model-settings; discrepancy verdict derived from repo evidence (mosicn/nex-n2.6 is the source of truth, xingchiapi/gpt-6-astra is a stale snapshot) (selftest)", "model-identity", "protocol", t134),
     ("T135", "bot-built Pages 2nd gen: routine fires -> re-read state -> pure-render <pages>/<slug>/index.html -> redeploy via deploy-page.py; idempotent (unchanged state = byte-identical file, deploy skipped); fail-closed publish allowlist with state outside the pages tree; deploy failure leaves the last good page + records it (selftest)", "botpages", "protocol", t135),
     ("T136", "eval harness LLM judge: judge.py grades prose via the console chat-task path (mosicn nex-n2.6, no new key); JSON verdict {pass, reason, evidence} in a <verdict> sentinel, non-JSON/missing-field/error/timeout is unqualified never pass; expect_contains refused (ValueError); 12-example calibration set (selftest)", "evals", "protocol", t136),
+    ("T137", "memory-recall eval: Layer-1 baseline measured on the real facts.py search (hit@1 0.833, hit@3 1.0, MRR 0.917, staleness + abstention verified); integrity fixtures staged, graded by the T136 judge only, never by substring (selftest)", "memory", "protocol", t137),
 ]
 
 SKIP_NOTE = {
