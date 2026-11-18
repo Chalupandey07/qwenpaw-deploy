@@ -227,7 +227,7 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 ### T21 — routines Worker reachable, /api/status shows QwenPaw up
 - Area: `routines` · Method: `protocol`
 - Check: `curl -s --max-time 30 https://qwenpaw-routines.qwenpaw-rohan.workers.dev/` (HTML status page, 200) and `curl -s --max-time 30 https://qwenpaw-routines.qwenpaw-rohan.workers.dev/api/status`
-- Expected: `/` → 200 `QwenPaw Routines` HTML; `/api/status` → 200 JSON with `qwenpaw.status:"up"`, `httpStatus:200`, and a `routines` list containing `daily-summary` (`Daily summary (07:00 IST)`). Source: `features/routines/worker/src/index.js`.
+- Expected: `/` → 200 `AgentX Routines` HTML (rebranded 2026-11-18, commit ef7e194; was `QwenPaw Routines`); `/api/status` → 200 JSON with `qwenpaw.status:"up"`, `httpStatus:200`, and a `routines` list containing `daily-summary` (`Daily summary (07:00 IST)`). Source: `features/routines/worker/src/index.js`.
 - Evidence: `/api/status` JSON (trimmed to worker + qwenpaw + routine ids). (Verified live: both 200; daily-summary present.)
 
 ### T22 — routines cron schedules present via the Cloudflare API
@@ -319,8 +319,8 @@ lease 1, browser-only extras 4 (folded into the 8 browser tests above).
 ### T31 — all skills enabled (qwenpaw skills list)
 - Area: `skills` · Method: `protocol`
 - Check (via `ib.py exec`): `docker exec qwenpaw qwenpaw skills list`
-- Expected: output ends `Showing: 20 of 20 skills, 20 enabled, 0 disabled` and every row shows `✓ enabled`. **Count correction:** the task brief said 18; the live list on 2026-11-15 07:03 IST was **19** (the 19th is builtin `QA_source_index`). The 20th is workspace skill `fxembed` (added 2026-11-16 10:10, not in the shared `skill_pool/`). The expected value in this catalogue is the live one (20); if a round shows a different count, record which skill is missing/disabled/added rather than assuming the brief was right.
-- Evidence: the `Showing:` line + full row list. (Verified live 2026-11-17: 20 of 20, all enabled.)
+- Expected: output ends `Showing: 24 of 24 skills, 24 enabled, 0 disabled` and every row shows `✓ enabled`. **Count correction:** the task brief said 18; the live list on 2026-11-15 07:03 IST was **19** (the 19th is builtin `QA_source_index`). The 20th is workspace skill `fxembed` (added 2026-11-16 10:10, not in the shared `skill_pool/`). The 21st–24th are `vault` (2026-11-17) and `telegram`, `tinyfish`, `memory` (2026-11-18). The expected value in this catalogue is the live one (24); if a round shows a different count, record which skill is missing/disabled/added rather than assuming the brief was right.
+- Evidence: the `Showing:` line + full row list. (Verified live 2026-11-19: 24 of 24, all enabled.)
 - Notes: the list reads the workspace registry (`working/workspaces/default/skills/`); a skill installed only to the pool (`skill_pool/`) is invisible until also installed to the workspace dir — see the teach-skill bug in `features/desktop/README.md` (removed 2026-11-15 → features/computer/README.md).
 
 ### T32 — delegate, github, build-page skills present and enabled
