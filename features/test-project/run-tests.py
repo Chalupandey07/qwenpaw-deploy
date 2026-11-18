@@ -2317,6 +2317,55 @@ def t134():
         ["features/model-identity/test_model_identity.py"], 48)
 
 
+def t135():
+    """Bot-built Pages 2nd gen: routine refresh loop + publish allowlist (25).
+
+    Machine-free test (features/botpages/routine-loop/test_routine_loop.py)
+    for the all-20 gap #15, on top of the shipped bot-built Pages
+    (build-page skill, qwenpaw-pages, deploy-page.py). The loop: routine
+    fires -> re-read <state-dir>/<slug>.json -> validate -> pure-render
+    <pages>/<slug>/index.html -> redeploy the whole pages dir via
+    deploy-page.py. Pure render / no drift: render_page() is a pure
+    function of allowlisted state (no wall clock, no filesystem reads,
+    sorted keys, all values HTML-escaped); a hand edit is overwritten
+    on the next run. Idempotent: unchanged state -> a byte-identical
+    file, and the deploy is skipped too (a full-snapshot deploy per
+    tick would waste Cloudflare API calls); the freshness line uses the
+    state's own updated_at, not run wall-clock — a run-time stamp
+    would break idempotency. The page says: "Last updated: ... This
+    page is a snapshot refreshed by a routine run, not a live view."
+    Deploy failure: atomic write (dot-prefixed temp in the same dir,
+    byte-verified, os.replace() — never truncate-in-place), then deploy
+    with the exit code checked; failure = no new deployment
+    (deploy-page.py creates one only as its final step), so the live
+    page stays the last good one; failure recorded in
+    <state-dir>/<slug>.failures.jsonl with slug + exit code; a
+    deploy_failed status makes the next run retry the deploy instead of
+    concluding "unchanged". Publish allowlist (fail-closed): unknown
+    slug, unlisted state key, missing title/updated_at, non-scalar
+    value, secret-shaped value (ghp_/github_pat_/sk-/AKIA...), or a
+    value naming working.secret/history.db/auth.json -> nonzero exit,
+    page untouched, failure recorded. State, failure log, status, and
+    lock live OUTSIDE the pages tree — a state.json under pages/ would
+    itself be published (.json is an allowed ext in collect()); check
+    21 proves it with the real deploy-page.py collect() over the pages
+    dir. A lock serialises render->deploy so two slugs can't race a
+    snapshot deploy. No sharing/private-link model (Pages URLs are
+    already public; that needs an auth layer, out of scope). Fail-first
+    proven: the same test against an empty stub -> 0 passed, 25 failed,
+    exit 1. DeepSeek design review (988 prompt / 5,337 completion
+    tokens): its two substantive findings were verified against the
+    real source and built in (state-outside-pages-tree;
+    freshness-vs-idempotency trade-off). The live half (a real routine
+    firing the loop, a real deploy-page.py run from the loop, the
+    refreshed page served at qwenpaw-pages.pages.dev/<slug>/, the
+    allowlist against real workspace state) is verified by Muse after
+    deploy.
+    """
+    return _py_script_harness(
+        ["features/botpages/routine-loop/test_routine_loop.py"], 25)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2840,6 +2889,7 @@ TESTS = [
     ("T132", "approval TTL: pending approvals + secret requests expire — issue stamps expires_at (approval 24h, secret 1h, question never), read is pure and fails closed (expired reads as denied, reason 'timed out'), late answers refused with ExpiredError, sweep expires stale cards idempotently (never legacy, post-migration card with no expiry fails closed), fork-shaped audit rows, store survives reload, flock serialises every read-modify-write (selftest)", "approvals", "protocol", t132),
     ("T133", "ask-before-durable-write: high-stakes memory v2 facts are held in a pending_facts table until explicit accept --id --why; routine facts write silently with provenance; secrets rejected, never held; caps mirror lessons.py (max 3 pending, --why required, PF-001 ids never reused) (selftest)", "memory", "protocol", t133),
     ("T134", "serving-model identity note: per-attempt note stamped at the model-wrapper dispatch boundary (plain when serving == configured) + {from,to,reason} switch log in PATCH model-settings; discrepancy verdict derived from repo evidence (mosicn/nex-n2.6 is the source of truth, xingchiapi/gpt-6-astra is a stale snapshot) (selftest)", "model-identity", "protocol", t134),
+    ("T135", "bot-built Pages 2nd gen: routine fires -> re-read state -> pure-render <pages>/<slug>/index.html -> redeploy via deploy-page.py; idempotent (unchanged state = byte-identical file, deploy skipped); fail-closed publish allowlist with state outside the pages tree; deploy failure leaves the last good page + records it (selftest)", "botpages", "protocol", t135),
 ]
 
 SKIP_NOTE = {
