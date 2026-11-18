@@ -1824,22 +1824,53 @@ def t115():
 
 
 def t116():
-    """TinyFish free search + fetch: request-building and fallback (52 checks).
+    """TinyFish free search + fetch: Settings-based key, request-building,
+    fallback, feature flags, and the Settings Search section (135 checks:
+    108 skill selftest + 27 UI harness).
 
     Machine-free selftest (features/tinyfish/test_tinyfish.py) for the
-    tinyfish skill's rules. It builds the TinyFish search URL (root path
-    on api.search.tinyfish.ai, the path the official SDK uses) and the
-    fetch body (1-10 urls, markdown/html/json), the DuckDuckGo Instant
-    Answer url (the only DDG surface that works from this box — the HTML
-    and lite endpoints are anomaly-blocked), the broker /run argv (sh -c
-    so $TINYFISH expands), the fallback decision (tinyfish item present
-    -> TinyFish, absent -> built-in web_search/web_fetch exactly as now),
-    and the error mapping (401/402/429/404/5xx). No network: it only
-    builds requests and decides. The live half (a real TinyFish call)
-    needs a real key in the vault and is NOT verified here.
-    """
-    return _py_script_harness(
-        ["features/tinyfish/test_tinyfish.py", "--selftest"], 52)
+    tinyfish skill's rules. The key is an env var (TINYFISH_API_KEY) set
+    by the user in Console -> Settings -> Environments — NOT a vault
+    item (the vault holds only connectors). The skill reads it from
+    os.environ at runtime with python3 (stdlib urllib), so the key never
+    appears in a command string, argv, or log, and it is deliberately NOT
+    declared in require_envs (a skill whose declared env vars are unmet
+    is skipped for the turn, which would break the fallback). It builds
+    the TinyFish search URL (root path on api.search.tinyfish.ai, the
+    path the official SDK uses) and the fetch body (1-10 urls,
+    markdown/html/json), the DuckDuckGo Instant Answer url (the only DDG
+    surface that works from this box — the HTML and lite endpoints are
+    anomaly-blocked), the env-based fallback decision (key present ->
+    TinyFish, absent -> built-in web_search/web_fetch exactly as now),
+    the feature flags (TINYFISH_SEARCH / TINYFISH_FETCH / TINYFISH_DDG_IA,
+    absent means on, the built-in is never a flag), and the error mapping
+    (401/402/429/404/5xx). No network: it only builds requests and
+    decides. The live half (a real TinyFish call) needs a real key in
+    Settings and is NOT verified here.
+
+    Node harness (features/tinyfish/test_search_settings_ui.mjs) for the
+    Settings Search section (pages/public/search-settings-ui.js): the
+    section saves via PATCH /api/envs (never PUT), removes the key via
+    DELETE /api/envs/TINYFISH_API_KEY, the key field is a password input
+    with autocomplete="new-password", the key value is never rendered
+    into the DOM or logged, the section mounts once after the
+    Environments heading (and is a safe no-op without a Settings
+    anchor), it self-mounts on SPA navigation with a throttled
+    MutationObserver, and pages/public/_worker.js routes
+    /search-settings-ui.js to the Pages assets and injects the module
+    script into the console HTML (an unrouted <script src> would fall
+    through to the console proxy and parse as nothing, B-35).
+    Fail-first proven: the skill selftest fails 7/108 against the old
+    vault-based SKILL.md, and the UI harness fails 2/27 before the
+    _worker.js wiring lands (and 3/22 against a PUT instead of PATCH,
+    2/22 against a buildSaveBody that always sends the key).
+    \"\"\"
+    s1, m1 = _py_script_harness(
+        ["features/tinyfish/test_tinyfish.py", "--selftest"], 108)
+    s2, m2 = _harness("features/tinyfish/test_search_settings_ui.mjs", 27)
+    good = s1 == "PASS" and s2 == "PASS"
+    return ("PASS" if good else "FAIL",
+            f"skill selftest: {m1} | search UI: {m2}")
 
 
 def t117():
@@ -1975,6 +2006,26 @@ def t122():
     """
     return _py_script_harness(
         ["features/plan-mode/test_plan_mode.py", "--selftest"], 43)
+
+
+def t123():
+    """Egress guard: untrusted-content wrapping + allowlist (35).
+
+    Machine-free test (features/egress-guard/test_egress_guard.py)
+    for the egress guard (features/egress-guard/egress_guard.py):
+    the wrapper marks fetched content as untrusted in a nonce-fenced
+    block and strips forged chat-template tokens; the allowlist guard
+    denies non-allowlisted hosts, denies secret-shaped strings even
+    to allowlisted hosts, and denies China hosts even if allowlisted,
+    while allowing legitimate requests to allowlisted hosts; the
+    redactor scrubs fake ghp_ / github_pat_ / sk- / AKIA strings
+    while a commit SHA and a UUID survive. Fail-first proven:
+    --impl none fails 26/35. The live half (wiring into the TinyFish
+    skill, web_fetch, and the broker /run, then a browser check
+    against a poisoned page) is verified by Muse after sync.
+    """
+    return _py_script_harness(
+        ["features/egress-guard/test_egress_guard.py"], 35)
 
 
 def t104():
@@ -2481,13 +2532,14 @@ TESTS = [
     ("T113", "routines daily-summary slot always probes (B-47 follow-up): slot bypasses the 15-min skip, wake-ticks still skip (harness)", "routines", "protocol", t113),
     ("T114", "AgentX rebrand (DOM injection): shim stubs PyPI + swallows upstream opens, 13-rule observer renames/hides by accessible name, About delegated to /status, logo replaced, title watcher, /status note AgentX (harness)", "rebrand", "protocol", t114),
     ("T115", "loop-gate fix: tool-call budget counts once per turn (reply-scoped recompute, no double-count, no stale-iteration skip) and applies by default (harness)", "loop-gate", "protocol", t115),
-    ("T116", "tinyfish: free search + fetch request-building, vault_run sh -c expansion, fallback to built-in search when no key, error mapping (selftest)", "tinyfish", "protocol", t116),
+    ("T116", "tinyfish: Settings env key (os.environ, python3, no vault), request-building, fallback when no key, feature flags, error mapping (selftest) + Settings Search section: PATCH /api/envs, mount, self-mount, _worker.js wiring (UI harness)", "tinyfish", "protocol", t116),
     ("T117", "memory facts: compact fact store + session handoff — extraction candidates, FTS5 retrieval ranked + token-budgeted, handoff written by session A read by session B, add-only dedup, supersede without deletion, secret rejection, universal search (selftest)", "memory", "protocol", t117),
     ("T118", "bloat win-win: Alibaba telemetry phone-home removed — telemetry.py + daily_telemetry.py are no-op stubs, no endpoint, no httpx, no thread, no disk writes (harness)", "bloat-winwin", "protocol", t118),
     ("T119", "bloat win-win data layer: history/audit DB VACUUM + WAL checkpoint preserve every row, journal_size_limit is per-connection, PNG recompression lossless, log rotation verifies the archive before truncating (harness)", "bloat-winwin", "protocol", t119),
     ("T120", "memory facts v2: multi-signal retrieval (BM25 + entity overlap + importance, weighted RRF), rule-based entity extraction, temporal validity windows + search --as-of, v1 -> v2 migration preserves every fact (selftest)", "memory", "protocol", t120),
     ("T121", "mechanical checks: no China endpoint host/URL in code, no secret-shaped string outside the allowlist, AGENTS.md under its 20000-char cap, no setInterval in server code (selftest)", "checks", "protocol", t121),
     ("T122", "plan mode: read-only plan before any mutation — ToolGate refuses mutating calls naming the tool, plan file with required sections, no execution before approval, after approval only the plan's steps run in order and at most once (selftest)", "plan-mode", "protocol", t122),
+    ("T123", "egress guard: untrusted-content wrapping (nonce fence, template-token strip) + allowlist egress (deny non-allowlisted, deny secret to allowlisted host, deny China hosts) + secret redaction in logs (selftest)", "egress-guard", "protocol", t123),
 ]
 
 SKIP_NOTE = {
