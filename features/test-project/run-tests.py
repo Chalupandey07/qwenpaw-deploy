@@ -2205,6 +2205,38 @@ def t131():
         ["features/telegram-full/test_telegram_full.py"], 66)
 
 
+def t132():
+    """Approval TTL: pending approvals + secret requests expire (41).
+
+    Machine-free test (features/approval-ttl/test_approval_ttl.py)
+    for the port of gogibeta/rakazo PR #50 (F6): issue stamps
+    expires_at (approval 24h, secret 1h, question never), env
+    overrides with the fork's fallback rule (bad values fall back to
+    the default, never expire instantly), read is pure and fails
+    closed (an expired card reads as denied with reason "timed out",
+    boundary now == expires_at counts as expired, legacy items never
+    auto-deny), answer refuses a late answer with ExpiredError after
+    persisting the expired state (terminal state is sticky, a clock
+    rollback cannot resurrect a card, a double answer never flips),
+    the sweep expires stale cards idempotently (never legacy, a
+    post-migration card with no expiry fails closed, fork-shaped
+    audit rows, a secret settles like a dismissal), the store
+    survives a reload (restart cannot resurrect a stale card), a
+    corrupt store raises (never a silent empty store), the file is
+    mode 0600, flock serialises every read-modify-write, and the CLI
+    sweep/check/issue exit codes. Fail-first proven: 0/41 against an
+    empty dir. DeepSeek review 2026-11-18: 6 findings, all fixed
+    (endpoint as the single gate, flock + re-read, sticky terminal
+    state, pure read, legacy keyed on the missing ttl_version, env
+    validated at issue time). The live half (module synced to the
+    machine, sweep timer, derived-image wiring of the approve/deny
+    handlers + GET /list, browser check of an expired card and a
+    refused late approve) is verified by Muse after deploy.
+    """
+    return _py_script_harness(
+        ["features/approval-ttl/test_approval_ttl.py"], 41)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2725,6 +2757,7 @@ TESTS = [
     ("T129", "skills as progressive-disclosure packages: frontmatter schema + tool-scope enforcement, index-only default load, self-written skill writer with secret/China/unbounded refusals, mechanical converter", "skills", "protocol", t129),
     ("T130", "drex decision model: NACE endpoint configurable via env (arg > NACE_BASE_URL > default), decision_model slot fragment for both agents, live-test script fails closed without a key (harness)", "decisions", "protocol", t130),
     ("T131", "telegram full-feature bot: token-only setup (no numeric id), owner = first whitelist entry, guests read-only, strangers refused; new chat, list + preview + continue an existing console chat (task API); settings via button callbacks (model PATCH, approval PUT); menu grammar + token cache; outbound redaction + inbound untrusted wrapping; driver patch applies cleanly to the pinned v2.3.0 platform.py and reproduces the patched file byte-for-byte (selftest)", "telegram", "protocol", t131),
+    ("T132", "approval TTL: pending approvals + secret requests expire — issue stamps expires_at (approval 24h, secret 1h, question never), read is pure and fails closed (expired reads as denied, reason 'timed out'), late answers refused with ExpiredError, sweep expires stale cards idempotently (never legacy, post-migration card with no expiry fails closed), fork-shaped audit rows, store survives reload, flock serialises every read-modify-write (selftest)", "approvals", "protocol", t132),
 ]
 
 SKIP_NOTE = {
