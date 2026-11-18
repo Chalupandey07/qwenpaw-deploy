@@ -4,6 +4,14 @@ You are working on **`Ratulbaba7/qwenpaw-deploy`**: the control plane for a
 QwenPaw agent running on an InstaBox **Free** machine, fronted by Cloudflare
 Pages + Workers. This file is the contract. Read it before touching anything.
 
+Keep this file under **20,000 characters** — the size an agent loads whole.
+Put long rules in the owning feature guide and leave a one-line pointer
+here. **Every new rule cites an incident:** the date + the failure that paid
+for it (see `docs/LESSONS.md` for the full symptom → cause → fix story).
+A convention that lives only in prose gets violated within a week; a rule +
+a mechanical check survives — the checks live in `scripts/checks/` and run
+before every push (see §5).
+
 ---
 
 ## 1. The one rule
@@ -16,8 +24,15 @@ The two known failure modes this rule exists to stop:
 
 - A deploy-generated admin password was reported as working ("login 200") for
   hours; the real account was a different user. **Verify the actual thing.**
+  (2026-11-15, docs/LESSONS.md.)
 - A browser round lost three tests to a spent Cloudflare KV write quota that
   no protocol test could see. **Check the quota before spending a session.**
+  (2026-11-15/17, docs/LESSONS.md.)
+
+**When you learn something new:** add the one-line rule here and the full
+symptom → cause → fix story to `docs/LESSONS.md` (append-only, timestamped,
+never rewritten). If the lesson can be checked mechanically, add a check
+under `scripts/checks/` — the check is the backup.
 
 ## 2. Division of labour
 
@@ -66,6 +81,13 @@ features/codemode/   Code Mode pilot (measures; does not claim)
 features/test-project/  the test catalogue, runner, preflight, log-check
 features/audit-2026-11-15/  the security audit of record (19 findings, 6 fixed)
 features/research/   research notes that code decisions rest on
+scripts/checks/      mechanical checks (no China endpoints, no secrets,
+                     AGENTS.md under its 20,000-char cap, no polling as the
+                     main path) — run `bash scripts/checks/run-checks.sh`
+                     before every push; see scripts/checks/README.md
+docs/LESSONS.md      the lessons log — full symptom → cause → fix stories,
+                     append-only, timestamped, never rewritten; AGENTS.md
+                     holds the distilled one-line rules
 ```
 
 Machine paths (on the InstaBox box): `/data/home/qwenpaw/` (`.env`,
@@ -85,17 +107,24 @@ Machine paths (on the InstaBox box): `/data/home/qwenpaw/` (`.env`,
    (`node features/**/harness-*.mjs`, `python3 features/**/test_*.py`) or a
    `T##` row in `features/test-project/TESTS.md`. Add one. A feature without
    a test is a rumour.
-4. **Run the suite before committing:**
+4. **Run the suite and the checks before committing:**
    ```bash
    python3 features/test-project/run-tests.py \
      --only T46,T47,T48,T62,T70,T71,T72,T73,T74,T75,T76,T77,T78,T79,T80,T81,T82,T83,T84
+   bash scripts/checks/run-checks.sh
    ```
    These are the machine-free tests (~20 groups, ~600 checks). Everything else
    needs Muse's box. **Registrations get lost when `run-tests.py` is rewritten
    — it has happened three times.** After any change to that file, count the
    `("T##"` registrations; a suite that stays green because nothing runs is
-   the worst failure mode this repo has.
-5. **Secret-scan before pushing:** `grep -rniE 'ghp_|github_pat_|sk-[A-Za-z0-9]{20}|AKIA[0-9A-Z]{16}' --include='*.{js,py,md,toml,json}' .`
+   the worst failure mode this repo has. The checks are the mechanical backup
+   for the rules in §3: a check that exits nonzero blocks the push until the
+   violation is fixed or an allowlist entry is added with a comment explaining
+   why — never weaken the check.
+5. **Secret-scan before pushing:** `bash scripts/checks/check-no-secrets.sh`
+   (the mechanical check; it uses the stricter length-qualified pattern so
+   documentation and regex-pattern definitions do not fail). The raw scan is
+   `grep -rniE 'ghp_|github_pat_|sk-[A-Za-z0-9]{20}|AKIA[0-9A-Z]{16}' --include='*.{js,py,md,toml,json}' .`
 6. **Commit** with a message that says what changed, what it cost (quota
    numbers), what you verified, and what you did **not**.
 7. **Update docs in the same commit:** `PLAN.md` status line, and
