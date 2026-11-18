@@ -812,7 +812,7 @@ def t21():
         data = {}
     q = (data.get("qwenpaw") or {})
     routines = [r.get("id") for r in data.get("routines", [])]
-    good = code1 == 200 and "QwenPaw Routines" in body1 \
+    good = code1 == 200 and "AgentX Routines" in body1 \
         and code2 == 200 and q.get("status") == "up" \
         and q.get("httpStatus") == 200 and "daily-summary" in routines
     return ("PASS" if good else "FAIL",
@@ -933,7 +933,7 @@ def t31():
     total, of, enabled, disabled = (int(x) for x in m.groups())
     rows = [l for l in out.splitlines() if "✓" in l or "✗" in l]
     disabled_rows = [l for l in rows if "✗" in l or "disabled" in l]
-    good = total == 20 and of == 20 and enabled == 20 and disabled == 0 \
+    good = total == 24 and of == 24 and enabled == 24 and disabled == 0 \
         and not disabled_rows
     return ("PASS" if good else "FAIL",
             f"{showing.strip()} rows={len(rows)}")
@@ -2918,14 +2918,14 @@ def t88():
 def t85():
     """Skill scanner: credential/RCE/injection patterns on third-party skills.
 
-    41 checks. Offline and deterministic, so it can gate every commit; the
+    79 checks. Offline and deterministic, so it can gate every commit; the
     LLM-backed SkillSpector stays the deep review for high-trust skills.
     """
     rc, out, err = run_local(
         [sys.executable, str(REPO / "features/skills/scan.py"), "--selftest"],
         timeout=180)
     m = re.search(r"(\d+) passed, (\d+) failed", out)
-    ok = rc == 0 and m and int(m.group(2)) == 0 and int(m.group(1)) == 41
+    ok = rc == 0 and m and int(m.group(2)) == 0 and int(m.group(1)) == 79
     return ("PASS" if ok else "FAIL",
             f"skills/scan --selftest: exit={rc} tally={m.group(0) if m else 'none'}")
 
@@ -3087,7 +3087,7 @@ TESTS = [
     ("T28", "board unauth /api/tickets -> 401", "board", "protocol", t28),
     ("T29", "bot Pages root 200", "botpages", "protocol", t29),
     ("T30", "bot Pages /skills/ 200", "botpages", "protocol", t30),
-    ("T31", "skills list: 19 enabled, 0 disabled", "skills", "protocol", t31),
+    ("T31", "skills list: 24 enabled, 0 disabled", "skills", "protocol", t31),
     ("T32", "delegate + github + build-page enabled", "skills", "protocol", t32),
     ("T33", "mailbox skill present, qwenpawmail not configured", "mailbox", "protocol", t33),
     ("T34", "heartbeat config state (record only)", "heartbeat", "protocol", t34),
