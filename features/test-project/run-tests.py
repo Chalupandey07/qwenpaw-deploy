@@ -2628,35 +2628,38 @@ def t141():
 
 
 def t142():
-    """Per-chat thinking selector: Default/Off/Low/Medium/High/XHigh (22).
+    """Per-chat thinking selector: Default/Off/Low/Medium/High/XHigh (23).
 
     Node harness (features/thinking-selector/test_thinking_selector.mjs)
     for the "thinking-selector" rule in pages/public/_worker.js. The
     backend already supports per-chat thinking end to end (GET/PUT
     /api/chats/{id}/thinking, ThinkingPreference {level}); the rule only
-    surfaces it as a selector next to the composer controls, appended
-    (never moved) into the toolbar so React reconciliation is untouched.
-    Static: the rule exists and is wired into the MutationObserver; it
-    GETs and PUTs /api/chats/{id}/thinking with a Bearer token from
-    localStorage qwenpaw_auth_token; it offers Default/Off/Low/Medium/
-    High/XHigh and sends the model_key on PUT (the 409 guard); it never
-    polls and never removes React nodes. Dynamic, with a DOM mock +
-    fetch mock: on /chat/<id> it creates one select, GETs the stored
-    level and shows it; changing it PUTs {level} with Bearer +
-    model_key; a second run re-GETs nothing and creates no second
-    select; on a brand-new chat a pick is stored as pending in
-    localStorage with no fetch and PUT once the chat gets an id; a PUT
-    422 reverts and re-syncs; a server level outside the offered set
-    (max) gains an option and is shown, never forced to Default; a GET
-    401 is a safe no-op; off chat pages it creates nothing. Fail-first
-    proven: against the pre-feature _worker.js the harness fails 20/22
-    (the two passes are the vacuous no-polling and off-chat no-op
-    checks on an empty rule). The live half (a real browser sets XHigh
-    on one chat and Low on another, GET reflects each, a reply still
-    works) is verified by Muse after the Pages deploy — blocked by the
-    2026-11-18 Workers 1027 outage until the 00:00 UTC reset.
+    surfaces it as a selector in the chat composer toolbar itself — in
+    the Smart Mode row next to Smart Mode (user screenshot 2026-11-19),
+    appended (never moved) into that row so React reconciliation is
+    untouched; the "Context usage" button's parent and the chat input's
+    grandparent are fallbacks. Static: the rule exists and is wired into
+    the MutationObserver; it GETs and PUTs /api/chats/{id}/thinking with
+    a Bearer token from localStorage qwenpaw_auth_token; it offers
+    Default/Off/Low/Medium/High/XHigh and sends the model_key on PUT
+    (the 409 guard); it never polls and never removes React nodes.
+    Dynamic, with a DOM mock + fetch mock: on /chat/<id> it creates one
+    select in the Smart Mode row, GETs the stored level and shows it;
+    changing it PUTs {level} with Bearer + model_key; a second run
+    re-GETs nothing and creates no second select; on a brand-new chat a
+    pick is stored as pending in localStorage with no fetch and PUT once
+    the chat gets an id; a PUT 422 reverts and re-syncs; a server level
+    outside the offered set (max) gains an option and is shown, never
+    forced to Default; a GET 401 is a safe no-op; off chat pages it
+    creates nothing. Fail-first proven: against the pre-feature
+    _worker.js the harness fails 21/23 (the two passes are the vacuous
+    no-polling and off-chat no-op checks on an empty rule). The live half
+    (a real browser sets XHigh on one chat and Low on another, GET
+    reflects each, a reply still works) is verified by Muse after the
+    Pages deploy — blocked by the 2026-11-18 Workers 1027 outage until
+    the 00:00 UTC reset.
     """
-    return _harness("features/thinking-selector/test_thinking_selector.mjs", 22)
+    return _harness("features/thinking-selector/test_thinking_selector.mjs", 23)
 
 
 def t104():
@@ -3189,7 +3192,7 @@ TESTS = [
     ("T139", "real sandbox profile: separate container, workspace-only mount, isolated bridge, read-only rootfs, user 10001, caps dropped ALL, no docker.sock; vault mints short-lived scoped tokens (90s default / 300s max); egress via the T123 allowlist only; dispatcher routes generated-code jobs to sandbox, refuses the rest (selftest)", "sandbox", "protocol", t139),
     ("T140", "per-task cap survives the per-turn agent rebuild (gatefix5): the runtime builds a fresh agent per turn, so the task budget must persist through the state_dict round-trip (task_budget_state_dict / load_task_budget_state_dict, wired into ReactAgent.state_dict / load_state_dict); turn 2 gets 20 more to 40 and finalises, turns 3 and 4 execute 0; snapshot round-trip + loader fails open on bad data (harness, section P of test_task_cap.py)", "loop-gate", "protocol", t140),
     ("T141", "realistic resume messages resume the current task (gatefix6): _is_continuation matches a continuation phrase at the START of the message at a word boundary, not just an exact match -- 'hello, are you working?' and 'Yes, continue from 21' resume the echo task (20 shell, then 20 more to 40 and finalise, then 0); 'yesterday' / 'history' / 'surely' / 'thanksgiving' are NOT continuations; a genuinely new instruction after finalisation still mints a fresh task (harness, section Q of test_task_cap.py)", "loop-gate", "protocol", t141),
-    ("T142", "per-chat thinking selector (Default/Off/Low/Medium/High/XHigh): the rule surfaces the backend's GET/PUT /api/chats/{id}/thinking as a selector next to the composer controls, appended into the toolbar (React-safe), Bearer from localStorage, model_key on PUT, pending level applied once a new chat gets an id, 422 revert + re-sync, out-of-set levels shown truthfully (harness)", "thinking", "protocol", t142),
+    ("T142", "per-chat thinking selector (Default/Off/Low/Medium/High/XHigh): the rule surfaces the backend's GET/PUT /api/chats/{id}/thinking as a selector in the chat composer toolbar itself, in the Smart Mode row next to Smart Mode (user screenshot 2026-11-19), appended into that row (React-safe), Bearer from localStorage, model_key on PUT, pending level applied once a new chat gets an id, 422 revert + re-sync, out-of-set levels shown truthfully (harness)", "thinking", "protocol", t142),
 ]
 
 SKIP_NOTE = {
