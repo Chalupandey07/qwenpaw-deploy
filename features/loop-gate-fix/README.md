@@ -1,6 +1,6 @@
 # Loop-gate fix: make the tool-call budget actually enforce
 
-## The bug
+## The bug (round 1: counting)
 
 A custom loop mode "Guarded" used the built-in `ToolCallBudgetGate`
 (`max_calls` 30, per-tool `execute_shell_command` 20). Two live tests
@@ -10,7 +10,7 @@ and stopped with "Tool call budget reached (100 calls)" / "(150 calls)"
 running loop did not enforce it. The original incident was a 167-call
 loop that ran ~6 minutes with no reply.
 
-## Root cause (read from the source, confirmed by the live log)
+## Root cause, round 1 (read from the source, confirmed by the live log)
 
 Two defects, both in the gate's counting:
 
@@ -38,11 +38,39 @@ TERMINATE on a tool-call iteration is **deferred** (the triggering
 batch still executes; the stop only prevents the next model call).
 So a gate cannot enforce a bound below one batch.
 
-## The fix
+## The bug (round 2: the workflow bypass)
+
+The round-1 fix (image `qwenpaw-agentx:2.3.0-gatefix1`) was deployed
+and live-tested in a fresh ordinary chat (echo 1–200). **The agent
+reached 200 with NO budget stop.** It did not emit 200 direct tool
+calls — it used the "Run workflow" batch runner (`run_tool_batch`):
+4 batches of 50 (echo_batch*.json), turn header "Completed 15 steps"
+(8 Thinking + 5 "Run workflow"). The gate counts only top-level tool
+calls, so it saw 5 calls and never fired. The batch runner executes
+its sub-calls internally (via `toolkit.call_tool`); those sub-calls
+never appear as top-level tool-call blocks, so the gate was blind
+to the workflow path.
+
+## Root cause, round 2 (read from the source)
+
+`run_tool_batch` (`qwenpaw/agents/tools/run_tool_batch.py`) reads a
+JSON batch file (or inline `actions`, max 50 steps per invocation)
+and executes each step through the toolkit. The parent appends both
+the tool-call blocks and the tool-result blocks to the assistant
+message(s) carrying the current `reply_id` (`AgentState.append_context`
+merges every block into the message with the current `reply_id`, and
+`_save_to_context` uses it for results too). So the sub-calls are
+recoverable from the context — but only if the gate looks for them:
+from the batch call's arguments (before it executes) and from the
+batch result JSON (after it executes). The gatefix1 gate looked at
+neither.
+
+## The fix (round 2, image `qwenpaw-agentx:2.3.0-gatefix2`)
 
 `qwenpaw-loop-gate-fix.patch` (against pinned upstream
 `agentscope/qwenpaw:v2.3.0`, digest `sha256:46a782f4…`) changes three
-files:
+files (the `mode.py` / `config.py` wiring is unchanged from round 1;
+only `limits.py` changed):
 
 - `src/qwenpaw/loop/gates/limits.py` — `ToolCallBudgetGate.check`
   now **recomputes** the turn total from the context on every check,
@@ -55,6 +83,18 @@ files:
   one message per round, and it excludes previous turns. When
   `reply_id` is unavailable it falls back to the previous
   incremental counting, so the gate never fails open.
+  **Plus the round-2 batch expansion:** a `run_tool_batch` call is
+  expanded into the sub-calls it will execute, read from its
+  arguments — inline `actions` (a list, or a JSON string) or the JSON
+  batch `file_path` (absolute; a list of steps or an object with an
+  `actions` key; `.json` only, 1 MB size guard). Control-flow steps
+  (`set_var`, `goto`, recursive `run_tool_batch`) are not real tool
+  calls and are excluded. A completed batch whose call could not be
+  expanded (unreadable file, invalid JSON) is counted from its result
+  JSON instead (`results` list, or `total` in `last_only` mode, where
+  per-tool attribution is unavailable). A batch is never counted
+  twice: a result whose call id was already expanded is skipped
+  (the result block's `id` matches its call block's `id`).
 - `src/qwenpaw/config/config.py` — new `ToolCallBudgetConfig`
   (`enabled` True, `max_calls` 30, `per_tool`
   `{"execute_shell_command": 20}`) and a `tool_call_budget` field on
@@ -74,10 +114,20 @@ files:
 The gate now fires reliably in round 0 (the first batch of ~50
 already exceeds `max_calls` 30), the deferred stop lets that batch
 execute, and the turn ends before a second batch. So a runaway that
-used to run 167 calls now stops after one batch (~50). The exact
-number is the model's first-batch size (typically ~50, up to ~100
-if the model emits a larger single batch); the gate cannot go below
-one batch.
+used to run 167 calls (direct) or 200 calls (via the batch runner)
+now stops after one batch (~50). The exact number is the model's
+first-batch size (typically ~50, up to ~100 if the model emits a
+larger single batch); the gate cannot go below one batch.
+
+For the workflow path specifically: the gate expands the batch call
+from its arguments at round 0, so it fires before the second batch
+is even issued — the run stops after the first batch (~50 executed,
+51 counted: 1 batch call + 50 sub-calls). If the batch arguments
+cannot be read (unreadable file), the gate falls back to counting
+the completed batch from its result JSON, so it fires at round 1
+and the run stops after the second batch (~100 executed). The
+`last_only` result form counts via `total` (no per-tool attribution
+there, but the total cap still fires).
 
 A strict 30 would additionally require execution-time enforcement
 (deny tool calls beyond the budget as they execute, e.g. a
@@ -96,23 +146,34 @@ parent's merged-message behaviour.
 
 ```bash
 # Fail-first: the pristine gate must FAIL (it reproduces the live bug)
-python3 test_gate.py --limits src/pristine/limits.py   # 10/14, A2=150, A3=300
+python3 test_gate.py --limits src/pristine/limits.py   # 11/29
+# The gatefix1 gate must FAIL only the workflow-bypass tests
+python3 test_gate.py --limits src/gatefix1/limits.py   # 15/29, H fails
 # The patched gate must PASS
-python3 test_gate.py --limits src/patched/limits.py    # 14/14
+python3 test_gate.py --limits src/patched/limits.py    # 29/29
 python3 test_gate.py                                   # defaults to patched
 ```
 
 Discriminating tests: **A** (merged message, total 50→100→150, not
 50→150→300) and **E** (stale `last_iteration` still counts).
-Regression tests B–D, F, G cover firing, the per-tool cap, the
-separate-message-per-round layout, previous-turn exclusion, and the
-`reply_id`-missing fallback.
+**H** (workflow bypass): a `run_tool_batch` call with 50 shell steps
+counts 51 and fires (H1 file, H2 inline); 4 batches count 204 (H3,
+the live test); a completed batch is counted from its result JSON
+when its call could not be expanded (H4, H8 `last_only`); a batch
+is never counted twice (H5: call + result = 51, not 101); the
+per-tool cap fires through a batch (H6); a small batch (3 steps)
+does NOT fire (H7, no false positive). Regression tests B–D, F, G
+cover firing, the per-tool cap, the separate-message-per-round
+layout, previous-turn exclusion, and the `reply_id`-missing
+fallback.
 
 `src/pristine/` holds the exact upstream files (sha256-verified
-against the pinned image) and `src/patched/limits.py` is the fixed
-gate the test runs against. The patch file is the authoritative diff;
-it was verified to apply cleanly to the pristine files and reproduce
-the patched files byte-for-byte.
+against the pinned image), `src/gatefix1/` holds the round-1 gate
+(which passes A–G but fails H — the live workflow bypass), and
+`src/patched/limits.py` is the fixed gate the test runs against.
+The patch file is the authoritative diff; it was verified to apply
+cleanly to the pristine files and reproduce the patched files
+byte-for-byte.
 
 The default-chain wiring (`mode.py` + `config.py`) is not covered by
 the machine-free unit test (it needs the full QwenPaw import chain).
@@ -132,8 +193,8 @@ one more image layer), then:
 
 ```bash
 cd /data/home/qwenpaw/loop-gate-fix   # or wherever the files were synced
-docker build -t qwenpaw-agentx:2.3.0-gatefix1 .
-docker images qwenpaw-agentx:2.3.0-gatefix1   # record the digest
+docker build -t qwenpaw-agentx:2.3.0-gatefix2 .
+docker images qwenpaw-agentx:2.3.0-gatefix2   # record the digest
 ```
 
 The Dockerfile fails the build if the patch does not apply cleanly.
@@ -158,7 +219,7 @@ actually runs.
 
 ```bash
 # The patched modules import and the gate is in the default chain
-docker run --rm qwenpaw-agentx:2.3.0-gatefix1 python3 -c "
+docker run --rm qwenpaw-agentx:2.3.0-gatefix2 python3 -c "
 from qwenpaw.loop.gates.limits import ToolCallBudgetGate
 from qwenpaw.modes.default.mode import DefaultMode
 print('gate imports OK')
@@ -166,10 +227,16 @@ print('gate imports OK')
 # Start it briefly on a scratch port and confirm the console serves
 # (do NOT point it at the live data dir for this check)
 docker run -d --name gatefix-smoke -p 18099:8080 \
-  qwenpaw-agentx:2.3.0-gatefix1
+  qwenpaw-agentx:2.3.0-gatefix2
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:18099/
 docker rm -f gatefix-smoke
 ```
+
+# The gate counts workflow sub-calls (machine-side live check, no browser):
+# feed the patched gate a synthetic context with a batch call whose
+# file holds 50 shell steps and confirm it counts 51 and fires.
+# (Do this inside the built image or on the machine; see the test for
+# the exact shape. The unit test T115 covers it machine-free.)
 
 Do NOT switch the live container to an image that has not passed
 these checks.
@@ -178,8 +245,11 @@ these checks.
 
 ```bash
 # 1. Snapshot the machine in the InstaBox console (record the snapshot id).
+#    At the 5-snapshot Free limit, delete the worst/oldest superseded
+#    snapshot first per Rohan's standing delegation. Never delete
+#    qwenpaw-phase0-verified.
 # 2. Edit /data/home/qwenpaw/docker-compose.yml: change only the image
-#    line to qwenpaw-agentx:2.3.0-gatefix1. Keep every mount, env var,
+#    line to qwenpaw-agentx:2.3.0-gatefix2. Keep every mount, env var,
 #    and port. Keep the pinned upstream image available for rollback.
 # 3. Restart and confirm the console comes back:
 docker compose -f /data/home/qwenpaw/docker-compose.yml up -d
@@ -214,3 +284,8 @@ not 30** — report the real number honestly. If it still executes
 ~100, the fix did not work; say so plainly. Also confirm normal
 function: one short harmless message gets a reply, and the console
 loads normally.
+
+Note the model may route through the batch runner again (that is the
+path this round fixes) or through direct calls (fixed in round 1).
+Either way the run must stop after about one batch. If it completes
+200 by any path, the gate is still bypassed — say so plainly.
