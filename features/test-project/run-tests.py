@@ -1719,7 +1719,7 @@ def t113():
 
 
 def t114():
-    """AgentX rebrand (DOM injection, 51 checks).
+    """AgentX rebrand (DOM injection, 69 checks).
 
     Machine-free harness (features/rebrand/harness-rebrand.mjs) for the
     AgentX rebrand (features/rebrand/README.md). Static checks on the real
@@ -1728,27 +1728,40 @@ def t114():
     the window.open patch swallows exactly the two upstream hosts
     (qwenpaw.agentscope.io, github.com/agentscope-ai/QwenPaw); the kill
     switch exists at both layers (worker env AGENTX_REBRAND=0 and
-    ?rebrand=0 at runtime); the rule table has 12 rules and each runs in
-    its own try/catch with a console.debug naming the rule; the
-    CSP-Report-Only + Referrer-Policy headers are set on the console HTML
-    and the <title> is rewritten; the shim is injected before the panel
-    script and the observer calls the rebrand pass. Dynamic checks in a
+    ?rebrand=0 at runtime); the rule table has 13 rules and each runs in
+    its own try/catch with a console.debug naming the rule; the menu/China
+    rules hide by accessible name (aria-label/title/alt) and climb to the
+    whole button/card container; the About click is a delegated capture
+    listener with a prefix match that opens /status; the title is watched
+    by its own MutationObserver on the <title> element; the logo rule
+    replaces the QwenPaw img with an AgentX text label; the CSP-Report-Only
+    + Referrer-Policy headers are set on the console HTML and the <title>
+    is rewritten; the shim is injected before the panel script and the
+    observer calls the rebrand pass; the keep-alive and activity-feed
+    Workers report the note "AgentX console answered". Dynamic checks in a
     VM with mocks: the real shim (extracted from the file, run with the
     file's own constants) stubs the PyPI fetch while other fetches pass
     through, swallows upstream window.open while other opens pass
     through, and stays unpatched under ?rebrand=0; the real rebrand
     rules (extracted between the AGENTX-REBRAND markers, run against a
     mock DOM) rename the title and a visible text node, hide a Tutorial
-    and a GitHub menu item (but not Settings), leave a load-bearing
-    instruction alone, rename an aria-label, hide a DashScope card, make
-    About open /status, and block an upstream link click while letting a
-    same-origin link through. Fail-first proven: against the unmodified
-    _worker.js it fails 49/51 (the 2 that pass check for the absence of a
-    rebrand section, vacuously true on the original file). The live half
-    (a real browser on the deployed console) is verified by Muse after
-    deploy.
+    and a GitHub menu item (but not Settings), hide icon-only buttons
+    matched by accessible name as whole buttons, leave a load-bearing
+    instruction alone, rename an aria-label, hide a DashScope card, hide
+    a DashScope card matched only by its aria-label and an Aliyun card and
+    a SiliconFlow card (name in an img alt) as whole cards, rename the
+    About item ("About QwenPaw v2.3.0" → "About AgentX v2.3.0") and make
+    clicking it open /status, replace the sidebar logo img with an
+    "AgentX" text label, rename a title change immediately via the title
+    observer, and block an upstream link click while letting a same-origin
+    link through. Fail-first proven: against the unmodified _worker.js it
+    fails 49/51 (the 2 that pass check for the absence of a rebrand
+    section, vacuously true on the original file); after the 2026-11-18
+    browser-verification fixes, the extended harness fails 22/69 against
+    the pre-fix code and passes 69/69 after. The live half (a real
+    browser on the deployed console) is verified by Muse after deploy.
     """
-    return _harness("features/rebrand/harness-rebrand.mjs", 51)
+    return _harness("features/rebrand/harness-rebrand.mjs", 69)
 
 
 def t104():
@@ -2253,7 +2266,7 @@ TESTS = [
     ("T111", "reset broker: allowlist guard + category table (selftest)", "reset", "protocol", t111),
     ("T112", "screen retry on failure (B-47): failed branch retries through bounded single-flight scheduleReconnect (harness)", "computer", "protocol", t112),
     ("T113", "routines daily-summary slot always probes (B-47 follow-up): slot bypasses the 15-min skip, wake-ticks still skip (harness)", "routines", "protocol", t113),
-    ("T114", "AgentX rebrand (DOM injection): shim stubs PyPI + swallows upstream opens, 12-rule observer renames/hides, kill switch at both layers (harness)", "rebrand", "protocol", t114),
+    ("T114", "AgentX rebrand (DOM injection): shim stubs PyPI + swallows upstream opens, 13-rule observer renames/hides by accessible name, About delegated to /status, logo replaced, title watcher, /status note AgentX (harness)", "rebrand", "protocol", t114),
 ]
 
 SKIP_NOTE = {
