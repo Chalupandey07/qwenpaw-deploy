@@ -1825,8 +1825,8 @@ def t115():
 
 def t116():
     """TinyFish free search + fetch: Settings-based key, request-building,
-    fallback, feature flags, and the Settings Search section (135 checks:
-    108 skill selftest + 27 UI harness).
+    fallback, feature flags, and the Settings "Your Keys" section (142 checks:
+    108 skill selftest + 34 UI harness).
 
     Machine-free selftest (features/tinyfish/test_tinyfish.py) for the
     tinyfish skill's rules. The key is an env var (TINYFISH_API_KEY) set
@@ -1849,17 +1849,22 @@ def t116():
     Settings and is NOT verified here.
 
     Node harness (features/tinyfish/test_search_settings_ui.mjs) for the
-    Settings Search section (pages/public/search-settings-ui.js): the
-    section saves via PATCH /api/envs (never PUT), removes the key via
-    DELETE /api/envs/TINYFISH_API_KEY, the key field is a password input
-    with autocomplete="new-password", the key value is never rendered
-    into the DOM or logged, the section mounts once after the
-    Environments heading (and is a safe no-op without a Settings
-    anchor), it self-mounts on SPA navigation with a throttled
-    MutationObserver, and pages/public/_worker.js routes
-    /search-settings-ui.js to the Pages assets and injects the module
-    script into the console HTML (an unrouted <script src> would fall
-    through to the console proxy and parse as nothing, B-35).
+    Settings "Your Keys" section (pages/public/search-settings-ui.js): the
+    section saves via PATCH /api/envs (never PUT), removes each key via
+    DELETE /api/envs/<KEY>, each key field is a password input with
+    autocomplete="new-password", the key values are never rendered into
+    the DOM or logged, the section mounts once after the Environments
+    heading (and is a safe no-op without a Settings anchor, and a safe
+    no-op on the chat page — the old <main> fallback put it at the
+    bottom of the chat view), it self-mounts on SPA navigation with a
+    throttled MutationObserver, it injects its own scoped styles, and
+    pages/public/_worker.js routes /search-settings-ui.js to the Pages
+    assets and injects the module script into the console HTML (an
+    unrouted <script src> would fall through to the console proxy and
+    parse as nothing, B-35). The section holds both keys the user
+    enters in Settings — TinyFish (Monid) TINYFISH_API_KEY and Drex
+    (NACE) NACE_API_KEY — each with what it is for, plus the search
+    feature flags.
     Fail-first proven: the skill selftest fails 7/108 against the old
     vault-based SKILL.md, and the UI harness fails 2/27 before the
     _worker.js wiring lands (and 3/22 against a PUT instead of PATCH,
@@ -1867,7 +1872,7 @@ def t116():
     """
     s1, m1 = _py_script_harness(
         ["features/tinyfish/test_tinyfish.py", "--selftest"], 108)
-    s2, m2 = _harness("features/tinyfish/test_search_settings_ui.mjs", 27)
+    s2, m2 = _harness("features/tinyfish/test_search_settings_ui.mjs", 34)
     good = s1 == "PASS" and s2 == "PASS"
     return ("PASS" if good else "FAIL",
             f"skill selftest: {m1} | search UI: {m2}")
