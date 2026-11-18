@@ -1,0 +1,32 @@
+# Derived QwenPaw image with the loop-gate fix, round 5 (gatefix5).
+#
+# Base is the LIVE image qwenpaw-agentx:2.3.0-deploy1 (upstream +
+# gatefix4 + bloat-winwin + cost-ledger + Telegram), so all of those
+# layers survive. The only change is the gatefix5 delta: persist the
+# per-task loop-gate budget through the session-state round-trip
+# (task_budget_state_dict / load_task_budget_state_dict in limits.py,
+# wired into ReactAgent.state_dict / load_state_dict), so the per-task
+# cap survives the runtime rebuilding the agent object for every user
+# turn. Nothing else is changed.
+# Tag: qwenpaw-agentx:2.3.0-gatefix5.
+FROM qwenpaw-agentx:2.3.0-deploy1
+
+COPY qwenpaw-loop-gate-fix5.patch /tmp/qwenpaw-loop-gate-fix5.patch
+
+# Apply the gatefix5 delta in BOTH places the code lives. The package is
+# installed in site-packages (that is what Python imports at runtime);
+# /app/src is the source tree the install was built from. Both copies
+# are byte-identical, so the same patch applies to both: -p1 from /app
+# patches src/qwenpaw/..., -p2 from site-packages patches qwenpaw/....
+# Then byte-compile the two patched modules so a stale .pyc can never win.
+# The build FAILS here if the patch does not apply cleanly to either copy.
+RUN cd /app \
+    && patch -p1 < /tmp/qwenpaw-loop-gate-fix5.patch \
+    && cd /app/venv/lib/python3.11/site-packages \
+    && patch -p2 < /tmp/qwenpaw-loop-gate-fix5.patch \
+    && rm /tmp/qwenpaw-loop-gate-fix5.patch \
+    && python3 -m py_compile \
+        /app/src/qwenpaw/loop/gates/limits.py \
+        /app/src/qwenpaw/agents/react_agent.py \
+        /app/venv/lib/python3.11/site-packages/qwenpaw/loop/gates/limits.py \
+        /app/venv/lib/python3.11/site-packages/qwenpaw/agents/react_agent.py
