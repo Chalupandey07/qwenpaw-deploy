@@ -1733,7 +1733,7 @@ def t113():
 
 
 def t114():
-    """AgentX rebrand (DOM injection, 93 checks).
+    """AgentX rebrand (DOM injection, 174 checks).
 
     Machine-free harness (features/rebrand/harness-rebrand.mjs) for the
     AgentX rebrand (features/rebrand/README.md). Static checks on the real
@@ -1742,7 +1742,7 @@ def t114():
     the window.open patch swallows exactly the two upstream hosts
     (qwenpaw.agentscope.io, github.com/agentscope-ai/QwenPaw); the kill
     switch exists at both layers (worker env AGENTX_REBRAND=0 and
-    ?rebrand=0 at runtime); the rule table has 13 rules and each runs in
+    ?rebrand=0 at runtime); the rule table has 41 rules and each runs in
     its own try/catch with a console.debug naming the rule; the menu/China
     rules hide by accessible name (aria-label/title/alt) and climb to the
     whole button/card container; the China climb is structural and never
@@ -1795,11 +1795,22 @@ def t114():
     passes 86/86 after; after the 2026-11-18 XiaoYi/Yuanbao channel fix,
     the extended harness fails 7/93 against the pre-fix code (the 2
     static checks — the China-hide list and the case-insensitive match —
-    and the 5 XiaoYi/Yuanbao hides) and passes 93/93 after. The live half
+    and the 5 XiaoYi/Yuanbao hides) and passes 93/93 after; after the
+    2026-11-19 smart-sleep rebrand gaps (22 net new rules: footer,
+    block-links-v2, hide-powered-by, hide-feedback, settings-about,
+    settings-language, settings-providers, settings-integrations,
+    hide-upgrade, account-card, workspace-switcher, sidebar-help,
+    model-labels, title-observer, head-rebrand, export-rebrand,
+    hide-run-in, auth-rebrand, error-rebrand, hide-onboarding,
+    hide-update-banner, hide-shortcuts-dialog; plus the merges
+    thinking-text into thinking-selector, toast-text into rename-text,
+    rename-attrs broadened to alt + data-tooltip, rename-logo broadened
+    to title/aria-label elements), the extended harness fails 54/174
+    against the pre-change code and passes 174/174 after. The live half
     (a real browser on the deployed console) is verified by Muse after
     deploy.
     """
-    return _harness("features/rebrand/harness-rebrand.mjs", 93)
+    return _harness("features/rebrand/harness-rebrand.mjs", 174)
 
 
 def t115():
@@ -2713,6 +2724,56 @@ def t142():
     return _harness("features/thinking-selector/test_thinking_selector.mjs", 23)
 
 
+def t143():
+    """Smart sleep/wake: keep-alive toggle + max-run guard + Hallmark pages (72 + 105 checks).
+
+    Two node harnesses under features/smart-sleep/ (README there):
+    harness-smart-sleep.mjs (72) runs the real keep-alive Worker module
+    with a mock D1 + a mock fetch that counts every call. Toggle: OFF ->
+    the cron tick returns skip with ZERO fetches and ZERO D1 mutations;
+    ON -> the decision is identical to today (golden compare vs
+    decideSleepWake); a read that throws or an invalid value -> HOLD with
+    zero fetches; absent -> ON. POST /keepalive: no bearer -> 401 and the
+    stored value unchanged; correct Bearer <redacted> -> 200 with exactly
+    2 D1 writes; bad body -> 400; WAKE_TOKEN unset -> 503; ?token= in
+    the query -> 401 (header only); GET -> 405 with Allow: POST. Toggle
+    OFF + a due routine -> the tick still skips (the routines Worker's
+    own scheduled wake is a separate worker and is unaffected). Max-run
+    guard: uptime 420 min + recent visit/agent activity -> sleep with
+    reason max_run_guard (via the pure function and via the tick: one
+    Pages sleep call, no console probe); 419 min -> hold; 420 min + a
+    routine due in 5 min -> hold (WAKE wins); unknown uptime -> hold;
+    toggle OFF + 420 min -> skip. GET /status and /sleepwake/state expose
+    keepAlive ("on"/"off"/"unknown") + keepAliveUpdatedAt, and /status
+    exposes sleepwake.nextRoutineAt (finite ms epoch when a routine
+    exists, null otherwise; omitted with no D1). Fail-first proven:
+    against the pre-change Worker the harness fails 48/72 (24 pass).
+    harness-smart-sleep-pages.mjs (105) extracts and runs the real
+    wakingPage/cooldownPage from pages/public/_worker.js in a VM and
+    reads pages/public/status-page.html: no backtick / no ${} in any of
+    the three rendered outputs; no external URL (outside WORKER_URL), no
+    <link, no src=, no @import, no <img>; cooldown remaining-time
+    table-driven cases; waking polls every 5 s and reloads only on
+    id="root"; cooldown reload-storm guard (max 1 auto-reload per 30 s
+    per tab via sessionStorage); status page has NO setInterval polling
+    (one GET on load; exactly one setTimeout refresh when waking);
+    size budgets (waking <=9 KB, cooldown <=8 KB, status <=12 KB);
+    keep-alive switch (role="switch"), password token field and the
+    "Scheduled runs still wake the machine." consequence text present.
+    Fail-first proven: 44/105 fail against the pre-change pages. Hallmark
+    sloplint on the three rendered pages: 0 FAIL, 1 WARN (F16, status
+    page browser surfaces unthemed — documented, accepted: theming them
+    costs ~155 B against a 12 KB budget). The live half (a real flip +
+    skipping tick, a real 7h guard sleep, the pages in a real browser)
+    is verified by Muse after the Pages/Workers deploy — blocked by the
+    2026-11-18 Workers 1027 outage until the 00:00 UTC reset.
+    """
+    a = _harness("features/smart-sleep/harness-smart-sleep.mjs", 72)
+    b = _harness("features/smart-sleep/harness-smart-sleep-pages.mjs", 105)
+    ok = a[0] == "PASS" and b[0] == "PASS"
+    return ("PASS" if ok else "FAIL", a[1] + " | " + b[1])
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -3244,6 +3305,7 @@ TESTS = [
     ("T140", "per-task cap survives the per-turn agent rebuild (gatefix5): the runtime builds a fresh agent per turn, so the task budget must persist through the state_dict round-trip (task_budget_state_dict / load_task_budget_state_dict, wired into ReactAgent.state_dict / load_state_dict); turn 2 gets 20 more to 40 and finalises, turns 3 and 4 execute 0; snapshot round-trip + loader fails open on bad data (harness, section P of test_task_cap.py)", "loop-gate", "protocol", t140),
     ("T141", "realistic resume messages resume the current task (gatefix6): _is_continuation matches a continuation phrase at the START of the message at a word boundary, not just an exact match -- 'hello, are you working?' and 'Yes, continue from 21' resume the echo task (20 shell, then 20 more to 40 and finalise, then 0); 'yesterday' / 'history' / 'surely' / 'thanksgiving' are NOT continuations; a genuinely new instruction after finalisation still mints a fresh task (harness, section Q of test_task_cap.py)", "loop-gate", "protocol", t141),
     ("T142", "per-chat thinking selector (Default/Off/Low/Medium/High/XHigh): the rule surfaces the backend's GET/PUT /api/chats/{id}/thinking as a selector in the chat composer toolbar itself, in the Smart Mode row next to Smart Mode (user screenshot 2026-11-19), appended into that row (React-safe), Bearer from localStorage, model_key on PUT, pending level applied once a new chat gets an id, 422 revert + re-sync, out-of-set levels shown truthfully (harness)", "thinking", "protocol", t142),
+    ("T143", "smart sleep/wake: keep-alive ON/OFF toggle (POST /keepalive, Bearer <redacted>, D1 keepalive:enabled, tick early-return fail-closed, /status + /sleepwake/state keepAlive fields) + max-run guard (sleep at 7h uptime even when busy, WAKE/rest still win) + Hallmark waking/cooldown/status pages (no polling, scaleX bars, keep-alive switch, /status sleepwake.nextRoutineAt) (harness)", "sleepwake", "protocol", t143),
 ]
 
 SKIP_NOTE = {
