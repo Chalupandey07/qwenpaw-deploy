@@ -1,0 +1,332 @@
+# Real sandbox profile for generated code (gap #6, T139)
+
+**Status: code complete, machine-free test T139 50/50, NOT verified
+live.** The profile, the token API, the proxy, and the dispatcher
+are built and tested here. NOTHING is deployed, no container has
+ever run, and no job has ever been routed to a sandbox. Until the
+deploy steps in §5 land and a live container run proves the
+isolation, generated code still runs in the main container exactly
+as before. This README says that instead of implying otherwise.
+
+## Why this exists
+
+Code Mode today has RLIMIT/timeouts/fixed-job only, and NO isolation
+from the vault socket (172.18.0.1:8896). The agent's shell runs in
+the main container, which owns `/app/working.secret/auth.json` and
+can reach the vault broker. A generated script that reads a secret
+or curls it out is one prompt injection away. The egress guard
+(T123) is a check layer in the agent's own process — a hostile shell
+can bypass it. This is the other half of that fix: the code runs
+somewhere else, with no credential and no route to the things that
+hold credentials.
+
+## The trust boundary (read this before deploying)
+
+The boundary is: **the sandbox container can reach exactly two
+things — its own job workspace, and the egress proxy. Everything
+else is refused, and a refusal is visible.**
+
+What the sandbox CAN reach:
+
+| Reachable | How | Why it is safe enough |
+|---|---|---|
+| Its own job workspace (`/workspace`, read-write) | one bind mount, source under `/data/home/qwenpaw/working/workspaces/` | the job's own files; nothing else on the host is mounted |
+| The egress proxy (`http://egress:8888` on the isolated bridge) | the only route out of the bridge | the proxy forwards only to hosts on the T123 allowlist |
+| Its own tmpfs (`/tmp` 64m, `/run` 16m, `/dev/shm` 64m, `/run/sandbox-token` 1m, all `noexec,nosuid,nodev`) | tmpfs mounts | dies with the container; cannot hold an executable |
+| The short-lived scoped token (file `/run/sandbox-token/token`, mode 0700) | tmpfs file, delivered per job | names only, 90 s default / 300 s max, single-use, exact item + host scope |
+
+What the sandbox CANNOT reach (each enforced in code, tested in T139):
+
+| Unreachable | Enforcement |
+|---|---|
+| `auth.json` / `working.secret` / provider keys | no mount outside the job workspace; the validator refuses `working.secret`, the whole `working` tree, and the machine home as mount sources |
+| The vault broker (172.18.0.1:8896) and the MCP proxy (:8898) | the sandbox is on the isolated bridge `qwenpaw-sandbox-net` with no route to the gateway; `extra_hosts` may not name the gateway; the proxy denies the gateway host too (T139 B9) |
+| The host Docker daemon | no `docker.sock` mount (validator + argv render refuse it); no docker client in the image |
+| The host network / host PID / host IPC / host devices | `--network` is the isolated bridge only; no `--privileged`, no `--cap-add` (caps dropped `ALL`), `no-new-privileges`, no `--pid=host` / `--ipc=host`, no `--device` |
+| Any vault value, ever | the container holds no broker token and no key; the only credential-shaped thing it ever sees is a scoped token that carries NAMES, and the broker injects the value into the child env only |
+| The internet, directly | no route out of the bridge except through the proxy; the proxy enforces the T123 allowlist |
+| China endpoints | the proxy uses the T123 guard, which denies China hosts BEFORE the allowlist — even if one were added to it |
+| Any other job's workspace | one bind mount per container, per job; the container is `--rm` |
+
+Residual holes that CANNOT be closed on this VM (DeepSeek design
+review, 2026-11-18, deepseek-v4.1-flash-free — honest list, no
+hand-waving):
+
+1. **Shared kernel.** A container/runc/kernel escape reaches the
+   host. There is no gVisor/KVM on the Free tier. The sandbox raises
+   the bar from "read a file" to "exploit the kernel"; it does not
+   remove the kernel from the trust boundary.
+2. **The gateway is one iptables rule away.** `172.18.0.1` is
+   reachable from ANY bridge unless the DOCKER-USER rule in §5
+   denies it. If that rule is missing or wrong, the token gate is
+   bypassed entirely. The rule is a deploy step, and its absence is
+   the single most dangerous misconfiguration in this feature.
+3. **TLS through the proxy is opaque.** CONNECT is allowed only to
+   allowlisted hosts, but the proxy cannot see the path or body
+   inside TLS. An allowlisted host that turns hostile can still
+   receive whatever the sandbox sends it. The allowlist is the
+   control; there is no content inspection.
+4. **DNS is not pinned.** The host is checked before resolution; a
+   rebinding answer after the check is not caught. DNS exfiltration
+   needs no HTTP at all. The bridge DNS must be the proxy host
+   itself (no upstream resolver reachable from the sandbox) — a
+   compose/deploy setting, NOT verified until a live run proves it.
+5. **Token replay inside the TTL.** The consumed-`jti` store is
+   in-memory and dies with the broker; a leaked token stays live
+   until its `exp` (at most 300 s). Real revocation is key rotation
+   or a broker restart. The TTL is short because of this, not in
+   spite of it.
+6. **Side channels.** Cache/timing, memory pressure, CPU
+   contention, `/proc`/cgroup host-info leakage. Unfixable on this VM.
+7. **Symlink escape in the workspace.** A job workspace containing
+   a symlink to `/app/working.secret` would be followed by the bind
+   mount. The profile validator checks the mount SOURCE, not the
+   workspace contents. The deploy step must resolve symlinks in the
+   job workspace before mounting (see §5, step 4).
+8. **Supply chain.** The sandbox and proxy images are trust anchors:
+   a compromised base image owns every job. Pin the digest at deploy
+   time; do not rebuild from `latest` silently.
+
+## What is where
+
+```
+features/sandbox/
+  sandbox.py             the profile: build + validate + render (docker run / compose)
+  vault_tokens.py        the broker token API: mint / verify (HMAC, short-lived, scoped)
+  dispatch.py            job-runner dispatch: sandbox / refuse / (one legacy main)
+  egress_proxy.py        the egress proxy: allowlist gate for the sandbox bridge
+  proxy-allowlist.txt    GENERATED snapshot of the T123 allowlist (do not edit by hand)
+  test_sandbox.py        machine-free test T139 (50 checks, fail-first)
+  profile/Dockerfile     the sandbox image (python:3.12-slim, uid 10001, no tools)
+  profile/docker-compose.sandbox.yml   sandbox + proxy on the isolated bridge
+  README.md              this file
+```
+
+## 1. The profile (sandbox.py)
+
+`build_profile(job)` returns a plain dict (image, user, network,
+mounts, limits, deadline). `validate_profile(profile)` returns the
+list of violations (empty = ok); `docker_run_argv` and
+`compose_service` REFUSE to render a profile that does not validate
+clean — a leaky profile must never become a command line by accident.
+
+Numbers (Free VM: 4 vCPU / 8 GiB, shared with the main container +
+the desktop):
+
+| Cap | Value | Why |
+|---|---|---|
+| memory / swap | 1g / 1g | swap == memory: no swap, OOM-kill instead. DeepSeek proposed 2g; NOT adopted — the main container + desktop already use most of 8 GiB. A job needing more is refused, not given the box's RAM. |
+| cpus | 1.0 | leaves ~3 cores for main + desktop |
+| pids | 128 | a fork bomb dies at 128 processes |
+| tmpfs | /tmp 64m, /run 16m, /dev/shm 64m | all `noexec,nosuid,nodev` |
+| ulimits | nofile 1024, nproc 256, core 0 | no core dumps (they can hold secrets) |
+| deadline | 120 s default, 300 s hard max | dispatch refuses anything above 300 |
+| stop timeout | 5 s | a job that ignores SIGTERM is killed, not waited on |
+| logs | json-file, 10m x 2 | a chatty job cannot fill the disk |
+| user | 10001:10001 | non-root, baked into the image |
+
+## 2. The token API (vault_tokens.py)
+
+Format: `v1.<base64url(payload)>.<base64url(HMAC-SHA256(payload))>`.
+Key: 32 random bytes, hex, from `SANDBOX_BROKER_KEY` (never logged,
+never committed, never sent to the sandbox). `kid` (first 8 hex of
+SHA-256(key)) selects the key for rotation; two keys may be active.
+
+Payload: `v`, `kid`, `jti` (16 random bytes), `sub` (job id),
+`aud` (`sandbox-inject`), `items` (exact vault item names), `hosts`
+(exact FQDNs), `ops` (`["inject-env"]` only), `iat`, `nbf`, `exp`,
+`single_use` (true). TTL: 90 s default, 300 s absolute max; 5 s
+clock-skew tolerance. Scope is exact-match, no wildcards, no prefix:
+a token for `api.github.com` does not open `evil.github.com`, and a
+token for `github-api` does not open `github-api-2`.
+
+`verify_token` refuses: bad format, unknown key id, bad signature,
+wrong audience, wrong ops, expired, not yet valid, wrong job, item
+or host outside the scope, and a `jti` already consumed (replay).
+`TokenStore` holds consumed ids in memory and sweeps them after
+expiry; it dies with the broker (see residual hole 5 above).
+
+The broker endpoint this token is FOR (`POST /sandbox/inject`) does
+not exist yet: it is the broker-side half of this design (see
+REMAINING). What exists here is the mint/verify half plus the CLI
+(`vault_tokens.py mint <job> <items> <hosts> [ttl]` /
+`verify <token> [item] [host]`, key from env only).
+
+## 3. The egress proxy (egress_proxy.py + proxy-allowlist.txt)
+
+A stdlib-only forward proxy (GET/POST forwarded, CONNECT tunnelled
+only to allowlisted hosts, every other method refused, 30 s timeout,
+1 MB cap). The allowlist is the T123 one and ONLY that:
+`proxy-allowlist.txt` is a GENERATED snapshot of
+`egress_guard.DEFAULT_ALLOWLIST` + `allowlist.txt`, and T139 asserts
+exact equality, so drift fails the test instead of silently opening
+(or closing) a host. Regenerate with:
+
+```bash
+python3 - <<'EOF'
+import importlib.util
+spec = importlib.util.spec_from_file_location("egress_guard", "features/egress-guard/egress_guard.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+hosts = sorted(m.load_allowlist())
+with open("features/sandbox/proxy-allowlist.txt", "w") as fh:
+    for h in hosts:
+        fh.write(h + "\n")
+EOF
+```
+
+(Keep the header comment in the file when regenerating.) When
+`egress_guard.py` is available the proxy delegates to its
+`check_request` — same code, same rules, including the China deny
+and the private-IP deny. When it is not available (proxy container
+without the mount), the proxy falls back to the snapshot file + a
+mirror of the same China/private checks; the test covers the repo
+path, and the fallback is documented in the module, not hidden.
+
+## 4. Dispatch (dispatch.py)
+
+`route_job(job)` returns `{"target", "reason", ...}`. The rule is:
+generated code runs ONLY in the sandbox; anything that cannot run
+there is REFUSED, never silently fallen back to main. A silent
+fallback would recreate exactly the hole the sandbox exists to
+close.
+
+* `generated-code` / `code` + workspace under the root + deadline
+  1..300 + every host on the T123 allowlist + every vault item
+  inside the token scope → `sandbox`.
+* `codemode-fixed-job` → `main`. The ONE legacy exception: the B-41
+  fixed pilot job drives the real desktop through the MCP proxy
+  (X11, no generated code, no vault item, no network beyond the
+  proxy). It cannot run in the sandbox and it is not generated code.
+  The exception is by exact job id, not by a caller-set flag.
+* Desktop tools (`list_apps`, `get_app_state`, `click`, `type_text`,
+  `press_key`, `scroll`, `set_value`, `drag`,
+  `perform_secondary_action`) or `needs_desktop` → `refuse`
+  ("needs-desktop"). The sandbox has no X11 socket and no route to
+  the MCP proxy.
+* Non-allowlisted host → `refuse` ("egress-denied"). Vault item
+  outside the token scope → `refuse` ("vault-scope"). Deadline over
+  300, workspace outside the root, unknown kind → `refuse` with the
+  reason named.
+
+## 5. Deploy (parent's job — machine side, needs the machine back)
+
+Nothing here is deployed. The deploy order, when the machine unlocks:
+
+1. Build the image on the machine:
+   `docker build -t qwenpaw-sandbox:2.3.0 -f features/sandbox/profile/Dockerfile features/sandbox/profile/`
+   (pin the digest; record it).
+2. Provision `SANDBOX_BROKER_KEY` (32 random bytes, hex) into
+   `/data/home/qwenpaw/.env` (mode 600) for the broker. Never print
+   it, never commit it. This is the ONE new secret this feature adds.
+3. Create the bridge + the DOCKER-USER gateway rule FIRST, before
+   any sandbox runs:
+   `docker network create qwenpaw-sandbox-net`
+   then an iptables rule in DOCKER-USER denying
+   `qwenpaw-sandbox-net` → `172.18.0.1` (broker :8896, MCP :8898).
+   Verify from a throwaway container on the bridge that the gateway
+   is unreachable AND that the proxy still answers. Without this
+   rule the isolation is fiction (residual hole 2).
+4. Resolve symlinks in the job workspace before mounting
+   (`realpath`; refuse the job if the resolved path escapes the
+   workspace root). Residual hole 7.
+5. Sync `features/sandbox/egress_proxy.py`,
+   `features/egress-guard/egress_guard.py`, and `proxy-allowlist.txt`
+   to the machine; start the proxy from
+   `profile/docker-compose.sandbox.yml`.
+6. Implement the broker-side `POST /sandbox/inject` endpoint: verify
+   the token (`vault_tokens.verify_token`, single-use store), fetch
+   the named value from the Worker (`/vault/export`), inject it into
+   the child env, scrub the output — the same pattern as the
+   broker's existing `/run`, but token-gated instead of broker-token
+   gated. Until this endpoint exists, no sandbox job can use a vault
+   key at all (fail-closed, by design).
+7. Wire dispatch into the job runner: Code Mode jobs call
+   `route_job`; a `sandbox` decision builds the profile, validates
+   it, mints the token, writes it to the tmpfs file, and runs
+   `docker run` from `docker_run_argv`. A `refuse` decision surfaces
+   the reason to the user.
+8. Live proof (parent runs this): a container on the bridge tries to
+   `cat /app/working.secret/auth.json` (must fail: no such mount),
+   curl the gateway :8896 (must fail: no route), curl an
+   allowlisted host through the proxy (must work), curl a
+   non-allowlisted host (must 403), and run a job that writes a file
+   into `/workspace` (must land in the job workspace on the host).
+   Record the run; until then this feature is code, not protection.
+
+## 6. The test (T139)
+
+```bash
+python3 features/sandbox/test_sandbox.py            # 50 checks
+python3 features/sandbox/test_sandbox.py --impl none  # fail-first: 7 passed, 43 failed
+```
+
+Fail-first: `--impl none` runs the same assertions against the
+pre-sandbox behaviour (main-container mounts, host network,
+unsigned never-expiring tokens, allow-everything proxy,
+route-everything-to-main) and fails 43/50. With the real code it
+passes 50/50. The test covers: (a) profile mounts/network/limits/
+lifetime/env/token-file + the validator naming each hole in a
+hand-built leaky profile + rendering refusing it; (b) the proxy
+allowlist equalling T123 exactly + deny/allow over real HTTP on
+localhost (deny paths only — no upstream fetch); (c) token
+mint/verify, expiry, wrong scope, tamper, wrong key, TTL cap,
+single-use replay; (d) dispatch routing + every refusal + the one
+legacy exception. All fixtures are FAKE, built by concatenation so
+no literal secret-shaped string or China endpoint host appears in
+the test file.
+
+## DONE vs REMAINING (honest)
+
+DONE in this pass (code + machine-free test, committed):
+
+* Sandbox profile builder + validator + `docker run` / compose
+  rendering (workspace-only mount, isolated bridge, caps, lifetime).
+* Vault-broker token API: mint/verify, exact scope, expiry,
+  single-use `jti`, fail-closed key loading, CLI.
+* Egress proxy enforcing the T123 allowlist (no new allowlist) +
+  the generated snapshot file with an exact-equality test.
+* Dispatcher routing generated-code jobs to the sandbox and
+  refusing everything that cannot run there (never falling back).
+* Dockerfile + compose file for the sandbox + proxy.
+* T139, 50/50, fail-first proven (7 passed / 43 failed on the stub).
+
+REMAINING (not done, not faked — parent's job when the machine unlocks):
+
+* **Broker-side `POST /sandbox/inject` endpoint.** The token API
+  exists; the endpoint that honours it does not. Without it no
+  sandbox job can use a vault key (fail-closed, by design).
+* **The DOCKER-USER gateway rule.** Compose alone cannot express
+  "this bridge may not reach that gateway". Until the rule is live,
+  the network isolation is a config claim, not a fact.
+* **Runner wiring.** Nothing calls `route_job` yet; Code Mode jobs
+  still run in the main container. The wiring is step 7 in §5.
+* **Live proof.** No container has run: no Dockerfile build, no
+  bridge test, no gateway-unreachable probe, no proxy-through-
+  container test, no browser check. All listed as NOT verified.
+* **Symlink resolution at mount time** (residual hole 7) and the
+  **bridge DNS setting** (residual hole 4) — both deploy steps.
+* **No gVisor / seccomp profile / AppArmor profile.** The profile
+  drops ALL caps and sets `no-new-privileges`; a seccomp default
+  profile is a follow-up hardening step, not in this pass.
+* **The 1 GiB memory cap is a sizing choice, not a measurement.**
+  If real jobs OOM at 1 GiB, the fix is a per-job memory request
+  with a hard ceiling — not a silent raise of the default.
+
+## Deliberately not done
+
+* No new allowlist. The proxy reuses T123's; the snapshot file is
+  generated from it and tested for exact equality.
+* No `docker.sock`, no DinD, no privileged mode, no host network —
+  not as options, not as flags. There is no supported way to ask
+  for them.
+* No token with a TTL above 300 s, no wildcard scope, no
+  prefix-match scope. A job that needs a broader scope gets a
+  refusal and a reason, not a broader token.
+* No second vault, no key storage in the sandbox image, no secret
+  in env vars. The sandbox image contains no credential of any kind.
+* DeepSeek's 2 GiB memory suggestion was NOT adopted (see §1):
+  the Free VM cannot afford it alongside the main container +
+  desktop.
+* The fixed codemode pilot job stays on main (exact job id). It is
+  not generated code and it needs the desktop; moving it to the
+  sandbox would break it, not secure it.
