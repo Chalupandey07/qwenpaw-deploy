@@ -698,7 +698,7 @@ function computerPanelScript(rebrandEnabled) {
     // ?rebrand=0 in the page URL (checked at runtime).
     /* AGENTX-REBRAND-START */
     var AGENTX_MENU_LABELS = ["Tutorial", "Feature Demos", "Changelog", "FAQ", "GitHub", "Documentation", "Import"];
-    var AGENTX_CHINA_LABELS = ["DashScope", "SiliconFlow", "ModelScope", "Alibaba", "WeCom", "DingTalk", "Feishu", "QQ", "WeChat", "Xiaoyi"];
+    var AGENTX_CHINA_LABELS = ["DashScope", "SiliconFlow", "ModelScope", "Alibaba", "Alibaba Cloud", "Aliyun", "WeCom", "DingTalk", "Feishu", "QQ", "WeChat", "Xiaoyi"];
     var AGENTX_LOAD_BEARING = ["qwenpaw[codex]", "qwenpaw[whisper]", "QWENPAW_AUTH_ENABLED", "~/.qwenpaw", "qwenpaw_auth_token", "qwenpaw-agent-storage", "qwenpaw-last-used-agent", "qwenpaw:", "qwenpaw-"];
     var agentxLinkBlockerInstalled = false;
     var agentxLastRun = 0;
@@ -774,26 +774,178 @@ function computerPanelScript(rebrandEnabled) {
       }
       return found;
     }
-    function agentxAboutRule() {
-      var items;
-      try { items = document.querySelectorAll("li, button, a, [role='menuitem']"); } catch (e) { return 0; }
-      var done = 0;
-      for (var i = 0; i < items.length; i++) {
+    // Climb from a matched element to the container that must be hidden
+    // (the button / card / menu item itself, not just the name inside it).
+    // Fix 2026-11-18 (browser verification): agentxHideExact only hid the
+    // leaf that held the label, so icon-only buttons and provider cards
+    // survived as unnamed shells. closest() with the container selector is
+    // tried first; when the container carries no matching class, walk up a
+    // few levels for a card/item-like ancestor, or for the ancestor that is
+    // a direct child of a list/grid (that ancestor IS the card). Returns
+    // null when no container is found, so the caller hides the element.
+    function agentxClimbToContainer(el, containerSelector) {
+      var target = null;
+      try { target = el.closest ? el.closest(containerSelector) : null; } catch (e) {}
+      if (target) return target;
+      var cur = el.parentNode;
+      for (var depth = 0; cur && cur.nodeType === 1 && depth < 6; depth++) {
         try {
-          var el = items[i];
-          if (el.children && el.children.length) continue;
-          var t = (el.textContent || "").trim();
-          if (t !== "About QwenPaw" && t !== "About AgentX") continue;
-          if (el.getAttribute && el.getAttribute("data-agentx-about")) continue;
-          if (el.setAttribute) el.setAttribute("data-agentx-about", "1");
-          el.addEventListener("click", function (ev) {
-            try { ev.preventDefault(); ev.stopPropagation(); } catch (e) {}
-            try { window.open("/status", "_blank"); } catch (e) {}
-          });
-          done += 1;
+          var cls = "";
+          try { cls = cur.getAttribute("class") || ""; } catch (e) {}
+          var role = "";
+          try { role = cur.getAttribute("role") || ""; } catch (e) {}
+          var tag = (cur.tagName || "").toLowerCase();
+          if (tag === "li" || role === "listitem" ||
+              cls.indexOf("card") !== -1 || cls.indexOf("item") !== -1 ||
+              cls.indexOf("listitem") !== -1 || cls.indexOf("provider") !== -1 ||
+              cls.indexOf("model") !== -1 || cls.indexOf("channel") !== -1) {
+            return cur;
+          }
+          var parent = cur.parentNode;
+          if (parent && parent.nodeType === 1) {
+            var pCls = "";
+            try { pCls = parent.getAttribute("class") || ""; } catch (e) {}
+            var pRole = "";
+            try { pRole = parent.getAttribute("role") || ""; } catch (e) {}
+            var pTag = (parent.tagName || "").toLowerCase();
+            if (pRole === "list" || pTag === "ul" || pTag === "ol" ||
+                pCls.indexOf("list") !== -1 || pCls.indexOf("grid") !== -1) {
+              return cur;
+            }
+          }
+        } catch (e) {}
+        cur = cur.parentNode;
+      }
+      return null;
+    }
+    // Hide every element whose ACCESSIBLE NAME matches a label — not just
+    // elements whose visible text equals it. Fix 2026-11-18 (browser
+    // verification): the header Documentation/GitHub buttons and the five
+    // Settings-menu icon buttons have no text at all, only an accessible
+    // name (aria-label / title), and the China channel cards likewise
+    // carry the name as an accessible name while showing only an icon +
+    // Configure. The name is read from aria-label, then title, then alt
+    // (img), then the element's own text. A name from an attribute may
+    // match as a whole word ("Open GitHub" matches "GitHub"); a name from
+    // text must match exactly, so a container whose text merely contains
+    // a label among other items is never hidden. The container found by
+    // agentxClimbToContainer is hidden, not the name element alone.
+    function agentxHideByName(labels, itemSelector, containerSelector) {
+      var found = 0;
+      var els;
+      try { els = document.querySelectorAll(itemSelector); } catch (e) { return 0; }
+      for (var i = 0; i < els.length; i++) {
+        try {
+          var el = els[i];
+          var name = "";
+          var fromAttr = false;
+          try { name = el.getAttribute("aria-label") || ""; } catch (e) {}
+          if (!name) { try { name = el.getAttribute("title") || ""; } catch (e) {} }
+          if (!name) { try { name = el.getAttribute("alt") || ""; } catch (e) {} }
+          if (name) fromAttr = true;
+          if (!name) { try { name = (el.textContent || "").trim(); } catch (e) {} }
+          if (!name) continue;
+          var matched = false;
+          for (var j = 0; j < labels.length; j++) {
+            var label = labels[j];
+            if (name === label) { matched = true; break; }
+            if (fromAttr) {
+              if (label.indexOf(" ") !== -1) {
+                if (name.indexOf(label) !== -1) { matched = true; break; }
+              } else {
+                var words = name.split(/[^A-Za-z0-9]+/);
+                for (var k = 0; k < words.length; k++) {
+                  if (words[k] === label) { matched = true; break; }
+                }
+                if (matched) break;
+              }
+            }
+          }
+          if (!matched) continue;
+          var target = agentxClimbToContainer(el, containerSelector);
+          if (!target) target = el;
+          if (target.getAttribute && target.getAttribute("data-agentx-hidden")) continue;
+          target.style.display = "none";
+          if (target.setAttribute) target.setAttribute("data-agentx-hidden", "1");
+          found += 1;
         } catch (e) {}
       }
-      return done;
+      return found;
+    }
+    // About item click: delegated, capture-phase, on document. Fix
+    // 2026-11-18 (browser verification): the old rule attached a listener
+    // to a leaf whose text was EXACTLY "About QwenPaw" / "About AgentX",
+    // but the real label carries the version ("About QwenPaw v2.3.0"), so
+    // it never matched and clicking About only closed the menu. This one
+    // matches by PREFIX ("About QwenPaw" / "About AgentX", version suffix
+    // allowed) and walks up from the click target, so it works whether the
+    // item is a button, an li, or a div, and whether the click lands on
+    // the icon, the text, or the row. Capture phase runs before the
+    // menu's own handler, so the upstream navigation never happens; the
+    // menu is closed with a best-effort Escape keypress (the menu would
+    // otherwise stay open, because its own handler never runs).
+    var agentxAboutInstalled = false;
+    function agentxAboutRule() {
+      if (agentxAboutInstalled) return 0;
+      try {
+        document.addEventListener("click", function (ev) {
+          try {
+            var cur = ev.target;
+            for (var depth = 0; cur && depth < 8; depth++) {
+              try {
+                if (cur.nodeType === 1) {
+                  var t = (cur.textContent || "").trim();
+                  if (t && t.length < 40 &&
+                      (t.indexOf("About QwenPaw") === 0 || t.indexOf("About AgentX") === 0)) {
+                    try { ev.preventDefault(); ev.stopPropagation(); } catch (e) {}
+                    try { window.open("/status", "_blank"); } catch (e) {}
+                    try {
+                      var esc = null;
+                      if (typeof KeyboardEvent === "function") esc = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+                      else if (document.createEvent) { esc = document.createEvent("Event"); esc.initEvent("keydown", true, true); esc.key = "Escape"; }
+                      if (esc) document.dispatchEvent(esc);
+                    } catch (e) {}
+                    return;
+                  }
+                }
+              } catch (e) {}
+              cur = cur.parentNode;
+            }
+          } catch (e) {}
+        }, true);
+        agentxAboutInstalled = true;
+        return 1;
+      } catch (e) { return 0; }
+    }
+    // Title watcher: rename document.title the moment the app sets it.
+    // Fix 2026-11-18 (browser verification): on navigation the title
+    // first read "Settings · QwenPaw" and only flipped to AgentX seconds
+    // later, because the body MutationObserver only runs the pass when a
+    // body mutation happens. A title change does not mutate the body, so
+    // the rename waited for the next re-render. This observer watches the
+    // <title> element itself, so the rename is immediate. Setting the
+    // title inside the callback re-fires the observer, but the title no
+    // longer contains "QwenPaw", so it is a no-op, not a loop. A brief
+    // flash can still occur if the app sets the title between the
+    // observer's microtask and the rename — that is a known limitation,
+    // not chased with a timer loop (quota rule: no wall-clock polling).
+    var agentxTitleWatcherInstalled = false;
+    function agentxWatchTitle() {
+      if (agentxTitleWatcherInstalled) return 0;
+      try {
+        var titleEl = document.querySelector("title");
+        if (!titleEl || typeof MutationObserver !== "function") return 0;
+        var titleObserver = new MutationObserver(function () {
+          try {
+            if (document.title && document.title.indexOf("QwenPaw") !== -1) {
+              document.title = document.title.split("QwenPaw").join("AgentX");
+            }
+          } catch (e) {}
+        });
+        titleObserver.observe(titleEl, { childList: true, characterData: true, subtree: true });
+        agentxTitleWatcherInstalled = true;
+        return 1;
+      } catch (e) { return 0; }
     }
     function agentxBlockUpstreamLinks() {
       if (agentxLinkBlockerInstalled) return;
@@ -834,10 +986,37 @@ function computerPanelScript(rebrandEnabled) {
       { id: "rename-text", run: function () {
         try { agentxRenameTextIn(document.body); } catch (e) {}
       } },
-      { id: "hide-menu", run: function () {
-        for (var i = 0; i < AGENTX_MENU_LABELS.length; i++) {
-          agentxHideExact(AGENTX_MENU_LABELS[i], "li, button, a, [role='menuitem'], span, div", "li, [role='menuitem'], [class*='menu-item']");
+      { id: "rename-logo", run: function () {
+        // Sidebar logo: an <img> with alt "QwenPaw" (browser verification
+        // 2026-11-18: the sidebar still showed "QwenPaw" + "v2.3.0" on
+        // every console page). An image cannot be renamed, so swap it for
+        // the AgentX wordmark in text, in the same brand slot, so the
+        // sidebar layout does not shift. The alt is renamed first, so the
+        // a11y tree says AgentX even if the swap is skipped.
+        var imgs;
+        try { imgs = document.querySelectorAll('img[alt*="QwenPaw"]'); } catch (e) { return; }
+        for (var i = 0; i < imgs.length; i++) {
+          try {
+            var img = imgs[i];
+            if (img.getAttribute && img.getAttribute("data-agentx-logo")) continue;
+            if (img.setAttribute) img.setAttribute("data-agentx-logo", "1");
+            try { img.setAttribute("alt", (img.getAttribute("alt") || "").split("QwenPaw").join("AgentX")); } catch (e) {}
+            try {
+              var parent = img.parentNode;
+              if (parent && document.createElement && parent.replaceChild) {
+                var label = document.createElement("span");
+                label.textContent = "AgentX";
+                try { label.setAttribute("style", "font-weight:700;font-size:18px;line-height:1;"); } catch (e) {}
+                parent.replaceChild(label, img);
+              } else {
+                img.style.display = "none";
+              }
+            } catch (e) { try { img.style.display = "none"; } catch (e2) {} }
+          } catch (e) {}
         }
+      } },
+      { id: "hide-menu", run: function () {
+        agentxHideByName(AGENTX_MENU_LABELS, "button, a, li, [role='menuitem'], [role='button'], [role='option'], span, div", "button, a, li, [role='menuitem'], [class*='menu-item']");
       } },
       { id: "hide-about", run: function () { agentxAboutRule(); } },
       { id: "hide-language", run: function () {
@@ -871,9 +1050,7 @@ function computerPanelScript(rebrandEnabled) {
         agentxHideAncestorByContent("Import data from other AI applications", "span, div, p, li", "section, [class*='card'], [class*='row'], li, div");
       } },
       { id: "hide-china", run: function () {
-        for (var i = 0; i < AGENTX_CHINA_LABELS.length; i++) {
-          agentxHideExact(AGENTX_CHINA_LABELS[i], "li, button, a, [role='menuitem'], [role='listitem'], span, div, h1, h2, h3, h4", "[class*='card'], li, [role='listitem'], [class*='item'], section");
-        }
+        agentxHideByName(AGENTX_CHINA_LABELS, "li, button, a, [role='menuitem'], [role='listitem'], span, div, h1, h2, h3, h4, img", "[class*='card'], li, [role='listitem'], [class*='item'], [class*='provider'], section");
       } },
       { id: "block-links", run: function () { agentxBlockUpstreamLinks(); } },
     ];
@@ -900,6 +1077,7 @@ function computerPanelScript(rebrandEnabled) {
       vaultMenuObserver.observe(document.body, { childList: true, subtree: true });
       addVaultMenuItem();
       agentxRunRules();
+      agentxWatchTitle();
     } catch (e) { /* observer unavailable; the floating Vault button still works */ }
   } catch (e) { /* never break the console */ }
 })();
