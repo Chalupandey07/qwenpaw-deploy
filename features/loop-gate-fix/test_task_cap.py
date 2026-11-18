@@ -50,6 +50,26 @@ Discriminating tests (must FAIL on the gatefix3 gate, PASS on patched):
      fails open on bad data. P FAILS on the gatefix4 gate (no
      persistence functions: every rebuild loses the task) and PASSES
      on gatefix5.
+  Q  (T141, gatefix6) realistic resume messages: the blind spot P
+     missed. P used bare "hello" turns, but the live test (browser
+     task d0f77cb7, chat 0b220b4f) used "hello, are you working?" and
+     "Yes, continue from 21". Gatefix5's _is_continuation required an
+     EXACT match against a fixed set of bare words, so those messages
+     each minted a FRESH task budget and abandoned the echo task --
+     the per-task cap never accumulated (live: 20 shell/turn,
+     cumulative 60, past the 40-shell cap). Gatefix6 matches a
+     continuation phrase at the START of the message at a word
+     boundary. Q1 replays the live shape WITH fresh agent objects
+     per turn and the realistic messages: "hello, are you working?"
+     resumes the same task (0 calls), "Yes, continue from 21"
+     resumes and spends 20 more to 40 and finalises, "continue"
+     executes 0. Q2 unit-checks the matcher (prefix + word
+     boundary: "yesterday" / "history" / "surely" / "thanksgiving"
+     are NOT continuations). Q3 checks a genuinely new instruction
+     after finalisation still mints a fresh task. Q FAILS on the
+     gatefix5 gate (11/30: Q1f/Q1g/Q1h/Q1l/Q1m/Q1o/Q1p/Q2a/Q2b/Q2c/
+     Q2e) with byte-identical task ids to the live session file,
+     and PASSES on gatefix6.
 
 Regression tests (must PASS on both):
   N1 a small run executes fully, is not finalised, writes no stops.
@@ -828,6 +848,153 @@ def run_tests(limits_mod, section=None):
         executed, _ = simulate_execute(fresh, blocks)
         check("P3f fresh task 5 shell execute",
               executed == 5, f"executed={executed}")
+
+        # -- Q: realistic resume messages (T141, gatefix6) -----------
+        # The blind spot section P missed: it used bare "hello" turns,
+        # but the live test (browser task d0f77cb7, chat 0b220b4f) used
+        # realistic messages. Gatefix5's _is_continuation required an
+        # EXACT match against a fixed set of bare words, so "hello,
+        # are you working?" and "Yes, continue from 21" each minted a
+        # FRESH task budget and abandoned the echo task -- the per-task
+        # cap never accumulated (live: 20 shell/turn, cumulative 60,
+        # past the 40-shell cap). Gatefix6 matches a continuation
+        # phrase at the START of the message at a word boundary, so
+        # those messages resume the current task. Q replays the live
+        # shape WITH a fresh agent object per turn (like P): turn 1
+        # spends 20, "hello, are you working?" resumes (same task,
+        # 0 calls), "Yes, continue from 21" resumes and spends 20
+        # more to 40 and finalises, "continue" executes 0.
+        # Q1: the live shape with realistic messages + rebuilds.
+        gate = make_gate()
+        gate.reset_turn()
+        agent = FakeAgent([], "r1")
+        blocks = [tool_block(SHELL) for _ in range(50)]
+        begin_turn(agent, "r1", ECHO, blocks)
+        res = await gate.check({"iteration": 0, "agent": agent})
+        check("Q1a turn1 gate TERMINATEs (per-turn)",
+              res.action == StopAction.TERMINATE, f"action={res.action}")
+        executed, refused = simulate_execute(agent, blocks)
+        check("Q1b turn1 20 shell execute",
+              executed == 20, f"executed={executed}")
+        check("Q1c turn1 30 refused",
+              refused == 30, f"refused={refused}")
+        task = task_of(agent)
+        task_a_id = task.get("task_id") if task else None
+        check("Q1d task shell total == 20 after turn1",
+              task is not None
+              and task.get("by_tool", {}).get(SHELL) == 20,
+              f"task={task}")
+        # Turn 2: "hello, are you working?" on a FRESH agent. The
+        # model sends no tool calls (prose reply), but the task must
+        # be the SAME task -- not a fresh one.
+        agent = rebuild_agent(agent, "r2")
+        gate.reset_turn()
+        begin_turn(agent, "r2", "hello, are you working?", [])
+        res = await gate.check({"iteration": 0, "agent": agent})
+        check("Q1e turn2 'hello, are you working?' does NOT fire",
+              res.action == StopAction.BYPASS, f"action={res.action}")
+        task = task_of(agent)
+        check("Q1f turn2 resumes the SAME task (no fresh budget)",
+              task is not None and task.get("task_id") == task_a_id,
+              f"task_id={task.get('task_id') if task else None!r} "
+              f"expected={task_a_id!r}")
+        check("Q1g turn2 task shell total still 20",
+              task is not None
+              and task.get("by_tool", {}).get(SHELL) == 20,
+              f"task={task}")
+        # Turn 3: "Yes, continue from 21" on a FRESH agent. Resumes
+        # the echo task and spends 20 more to the 40 cap.
+        agent = rebuild_agent(agent, "r3")
+        gate.reset_turn()
+        blocks3 = [tool_block(SHELL) for _ in range(20)]
+        begin_turn(agent, "r3", "Yes, continue from 21", blocks3)
+        task = task_of(agent)
+        check("Q1h turn3 'Yes, continue from 21' resumes SAME task",
+              task is not None and task.get("task_id") == task_a_id,
+              f"task_id={task.get('task_id') if task else None!r} "
+              f"expected={task_a_id!r}")
+        res = await gate.check({"iteration": 0, "agent": agent})
+        check("Q1i turn3 gate TERMINATEs",
+              res.action == StopAction.TERMINATE, f"action={res.action}")
+        executed, refused = simulate_execute(agent, blocks3)
+        check("Q1j turn3 20 more shell execute",
+              executed == 20, f"executed={executed}")
+        check("Q1k turn3 0 refused (the model only sent 20)",
+              refused == 0, f"refused={refused}")
+        task = task_of(agent)
+        check("Q1l task shell total == 40 (the cap) after turn3",
+              task is not None
+              and task.get("by_tool", {}).get(SHELL) == 40,
+              f"task={task}")
+        check("Q1m task is finalised at the cap after turn3",
+              task is not None and task.get("finalized") is True,
+              f"task={task}")
+        # Turn 4: "continue" on a FRESH agent; the finalised task
+        # must refuse all.
+        agent = rebuild_agent(agent, "r4")
+        gate.reset_turn()
+        blocks4 = [tool_block(SHELL) for _ in range(20)]
+        begin_turn(agent, "r4", "continue", blocks4)
+        res = await gate.check({"iteration": 0, "agent": agent})
+        check("Q1n turn4 gate TERMINATEs (finalised task)",
+              res.action == StopAction.TERMINATE, f"action={res.action}")
+        executed, refused = simulate_execute(agent, blocks4)
+        check("Q1o turn4 0 execute",
+              executed == 0, f"executed={executed}")
+        check("Q1p turn4 20 refused",
+              refused == 20, f"refused={refused}")
+
+        # Q2: the continuation matcher itself (prefix + word
+        # boundary). Direct unit checks on _is_continuation.
+        is_cont = getattr(limits_mod, "_is_continuation", None)
+        if is_cont is None:
+            check("Q2a _is_continuation exists",
+                  False, "missing (no task-cap code)")
+        else:
+            check("Q2a 'hello, are you working?' is a continuation",
+                  is_cont("hello, are you working?") is True)
+            check("Q2b 'Yes, continue from 21' is a continuation",
+                  is_cont("Yes, continue from 21") is True)
+            check("Q2c 'continue from 21' is a continuation",
+                  is_cont("continue from 21") is True)
+            check("Q2d 'please continue' is a continuation",
+                  is_cont("please continue") is True)
+            check("Q2e 'go on with it' is a continuation",
+                  is_cont("go on with it") is True)
+            check("Q2f 'yesterday I was working' is NOT a continuation",
+                  is_cont("yesterday I was working on this") is False)
+            check("Q2g 'history of the loop gate' is NOT a continuation",
+                  is_cont("history of the loop gate") is False)
+            check("Q2h 'surely you can do better' is NOT a continuation",
+                  is_cont("surely you can do better") is False)
+            check("Q2i 'thanksgiving dinner' is NOT a continuation",
+                  is_cont("thanksgiving dinner") is False)
+            check("Q2j 'please print the numbers' is NOT a continuation",
+                  is_cont("Please print the numbers from 1 to 200") is False)
+
+        # Q3: a genuinely new instruction after finalisation still
+        # mints a fresh task with a fresh budget (the fix must not
+        # collapse every message into the old task). The new task is
+        # resolved by gate.check, so the identity is read after it.
+        agent = rebuild_agent(agent, "r5")
+        gate.reset_turn()
+        blocks5 = [tool_block(SHELL) for _ in range(5)]
+        begin_turn(agent, "r5",
+                   "What is 2 + 2? Please use a shell echo.", blocks5)
+        res = await gate.check({"iteration": 0, "agent": agent})
+        task = task_of(agent)
+        check("Q3a new instruction mints a DIFFERENT task",
+              task is not None and task.get("task_id") != task_a_id,
+              f"task_id={task.get('task_id') if task else None!r}")
+        check("Q3b new instruction does NOT fire (5 < 30)",
+              res.action == StopAction.BYPASS, f"action={res.action}")
+        executed, refused = simulate_execute(agent, blocks5)
+        check("Q3c new instruction 5 shell execute",
+              executed == 5, f"executed={executed}")
+        task = task_of(agent)
+        check("Q3d new task is not finalised",
+              task is not None and task.get("finalized") is False,
+              f"task={task}")
 
     asyncio.run(run_all())
     return results
