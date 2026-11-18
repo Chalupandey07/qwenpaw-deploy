@@ -827,6 +827,188 @@ def get_task_state(agent: Any) -> dict[str, Any] | None:
     }
 
 
+# --- Task-budget persistence (gatefix5) -------------------------------------
+# The agent object is rebuilt for EVERY user turn (runtime/runtime.py:
+# `ctx.agent = await builder.build(ctx)` per request; the builder restores
+# the session via `agent.load_state_dict(ctx.session_state)`).
+# load_state_dict restores only self.state (AgentState) + scroll-manager
+# bookkeeping -- it does NOT restore plain Python attributes on the agent
+# object. Gatefix4 stored the task budget as such an attribute
+# (_tool_call_task_budget), so every turn started with a fresh task
+# (total=0) and the per-task cap never bound: the live gatefix4 test
+# executed 20 shell calls per turn for 4 turns (cumulative 80, past the
+# 40-shell cap). The fix persists the task budget through the
+# session-state round-trip, following the existing "scroll" pattern in
+# ReactAgent.state_dict()/load_state_dict(): the budget is a top-level key
+# ("tool_call_task_budget") in the state dict, next to "scroll". The
+# react_agent.py patch wires state_dict()/load_state_dict() to these two
+# functions. The cap numbers, check order and enforcer are unchanged.
+#
+# The snapshot is a COPY (by_tool / reply_ids / charged_batch_results are
+# copied), so a later mutation during serialization cannot tear it. The
+# prior-task map is capped at 32 entries (bounded growth in long
+# sessions). The loader validates BEFORE mutating anything on the agent
+# and fails open (returns False, agent untouched) on any bad data -- an
+# old session file simply has no key and the task starts fresh. Limits
+# are persisted frozen (gatefix4 froze them at task creation); restoring
+# them preserves the freeze, so a config reload cannot move the
+# goalposts mid-task.
+_TASK_BUDGET_STATE_KEY = "tool_call_task_budget"
+_TASK_BUDGET_STATE_VERSION = 1
+_PRIOR_PERSIST_CAP = 32
+
+
+def task_budget_state_dict(agent: Any) -> dict[str, Any] | None:
+    """JSON-safe snapshot of the task budget + prior tasks, or None.
+
+    Returns None when the agent has no task and no prior-task record
+    (nothing to persist). The caller (ReactAgent.state_dict) writes the
+    key unconditionally -- None means "no budget", which is distinct
+    from a missing key on an old session file.
+    """
+    try:
+        if agent is None:
+            return None
+        task = getattr(agent, _TASK_ATTR, None)
+        prior = getattr(agent, _PRIOR_ATTR, None) or {}
+        if task is None and not prior:
+            return None
+        task_data = None
+        if task is not None:
+            task_data = {
+                "task_id": str(task.task_id or ""),
+                "instruction": str(task.instruction or ""),
+                "fingerprint": str(task.fingerprint or ""),
+                "total": int(task.total or 0),
+                "by_tool": {
+                    str(k): int(v) for k, v in dict(task.by_tool).items()
+                },
+                "max_calls": task.max_calls,
+                "per_tool": {
+                    str(k): int(v) for k, v in dict(task.per_tool).items()
+                },
+                "finalized": bool(task.finalized),
+                "finalized_reason": str(task.finalized_reason or ""),
+                "reply_ids": sorted(str(r) for r in set(task.reply_ids)),
+                "charged_batch_results": sorted(
+                    str(r) for r in set(task.charged_batch_results)
+                ),
+            }
+        prior_data: dict[str, Any] = {}
+        items = list(prior.items())
+        for fingerprint, spent in items[-_PRIOR_PERSIST_CAP:]:
+            try:
+                prior_data[str(fingerprint)] = {
+                    "total": int((spent or {}).get("total") or 0),
+                    "by_tool": {
+                        str(k): int(v)
+                        for k, v in dict(
+                            (spent or {}).get("by_tool") or {},
+                        ).items()
+                    },
+                    "capped": bool((spent or {}).get("capped")),
+                }
+            except Exception:
+                continue
+        return {
+            "version": _TASK_BUDGET_STATE_VERSION,
+            "task": task_data,
+            "prior": prior_data,
+        }
+    except Exception:
+        return None
+
+
+def load_task_budget_state_dict(agent: Any, data: Any) -> bool:
+    """Restore the task budget + prior tasks onto the agent.
+
+    Returns True when a task (or prior record) was restored, False when
+    there was nothing to restore (None / missing / bad data). Validates
+    BEFORE mutating anything on the agent, so a bad payload leaves the
+    agent untouched and the caller proceeds with a fresh task
+    (fail-open).
+    """
+    if agent is None or not isinstance(data, dict):
+        return False
+    try:
+        if data.get("version") != _TASK_BUDGET_STATE_VERSION:
+            return False
+        task_data = data.get("task")
+        prior_data = data.get("prior")
+        # Validate the task payload before touching the agent.
+        task = None
+        if task_data is not None:
+            if not isinstance(task_data, dict):
+                return False
+            total = task_data.get("total")
+            by_tool = task_data.get("by_tool")
+            max_calls = task_data.get("max_calls")
+            per_tool = task_data.get("per_tool")
+            if not isinstance(total, int) or isinstance(total, bool):
+                return False
+            if not isinstance(by_tool, dict):
+                return False
+            if max_calls is not None and (
+                not isinstance(max_calls, int)
+                or isinstance(max_calls, bool)
+            ):
+                return False
+            if not isinstance(per_tool, dict):
+                return False
+            task = _TaskBudget(
+                task_id=str(task_data.get("task_id") or ""),
+                instruction=str(task_data.get("instruction") or "")[:120],
+                fingerprint=str(task_data.get("fingerprint") or ""),
+                total=int(total),
+                by_tool=Counter(
+                    {str(k): int(v) for k, v in by_tool.items()},
+                ),
+                max_calls=max_calls,
+                per_tool={
+                    str(k): int(v) for k, v in per_tool.items()
+                },
+                finalized=bool(task_data.get("finalized")),
+                finalized_reason=str(
+                    task_data.get("finalized_reason") or "",
+                ),
+                reply_ids=set(
+                    str(r)
+                    for r in (task_data.get("reply_ids") or [])
+                    if isinstance(r, str)
+                ),
+                charged_batch_results=set(
+                    str(r)
+                    for r in (task_data.get("charged_batch_results") or [])
+                    if isinstance(r, str)
+                ),
+            )
+        # Validate the prior payload before touching the agent.
+        prior: dict[str, Any] = {}
+        if prior_data is not None:
+            if not isinstance(prior_data, dict):
+                return False
+            for fingerprint, spent in prior_data.items():
+                if not isinstance(spent, dict):
+                    return False
+                prior[str(fingerprint)] = {
+                    "total": int(spent.get("total") or 0),
+                    "by_tool": {
+                        str(k): int(v)
+                        for k, v in dict(
+                            spent.get("by_tool") or {},
+                        ).items()
+                    },
+                    "capped": bool(spent.get("capped")),
+                }
+        if task is not None:
+            setattr(agent, _TASK_ATTR, task)
+        if prior:
+            setattr(agent, _PRIOR_ATTR, prior)
+        return task is not None or bool(prior)
+    except Exception:
+        return False
+
+
 class ToolCallBudgetGate(LoopGate):
     """Limit total and per-tool calls in one agent turn."""
 
