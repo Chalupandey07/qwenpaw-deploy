@@ -47,6 +47,11 @@ records the outcome — a failed suspend reverts to running (fail-awake).
 next routine first and only probes when a routine is due within 15 min
 (a backup wake for the keep-alive, which owns waking). A blind probe
 every 30 min would wake the machine around the clock and defeat sleep.
+Exception (2026-11-18): the daily 07:00 IST slot always probes — at slot
+time the next-run pointer has already rolled to tomorrow, so the 15-min
+rule skipped it live on 2026-11-18 (both 07:00 slots recorded "skipped");
+the slot is the backup wake for the summary, so a failed keep-alive wake
+would otherwise be a silent miss. Cost: one probe/day.
 
 **Wake experience + slow open (same job)**: the waking page now shows
 live progress (elapsed timer, progress bar, status line, 5 s polling,
