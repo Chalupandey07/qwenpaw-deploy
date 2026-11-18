@@ -1958,6 +1958,25 @@ def t121():
         ["features/test-project/test_checks.py"], 14)
 
 
+def t122():
+    """Plan mode: read-only plan before any mutation (43).
+
+    Machine-free test (features/plan-mode/test_plan_mode.py --selftest)
+    for the plan-mode enforcer (features/plan-mode/plan_mode.py):
+    ToolGate refuses mutating calls naming the tool, the plan file
+    carries the five required sections, nothing executes before
+    approval, and after approval only the plan's steps run, in order
+    and at most once, with each approved step id bound to its tool and
+    (for bash) its exact command. Fail-first proven: --gate permissive
+    (prompt-only, no enforcer) fails 20/43. DeepSeek design review
+    2026-11-18 (10,469 tokens) found 12 findings; 9 fixed. The live
+    half (agent loop calling PlanMode.enforce() before dispatch,
+    plan-mode skill enabled) is verified by Muse after deploy.
+    """
+    return _py_script_harness(
+        ["features/plan-mode/test_plan_mode.py", "--selftest"], 43)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2468,6 +2487,7 @@ TESTS = [
     ("T119", "bloat win-win data layer: history/audit DB VACUUM + WAL checkpoint preserve every row, journal_size_limit is per-connection, PNG recompression lossless, log rotation verifies the archive before truncating (harness)", "bloat-winwin", "protocol", t119),
     ("T120", "memory facts v2: multi-signal retrieval (BM25 + entity overlap + importance, weighted RRF), rule-based entity extraction, temporal validity windows + search --as-of, v1 -> v2 migration preserves every fact (selftest)", "memory", "protocol", t120),
     ("T121", "mechanical checks: no China endpoint host/URL in code, no secret-shaped string outside the allowlist, AGENTS.md under its 20000-char cap, no setInterval in server code (selftest)", "checks", "protocol", t121),
+    ("T122", "plan mode: read-only plan before any mutation — ToolGate refuses mutating calls naming the tool, plan file with required sections, no execution before approval, after approval only the plan's steps run in order and at most once (selftest)", "plan-mode", "protocol", t122),
 ]
 
 SKIP_NOTE = {
