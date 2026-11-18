@@ -1160,7 +1160,14 @@ function computerPanelScript(rebrandEnabled) {
           for (var i = 0; i < btns.length; i++) {
             try {
               var b = btns[i];
-              if (b.getAttribute && b.getAttribute("data-agentx-ellipsis")) continue;
+              // NO early skip on data-agentx-ellipsis (2026-11-18 QA
+              // rounds 5–12): React re-renders and RESETS the text
+              // node to the full title, but the attribute survives (it
+              // is not a React prop), so a skip meant the rule ran once
+              // and never re-truncated after React reverted it. The
+              // truncation below is idempotent (it skips text already
+              // containing "…"), so re-running is safe. The wrapping is
+              // guarded separately (see below).
               var name = "";
               try { name = (b.getAttribute("aria-label") || "") + " " + (b.textContent || ""); } catch (e) {}
               if (/more actions/i.test(name)) continue;
@@ -1224,12 +1231,14 @@ function computerPanelScript(rebrandEnabled) {
               // Wrap the first substantial direct text node (the visible
               // title; the duplicate is a later node for the tooltip) in
               // a span that IS a real flex item and can truncate.
-              // FALLBACK (2026-11-18 QA rounds 5–9: CSS ellipsis never
-              // engaged through five different approaches): if the row
-              // still overflows after wrapping, truncate the title text
-              // itself to fit and append "…". This does not depend on
-              // CSS layout at all — the "…" is in the text.
+              // Guard: only wrap once — if a wrap span already exists
+              // (from a previous run), do not wrap again, or nested
+              // spans accumulate on every observer pass now that the
+              // attribute skip is gone.
               try {
+                var alreadyWrapped = false;
+                try { alreadyWrapped = !!(b.querySelector && b.querySelector("span[data-agentx-title-wrap]")); } catch (e) {}
+                if (!alreadyWrapped) {
                 var nodes = b.childNodes;
                 for (var n = 0; n < nodes.length; n++) {
                   var tn = nodes[n];
@@ -1248,6 +1257,7 @@ function computerPanelScript(rebrandEnabled) {
                     break;
                   }
                 }
+                }
               } catch (e) {}
               try {
                 // Truncate by LENGTH, not by measured overflow: the
@@ -1264,7 +1274,7 @@ function computerPanelScript(rebrandEnabled) {
                   if (t2 && t2.nodeType === 3) {
                     var val = t2.nodeValue || "";
                     if (val.trim().length >= 3 && val.length > 16 && val.indexOf("…") === -1) {
-                      t2.nodeValue = val.slice(0, 22).replace(/\\s+$/, "") + "…";
+                      t2.nodeValue = val.slice(0, 15).replace(/\\s+$/, "") + "…";
                       break;
                     }
                   } else if (t2 && t2.textContent) {
@@ -1273,7 +1283,7 @@ function computerPanelScript(rebrandEnabled) {
                       if (inner[q] && inner[q].nodeType === 3 && (inner[q].nodeValue || "").trim().length >= 3) {
                         var v = inner[q].nodeValue;
                         if (v.length > 16 && v.indexOf("…") === -1) {
-                          inner[q].nodeValue = v.slice(0, 22).replace(/\\s+$/, "") + "…";
+                          inner[q].nodeValue = v.slice(0, 15).replace(/\\s+$/, "") + "…";
                         }
                         break;
                       }
