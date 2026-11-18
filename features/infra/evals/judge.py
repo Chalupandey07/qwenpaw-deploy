@@ -101,7 +101,10 @@ JUDGE_PROMPT_VERSION = "judge-prompt/v1"
 JUDGE_MODEL = "deepseek-v4.1-flash-free (console active model, verified 2026-11-19)"
 DEFAULT_BASE = "https://qwenpawx.pages.dev"
 POLL_INTERVAL = 5
-MAX_POLLS = 72  # 72 * 5s = 6 min per judge call, same as run-evals.py
+MAX_POLLS = 180  # 180 * 5s = 15 min per judge call, same as run-evals.py.
+# Was 72 (6 min): live calibration run 1 (2026-11-19) timed out 9/12
+# cases at 360s because a live agent turn takes ~6 min — the reply
+# lands right as the poll gives up. 15 min is ~2.5x headroom.
 MAX_JUDGE_CALLS = 50  # per-transport cap: judging doubles call volume
 MAX_REPLY_CHARS = 12000  # longer replies are truncated, flagged, graded
 
