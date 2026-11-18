@@ -18,11 +18,22 @@ Rules that never change: English only, no China endpoints/data, InstaBox Free on
   HttpOnly/Secure/SameSite=Lax) + a store-free gate in `handleComputer` whose
   allowlist is a list of EXEMPTIONS, so new endpoints are gated by default.
   Also fixed B-37: machine-rest verified tokens against `/api/auth/status`,
-  which is public by design, so any 8-char string passed. T88 is now 70 checks
-  (fail-first 28/70); T04/T05/T06 were rewritten off the deleted `/desktop`
+  which is public by design, so any 8-char string passed. T88 is now 88 checks
+  (fail-first 28/70 was the 70-check version). T04/T05/T06 were rewritten off the deleted `/desktop`
   surface. See BUGS.md B-36/B-37/B-38. **Muse must deploy `_worker.js`,
   `computer/router.js`, `computer/ui.html`, `machine-control.js`, `session.js`
   and set `COMPUTER_SESSION_SECRET` (or reuse `COMPUTER_CAPABILITY_SECRET`).**
+
+- Stale test expectations fixed (2026-11-19, code complete, machine-free
+  verified; live verification of T21 pending the 05:30 IST quota reset):
+  T21 root page is now `AgentX Routines` (was `QwenPaw Routines`, rebrand
+  commit ef7e194); T31 skills 20 → 24 (`vault` 2026-11-17; `telegram`,
+  `tinyfish`, `memory` 2026-11-18; verified live 2026-11-19: `Showing: 24 of
+  24 skills, 24 enabled, 0 disabled`); T85 scanner selftest 41 → 79 checks;
+  T88 Referrer-Policy expectation `same-origin` → `no-referrer` (the proxied
+  console HTML sets `no-referrer`, `_worker.js:2090`, overriding the
+  `same-origin` from `rewriteHeaders`). Harness T88 88/88 machine-free.
+  Registrations still 136. No live behavior changed — only test expectations.
 
 - Console: https://qwenpawx.pages.dev (login satwik), backup https://qwenpaw-frontend.pages.dev; InstaBox machine m_agq5wqqo2fvypym7rjlpvngc2m, QwenPaw Docker v2.3.0 healthy; keep-alive Worker up; Pages proxy live.
 - Loop-gate fix (2026-11-18, round 3 DEPLOYED + LIVE, browser test PARTIAL PASS 2026-11-18 ~13:43 IST): `ToolCallBudgetGate` double-counted (live test fired "(150 calls)" with 100 executed) because the parent merges a turn's tool-call blocks into the `reply_id` message and the gate added the cumulative message each round; a stale `last_iteration` could also skip a count. Round-1 fix recomputes the turn total from the reply-scoped blocks on every check, and wires the gate into the default chain (`loop.tool_call_budget`, defaults 30 / shell 20) so it applies to every chat. Round-2 fix expands a batch call into its sub-calls (from its arguments: inline `actions` or the JSON batch `file_path`) and counts a completed batch from its result JSON when its call could not be expanded; a batch is never counted twice. Round-2 image `qwenpaw-agentx:2.3.0-gatefix2` deployed + live, but the live test REACHED 200 echoes via 200 DIRECT parallel calls in ONE model response — the gate fired ("(200 calls)") but its TERMINATE is deferred, so all 200 executed. Round-3 fix enforces the budget at execution time: `try_reserve_execution` (called from `ReactAgent._execute_tool_call` before the first await) reserves a slot per call and refuses past the budget as a DENIED tool result; a batch call reserves its sub-calls and is refused whole when it would exceed the budget. Enforced bound is ~20 executed for a shell-only burst (per-tool cap) / ~30 for a mixed burst (total cap), NOT 50. `features/loop-gate-fix/` (patch + Dockerfile + README + T115, 47/47, fail-first proven: pristine 18/47, gatefix1 22/47, gatefix2 36/47 with only I failing). Derived image `qwenpaw-agentx:2.3.0-gatefix3` (id 188c1eeebd9f) deployed + live; machine-side live check PASS (real gate + enforcer under asyncio.gather: 20 executed, 180 refused, new turn 20 again). Snapshot `qwenpaw-before-gatefix3` (sn_agq63lss42zgxq2jcicx4jynxu) created first (oldest superseded `qwenpaw-before-camoufox` deleted per standing delegation; `qwenpaw-phase0-verified` untouched). Live browser test (fresh ordinary chat, no `/guarded`, echo 1–200): PARTIAL PASS — the model emitted 50 calls in one response, only 20 executed, 30 refused with DENIED errors, stopped at 50 attempts, did NOT reach 200; the stop message read "(50 calls)" (the model emitted 50, not 200, so the count is correct). Known limitation: the cap is PER-TURN and resets — on the follow-up "hello" the agent resumed the number task and executed 21–40 (cumulative 40). A per-TASK cap (not per-turn) would be a separate feature.
