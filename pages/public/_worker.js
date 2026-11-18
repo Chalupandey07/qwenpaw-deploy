@@ -1177,11 +1177,13 @@ function computerPanelScript(rebrandEnabled) {
               b.style.paddingRight = "30px";
               b.style.boxSizing = "border-box";
               b.style.maxWidth = "100%";
-              var kids = b.querySelectorAll ? b.querySelectorAll("span, div") : [];
+              var kids = b.querySelectorAll ? b.querySelectorAll("*") : [];
               for (var j = 0; j < kids.length; j++) {
                 try {
                   var k = kids[j];
                   if (!k.textContent || !k.textContent.trim()) continue;
+                  var tag = (k.tagName || "").toUpperCase();
+                  if (tag === "IMG" || tag === "BUTTON" || tag === "INPUT" || tag === "SVG") continue;
                   k.style.overflow = "hidden";
                   k.style.textOverflow = "ellipsis";
                   k.style.whiteSpace = "nowrap";
@@ -1192,6 +1194,11 @@ function computerPanelScript(rebrandEnabled) {
                   // mid-word, no ellipsis) instead of truncating.
                   k.style.minWidth = "0";
                   k.style.flexShrink = "1";
+                  // Ellipsis only works on a block container. If the
+                  // title lives in an inline element (span) inside a
+                  // flex button, the inline box never truncates — make
+                  // it a block so the ellipsis engages.
+                  if (tag === "SPAN") k.style.display = "block";
                 } catch (e) {}
               }
             } catch (e) {}
@@ -1255,6 +1262,23 @@ function computerPanelScript(rebrandEnabled) {
               b.style.maxWidth = "none";
               b.style.overflow = "visible";
             } catch (e) {}
+          }
+        } catch (e) {}
+      } },
+      { id: "page-bottom-padding", run: function () {
+        // The three floating pills (Vault / Rest machine / Computer) are
+        // fixed at the bottom-right and overlay whatever content sits
+        // there — on the Models page they cover a provider card's
+        // "Configure ›" link (QA round 7: only "Conf" visible on the
+        // MiniMax card). Give <main> bottom padding so the last row of
+        // content can always be scrolled fully above the pills. The
+        // pills span bottom 16–152px, so 170px clears them.
+        try {
+          var main = document.querySelector ? document.querySelector("main") : null;
+          if (main && !main.getAttribute("data-agentx-bottom-pad")) {
+            main.setAttribute("data-agentx-bottom-pad", "1");
+            main.style.paddingBottom = "170px";
+            main.style.boxSizing = "border-box";
           }
         } catch (e) {}
       } },
@@ -1384,6 +1408,7 @@ function computerPanelScript(rebrandEnabled) {
         agentxRunRuleNow("fix-grammar");
         agentxRunRuleNow("sidebar-ellipsis");
         agentxRunRuleNow("chat-input-fixes");
+        agentxRunRuleNow("page-bottom-padding");
         agentxRunRules();
       });
       // characterData: React updates a text node in place (nodeValue)
