@@ -13,15 +13,19 @@ verification, 2026-11-18). Approach B (DOM injection) was chosen over A
 live-verified.** Built by Muse (code) from the DeepSeek research report.
 Files: `pages/public/_worker.js` (shim + rebrand rules + our strings),
 `features/board/worker/src/index.js`, `features/routines/worker/src/index.js`,
+`worker/src/index.js` (keep-alive probe note),
+`features/infra/workers/activity-feed/index.js` (probe note + title/h1),
 `pages/public/{reset/index.html, vault/ui.html, status-page.html,
 computer/router.js, computer/ui.html, vault/router.js, reset/ui.js}`,
 `features/rebrand/` (this README + harness). Tests: T114
-(harness-rebrand.mjs, 51 checks), PASS; fail-first proven (against the
+(harness-rebrand.mjs, 69 checks), PASS; fail-first proven (against the
 unmodified `_worker.js` it fails 49/51 — the 2 that pass check for the
 ABSENCE of a rebrand section, which is vacuously true on the original
-file). Full machine-free suite 21 PASS / 4 known NEEDS-REBUILD. Secret-scan clean. NOT deployed — the parent deploys
-after the model-loop browser test finishes, so the Pages proxy is untouched
-by this commit.
+file; after the browser-verification fixes below, the extended harness
+fails 22/69 against the pre-fix code and passes 69/69 after). Full
+machine-free suite 21 PASS / 4 known NEEDS-REBUILD. Secret-scan clean.
+NOT deployed — the parent deploys after the model-loop browser test
+finishes, so the Pages proxy is untouched by this commit.
 
 What changed, in order:
 1. **Freeze upstream.** The machine's `/data/home/qwenpaw/docker-compose.yml`
@@ -58,22 +62,76 @@ What changed, in order:
    observer, same file): renames visible "QwenPaw" text (title,
    aria-labels, placeholders, toasts, dialogs) to AgentX; hides the header
    menu items (Tutorial, Feature Demos, Changelog, FAQ, GitHub, the
-   Documentation dropdown, Import); renames "About QwenPaw" to "About
-   AgentX" and intercepts its click (opens our `/status` page); hides the
-   language switcher, the desktop-install prompt, the Codex/Qoder profile
-   rows, the voice/Whisper section; hides the China provider cards
-   (DashScope, SiliconFlow, ModelScope, Alibaba) and China channel cards
-   (WeCom, DingTalk, Feishu, QQ, WeChat, Xiaoyi) by exact display name; a
-   delegated click listener neutralises any `<a>` to the upstream hosts
-   (covers the "View guide"/"Documentation" links in settings). Each rule
-   in its own try/catch with a `console.debug` naming the rule. The pass
-   is throttled (leading + trailing, 400 ms). Kill switches: worker env
+   Documentation dropdown, Import) by accessible name — the whole button,
+   not just its text — via `agentxHideByName` + `agentxClimbToContainer`;
+   renames "About QwenPaw" to "About AgentX" and intercepts its click
+   with a delegated capture listener that opens our `/status` page;
+   replaces the sidebar logo img with an "AgentX" text label; watches
+   the `<title>` element so the title is renamed the moment the app sets
+   it; hides the language switcher, the desktop-install prompt, the
+   Codex/Qoder profile rows, the voice/Whisper section; hides the China
+   provider cards (DashScope, SiliconFlow, ModelScope, Alibaba, Alibaba
+   Cloud, Aliyun) and China channel cards (WeCom, DingTalk, Feishu, QQ,
+   WeChat, Xiaoyi) by accessible name as whole cards; a delegated click
+   listener neutralises any `<a>` to the upstream hosts (covers the
+   "View guide"/"Documentation" links in settings). Each rule in its own
+   try/catch with a `console.debug` naming the rule. The pass is
+   throttled (leading + trailing, 400 ms). Kill switches: worker env
    `AGENTX_REBRAND=0` or `?rebrand=0` in the page URL.
 6. **Our workers' visible text**: board worker title/h1/help text and the
    "Sent to" / "Post to" strings; routines worker title/h1/notes and the
-   history table header; page titles "Reset — AgentX", "Vault — AgentX",
+   history table header; keep-alive worker probe note ("AgentX console
+   answered" — the note the /status page renders); activity-feed worker
+   probe note + page title/h1; page titles "Reset — AgentX", "Vault — AgentX",
    "AgentX — Status" (plus the status page h1, Wake button, footer);
    computer/vault gate error details; reset Logs hint.
+
+## Browser-verification fixes (2026-11-18, after first deploy)
+
+A live browser check (satwik, qwenpawx.pages.dev, 11:13–11:18 IST) found
+the first version only PARTLY working. All six findings are fixed in
+this commit; the harness grew from 51 to 69 checks for them.
+
+1. **Menu buttons only blanked, not removed.** `agentxHideExact` only
+   matched leaf elements whose visible text exactly equalled the label,
+   so icon-only buttons (accessible name only, no text) never matched,
+   and when a name leaf did match, `closest()` often found no card/menu
+   ancestor, so only the name was hidden. Fix: `agentxHideByName`
+   matches by accessible name (aria-label, then title, then alt, then
+   text) and `agentxClimbToContainer` hides the whole button/card —
+   closest() first, then a fallback climb for containers with no
+   matching class. The hide-menu and hide-china rules use it now.
+2. **About click did nothing.** The old rule required the label to be
+   exactly "About QwenPaw" / "About AgentX", but the real label carries
+   the version ("About QwenPaw v2.3.0"), so the listener was never
+   attached — the harness mock used the exact label, which is why it
+   passed. Fix: a delegated capture-phase listener on document, prefix
+   match ("About QwenPaw" / "About AgentX", version suffix allowed),
+   walking up from the click target; it opens /status in a new tab and
+   closes the menu with a best-effort Escape keypress (the menu's own
+   handler never runs, because the click is stopped in capture).
+3. **Sidebar logo still "QwenPaw".** New `rename-logo` rule: finds
+   `img[alt*="QwenPaw"]`, renames the alt to AgentX, and replaces the
+   img with an "AgentX" text span in the same brand slot, so the
+   sidebar layout does not shift.
+4. **/status note still "QwenPaw console answered".** The note comes
+   from the keep-alive Worker's probe result
+   (`worker/src/index.js`), which the /status page renders — renamed
+   to "AgentX console answered". The deployed activity-feed Worker had
+   the same string (plus a QwenPaw title/h1); renamed there too. The
+   routines Worker was already AgentX.
+5. **Settings title flashed "Settings · QwenPaw".** A title change does
+   not mutate the body, so the body MutationObserver never saw it and
+   the rename waited for the next re-render. Fix: `agentxWatchTitle()`
+   observes the `<title>` element itself, so the rename is immediate.
+   A brief flash can still occur if the app sets the title between the
+   observer's microtask and the rename — documented as a known
+   limitation, not chased with a timer loop.
+6. **China cards only blanked, not hidden.** Same root cause as (1):
+   the name leaf was hidden but the card stayed. Fix: the hide-china
+   rule now uses `agentxHideByName` (accessible name + whole-card
+   climb). "Aliyun" (Alibaba Cloud's visible brand) and "Alibaba
+   Cloud" were added to the label list — "Aliyun" was never in it.
 
 ## Live verification (NOT yet done — parent deploys)
 
@@ -123,7 +181,15 @@ or parent text contains `qwenpaw[codex]`, `qwenpaw[whisper]`,
 - **No debloat.** ~10.5 MB of JS still ships; routes stay reachable by
   deep link even if nav is hidden; first paint can flash "QwenPaw" before
   the observer renames it. Only a fork (approach C) actually deletes code
-  or shrinks the bundle.
+  or shrinks the bundle. The settings-title flash is reduced by the
+  `<title>` observer, but a brief flash can still occur if the app sets
+  the title between the observer's microtask and the rename — that is a
+  known limitation, not chased with a timer loop.
+- **About opens /status in a new tab; the menu is closed with a
+  best-effort Escape keypress.** The click is stopped in capture phase,
+  so the menu's own handler never runs. If the Escape dispatch does not
+  close the menu in some browser, the menu stays open behind the new
+  tab — cosmetic, the navigation still happens.
 - **No "no China data" guarantee.** DOM hiding is cosmetic. An egress
   allowlist on the InstaBox VM is the only control that covers
   integrations not yet enumerated. (Note: the China channels
@@ -152,10 +218,17 @@ or parent text contains `qwenpaw[codex]`, `qwenpaw[whisper]`,
 
 - `pages/public/_worker.js` — `headShim()` (fetch/window.open patches),
   `computerPanelScript(rebrandEnabled)` (rebrand rule table + observer),
-  `PINNED_QWENPAW_VERSION` / `PYPI_QWENPAW_URL` / `UPSTREAM_DOC_ORIGIN` /
-  `UPSTREAM_GITHUB_URL` constants, proxy injection + title rewrite +
-  CSP-Report-Only / Referrer-Policy headers, waking/cooldown/502/409
-  strings, Computer button tooltip.
+  `agentxHideByName` / `agentxClimbToContainer` (hide by accessible name,
+  whole button/card), `agentxAboutRule` (delegated About click),
+  `agentxWatchTitle` (title observer), `PINNED_QWENPAW_VERSION` /
+  `PYPI_QWENPAW_URL` / `UPSTREAM_DOC_ORIGIN` / `UPSTREAM_GITHUB_URL`
+  constants, proxy injection + title rewrite + CSP-Report-Only /
+  Referrer-Policy headers, waking/cooldown/502/409 strings, Computer
+  button tooltip.
+- `worker/src/index.js` (keep-alive) — probe note "AgentX console
+  answered" (feeds the /status page).
+- `features/infra/workers/activity-feed/index.js` — probe note + page
+  title/h1 ("AgentX — Live activity").
 - `features/board/worker/src/index.js` — title/h1/help text + "Post to" /
   "Sent to" strings (D1 columns, JSON keys, `qwenpaw-board` key kept).
 - `features/routines/worker/src/index.js` — title/h1/notes + history table
