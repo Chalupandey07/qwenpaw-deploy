@@ -29,6 +29,10 @@ What this test PROVES (machine-free):
      substring grader disagrees with the human verdict (proving the
      anti-pattern this judge replaces). The old grader is run over the
      set and MUST disagree with the humans on >= 2 examples.
+  G. Poll window: MAX_POLLS * POLL_INTERVAL is 15 min in judge.py and
+     run-evals.py alike (the 6-min window timed out 9/12 live
+     calibration cases on 2026-11-19 — live agent turns take ~6 min,
+     so the replies land right as the old poll gives up).
 
 What this test does NOT prove (honest limit, DeepSeek design review
 2026-11-18): that the LIVE model (mosicn nex-n2.6 via the console)
@@ -531,6 +535,24 @@ def main() -> int:
                 os.environ.pop(k, None)
     check("F6 a 401 with a supplied token fails as infra without "
           "attempting a login (a dead token is never re-logged-in)", ok6)
+
+    # ================= G. Poll window =================
+    # Live calibration run 1 (2026-11-19) finished 0/12 NOT TRUSTED on
+    # transport, not on substance: cal-01..09 hit "judge poll timed out
+    # after 360s" because MAX_POLLS * POLL_INTERVAL was 6 min while a
+    # live agent turn takes ~6 min (the reply lands right as the poll
+    # gives up). The window is now 15 min, and the two pollers must
+    # agree, so a one-file change cannot silently reintroduce the gap.
+    check("G1 the judge poll window is 15 min (MAX_POLLS * "
+          "POLL_INTERVAL == 900), not the 6 min that timed out 9/12 "
+          "live calibration cases",
+          judge.MAX_POLLS * judge.POLL_INTERVAL == 900)
+    check("G2 run-evals.py uses the same poll cap as judge.py "
+          "(MAX_POLLS agrees, so the two pollers cannot drift apart)",
+          run_evals.MAX_POLLS == judge.MAX_POLLS)
+    check("G3 run-evals.py uses the same poll tick as judge.py "
+          "(POLL_INTERVAL is 5 s in both)",
+          run_evals.POLL_INTERVAL == judge.POLL_INTERVAL == 5)
 
     passed = sum(1 for _, ok, _ in CHECKS if ok)
     total = len(CHECKS)
