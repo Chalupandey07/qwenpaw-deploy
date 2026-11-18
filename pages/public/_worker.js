@@ -1115,8 +1115,21 @@ function computerPanelScript(rebrandEnabled) {
               var fixed = t.replace(/1\\s+steps/g, "1 step").replace(/1\\s+providers/g, "1 provider");
               if (fixed !== t) { n.nodeValue = fixed; continue; }
               if (t.indexOf("providers") !== -1 && i > 0) {
-                var prev = nodes[i - 1];
-                var prevText = prev ? (prev.nodeValue || "") : "";
+                // Split-node case: React may render the count and the
+                // label in SEPARATE text nodes, but not necessarily
+                // adjacent — there can be whitespace-only or empty text
+                // nodes between them ("1" | " " | " providers online").
+                // Walk backwards past whitespace-only nodes and fix the
+                // "providers" node when the first non-whitespace node
+                // before it ends with "1".
+                var j = i - 1;
+                var prevText = "";
+                while (j >= 0) {
+                  var cand = nodes[j] ? (nodes[j].nodeValue || "") : "";
+                  if (/^\\s*$/.test(cand)) { j--; continue; }
+                  prevText = cand;
+                  break;
+                }
                 if (/\\b1\\s*$/.test(prevText)) {
                   n.nodeValue = t.split("providers").join("provider");
                 }
@@ -1173,6 +1186,12 @@ function computerPanelScript(rebrandEnabled) {
                   k.style.textOverflow = "ellipsis";
                   k.style.whiteSpace = "nowrap";
                   k.style.maxWidth = "100%";
+                  // Flex-item floor: in a flex row a text child will
+                  // NOT shrink below its content size unless min-width
+                  // is 0, so without this the title overflows (clipped
+                  // mid-word, no ellipsis) instead of truncating.
+                  k.style.minWidth = "0";
+                  k.style.flexShrink = "1";
                 } catch (e) {}
               }
             } catch (e) {}
