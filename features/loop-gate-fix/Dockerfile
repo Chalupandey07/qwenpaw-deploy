@@ -2,8 +2,10 @@
 #
 # Base is the pinned upstream image (same digest as the live deploy).
 # The only change is the loop-gate patch: it fixes ToolCallBudgetGate
-# counting and wires the gate into the default loop chain so the cap
-# applies to every chat. Nothing else is changed.
+# counting (round 1) and expands workflow/batch sub-calls so the batch
+# runner cannot bypass the budget (round 2), and wires the gate into
+# the default loop chain so the cap applies to every chat. Nothing
+# else is changed. Tag: qwenpaw-agentx:2.3.0-gatefix2.
 FROM agentscope/qwenpaw:v2.3.0@sha256:46a782f4b39b673eac399c90294244e348e71a01bdf032f8e78b00776be3c87d
 
 COPY qwenpaw-loop-gate-fix.patch /tmp/qwenpaw-loop-gate-fix.patch
