@@ -225,12 +225,30 @@ def run_checks(impl) -> None:
     # -- (a) profile -----------------------------------------------------
     profile = impl.build_profile(JOB)
     violations = impl.validate_profile(profile)
-    check("A1 one bind mount at /workspace under the workspace root",
-          len([m for m in profile["mounts"] if m.get("type") == "bind"]) == 1
-          and profile["mounts"][0].get("target") == "/workspace"
-          and str(profile["mounts"][0].get("source", "")).startswith(
-              "/data/home/qwenpaw/working/workspaces/"),
-          f"mounts={profile['mounts']!r}")
+    _ws_binds = [m for m in profile["mounts"] if m.get("type") == "bind"]
+    _a1_default = (len(_ws_binds) == 1
+                   and profile["mounts"][0].get("target") == "/workspace"
+                   and str(profile["mounts"][0].get("source", "")).startswith(
+                       "/data/home/qwenpaw/working/workspaces/"))
+    # The token_dir form: a second bind, ONLY for the per-job token
+    # directory under /run/sandbox-tokens, mounted at /run/sandbox-
+    # token — it validates clean and renders in the argv; a token dir
+    # anywhere else is a violation.
+    _tok_profile = impl.build_profile(
+        {**JOB, "token_dir": "/run/sandbox-tokens/job-001"})
+    _tok_binds = [m for m in _tok_profile["mounts"] if m.get("type") == "bind"]
+    _a1_token = (len(_tok_binds) == 2
+                 and impl.validate_profile(_tok_profile) == []
+                 and any(m.get("target") == "/run/sandbox-token"
+                         and str(m.get("source", "")).startswith("/run/sandbox-tokens/")
+                         for m in _tok_binds)
+                 and "/run/sandbox-tokens/job-001" in " ".join(impl.docker_run_argv(_tok_profile)))
+    _bad_tok = impl.build_profile({**JOB, "token_dir": "/tmp/evil-tokens"})
+    _a1_bad = any("token dir" in v for v in impl.validate_profile(_bad_tok))
+    check("A1 one workspace bind at /workspace (+ one token-dir bind only)",
+          _a1_default and _a1_token and _a1_bad,
+          f"mounts={profile['mounts']!r} tok={_tok_profile['mounts']!r} "
+          f"bad={impl.validate_profile(_bad_tok)!r}")
     check("A2 profile validates clean", violations == [], f"{violations!r}")
     check("A3 network is the isolated sandbox bridge, not host",
           profile.get("network") == "qwenpaw-sandbox-net", f"{profile.get('network')!r}")
