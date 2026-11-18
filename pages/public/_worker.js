@@ -1553,6 +1553,12 @@ function computerPanelScript(rebrandEnabled) {
           if (path.indexOf("/chat") !== 0) return;
           var st = agentxThinkingState;
           if (!st.pending) { try { st.pending = window.localStorage ? (window.localStorage.getItem("agentx_thinking_pending") || null) : null; } catch (e) {} }
+          // Anchor: the composer toolbar row itself. Primary (user
+          // screenshot, 2026-11-19): the Smart Mode control's parent —
+          // the row with the mic, model/agent dropdowns, Smart Mode and
+          // Send. The selector belongs IN that row, next to Smart Mode.
+          // Fallbacks: the "Context usage" button's parent (same toolbar
+          // on most console versions), then the chat input's grandparent.
           var toolbar = null;
           try {
             var btns = document.querySelectorAll("button");
@@ -1561,8 +1567,18 @@ function computerPanelScript(rebrandEnabled) {
                 var b = btns[i];
                 var lab = "";
                 try { lab = (b.getAttribute("aria-label") || "") + " " + (b.getAttribute("title") || "") + " " + (b.textContent || ""); } catch (e) {}
-                if (lab.indexOf("Context usage") !== -1) { toolbar = b.parentElement; break; }
+                if (lab.indexOf("Smart Mode") !== -1) { toolbar = b.parentElement; break; }
               } catch (e) {}
+            }
+            if (!toolbar) {
+              for (var ci = 0; ci < btns.length; ci++) {
+                try {
+                  var cb = btns[ci];
+                  var clab = "";
+                  try { clab = (cb.getAttribute("aria-label") || "") + " " + (cb.getAttribute("title") || "") + " " + (cb.textContent || ""); } catch (e) {}
+                  if (clab.indexOf("Context usage") !== -1) { toolbar = cb.parentElement; break; }
+                } catch (e) {}
+              }
             }
           } catch (e) {}
           if (!toolbar) {
