@@ -1540,6 +1540,23 @@ function computerPanelScript(rebrandEnabled) {
       // never fires for that, so the grammar fix was never re-applied
       // after the first React re-render (2026-11-18 DOM inspection).
       vaultMenuObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+      // Timer re-apply (2026-11-18 QA rounds 5–13): the sidebar rule
+      // still did not stick even after removing the done-marker skip —
+      // React re-renders can revert the text node between observer
+      // firings, and the observer may not fire for every React commit.
+      // A 1.5 s timer re-runs the sidebar truncation independently, so
+      // a reverted title is re-cut within ~1.5 s no matter what React
+      // does. The truncation is idempotent (skips text already holding
+      // "…"), so the timer is cheap and safe.
+      // UI-TIMER-ALLOWLIST: sidebar-ellipsis re-apply timer. Client-side
+      // only, runs only while the user has the console open, makes no
+      // network calls and writes no data — it only re-truncates sidebar
+      // title text nodes. Not a server poll loop.
+      try {
+        setInterval(function () { // UI-TIMER-ALLOWLIST: sidebar-ellipsis re-apply
+          try { agentxRunRuleNow("sidebar-ellipsis"); } catch (e) {}
+        }, 1500);
+      } catch (e) {}
       addVaultMenuItem();
       agentxRunRules();
       agentxWatchTitle();
