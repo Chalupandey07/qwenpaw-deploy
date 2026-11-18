@@ -2085,6 +2085,27 @@ def t126():
         ["features/loop-gate-fix/test_task_cap.py"], 61)
 
 
+def t127():
+    """Checkpoints + rollback: per-run workspace snapshot + safe restore (48).
+
+    Machine-free test (features/checkpoints/test_checkpoints.py) for the
+    per-run snapshot tool (features/checkpoints/checkpoints.py): tarball +
+    JSON manifest (per-file sha256/size/mode, tarball sha256) tagged with
+    the run ID, taken before the first mutation; a second snapshot with the
+    same run ID is a first-wins no-op. Restore returns the exact original
+    bytes, REFUSES on drift without --force and leaves the workspace
+    untouched, proceeds with --force and prints what will be lost; every
+    restore takes an automatic pre-restore safety snapshot so a restore is
+    reversible. Excludes history.db*, sessions/, media/, logs, caches,
+    node_modules, .git, and the store itself. Fail-first proven: against
+    a stub with no implementation it fails 29/37 checks that run.
+    The live half (snapshot + restore on the real workspace, list on the
+    real store) is verified by Muse after sync.
+    """
+    return _py_script_harness(
+        ["features/checkpoints/test_checkpoints.py"], 48)
+
+
 def t131():
     """Telegram full-feature bot: token-only setup, menus, chats (66).
 
@@ -2628,6 +2649,7 @@ TESTS = [
     ("T124", "SMART approval patch as a machine-apply script (agent.json AUTO -> SMART, idempotent, destructive auto-deny verified) + per-tool preview (exact shell command / file diff, never executes) + per-tool Allow/Block list (auto/ask/deny, deny beats every level incl. OFF) (selftest)", "approvals", "protocol", t124),
     ("T125", "cost ledger with hard kill switch: per-run + cumulative tokens/cost from token_usage.json priced by a static table, /cost endpoint, alert at 80% and hard stop at 100% with pre-call reservations, budget raise unblocks (harness)", "cost-ledger", "protocol", t125),
     ("T126", "per-task cap + structured stop audit: task budget 60 total / 40 shell across turns, finalise flag, stop audit (harness)", "loop-gate", "protocol", t126),
+    ("T127", "checkpoints + rollback: per-run workspace snapshot (tarball + manifest) tagged with run id, restore refuses on drift without --force, automatic pre-restore safety snapshot, list command (harness)", "checkpoints", "protocol", t127),
     ("T131", "telegram full-feature bot: token-only setup (no numeric id), owner = first whitelist entry, guests read-only, strangers refused; new chat, list + preview + continue an existing console chat (task API); settings via button callbacks (model PATCH, approval PUT); menu grammar + token cache; outbound redaction + inbound untrusted wrapping; driver patch applies cleanly to the pinned v2.3.0 platform.py and reproduces the patched file byte-for-byte (selftest)", "telegram", "protocol", t131),
 ]
 
