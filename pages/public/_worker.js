@@ -202,7 +202,7 @@ function computerPanelScript(rebrandEnabled) {
     btn.type = "button";
     btn.textContent = "Computer";
     btn.title = "AgentX's computer — watch and drive the live desktop";
-    btn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483647;padding:10px 16px;border-radius:999px;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
+    btn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483647;width:150px;box-sizing:border-box;text-align:center;padding:10px 16px;border-radius:999px;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
 
     // ---- Rest button ----
     // Deliberately a visible button next to "Computer", NOT a menu item: the
@@ -219,7 +219,7 @@ function computerPanelScript(rebrandEnabled) {
     restBtn.type = "button";
     restBtn.textContent = "Rest machine";
     restBtn.title = "Send the machine to rest when you are done — opening the site wakes it again";
-    restBtn.style.cssText = "position:fixed;right:16px;bottom:64px;z-index:2147483647;padding:10px 16px;border-radius:999px;border:1px solid #34404f;background:#171a21;color:#c8d1dc;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
+    restBtn.style.cssText = "position:fixed;right:16px;bottom:64px;z-index:2147483647;width:150px;box-sizing:border-box;text-align:center;padding:10px 16px;border-radius:999px;border:1px solid #34404f;background:#171a21;color:#c8d1dc;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
 
     // ---- Vault button ----
     // The vault (an API-key store the agent can use but never see) lives at
@@ -232,7 +232,7 @@ function computerPanelScript(rebrandEnabled) {
     vaultBtn.type = "button";
     vaultBtn.textContent = "Vault";
     vaultBtn.title = "API-key vault — keys the agent can use but never see";
-    vaultBtn.style.cssText = "position:fixed;right:16px;bottom:112px;z-index:2147483647;padding:10px 16px;border-radius:999px;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
+    vaultBtn.style.cssText = "position:fixed;right:16px;bottom:112px;z-index:2147483647;width:150px;box-sizing:border-box;text-align:center;padding:10px 16px;border-radius:999px;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
 
     var panel = document.createElement("div");
     panel.id = "qwenpawComputerPanel";
@@ -591,6 +591,14 @@ function computerPanelScript(rebrandEnabled) {
     function setOpen(v) {
       open = !!v;
       panel.style.display = open ? "flex" : "none";
+      // When the 316 px panel is open it covers the right edge, and the
+      // pills (max z-index) would sit on top of it — the Computer pill
+      // over the panel's own content. Shift the whole column left of
+      // the panel while it is open, back to the edge when it closes.
+      var right = open ? "332px" : "16px";
+      btn.style.right = right;
+      restBtn.style.right = right;
+      vaultBtn.style.right = right;
       if (open && !frame.getAttribute("src")) frame.setAttribute("src", "/computer?embed=1");
       try { sessionStorage.setItem("qwenpawComputerOpen", open ? "1" : "0"); } catch (e) {}
     }
@@ -1064,6 +1072,24 @@ function computerPanelScript(rebrandEnabled) {
       { id: "rename-text", run: function () {
         try { agentxRenameTextIn(document.body); } catch (e) {}
       } },
+      { id: "fix-grammar", run: function () {
+        // Upstream console grammar (2026-11-18 QA): "Completed 1 steps"
+        // and "1 providers online" — the count is 1 but the noun is
+        // plural. Fix the singular forms in text nodes; other counts
+        // ("2 steps", "3 providers") are already correct and untouched.
+        try {
+          var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+          var node;
+          while ((node = walker.nextNode())) {
+            try {
+              var t = node.nodeValue;
+              if (!t) continue;
+              var fixed = t.split("1 steps").join("1 step").split("1 providers").join("1 provider");
+              if (fixed !== t) node.nodeValue = fixed;
+            } catch (e) {}
+          }
+        } catch (e) {}
+      } },
       { id: "rename-logo", run: function () {
         // Sidebar logo: an <img> with alt "QwenPaw" (browser verification
         // 2026-11-18: the sidebar still showed "QwenPaw" + "v2.3.0" on
@@ -1071,14 +1097,27 @@ function computerPanelScript(rebrandEnabled) {
         // the AgentX wordmark in text, in the same brand slot, so the
         // sidebar layout does not shift. The alt is renamed first, so the
         // a11y tree says AgentX even if the swap is skipped.
+        // Size gate (2026-11-18 QA): the bottom-left user card ALSO
+        // carries a small QwenPaw avatar image, and swapping THAT for an
+        // 18px "AgentX" span overflows its circle and prints over the
+        // "satwik" / "Console account" text. Only the large brand logo
+        // gets the text swap; a small avatar keeps its image (alt
+        // renamed) so the user card stays readable. An image whose
+        // size is not known yet (not loaded, naturalWidth 0) is left
+        // alone — it still matches the selector on a later pass, once
+        // loaded, so the decision is made with a real size.
         var imgs;
         try { imgs = document.querySelectorAll('img[alt*="QwenPaw"]'); } catch (e) { return; }
         for (var i = 0; i < imgs.length; i++) {
           try {
             var img = imgs[i];
             if (img.getAttribute && img.getAttribute("data-agentx-logo")) continue;
+            var w = 0;
+            try { w = img.naturalWidth || 0; } catch (e) {}
+            if (!w) continue;
             if (img.setAttribute) img.setAttribute("data-agentx-logo", "1");
             try { img.setAttribute("alt", (img.getAttribute("alt") || "").split("QwenPaw").join("AgentX")); } catch (e) {}
+            if (w < 80) continue;
             try {
               var parent = img.parentNode;
               if (parent && document.createElement && parent.replaceChild) {
