@@ -260,14 +260,19 @@ class DecisionClient:
         # "kind" (live 422: "questions.priority.type: must be 'noul',
         # 'choice', or 'score'"), and NACE has no "box" type — a box
         # (true/false) is sent as a choice with ["true","false"] options.
+        # Choice options nest under "criteria" (live 422:
+        # "questions.priority.criteria: must be an object with options").
         def _spec(q: Question) -> dict[str, Any]:
             p = {k: v for k, v in q.payload().items() if k != "name"}
             kind = p.pop("kind")
+            options = p.pop("options", None)
             if kind == "box":
                 p["type"] = "choice"
-                p["options"] = ["true", "false"]
+                p["criteria"] = {"options": ["true", "false"]}
             else:
                 p["type"] = kind
+                if options is not None:
+                    p["criteria"] = {"options": options}
             return p
 
         body = {
@@ -553,11 +558,14 @@ def selftest() -> int:
     def _spec(qq):
         pp = {k: v for k, v in qq.payload().items() if k != "name"}
         kk = pp.pop("kind")
+        oo = pp.pop("options", None)
         if kk == "box":
             pp["type"] = "choice"
-            pp["options"] = ["true", "false"]
+            pp["criteria"] = {"options": ["true", "false"]}
         else:
             pp["type"] = kk
+            if oo is not None:
+                pp["criteria"] = {"options": oo}
         return pp
 
     _qs = [Question("priority", "choice", options=["urgent", "routine"], prompt="p?"),
@@ -571,11 +579,11 @@ def selftest() -> int:
            "name" not in _body_questions["priority"]
            and "kind" not in _body_questions["priority"]
            and _body_questions["priority"]["type"] == "choice"
-           and _body_questions["priority"]["options"] == ["urgent", "routine"],
+           and _body_questions["priority"]["criteria"] == {"options": ["urgent", "routine"]},
            str(_body_questions["priority"]))
     expect("box is sent as a true/false choice (NACE has no box type)",
            _body_questions["wake"] == {"type": "choice",
-                                        "options": ["true", "false"]},
+                                        "criteria": {"options": ["true", "false"]}},
            str(_body_questions["wake"]))
 
     print("answer parsing tolerates provider shape differences")
