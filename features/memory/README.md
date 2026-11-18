@@ -183,11 +183,68 @@ Exit `0` = healthy, `3` = at least one blocking cause. Read-only: it reads
 `config.json`, `qwenpaw.log` (tail), `history.db` (`mode=ro`) and counts
 markdown files. It never writes, restarts, or prints a credential.
 
+## `facts.py` — compact fact store + session handoff (cross-session recall)
+
+Mem0-style extract-and-retrieve, self-contained on the Free machine.
+No new database, no managed service, no embeddings, no new provider.
+Stdlib only. The full history stays in `history.db`, untouched; this
+adds a SECOND, compact store (`memory.db`) of distilled fact records,
+so a turn retrieves a few hundred tokens of relevant facts instead of
+the whole history — and a new session reads the previous session's
+handoff instead of starting cold.
+
+```bash
+DB=/data/home/qwenpaw/working/workspaces/default/memory.db
+HIST=/data/home/qwenpaw/working/workspaces/default/history.db
+
+python3 facts.py --db $DB check
+python3 facts.py --db $DB add --text "DeepSeek is the coding model." \
+    --kind preference --session sess-a --importance 3
+python3 facts.py --db $DB search --query "loop gate" --limit 5
+python3 facts.py --db $DB extract --transcript turns.txt --session sess-a
+python3 facts.py --db $DB handoff-write --session sess-a \
+    --summary "Fixed the gate design." \
+    --open-tasks '["Build the derived image"]' \
+    --left-off "Waiting on the image build."
+python3 facts.py --db $DB handoff-read        # latest handoff
+python3 facts.py --db $DB search-history --history $HIST --query "gate"
+```
+
+Guarantees, all covered by `test_facts.py` (T117, 41 checks):
+
+- **Add-only.** Adding the same fact twice returns the same id (content-hash
+  dedup). A fact that changes is SUPERSEDED, never deleted — the old row
+  stays, marked, so "what was true then" stays answerable. Search excludes
+  superseded rows by default.
+- **Token-budgeted retrieval.** FTS5 + BM25, default limit 5, default budget
+  500 tokens, hard cap 1000. The test measures the win: the retrieved set
+  costs < 10% of the full history text, and the FTS query runs in < 100 ms.
+- **Handoff.** A handoff written by session A is read by session B and
+  carries the open tasks + where A left off, in ≤ 300 tokens.
+- **Secrets are rejected, not scrubbed** (like `lessons.py`): a fact
+  containing a credential pattern is refused and no row is written.
+- **Universal search.** `search-history` returns the facts AND reaches
+  back into `history.db` read-only through `recall.py` — the memory can
+  see everything, not just the extracted facts.
+- **Extraction is selection, not generation.** `extract` proposes
+  candidate facts from a transcript using the same shapes as
+  `consolidate.py` (decision, preference, task, measurement, correction,
+  lesson). It never writes. The agent's LLM reviews the candidates and
+  adds the salient ones — no model call inside this tool, no new key.
+
+The skill (`SKILL.md`, same directory) is what the agent reads: handoff-read
+at the start of a session, facts during, handoff-write at the end. Until a
+lifecycle hook exists (a follow-up layered on the derived image), the agent
+follows it by convention. The skill is installed on the machine at
+`working/workspaces/default/skills/memory/SKILL.md` and enabled with
+`docker exec qwenpaw qwenpaw skills enable memory`.
+
 ## Tests
 
 ```bash
 python3 features/memory/test_recall.py     # 44 checks
 python3 features/memory/test_lessons.py    # 45 checks
+python3 features/memory/test_facts.py      # 41 checks
 python3 features/memory/reme_doctor.py --selftest   # 11 checks
 ```
 
