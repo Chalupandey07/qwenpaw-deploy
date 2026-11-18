@@ -2065,6 +2065,26 @@ def t125():
         ["features/cost-ledger/test_cost_ledger.py"], 55)
 
 
+def t126():
+    """Per-task cap + structured stop audit: task budget across turns (61).
+
+    Machine-free test (features/loop-gate-fix/test_task_cap.py) for the
+    round-4 per-task cap: task budget 60 total / 40 shell across turns,
+    finalise flag, structured stop audit. J — the live cross-turn shape
+    (turn 1 spends 20 shell, turn 2 "hello" gets 20 more to task shell 40
+    = cap and finalises, turn 3 "hello" executes 0, a new instruction gets
+    a fresh budget); K — sub-cap creep; L — the stop audit (all four
+    kinds); M — explicit task id, re-issued capped instruction inherits
+    the spent budget; N — unreadable batch charged from the result JSON;
+    O — a batch that would jump the task cap is refused whole.
+    Fail-first proven: against gatefix3 limits.py it fails 37/61.
+    T115 still 47/47. The live half (single-turn echo test, cross-turn
+    "hello" test, new-instruction test) is verified by Muse after deploy.
+    """
+    return _py_script_harness(
+        ["features/loop-gate-fix/test_task_cap.py"], 61)
+
+
 def t131():
     """Telegram full-feature bot: token-only setup, menus, chats (66).
 
@@ -2607,6 +2627,7 @@ TESTS = [
     ("T123", "egress guard: untrusted-content wrapping (nonce fence, template-token strip) + allowlist egress (deny non-allowlisted, deny secret to allowlisted host, deny China hosts) + secret redaction in logs (selftest)", "egress-guard", "protocol", t123),
     ("T124", "SMART approval patch as a machine-apply script (agent.json AUTO -> SMART, idempotent, destructive auto-deny verified) + per-tool preview (exact shell command / file diff, never executes) + per-tool Allow/Block list (auto/ask/deny, deny beats every level incl. OFF) (selftest)", "approvals", "protocol", t124),
     ("T125", "cost ledger with hard kill switch: per-run + cumulative tokens/cost from token_usage.json priced by a static table, /cost endpoint, alert at 80% and hard stop at 100% with pre-call reservations, budget raise unblocks (harness)", "cost-ledger", "protocol", t125),
+    ("T126", "per-task cap + structured stop audit: task budget 60 total / 40 shell across turns, finalise flag, stop audit (harness)", "loop-gate", "protocol", t126),
     ("T131", "telegram full-feature bot: token-only setup (no numeric id), owner = first whitelist entry, guests read-only, strangers refused; new chat, list + preview + continue an existing console chat (task API); settings via button callbacks (model PATCH, approval PUT); menu grammar + token cache; outbound redaction + inbound untrusted wrapping; driver patch applies cleanly to the pinned v2.3.0 platform.py and reproduces the patched file byte-for-byte (selftest)", "telegram", "protocol", t131),
 ]
 
