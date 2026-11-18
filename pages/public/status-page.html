@@ -3,97 +3,264 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AgentX — Status</title>
+<meta name="description" content="AgentX status, keep-alive, and wake controls.">
+<title>AgentX: Status</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 2rem 1rem; background: #0f1115; color: #e8eaf0; }
-  main { max-width: 640px; margin: 0 auto; }
-  h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
-  p.sub { color: #9aa3b2; margin: 0 0 1.5rem; }
-  .card { background: #171a21; border: 1px solid #262b36; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; }
-  .pill { display: inline-block; padding: .3rem .7rem; border-radius: 999px; font-weight: 600; font-size: .9rem; }
-  .up { background: #14532d; color: #bbf7d0; } .waking { background: #713f12; color: #fde68a; }
-  .cooldown { background: #7f1d1d; color: #fecaca; } .offline { background: #7f1d1d; color: #fecaca; }
-  .unknown { background: #334155; color: #e2e8f0; } .degraded { background: #713f12; color: #fde68a; }
-  dl { display: grid; grid-template-columns: 10rem 1fr; gap: .35rem .75rem; margin: 1rem 0 0; font-size: .95rem; }
-  dt { color: #9aa3b2; } dd { margin: 0; overflow-wrap: anywhere; }
-  button, a.btn { display: inline-block; border: 0; border-radius: 8px; padding: .7rem 1.1rem; font-size: 1rem; font-weight: 600; cursor: pointer; text-decoration: none; margin-right: .5rem; }
-  button { background: #2563eb; color: #fff; } button:disabled { opacity: .55; cursor: wait; }
-  a.btn { background: #22c55e; color: #052e12; }
-  #msg { margin-top: .75rem; color: #9aa3b2; font-size: .95rem; min-height: 1.2em; }
-  small { color: #7d8597; }
+/* Hallmark · v2.0.0 · theme: AgentX status (custom) · genre modern-minimal · shape: one card */
+/* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V4 · weakest: S, led with the live state */
+:root{color-scheme:dark;--color-bg:oklch(0.23 0.012 260);--color-surface:oklch(0.28 0.014 260);--color-track:oklch(0.35 0.012 260);--color-ink:oklch(0.93 0.008 250);--color-muted:oklch(0.74 0.01 250);--color-line:oklch(0.40 0.012 260);--color-accent:oklch(0.75 0.13 155);--color-accent-ink:oklch(0.24 0.03 160);--color-warn:oklch(0.80 0.10 85);--color-warn-ink:oklch(0.28 0.03 85);--color-danger:oklch(0.70 0.10 25);--font-display:Georgia,"Times New Roman",serif;--font-body:system-ui,-apple-system,"Segoe UI",sans-serif;--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:32px;--radius-card:16px;--radius-control:10px;--radius-pill:999px;--text-title:1.75rem;--text-section:1.25rem;--text-body:1rem;--text-small:0.875rem;--width-card:38rem;}
+*{box-sizing:border-box;}
+html,body{overflow-x:clip;}
+body{margin:0;min-height:100svh;display:grid;place-items:center;padding:var(--space-6) var(--space-4);background:var(--color-bg);color:var(--color-ink);font-family:var(--font-body);font-size:var(--text-body);line-height:1.55;}
+main{width:100%;max-width:var(--width-card);background:var(--color-surface);border:1px solid var(--color-line);border-radius:var(--radius-card);padding:var(--space-6);}
+h1{font-family:var(--font-display);font-size:var(--text-title);line-height:1.15;margin:0 0 var(--space-2);overflow-wrap:break-word;min-width:0;text-wrap:balance;}
+h2{font-family:var(--font-display);font-size:var(--text-section);line-height:1.25;margin:var(--space-4) 0 var(--space-2);overflow-wrap:break-word;min-width:0;text-wrap:balance;}
+p{margin:0 0 var(--space-4);}
+.fine{color:var(--color-muted);font-size:var(--text-small);}
+.pill{display:inline-block;padding:var(--space-1) var(--space-3);border-radius:var(--radius-pill);font-weight:600;font-size:var(--text-small);background:var(--color-track);color:var(--color-ink);}
+.pill-up{background:var(--color-accent);color:var(--color-accent-ink);}
+.pill-waking,.pill-degraded{background:var(--color-warn);color:var(--color-warn-ink);}
+.pill-cooldown,.pill-offline{background:var(--color-danger);color:var(--color-warn-ink);}
+dl{display:grid;grid-template-columns:10rem 1fr;gap:var(--space-2) var(--space-3);margin:var(--space-4) 0;}
+dt{color:var(--color-muted);}
+dd{margin:0;overflow-wrap:break-word;}
+#msg,#kaMsg{min-height:1lh;}
+a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--color-accent);outline-offset:2px;}
+button{font-family:var(--font-body);font-size:var(--text-body);cursor:pointer;}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:var(--space-3) var(--space-4);border-radius:var(--radius-control);font-weight:600;white-space:nowrap;text-decoration:none;}
+.btn:active{opacity:0.8;}
+.btn:disabled,.switch:disabled{opacity:0.55;cursor:not-allowed;}
+.btn-primary{background:var(--color-accent);color:var(--color-accent-ink);}
+.btn-secondary{background:none;color:var(--color-ink);border:1px solid var(--color-line);}
+.actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);margin-top:var(--space-4);}
+.ka-row{display:flex;align-items:center;gap:var(--space-3);}
+.switch{width:56px;height:32px;padding:var(--space-1);border-radius:var(--radius-pill);background:var(--color-track);border:1px solid var(--color-line);}
+.switch[aria-checked="true"]{background:var(--color-accent);border-color:var(--color-accent);}
+.switch::before{content:"";display:block;width:24px;height:24px;border-radius:50%;background:var(--color-ink);transition:transform 150ms ease;}
+.switch[aria-checked="true"]::before{transform:translateX(24px);background:var(--color-accent-ink);}
+.token-row{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);margin-top:var(--space-3);}
+.token-row[hidden]{display:none;}
+input{font-family:var(--font-body);font-size:var(--text-body);color:var(--color-ink);background:var(--color-bg);border:1px solid var(--color-line);border-radius:var(--radius-control);min-height:44px;padding:var(--space-3);}
+@media (prefers-reduced-motion:reduce){.switch::before{transition:none;}}
 </style>
 </head>
 <body>
 <main>
   <h1>AgentX</h1>
-  <p class="sub">Personal AI assistant — InstaBox Free + Cloudflare Worker keep-alive. The console itself lives at <a style="color:#22c55e" href="/">this site's root /</a> — this page is only the status / wake page.</p>
-  <section class="card">
-    <span id="pill" class="pill unknown">Checking…</span>
-    <dl>
-      <dt>Status</dt><dd id="status">—</dd>
-      <dt>Last check</dt><dd id="checkedAt">—</dd>
-      <dt>Last seen up</dt><dd id="lastUpAt">—</dd>
-      <dt>HTTP</dt><dd id="http">—</dd>
-      <dt>Note</dt><dd id="note">—</dd>
-    </dl>
-    <p id="msg"></p>
-  </section>
-  <section class="card">
-    <button id="wakeBtn" type="button">Wake AgentX</button>
-    <a id="openBtn" class="btn" href="#" target="_blank" rel="noopener">Open Console ↗</a>
-    <button id="refreshBtn" type="button" style="background:#262b36;color:#e8eaf0">Refresh status</button>
-    <p><small>Wake pings the console URL — that alone wakes an auto-paused box (up to ~45 s). If it is in max-run cooldown, nothing can wake it until the cooldown ends; the status above will say so.</small></p>
-  </section>
-  <p><small>Frontend: Cloudflare Pages reverse proxy — root / is the AgentX console, this /status page is the status / wake page. Keep-alive: Cloudflare Worker cron every 5 min. AgentX itself runs on InstaBox Free.</small></p>
+  <p class="fine">Status and wake controls.</p>
+  <p><span id="pill" class="pill" role="status">Checking</span></p>
+  <dl>
+    <dt>Status</dt><dd id="status">Unknown</dd>
+    <dt>Last seen up</dt><dd id="lastUpAt">Not known</dd>
+    <dt>Next scheduled run</dt><dd id="nextRunAt">Not scheduled</dd>
+  </dl>
+  <p id="msg"></p>
+  <h2>Keep-alive</h2>
+  <div class="ka-row">
+    <button id="kaSwitch" class="switch" role="switch" aria-checked="false" aria-label="Keep-alive"></button>
+    <span id="kaState">Unavailable</span>
+  </div>
+  <p class="fine">Scheduled runs still wake the machine.</p>
+  <p class="fine" id="kaMsg"></p>
+  <div class="token-row" id="tokenRow" hidden>
+    <label for="tokenInput">Admin token</label>
+    <input id="tokenInput" type="password">
+    <button id="tokenSave" class="btn btn-secondary">Save token</button>
+  </div>
+  <div class="actions">
+    <a class="btn btn-primary" href="/">Open console</a>
+    <button id="wakeBtn" class="btn btn-primary">Wake AgentX</button>
+    <button id="restBtn" class="btn btn-secondary">Rest machine</button>
+    <button id="refreshBtn" class="btn btn-secondary">Refresh status</button>
+  </div>
 </main>
 <script>
-  // ---- CONFIG: replace these two values ----
-  const WORKER_URL = "https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev";
-  const CONSOLE_URL = "/";
-  // ------------------------------------------
-  const $ = (id) => document.getElementById(id);
-  const fmt = (iso) => iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" }) : "—";
-  async function loadStatus(live = false) {
-    try {
-      const res = await fetch(`${WORKER_URL}/status${live ? "?live=1" : ""}`, { cache: "no-store" });
-      const d = await res.json();
-      const pill = $("pill");
-      pill.textContent = d.status ? d.status.toUpperCase() : "UNKNOWN";
-      pill.className = "pill " + (d.status || "unknown");
-      $("status").textContent = d.status || "unknown";
-      $("checkedAt").textContent = fmt(d.checkedAt);
-      $("lastUpAt").textContent = fmt(d.lastUpAt);
-      $("http").textContent = d.httpStatus ? `HTTP ${d.httpStatus}` : "—";
-      $("note").textContent = d.note || "";
-      $("openBtn").href = "/";
-      if (d.status === "cooldown" && d.retryAfterSeconds) {
-        $("msg").textContent = `In cooldown — retry in about ${Math.ceil(d.retryAfterSeconds / 60)} min. Do not keep pressing Wake; it cannot help until the cooldown ends.`;
-      } else if (d.status === "waking") {
-        $("msg").textContent = "Waking up — wait ~60 s, then press Refresh status.";
-      } else if (d.status === "up") {
-        $("msg").textContent = "Up — open the console.";
-      } else if (d.status === "offline") {
-        $("msg").textContent = "Offline — press Wake AgentX, wait ~60 s, then Refresh.";
-      } else {
-        $("msg").textContent = "";
-      }
-    } catch (e) {
-      $("pill").textContent = "ERROR"; $("pill").className = "pill offline";
-      $("msg").textContent = "Could not reach the Worker (/status). Check WORKER_URL.";
+(function () {
+  var WORKER_URL = "https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev";
+  function $(id) { return document.getElementById(id); }
+  var pill = $("pill");
+  var kaOn = false;
+  var kaKnown = false;
+  var kaPending = null;
+  var wakeSet = false;
+  var resting = false;
+  function setMsg(t) { $("msg").textContent = t; }
+  function setKaMsg(t) { $("kaMsg").textContent = t; }
+  function paintKa() {
+    var sw = $("kaSwitch");
+    var state = $("kaState");
+    if (!kaKnown) {
+      sw.setAttribute("aria-checked", "false");
+      sw.disabled = true;
+      state.textContent = "Unavailable";
+      return;
     }
+    sw.disabled = false;
+    sw.setAttribute("aria-checked", kaOn ? "true" : "false");
+    state.textContent = kaOn ? "On" : "Off";
   }
-  $("wakeBtn").addEventListener("click", async () => {
-    const btn = $("wakeBtn"); btn.disabled = true; btn.textContent = "Waking…";
-    $("msg").textContent = "Pinging the console — this wakes an auto-paused box. Wait ~60 s…";
-    try { await fetch(`${WORKER_URL}/ping`, { cache: "no-store" }); } catch (e) { /* status poll below will show the result */ }
-    await new Promise((r) => setTimeout(r, 5000));
-    await loadStatus(true);
-    btn.disabled = false; btn.textContent = "Wake AgentX";
+  function getKaToken() {
+    try { return sessionStorage.getItem("agentxWakeToken"); } catch (e) { return null; }
+  }
+  function revertFlip(next) { kaOn = !next; paintKa(); }
+  function sendFlip(next, tok) {
+    fetch(WORKER_URL + "/keepalive", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + tok, "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: next })
+    }).then(function (r) {
+      if (r.status === 401) {
+        try { sessionStorage.removeItem("agentxWakeToken"); } catch (e) {}
+        revertFlip(next);
+        setKaMsg("That token was refused.");
+        $("tokenRow").hidden = false;
+        return;
+      }
+      if (r.status === 503) {
+        revertFlip(next);
+        setKaMsg("The Worker is unavailable.");
+        return;
+      }
+      if (!r.ok) {
+        revertFlip(next);
+        setKaMsg("Keep-alive change failed. HTTP " + r.status + ".");
+        return;
+      }
+      kaOn = next;
+      paintKa();
+      setKaMsg(next ? "Keep-alive is on." : "Keep-alive is off.");
+    }).catch(function () {
+      revertFlip(next);
+      setKaMsg("Could not reach the Worker.");
+    });
+  }
+  function flipKeepAlive() {
+    if (!kaKnown) { return; }
+    var next = !kaOn;
+    var tok = getKaToken();
+    if (!tok) {
+      kaPending = next;
+      $("tokenRow").hidden = false;
+      $("tokenInput").focus();
+      setKaMsg("Enter the admin token.");
+      return;
+    }
+    kaOn = next;
+    paintKa();
+    sendFlip(next, tok);
+  }
+  function loadStatus(live) {
+    var url = WORKER_URL + "/status" + (live ? "?live=1" : "");
+    fetch(url, { cache: "no-store" }).then(function (res) { return res.json(); }).then(function (d) {
+      var st = d.status || "unknown";
+      pill.textContent = st.charAt(0).toUpperCase() + st.slice(1);
+      pill.className = "pill pill-" + st;
+      $("status").textContent = st;
+      $("lastUpAt").textContent = d.lastUpAt ? new Date(d.lastUpAt).toLocaleString() : "Not known";
+      var nextMs = (d.sleepwake && typeof d.sleepwake.nextRoutineAt === "number") ? d.sleepwake.nextRoutineAt : null;
+      if (nextMs && isFinite(nextMs)) {
+        $("nextRunAt").textContent = new Date(nextMs).toLocaleString();
+      } else {
+        $("nextRunAt").textContent = "Not scheduled";
+      }
+      var ka = d.keepAlive;
+      if (ka === "on" || ka === "off" || ka === "unknown") {
+        kaKnown = true;
+        kaOn = (ka === "on");
+      } else {
+        kaKnown = false;
+      }
+      paintKa();
+      var msg = "";
+      if (st === "cooldown") {
+        msg = d.retryAfterSeconds ? "In cooldown. Retry in about " + Math.ceil(d.retryAfterSeconds / 60) + " minutes." : "In cooldown. Nothing can wake it yet.";
+      } else if (st === "waking") {
+        msg = "Waking up. Press Refresh status in a minute.";
+        if (!wakeSet) {
+          wakeSet = true;
+          setTimeout(function () { loadStatus(true); }, 60000);
+        }
+      } else if (st === "up") {
+        msg = "Up. Open the console.";
+      } else if (st === "offline") {
+        msg = "Offline. Press Wake AgentX, then refresh.";
+      }
+      setMsg(msg);
+    }).catch(function () {
+      pill.textContent = "Error";
+      pill.className = "pill pill-offline";
+      setMsg("Could not reach the Worker.");
+    });
+  }
+  $("wakeBtn").addEventListener("click", function () {
+    var btn = $("wakeBtn");
+    btn.disabled = true;
+    btn.textContent = "Waking";
+    setMsg("Pinging the console.");
+    fetch(WORKER_URL + "/ping", { cache: "no-store" }).catch(function () {}).then(function () {
+      setTimeout(function () {
+        loadStatus(true);
+        btn.disabled = false;
+        btn.textContent = "Wake AgentX";
+      }, 5000);
+    });
   });
-  $("refreshBtn").addEventListener("click", () => loadStatus(true));
+  $("refreshBtn").addEventListener("click", function () { loadStatus(true); });
+  $("kaSwitch").addEventListener("click", flipKeepAlive);
+  $("tokenSave").addEventListener("click", function () {
+    var v = $("tokenInput").value;
+    if (!v) { setKaMsg("Enter the admin token."); return; }
+    try { sessionStorage.setItem("agentxWakeToken", v); } catch (e) {}
+    $("tokenInput").value = "";
+    $("tokenRow").hidden = true;
+    setKaMsg("");
+    if (kaPending !== null) {
+      var next = kaPending;
+      kaPending = null;
+      kaOn = next;
+      paintKa();
+      sendFlip(next, v);
+    }
+  });
+  function paintRest() {
+    var btn = $("restBtn");
+    btn.textContent = resting ? "Resting" : "Rest machine";
+    btn.disabled = resting;
+  }
+  $("restBtn").addEventListener("click", function () {
+    if (resting) { return; }
+    if (!window.confirm("Send the machine to rest?")) { return; }
+    var btn = $("restBtn");
+    btn.textContent = "Resting";
+    btn.disabled = true;
+    var tok = null;
+    try { tok = localStorage.getItem("qwenpaw_auth_token"); } catch (e) { tok = null; }
+    var headers = {};
+    if (tok) { headers = { Authorization: "Bearer " + tok }; }
+    var whyMap = {
+      auth_required: "Sign in to the console first, then rest the machine.",
+      instabox_api_key_unset: "Rest is not configured yet.",
+      machine_not_running: "The machine is already paused."
+    };
+    fetch("/api/machine/rest", { method: "POST", headers: headers }).then(function (r) {
+      return r.json().then(function (j) {
+        if (r.ok && j && j.ok) {
+          resting = true;
+          paintRest();
+          setMsg(j.message || "Machine resting.");
+          return;
+        }
+        var why = (j && whyMap[j.error]) || (j && (j.error || j.detail)) || ("HTTP " + r.status);
+        setMsg(String(why));
+        paintRest();
+      });
+    }).catch(function (e) {
+      setMsg("Could not reach the machine. " + (e && e.message ? e.message : "Network error."));
+      paintRest();
+    });
+  });
   loadStatus(false);
-  setInterval(() => loadStatus(false), 30_000);
+})();
 </script>
 </body>
 </html>
