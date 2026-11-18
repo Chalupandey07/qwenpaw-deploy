@@ -2366,6 +2366,54 @@ def t135():
         ["features/botpages/routine-loop/test_routine_loop.py"], 25)
 
 
+def t136():
+    """Eval harness, LLM judge: judge.py + versioned rubric + calibration set (44).
+
+    Machine-free test (features/infra/evals/test_judge.py) for the
+    all-20 gap #13. judge_reply(reply, rubric, task, *, transport=None,
+    case_id=None) -> verdict dict {pass, reason, evidence, qualified,
+    error_kind, rubric_version, rubric_sha256, judge_prompt_version,
+    model, reply_truncated}. The judge runs over the same console
+    chat-task API as run-evals.py (login once, an
+    eval-judge-<case-id> session so judging never contaminates the case
+    chat, 423 aborts, 429 backoff, 401 one re-login), on the existing
+    model (mosicn nex-n2.6 expected), no new key, per-transport cap of
+    50 calls. The versioned rubric (evals/rubrics/v1.md, criteria
+    R1-R6) is immutable — a change means a new v2.md file, never an
+    edit. Fail-closed: non-JSON / missing field / pass not a bool /
+    empty reason / pass with no quoted evidence / judge error / timeout
+    / empty reply -> unqualified, never pass; in grade_case that
+    surfaces as verdict "unqualified", not "fail", so an outage never
+    looks like a quality regression; task is mandatory.
+    Injection-resistant: the reply is fenced as data, never
+    instructions; the parser takes only the judge's own (last)
+    <verdict> block, else whole-output JSON — no substring search for
+    a JSON object. No substring grading, at all: grade_case raises
+    ValueError on legacy expect_contains/must_not_contain; observable
+    effects are real probes only (file_exists, endpoint_called); a
+    failed effect fails the case without calling the judge (quota
+    saved). audit_cases(cases.json) flags 9 violations across 8 cases
+    — all 5 T61 cases, plus 3 recall cases the sibling #6 agent added
+    (recall-loop-gate, recall-keepalive, recall-daily-summary). The
+    calibration set (12 human-reviewed examples with expected verdicts)
+    is graded by the judge, not by a stub — the machine-free test does
+    NOT claim live-model agreement (a stub returning recorded verdicts
+    would only prove the parser); it proves parser/plumbing, set
+    well-formedness, and that the old substring grader disagrees with
+    the humans on 5/12 examples (--old-grader exits non-zero by
+    design; the injection case fools the substring grader too, since
+    the smuggled block itself contains "Paris"). Fail-first proven:
+    the test failed with ModuleNotFoundError before judge.py existed.
+    The live half (live-model agreement with the calibration set:
+    QWENPAW_USER=satwik QWENPAW_PASS='...' python3 judge.py
+    --calibrate --live, requiring 12/12 agreement before the judge is
+    called trusted, and confirming the serving model is actually
+    mosicn/nex-n2.6) is verified by Muse after deploy.
+    """
+    return _py_script_harness(
+        ["features/infra/evals/test_judge.py"], 44)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2890,6 +2938,7 @@ TESTS = [
     ("T133", "ask-before-durable-write: high-stakes memory v2 facts are held in a pending_facts table until explicit accept --id --why; routine facts write silently with provenance; secrets rejected, never held; caps mirror lessons.py (max 3 pending, --why required, PF-001 ids never reused) (selftest)", "memory", "protocol", t133),
     ("T134", "serving-model identity note: per-attempt note stamped at the model-wrapper dispatch boundary (plain when serving == configured) + {from,to,reason} switch log in PATCH model-settings; discrepancy verdict derived from repo evidence (mosicn/nex-n2.6 is the source of truth, xingchiapi/gpt-6-astra is a stale snapshot) (selftest)", "model-identity", "protocol", t134),
     ("T135", "bot-built Pages 2nd gen: routine fires -> re-read state -> pure-render <pages>/<slug>/index.html -> redeploy via deploy-page.py; idempotent (unchanged state = byte-identical file, deploy skipped); fail-closed publish allowlist with state outside the pages tree; deploy failure leaves the last good page + records it (selftest)", "botpages", "protocol", t135),
+    ("T136", "eval harness LLM judge: judge.py grades prose via the console chat-task path (mosicn nex-n2.6, no new key); JSON verdict {pass, reason, evidence} in a <verdict> sentinel, non-JSON/missing-field/error/timeout is unqualified never pass; expect_contains refused (ValueError); 12-example calibration set (selftest)", "evals", "protocol", t136),
 ]
 
 SKIP_NOTE = {
