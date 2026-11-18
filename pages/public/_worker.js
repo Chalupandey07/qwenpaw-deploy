@@ -611,9 +611,9 @@ function computerPanelScript(rebrandEnabled) {
       btn.style.right = right;
       restBtn.style.right = right;
       vaultBtn.style.right = right;
-      btn.style.bottom = open ? "380px" : "16px";
-      restBtn.style.bottom = open ? "428px" : "64px";
-      vaultBtn.style.bottom = open ? "476px" : "112px";
+      btn.style.bottom = open ? "428px" : "16px";
+      restBtn.style.bottom = open ? "476px" : "64px";
+      vaultBtn.style.bottom = open ? "524px" : "112px";
       if (open && !frame.getAttribute("src")) frame.setAttribute("src", "/computer?embed=1");
       try { sessionStorage.setItem("qwenpawComputerOpen", open ? "1" : "0"); } catch (e) {}
     }
@@ -1371,7 +1371,12 @@ function computerPanelScript(rebrandEnabled) {
               var inp = inputs[i];
               var ph = "";
               try { ph = inp.getAttribute ? (inp.getAttribute("placeholder") || "") : ""; } catch (e) {}
-              if (ph.indexOf("message navigation") === -1) continue;
+              // The chat input's placeholder is "Ask anything, @ to
+              // mention" (QA round 18). The old check matched
+              // "message navigation", which is NOT the chat input — so
+              // the margin never landed on the real textbox and the
+              // banner stayed flush on it (rounds 16–18 FAIL).
+              if (ph.indexOf("Ask anything") === -1) continue;
               if (inp.getAttribute && inp.getAttribute("data-agentx-banner-gap")) continue;
               if (inp.setAttribute) inp.setAttribute("data-agentx-banner-gap", "1");
               inp.style.marginTop = "8px";
@@ -1469,9 +1474,9 @@ function computerPanelScript(rebrandEnabled) {
           cBtn.style.display = "";
           rBtn.style.display = "";
           vBtn.style.display = "";
-          cBtn.style.bottom = isOpen ? "380px" : "16px";
-          rBtn.style.bottom = isOpen ? "428px" : "64px";
-          vBtn.style.bottom = isOpen ? "476px" : "112px";
+          cBtn.style.bottom = isOpen ? "428px" : "16px";
+          rBtn.style.bottom = isOpen ? "476px" : "64px";
+          vBtn.style.bottom = isOpen ? "524px" : "112px";
         } catch (e) {}
       } },
       { id: "rename-logo", run: function () {
