@@ -28,9 +28,17 @@ store (memory.db) holding only distilled fact records:
   returns the same id (content-hash dedup); a fact that changes is
   SUPERSEDED, never deleted — the old row stays, marked, so "what was
   true then" stays answerable (Graphiti-style validity, without a graph DB).
-- Retrieve: FTS5 + BM25, token-budgeted (default 500, hard cap 1000).
-  A turn retrieves a few hundred tokens of relevant facts, not the whole
-  history — that is the token win.
+- Retrieve: multi-signal, token-budgeted (default 500, hard cap 1000).
+  Three signals fused by reciprocal rank fusion (RRF, k=60) — the same
+  shape Mem0 uses (semantic + BM25 + entity), minus the vector signal
+  (no embedding model is configured, so the lexical path is the only
+  honest one): BM25 over the FTS5 index, entity overlap (facts sharing
+  an entity with the query rank up), and importance. A turn retrieves a
+  few hundred tokens of relevant facts, not the whole history — that is
+  the token win. `search --as-of DATE` is Zep/Graphiti-style time
+  travel: the facts that were valid at that moment (valid_from /
+  valid_to windows; superseding a fact closes its window, it never
+  deletes the row).
 - Handoff: at the end of a session the agent writes one handoff row
   (summary + open tasks + where it left off). A NEW session reads the
   latest handoff first, so it continues from where the previous session
@@ -89,7 +97,7 @@ except ImportError as exc:  # pragma: no cover - missing sibling is fatal
         "read-only history reader)."
     ) from exc
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TOKEN_CHARS = 3.6  # chars per token (AGENTS.md section 7)
 
 # Facts are compact; the whole point is a few hundred tokens. The hard cap
@@ -115,6 +123,8 @@ CREATE TABLE IF NOT EXISTS facts (
     source TEXT,
     importance INTEGER NOT NULL DEFAULT 2,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    valid_from TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    valid_to TEXT,
     superseded_by INTEGER,
     hash TEXT NOT NULL UNIQUE
 );
@@ -179,19 +189,180 @@ def _fact_hash(text: str) -> str:
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()
 
 
+# ------------------------------------------------------------ entities
+# Mem0-style entity extraction, rule-based and stdlib-only (no model, no
+# embeddings). Entities are used as a SECOND retrieval signal: a fact
+# sharing an entity with the query gets a rank boost (see search_facts).
+# They are a heuristic, not ground truth — a noisy entity only matters
+# if the query shares it, which means the query names the same topic.
+# The FTS index already contains the entities column, so entity terms
+# also match lexically; the explicit boost weights entity overlap more
+# heavily than body-text overlap.
+
+# Project / product / service names this deployment actually uses.
+# Matched case-insensitively on word boundaries; stored in canonical form.
+_ENTITY_LEXICON = {
+    "qwenpaw": "QwenPaw", "agentx": "AgentX", "deepseek": "DeepSeek",
+    "tinyfish": "TinyFish", "kilo": "Kilo", "instabox": "InstaBox",
+    "cloudflare": "Cloudflare", "github": "GitHub", "rakazo": "Rakazo",
+    "mem0": "Mem0", "zep": "Zep", "graphiti": "Graphiti",
+    "letta": "Letta", "supermemory": "Supermemory",
+    "docker": "Docker", "pages": "Pages", "workers": "Workers",
+    "d1": "D1", "vault": "Vault", "telegram": "Telegram",
+    "slack": "Slack", "discord": "Discord", "openai": "OpenAI",
+    "anthropic": "Anthropic", "gemini": "Gemini", "groq": "Groq",
+    "mistral": "Mistral", "openrouter": "OpenRouter", "xai": "xAI",
+    "gogibeta": "gogibeta", "ratulbaba7": "Ratulbaba7",
+    "satwik": "satwik", "qwen": "Qwen", "agentscope": "AgentScope",
+    "camoufox": "Camoufox", "novnc": "noVNC", "systemd": "systemd",
+    "sqlite": "SQLite", "fts5": "FTS5", "bm25": "BM25",
+    "hugging face": "Hugging Face", "google gemini": "Google Gemini",
+    "loop gate": "loop gate", "derived image": "derived image",
+    "daily summary": "daily summary", "guarded": "Guarded",
+}
+
+_ENTITY_STOP = {
+    "the", "a", "an", "this", "that", "it", "its", "in", "on", "at",
+    "to", "for", "of", "and", "or", "but", "we", "i", "you", "he",
+    "she", "they", "is", "are", "was", "were", "has", "have", "had",
+    "will", "would", "can", "could", "should", "do", "does", "did",
+    "not", "no", "yes", "if", "when", "where", "why", "how", "what",
+    "who", "which", "with", "without", "from", "by", "as", "be",
+    "been", "being", "all", "any", "each", "every", "some", "none",
+    "one", "two", "first", "second", "new", "old", "more", "most",
+    "other", "same", "such", "only", "own", "too", "very", "just",
+    "also", "now", "then", "here", "there", "today", "tomorrow",
+    "yesterday",
+}
+
+_MAX_ENTITIES = 8
+
+
+def extract_entities(text: str) -> list[str]:
+    """Rule-based entity extraction from a fact or query (stdlib only).
+
+    Returns a deduped list (first-seen casing), capped at 8. Sources,
+    in order: quoted strings, the known-name lexicon, CamelCase/acronym
+    tokens, and 2-4 word capitalised phrases (leading stopwords stripped).
+    """
+    text = text or ""
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str) -> None:
+        value = re.sub(r"\s+", " ", value.strip())
+        if not value or len(value) > 40 or len(value) < 2:
+            return
+        key = value.lower()
+        if key in seen or key in _ENTITY_STOP:
+            return
+        seen.add(key)
+        found.append(value)
+
+    # Quoted strings are deliberate names.
+    for m in re.finditer(r'"([^"]{2,40})"|\'([^\']{2,40})\'', text):
+        _add(m.group(1) or m.group(2) or "")
+    # Known project / product names (case-insensitive word boundary).
+    lowered = text.lower()
+    for term, canonical in _ENTITY_LEXICON.items():
+        if re.search(r"\b" + re.escape(term) + r"\b", lowered):
+            _add(canonical)
+    # CamelCase tokens (QwenPaw, TinyFish) and acronyms (API, CLI, D1).
+    for m in re.finditer(r"\b[A-Za-z]*[A-Z][a-z]+[A-Z][A-Za-z]*\b", text):
+        _add(m.group(0))
+    for m in re.finditer(r"\b[A-Z]{2,}\d*\b", text):
+        if m.group(0).lower() not in _ENTITY_STOP:
+            _add(m.group(0))
+    # 2-4 word capitalised phrases ("Loop Gate Fix", "Daily Summary").
+    for m in re.finditer(r"\b(?:[A-Z][a-z]+)(?:\s+[A-Z][a-z]+){1,3}\b", text):
+        words = m.group(0).split()
+        while words and words[0].lower() in _ENTITY_STOP:
+            words.pop(0)
+        if len(words) >= 2:
+            _add(" ".join(words))
+    return found[:_MAX_ENTITIES]
+
+
+def _entity_overlap(a: list[str], b: list[str]) -> int:
+    """Count of shared entities (case-insensitive)."""
+    return len({x.lower() for x in a} & {y.lower() for y in b})
+
+
+def _rrf_fuse(weighted_ranks: list[tuple[int, float]], k: int = 10) -> float:
+    """Weighted reciprocal rank fusion: sum weight / (k + rank) over signals.
+
+    k=10 (not the standard 60) because our candidate lists are short
+    (<= 30); a smaller k gives the rank differences real weight. The
+    entity signal is weighted 2x and importance 2x: sharing an entity
+    with the query, or being marked important, is a stronger relevance
+    cue than a one-position BM25 difference, but neither alone
+    overrides a large BM25 gap.
+    """
+    return sum(w / (k + r) for r, w in weighted_ranks)
+
+
+def _dense_ranks(items: list[dict], key) -> dict[int, int]:
+    """Dense rank (1-based, ties share a rank) for a list of dicts.
+
+    Returns {id(item): rank}. `key` extracts the sort value (higher is
+    better). Ties get the same rank; the next distinct value is +1.
+    """
+    ordered = sorted(items, key=key, reverse=True)
+    ranks: dict[int, int] = {}
+    rank = 0
+    prev = None
+    for it in ordered:
+        val = key(it)
+        if prev is None or val != prev:
+            rank += 1
+            prev = val
+        ranks[id(it)] = rank
+    return ranks
+
+
 def open_db(path: str | Path) -> sqlite3.Connection:
-    """Open (creating if needed) the fact store and ensure the schema."""
+    """Open (creating if needed) the fact store and ensure the schema.
+
+    Migrates v1 -> v2 on open: adds valid_from / valid_to (temporal
+    validity windows, Zep/Graphiti-style) and backfills valid_from from
+    created_at. Existing rows are never deleted or rewritten — the
+    migration only ADDS columns and fills the new ones.
+    """
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
     row = conn.execute(
         "SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    version = int(row[0]) if row is not None else 0
+    if version < 2:
+        _migrate_v1_to_v2(conn)
     if row is None:
         conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),))
+    else:
+        # Write the current version (covers the migration case: the
+        # stored value is stale until this update runs).
+        conn.execute(
+            "UPDATE meta SET value=? WHERE key='schema_version'",
+            (str(SCHEMA_VERSION),))
     conn.commit()
     return conn
+
+
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """Add valid_from / valid_to to facts (v1 -> v2). Add-only migration."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(facts)")}
+    if "valid_from" not in cols:
+        conn.execute("ALTER TABLE facts ADD COLUMN valid_from TEXT")
+    if "valid_to" not in cols:
+        conn.execute("ALTER TABLE facts ADD COLUMN valid_to TEXT")
+    # Backfill: a fact is valid from when it was created. Superseded rows
+    # keep valid_to NULL (their superseded_by marker already excludes
+    # them from default search); only NEW supersessions set valid_to.
+    conn.execute(
+        "UPDATE facts SET valid_from = created_at WHERE valid_from IS NULL")
+    conn.commit()
 
 
 def _check_secret(text: str, what: str = "fact") -> None:
@@ -225,6 +396,11 @@ def add_fact(conn: sqlite3.Connection, text: str, kind: str = "fact",
         "SELECT id FROM facts WHERE hash=?", (digest,)).fetchone()
     if row is not None:
         return int(row["id"])
+    # Entities are auto-extracted when the caller supplies none, so
+    # every fact carries the entity signal for retrieval (Mem0-style).
+    # Explicitly supplied entities are used as-is.
+    if not entities:
+        entities = extract_entities(text)
     cur = conn.execute(
         "INSERT INTO facts (text, kind, entities, session_id, source,"
         " importance, hash) VALUES (?,?,?,?,?,?,?)",
@@ -232,6 +408,28 @@ def add_fact(conn: sqlite3.Connection, text: str, kind: str = "fact",
          importance, digest))
     conn.commit()
     return int(cur.lastrowid)
+
+
+def backfill_entities(conn: sqlite3.Connection) -> dict:
+    """Populate entities for facts that have none (migration helper).
+
+    Only touches rows whose entities list is empty; it never changes
+    text, kind, or any other field, and never deletes a row. The FTS
+    trigger re-indexes the updated rows. Returns a count report.
+    """
+    rows = conn.execute(
+        "SELECT id, text FROM facts WHERE entities IN ('[]', '', 'null')"
+    ).fetchall()
+    updated = 0
+    for r in rows:
+        ents = extract_entities(r["text"])
+        if ents:
+            conn.execute(
+                "UPDATE facts SET entities=? WHERE id=?",
+                (json.dumps(ents), r["id"]))
+            updated += 1
+    conn.commit()
+    return {"examined": len(rows), "updated": updated}
 
 
 def supersede_fact(conn: sqlite3.Connection, fact_id: int, new_text: str,
@@ -250,19 +448,46 @@ def supersede_fact(conn: sqlite3.Connection, fact_id: int, new_text: str,
     new_id = add_fact(conn, new_text, kind=kind or row["kind"],
                       session_id=session_id,
                       source=f"supersedes:{fact_id}")
+    # Temporal validity (Zep/Graphiti-style): the old fact stops being
+    # valid now; the new fact is valid from now (its created_at). The old
+    # row stays, so "what was true then" is still answerable with --as-of.
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     conn.execute(
-        "UPDATE facts SET superseded_by=? WHERE id=?", (new_id, fact_id))
+        "UPDATE facts SET superseded_by=?, valid_to=? WHERE id=?",
+        (new_id, now, fact_id))
     conn.commit()
     return new_id
 
 
 def search_facts(conn: sqlite3.Connection, query: str, limit: int = DEFAULT_LIMIT,
                  budget_tokens: int = DEFAULT_BUDGET_TOKENS,
-                 include_superseded: bool = False) -> dict:
-    """FTS5 + BM25 retrieval over the fact store, token-budgeted.
+                 include_superseded: bool = False,
+                 as_of: str | None = None) -> dict:
+    """Multi-signal retrieval over the fact store, token-budgeted.
+
+    Signals, fused by weighted reciprocal rank fusion (RRF, k=10) — the
+    same shape Mem0 uses (semantic + BM25 + entity), minus the vector
+    signal (no embedding model is configured, so the lexical path is the
+    only honest one; see the README):
+      1. BM25 over the FTS5 index (text + kind + entities), weight 1.
+      2. Entity overlap: facts sharing an entity with the query rank up,
+         weight 2 (a shared entity outweighs a one-position BM25 gap,
+         not a large one). Ties share a rank, so a signal with no
+         spread adds the same constant to every candidate.
+      3. Importance: importance-3 facts rank above importance-1, weight 2
+         (importance outweighs a one-position BM25 gap, same as entity).
+    A query with no entities degrades gracefully: the entity signal ties
+    for every candidate and adds the same constant to all scores, so the
+    order falls back to BM25 + importance.
+
+    `as_of` (ISO date/datetime, Zep/Graphiti-style time travel) returns
+    the facts that were valid at that moment: valid_from <= as_of AND
+    (valid_to IS NULL OR valid_to > as_of). It implies include-superseded
+    for the validity window — a fact superseded later was still true then.
 
     Returns a JSON-serialisable report: results (id, text, kind,
-    session_id, rank, tokens), tokens (total estimate), truncated_by_budget.
+    session_id, rank, entity_overlap, fused_score, tokens), tokens
+    (total estimate), truncated_by_budget, latency_ms.
     """
     if limit < 1:
         raise FactError("limit must be >= 1")
@@ -274,49 +499,114 @@ def search_facts(conn: sqlite3.Connection, query: str, limit: int = DEFAULT_LIMI
             f"{ABSOLUTE_BUDGET_TOKENS}")
     if not query or not query.strip():
         raise FactError("query is required (empty query is not allowed)")
+    if as_of and not re.match(
+            r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?Z?)?$", as_of):
+        raise FactError("as_of must be an ISO date or datetime (YYYY-MM-DD)")
     match = _recall.fts_match_query(query)
-    where_super = "" if include_superseded else "AND f.superseded_by IS NULL"
+    query_entities = extract_entities(query)
+    # Validity filter. Default: current facts only (not superseded).
+    # as_of: the facts valid at that moment (superseded later is fine).
+    if as_of:
+        stamp = as_of if "T" in as_of else as_of + "T23:59:59Z"
+        where = ("AND f.valid_from <= ? AND "
+                 "(f.valid_to IS NULL OR f.valid_to > ?)")
+        where_params: list[str] = [stamp, stamp]
+    elif include_superseded:
+        where, where_params = "", []
+    else:
+        where, where_params = "AND f.superseded_by IS NULL", []
+    # Fetch 3x the limit so the re-rank has candidates to choose from.
+    fetch = min(limit * 3, MAX_LIMIT * 3)
     t0 = time.perf_counter()
     try:
         rows = conn.execute(
             "SELECT f.id, f.text, f.kind, f.session_id, f.created_at,"
+            " f.entities, f.importance, f.valid_from, f.valid_to,"
             " bm25(facts_fts) AS rank"
             " FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid"
-            " WHERE facts_fts MATCH ? " + where_super +
+            " WHERE facts_fts MATCH ? " + where +
             " ORDER BY rank LIMIT ?",
-            (match, limit)).fetchall()
+            (match, *where_params, fetch)).fetchall()
     except sqlite3.Error:
         # LIKE fallback (mirrors recall.py): FTS unavailable, not fatal.
         terms = _recall.like_terms(query)
         like = " OR ".join("f.text LIKE ?" for _ in terms)
         rows = conn.execute(
             "SELECT f.id, f.text, f.kind, f.session_id, f.created_at,"
+            " f.entities, f.importance, f.valid_from, f.valid_to,"
             " 0.0 AS rank FROM facts f WHERE (" + like + ") "
-            + where_super.replace("AND", "AND", 1) +
+            + where +
             " LIMIT ?",
-            *[f"%{t}%" for t in terms] + [limit]).fetchall() \
+            *[f"%{t}%" for t in terms] + where_params + [fetch]).fetchall() \
             if terms else []
     latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-    results: list[dict] = []
-    total = 0
-    truncated = False
-    for r in rows:
-        tokens = estimate_tokens(r["text"])
-        if results and total + tokens > budget_tokens:
-            truncated = True
-            break
-        total += tokens
-        results.append({
+    # --- multi-signal re-rank (weighted RRF over BM25 rank, entity
+    # overlap, importance). Rank positions are 1-based within each
+    # signal; ties share a rank (dense ranking), so a tied signal adds
+    # the same constant to every candidate and cannot tip the order.
+    cands: list[dict] = []
+    for pos, r in enumerate(rows):
+        ents = json.loads(r["entities"] or "[]")
+        cands.append({
             "id": int(r["id"]),
             "text": r["text"],
             "kind": r["kind"],
             "session_id": r["session_id"],
             "created_at": r["created_at"],
-            "rank": round(float(r["rank"]), 3),
+            "valid_from": r["valid_from"],
+            "valid_to": r["valid_to"],
+            "entities": ents,
+            "importance": int(r["importance"]),
+            "bm25_rank": round(float(r["rank"]), 3),
+            "bm25_pos": pos + 1,
+            "entity_overlap": _entity_overlap(query_entities, ents),
+        })
+    # Entity-overlap rank: more shared entities first (dense, ties share).
+    entity_ranks = _dense_ranks(cands, lambda c: c["entity_overlap"])
+    # Importance rank: higher importance first (dense, ties share).
+    importance_ranks = _dense_ranks(cands, lambda c: c["importance"])
+    for c in cands:
+        c["entity_pos"] = entity_ranks[id(c)]
+        c["importance_pos"] = importance_ranks[id(c)]
+        # Weights: BM25 1, entity 2, importance 2. The two quality
+        # signals together outweigh a modest BM25 gap; either one alone
+        # outweighs a one-position BM25 gap (see test_rrf_math).
+        c["fused_score"] = round(_rrf_fuse([
+            (c["bm25_pos"], 1.0),
+            (c["entity_pos"], 2.0),
+            (c["importance_pos"], 2.0),
+        ]), 6)
+    # Fused order; ties break toward the better BM25 position.
+    cands.sort(key=lambda c: (-c["fused_score"], c["bm25_pos"]))
+    results: list[dict] = []
+    total = 0
+    truncated = False
+    for c in cands:
+        if len(results) >= limit:
+            break
+        tokens = estimate_tokens(c["text"])
+        if results and total + tokens > budget_tokens:
+            truncated = True
+            break
+        total += tokens
+        results.append({
+            "id": c["id"],
+            "text": c["text"],
+            "kind": c["kind"],
+            "session_id": c["session_id"],
+            "created_at": c["created_at"],
+            "valid_from": c["valid_from"],
+            "valid_to": c["valid_to"],
+            "entities": c["entities"],
+            "importance": c["importance"],
+            "rank": c["bm25_rank"],
+            "entity_overlap": c["entity_overlap"],
+            "fused_score": c["fused_score"],
             "tokens": tokens,
         })
     return {
         "query": query,
+        "query_entities": query_entities,
         "results": results,
         "tokens": total,
         "truncated_by_budget": truncated,
@@ -497,6 +787,12 @@ def check_db(conn: sqlite3.Connection) -> dict:
             "SELECT COUNT(*) FROM handoffs").fetchone()[0],
         "fts": fts,
         "tables": sorted(tables),
+        "schema_version": int(
+            (conn.execute("SELECT value FROM meta WHERE key='schema_version'"
+                          ).fetchone() or ["?"])[0]),
+        "facts_with_entities": conn.execute(
+            "SELECT COUNT(*) FROM facts WHERE entities NOT IN ('[]', '', 'null')"
+        ).fetchone()[0],
     }
     latest = handoff_read(conn)
     if latest.get("found"):
@@ -538,11 +834,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--source")
     p.add_argument("--importance", type=int, default=2)
 
-    p = sub.add_parser("search", help="FTS5 retrieval over facts")
+    p = sub.add_parser("search", help="multi-signal retrieval over facts")
     p.add_argument("--query", required=True)
     p.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     p.add_argument("--budget", type=int, default=DEFAULT_BUDGET_TOKENS)
     p.add_argument("--include-superseded", action="store_true")
+    p.add_argument("--as-of", default=None,
+                   help="ISO date/datetime: facts valid at that moment "
+                        "(time travel; implies the validity window)")
+
+    p = sub.add_parser("backfill-entities",
+                       help="populate entities for facts that have none "
+                            "(migration helper; never changes text)")
 
     p = sub.add_parser("extract",
                        help="propose candidate facts from a transcript (no writes)")
@@ -587,7 +890,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(search_facts(
                 conn, args.query, limit=args.limit,
                 budget_tokens=args.budget,
-                include_superseded=args.include_superseded), indent=2))
+                include_superseded=args.include_superseded,
+                as_of=args.as_of), indent=2))
+        elif args.cmd == "backfill-entities":
+            print(json.dumps(backfill_entities(conn), indent=2))
         elif args.cmd == "extract":
             text = Path(args.transcript).read_text(encoding="utf-8")
             cands = extract_candidates(text, session_id=args.session)
