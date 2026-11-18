@@ -2463,6 +2463,43 @@ def t137():
         ["features/memory/recall-eval/test_recall_eval.py"], 64)
 
 
+def t138():
+    """Artifacts library: SQLite index over workspace + sent files + history.db (44).
+
+    Machine-free test (features/artifacts/test_artifacts.py) for the
+    all-20 gap #14. artifacts.py is a stdlib-only CLI with subcommands
+    index / backfill / search / render. It walks a workspace (skips
+    hidden files, .git, caches, venvs, history.db*, the index DB
+    itself, and symlinks escaping the root), stores name / slug / date
+    / size / type / source in SQLite (artifacts table, UNIQUE (path,
+    source) + indexes on slug/type/date/name), and renders one
+    searchable static HTML page (rows embedded as JSON, client-side AND
+    token filter, header states "Not live"). Backfill has two inputs:
+    sent-file metadata JSON ({path, sent_at, session_id, channel}) and
+    history.db — opened strictly read-only (mode=ro URI +
+    mutation-denying authorizer, mirroring features/memory/recall.py),
+    matching real workspace files by path/name in conversation content;
+    only metadata enters the index, no message content. History
+    matching checks real files rather than regex-extracting paths —
+    that was a real bug found by the test (paths with spaces like
+    "Meeting Notes.md" were missed), fixed before green. Fail-first
+    proven (stub --code fails: no init_db). Covers: (a) walk indexes
+    all 7 fixture files with full metadata, (b) search finds the right
+    artifact / misses the wrong one, (c) sent backfill picks up a
+    pre-index file, (d) re-index adds zero rows, (e) history.db hash +
+    mtime unchanged and no journal/WAL files; plus history backfill,
+    slug-collision dedupe, hidden/symlink exclusions, render + both
+    CLIs, bad inputs. DeepSeek design help failed — one seek.py call
+    returned malformed JSON ("provider response was not valid JSON");
+    not retried, the design was verified against repo patterns instead.
+    The live half (run index + render against the real
+    workspace/history.db on the machine and check the page in a
+    browser) is verified by Muse after deploy.
+    """
+    return _py_script_harness(
+        ["features/artifacts/test_artifacts.py"], 44)
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -2989,6 +3026,7 @@ TESTS = [
     ("T135", "bot-built Pages 2nd gen: routine fires -> re-read state -> pure-render <pages>/<slug>/index.html -> redeploy via deploy-page.py; idempotent (unchanged state = byte-identical file, deploy skipped); fail-closed publish allowlist with state outside the pages tree; deploy failure leaves the last good page + records it (selftest)", "botpages", "protocol", t135),
     ("T136", "eval harness LLM judge: judge.py grades prose via the console chat-task path (mosicn nex-n2.6, no new key); JSON verdict {pass, reason, evidence} in a <verdict> sentinel, non-JSON/missing-field/error/timeout is unqualified never pass; expect_contains refused (ValueError); 12-example calibration set (selftest)", "evals", "protocol", t136),
     ("T137", "memory-recall eval: Layer-1 baseline measured on the real facts.py search (hit@1 0.833, hit@3 1.0, MRR 0.917, staleness + abstention verified); integrity fixtures staged, graded by the T136 judge only, never by substring (selftest)", "memory", "protocol", t137),
+    ("T138", "artifacts library: SQLite index over workspace + sent-file metadata + history.db (read-only, mutation-denying authorizer); one searchable static page; backfill for files already sent; re-index is idempotent (selftest)", "artifacts", "protocol", t138),
 ]
 
 SKIP_NOTE = {
