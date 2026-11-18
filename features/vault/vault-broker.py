@@ -44,7 +44,8 @@ TOKEN
   which the vault does not remove (a skill that bypasses the broker can
   already read working.secret/ directly; the vault gives the SAFE path).
 
-ENDPOINTS (all require X-Vault-Broker-Token, except /health)
+ENDPOINTS (all require X-Vault-Broker-Token, except /health and
+  POST /sandbox/inject, which is token-gated instead)
   GET  /health          {ok, ready, reason} — ready is false without a token.
   POST /run             {names: [...], argv: [...], cwd?, timeoutSeconds?}
                         Runs argv with the named items exported as $VAR
@@ -59,11 +60,27 @@ ENDPOINTS (all require X-Vault-Broker-Token, except /health)
                         origin pin, policy, and redaction rules are enforced
                         here as in the Worker, and the redaction is applied
                         again on the way back (defence in depth).
+  POST /sandbox/inject  {token, name, host?, job_id?, argv, cwd?,
+                        timeoutSeconds?} — the sandbox half of T139. The
+                        token is a short-lived scoped token minted with
+                        SANDBOX_BROKER_KEY (see features/sandbox/
+                        vault_tokens.py): audience `sandbox-inject`, exact
+                        item + host scope, 90 s default / 300 s max TTL,
+                        single-use jti. The broker verifies it (no broker
+                        token is accepted here — the sandbox must never hold
+                        one), fetches the named value from the Worker
+                        /vault/export, runs argv with the value in the child
+                        env ONLY, and scrubs the output. A refused token is
+                        401; a missing/malformed SANDBOX_BROKER_KEY is 503
+                        (fail closed). The token is consumed on first
+                        successful verification even if the export or the
+                        run then fails — single-use means single-use.
 
 Install (Muse, machine side):
   install -d -m 0755 /data/home/qwenpaw/vault
   cp features/vault/vault-broker.py /data/home/qwenpaw/vault/
   cp features/vault/redact.py       /data/home/qwenpaw/vault/
+  cp features/sandbox/vault_tokens.py /data/home/qwenpaw/vault/
   cp features/vault/qwenpaw-vault-broker.service /etc/systemd/system/
   systemctl daemon-reload && systemctl enable --now qwenpaw-vault-broker
 
@@ -184,6 +201,99 @@ def _worker_list():
     return payload.get("items", [])
 
 
+# ---------------------------------------------------------------------------
+# Sandbox inject (T139): the short-lived scoped token API.
+#
+# The broker mints nothing here — the runner mints (vault_tokens.
+# mint_token, key from SANDBOX_BROKER_KEY) and the sandbox job carries
+# the token. This side only VERIFIES, once, then fetches the named
+# value and runs the child. The token is the ONLY credential the
+# sandbox path accepts: the broker token (VAULT_BROKER_TOKEN) is never
+# accepted on /sandbox/inject, so a leaked sandbox token cannot be
+# replayed as a broker call — and the sandbox never holds the broker
+# token in the first place.
+# ---------------------------------------------------------------------------
+
+_vault_tokens = None
+_vault_tokens_tried = False
+_SANDBOX_TOKEN_STORE = None
+
+
+def _load_vault_tokens():
+    """Import vault_tokens.py: same dir (machine layout, /data/home/
+    qwenpaw/vault/vault_tokens.py) or the repo layout (features/sandbox/
+    vault_tokens.py, one dir up from features/vault/). Returns the
+    module or None. Never raises for a missing file — the endpoint
+    fails closed (503) when the module is absent."""
+    global _vault_tokens, _vault_tokens_tried
+    if _vault_tokens_tried:
+        return _vault_tokens
+    _vault_tokens_tried = True
+    try:
+        import vault_tokens as _vt  # noqa: F401
+
+        _vault_tokens = _vt
+        return _vault_tokens
+    except ImportError:
+        pass
+    try:
+        import importlib.util
+
+        candidate = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "sandbox", "vault_tokens.py",
+        )
+        spec = importlib.util.spec_from_file_location("vault_tokens", candidate)
+        if spec is not None and spec.loader is not None:
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _vault_tokens = module
+    except Exception:
+        _vault_tokens = None
+    return _vault_tokens
+
+
+def _load_sandbox_keys():
+    """Load the sandbox signing key(s) from the environment.
+
+    SANDBOX_BROKER_KEY (32 random bytes, hex) is required; the optional
+    SANDBOX_BROKER_KEY_PREVIOUS covers rotation (its kid verifies too).
+    Keys are loaded per request so a rotation lands without a broker
+    restart. Raises the token module's TokenError when the current key
+    is missing or malformed — the endpoint answers 503, never 200.
+    The key value is never printed or logged anywhere in this module.
+    """
+    vt = _load_vault_tokens()
+    if vt is None:
+        raise RuntimeError("vault_tokens module is not installed")
+    keys = {}
+    kid, key = vt.load_key()
+    keys[kid] = key
+    previous = os.environ.get("SANDBOX_BROKER_KEY_PREVIOUS", "").strip()
+    if previous:
+        try:
+            pkid, pkey = vt.load_key({"SANDBOX_BROKER_KEY": previous})
+        except Exception:
+            pkid, pkey = None, None
+        if pkid is not None and pkid != kid:
+            keys[pkid] = pkey
+    return keys
+
+
+def _sandbox_token_store():
+    """The single-use jti store for /sandbox/inject. In-memory, one per
+    broker process: a restart forgets consumed ids, but every token
+    also expires within 300 s, so the replay window after a restart is
+    bounded by the TTL (see vault_tokens.TokenStore)."""
+    global _SANDBOX_TOKEN_STORE
+    vt = _load_vault_tokens()
+    if vt is None:
+        return None
+    if _SANDBOX_TOKEN_STORE is None:
+        _SANDBOX_TOKEN_STORE = vt.TokenStore()
+    return _SANDBOX_TOKEN_STORE
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -242,11 +352,25 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, {"items": items})
             return
+        if self.path == "/sandbox/inject":
+            self._send(405, {"error": "method_not_allowed"})
+            return
         self._send(404, {"error": "not_found"})
 
     def do_POST(self):  # noqa: N802
         if self.path == "/health":
             self._send(405, {"error": "method_not_allowed"})
+            return
+        # /sandbox/inject is token-gated, NOT broker-token-gated: the
+        # sandbox must never hold VAULT_BROKER_TOKEN, so the broker
+        # token is not accepted here at all. The scoped token in the
+        # body is the only credential this endpoint honours.
+        if self.path == "/sandbox/inject":
+            body = self._read_json()
+            if body is None:
+                self._send(400, {"error": "bad_json"})
+                return
+            self._handle_sandbox_inject(body)
             return
         if not self._require_token():
             self._send(401, {"error": "auth_required"})
@@ -311,6 +435,128 @@ class Handler(BaseHTTPRequestHandler):
             # Scrub the output with EVERY form this broker has ever handled
             # (not just this run's) — a value from an earlier run must stay
             # hidden in a later run's output too.
+            self._send(200, {
+                "ok": True,
+                "exitCode": proc.returncode,
+                "stdout": _scrub(proc.stdout or ""),
+                "stderr": _scrub(proc.stderr or ""),
+            })
+        except subprocess.TimeoutExpired as e:
+            self._send(200, {
+                "ok": True,
+                "exitCode": None,
+                "stdout": _scrub((e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")),
+                "stderr": _scrub((e.stderr or b"").decode("utf-8", "replace") if isinstance(e.stderr, bytes) else (e.stderr or "")),
+                "timedOut": True,
+            })
+        except Exception as e:
+            self._send(500, {"error": "run_failed", "detail": str(e)[:200]})
+
+    def _handle_sandbox_inject(self, body):
+        """POST /sandbox/inject (T139): run argv with ONE vault value in
+        the child env, gated by a short-lived scoped token — not by the
+        broker token.
+
+        Order matters and is deliberate: (1) validate the shape,
+        (2) verify the token (exact item + host scope, audience
+        `sandbox-inject`, TTL, single-use jti) — a refused token never
+        reaches the Worker, (3) fetch the named value from the Worker
+        /vault/export, (4) run argv with the value in the child env
+        ONLY, (5) scrub the output with every redaction form this
+        broker has ever handled. The token is consumed by step (2)
+        even if (3) or (4) then fails: single-use means the token is
+        spent on first presentation, not on first success. The token
+        string itself is never logged (log_message records method +
+        path only) and never echoed back in an error.
+        """
+        token = body.get("token")
+        if not isinstance(token, str) or not token:
+            self._send(400, {"error": "bad_token"})
+            return
+        name = body.get("name")
+        if not isinstance(name, str) or not re.match(r"^[a-z][a-z0-9_-]{0,63}$", name):
+            self._send(400, {"error": "bad_name"})
+            return
+        job_id = body.get("job_id")
+        if job_id is not None and not isinstance(job_id, str):
+            self._send(400, {"error": "bad_job_id"})
+            return
+        host = body.get("host")
+        if host is not None:
+            if not isinstance(host, str) or not host:
+                self._send(400, {"error": "bad_host"})
+                return
+            host = host.lower()
+        argv = body.get("argv")
+        if not isinstance(argv, list) or not argv or len(argv) > MAX_ARGV:
+            self._send(400, {"error": "bad_argv"})
+            return
+        for a in argv:
+            if not isinstance(a, str) or not a or len(a) > MAX_ARG_LEN:
+                self._send(400, {"error": "bad_argv"})
+                return
+        timeout_s = body.get("timeoutSeconds", DEFAULT_TIMEOUT_S)
+        try:
+            timeout_s = int(timeout_s)
+        except (TypeError, ValueError):
+            self._send(400, {"error": "bad_timeout"})
+            return
+        timeout_s = max(1, min(timeout_s, MAX_TIMEOUT_S))
+        cwd = body.get("cwd")
+        if cwd is not None and not isinstance(cwd, str):
+            self._send(400, {"error": "bad_cwd"})
+            return
+        vt = _load_vault_tokens()
+        if vt is None:
+            self._send(503, {"error": "sandbox_unconfigured",
+                             "detail": "vault_tokens module is not installed"})
+            return
+        try:
+            keys = _load_sandbox_keys()
+        except RuntimeError:
+            self._send(503, {"error": "sandbox_unconfigured",
+                             "detail": "vault_tokens module is not installed"})
+            return
+        except Exception:
+            # load_key raises TokenError when SANDBOX_BROKER_KEY is
+            # missing or malformed. Fail closed, and say only that the
+            # key is the problem — never anything about the key itself.
+            self._send(503, {"error": "sandbox_unconfigured",
+                             "detail": "SANDBOX_BROKER_KEY is not set or malformed"})
+            return
+        store = _sandbox_token_store()
+        try:
+            vt.verify_token(token, keys, required_item=name,
+                            required_host=host, job_id=job_id or None,
+                            store=store)
+        except Exception as exc:
+            # TokenError messages are generic reasons (bad signature,
+            # expired, out of scope, already used) — safe to return.
+            self._send(401, {"error": "sandbox_token_refused",
+                             "detail": str(exc)[:120]})
+            return
+        try:
+            items = _worker_export([name])
+        except RuntimeError as e:
+            self._send(502, {"error": str(e)})
+            return
+        if name not in items:
+            self._send(502, {"error": "upstream_error"})
+            return
+        item = items[name]
+        # Same minimal child env as /run: the named item exported as
+        # $VAR, on top of PATH/HOME only. The value never enters this
+        # process's own os.environ — only the child's.
+        child_env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", "/root"),
+        }
+        child_env[item["varName"]] = item["value"]
+        try:
+            proc = subprocess.run(
+                argv, env=child_env, cwd=cwd, timeout=timeout_s,
+                capture_output=True, text=True, errors="replace",
+            )
             self._send(200, {
                 "ok": True,
                 "exitCode": proc.returncode,
@@ -416,8 +662,10 @@ def _selftest():
     from redact import redaction_forms as rf, redact as rd, StreamRedactor
     checks = []
 
-    def check(name, cond):
+    def check(name, cond, detail=""):
         checks.append((name, bool(cond)))
+        if not cond and detail:
+            print(f"  FAIL detail {name}: {detail}")
 
     # Bearer forms: raw, scheme variants, JSON-escaped, percent-encoded.
     f = rf("bearer", "ghp_abc123XYZ")
@@ -459,7 +707,7 @@ def _selftest():
     # stubbed _worker_list, so no Worker or D1 is needed here.
     import threading as _threading
     import urllib.request as _urlreq
-    global TOKEN, _worker_list
+    global TOKEN, _worker_list, _worker_export
     _old_token = TOKEN
     _old_worker_list = _worker_list
     TOKEN = "test-broker-token-0123456789"
@@ -499,6 +747,112 @@ def _selftest():
               and "ciphertext" not in payload["items"][0])
         s, _ = _get("/health")
         check("broker /health still 200 with /list present", s == 200)
+        # POST /sandbox/inject (T139): served live on the same ephemeral
+        # port, with a stubbed _worker_export and a test SANDBOX key, so
+        # no Worker or D1 is needed here. The fake value is built by
+        # concatenation (never a literal secret-shaped string).
+        vt = _load_vault_tokens()
+        check("sandbox inject selftest: vault_tokens loads", vt is not None)
+        if vt is not None:
+            def _post(path, payload, broker_token=None):
+                req = _urlreq.Request(f"http://127.0.0.1:{_port}{path}",
+                                      data=json.dumps(payload).encode(), method="POST")
+                req.add_header("Content-Type", "application/json")
+                if broker_token:
+                    req.add_header("X-Vault-Broker-Token", broker_token)
+                try:
+                    with _urlreq.build_opener().open(req, timeout=5) as resp:
+                        return resp.status, json.loads(resp.read().decode())
+                except _urlreq.HTTPError as e:
+                    try:
+                        return e.code, json.loads(e.read().decode())
+                    except Exception:
+                        return e.code, {}
+
+            _fake_value = "ghp_" + "K" * 30  # fake, never a real key
+            _fake_key_hex = "33" * 32  # fake test signing key, never real
+
+            def _fake_export(names):
+                out = {}
+                for n in names:
+                    if n == "github-api":
+                        item = {"name": n, "kind": "bearer",
+                                "varName": "GITHUB_API", "value": _fake_value}
+                        out[n] = item
+                        _add_forms(redaction_forms(item["kind"], item["value"],
+                                                   header_name=None, username=None))
+                return out
+
+            _old_worker_export = _worker_export
+            _worker_export = _fake_export
+            _old_sandbox_key = os.environ.get("SANDBOX_BROKER_KEY")
+            os.environ["SANDBOX_BROKER_KEY"] = _fake_key_hex
+            try:
+                _kid, _key = vt.load_key({"SANDBOX_BROKER_KEY": _fake_key_hex})
+
+                def _mint(items, hosts, job="job-001"):
+                    return vt.mint_token(_key, _kid, job, items, hosts, ttl_s=90)
+
+                _child = [sys.executable, "-c",
+                          "import os,sys; sys.stdout.write(os.environ.get('GITHUB_API',''))"]
+                _env_probe = [sys.executable, "-c",
+                              "import os,sys; sys.stdout.write(os.environ.get('VAULT_BROKER_TOKEN','ABSENT'))"]
+                _tok1 = _mint(["github-api"], ["api.github.com"])
+                s, payload = _post("/sandbox/inject",
+                                   {"token": _tok1, "name": "github-api",
+                                    "host": "api.github.com", "job_id": "job-001",
+                                    "argv": _child})
+                check("sandbox inject with a valid token -> 200, value scrubbed",
+                      s == 200 and payload.get("exitCode") == 0
+                      and payload.get("stdout") == "[redacted]"
+                      and _fake_value not in json.dumps(payload))
+                _tok2 = _mint(["github-api"], ["api.github.com"])
+                s, payload = _post("/sandbox/inject",
+                                   {"token": _tok2, "name": "github-api",
+                                    "argv": _env_probe})
+                check("sandbox inject child env has no broker token",
+                      s == 200 and payload.get("stdout") == "ABSENT")
+                s, payload = _post("/sandbox/inject",
+                                   {"token": _tok1, "name": "github-api",
+                                    "argv": _child})
+                check("sandbox inject replay of a used token -> 401", s == 401,
+                      f"status={s}")
+                s, payload = _post("/sandbox/inject",
+                                   {"token": "v1.bad.bad", "name": "github-api",
+                                    "argv": _child})
+                check("sandbox inject with a bad token -> 401", s == 401,
+                      f"status={s}")
+                s, payload = _post("/sandbox/inject",
+                                   {"name": "github-api", "argv": _child},
+                                   broker_token="test-broker-token-0123456789")
+                check("sandbox inject: broker token alone grants nothing (400, no token)",
+                      s == 400 and payload.get("error") == "bad_token")
+                _tok_wrong = _mint(["cloudflare-api"], ["api.cloudflare.com"])
+                s, payload = _post("/sandbox/inject",
+                                   {"token": _tok_wrong, "name": "github-api",
+                                    "argv": _child})
+                check("sandbox inject token scoped to another item -> 401", s == 401,
+                      f"status={s}")
+                s, payload = _post("/sandbox/inject",
+                                   {"name": "github-api", "argv": _child})
+                check("sandbox inject with no token -> 400", s == 400,
+                      f"status={s}")
+                _tok3 = _mint(["github-api"], ["api.github.com"])
+                del os.environ["SANDBOX_BROKER_KEY"]
+                s, payload = _post("/sandbox/inject",
+                                   {"token": _tok3, "name": "github-api",
+                                    "argv": _child})
+                check("sandbox inject with no key configured -> 503 (fail closed)",
+                      s == 503 and payload.get("error") == "sandbox_unconfigured")
+                os.environ["SANDBOX_BROKER_KEY"] = _fake_key_hex
+                s, _ = _get("/sandbox/inject")
+                check("sandbox inject GET -> 405", s == 405, f"status={s}")
+            finally:
+                _worker_export = _old_worker_export
+                if _old_sandbox_key is None:
+                    os.environ.pop("SANDBOX_BROKER_KEY", None)
+                else:
+                    os.environ["SANDBOX_BROKER_KEY"] = _old_sandbox_key
     finally:
         _srv.shutdown()
         _srv.server_close()
