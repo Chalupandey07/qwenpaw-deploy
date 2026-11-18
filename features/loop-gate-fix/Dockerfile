@@ -4,11 +4,13 @@
 # The only change is the loop-gate patch: it fixes ToolCallBudgetGate
 # counting (round 1) and expands workflow/batch sub-calls so the batch
 # runner cannot bypass the budget (round 2), wires the gate into
-# the default loop chain so the cap applies to every chat, and enforces
+# the default loop chain so the cap applies to every chat, enforces
 # the budget at execution time (round 3) so a single response carrying
 # 200 direct parallel calls cannot execute them all before the gate's
-# deferred stop applies. Nothing else is changed.
-# Tag: qwenpaw-agentx:2.3.0-gatefix3.
+# deferred stop applies, and adds a per-task cap with a structured
+# stop audit (round 4) so a task cannot creep across turns by resuming.
+# Nothing else is changed.
+# Tag: qwenpaw-agentx:2.3.0-gatefix4.
 FROM agentscope/qwenpaw:v2.3.0@sha256:46a782f4b39b673eac399c90294244e348e71a01bdf032f8e78b00776be3c87d
 
 COPY qwenpaw-loop-gate-fix.patch /tmp/qwenpaw-loop-gate-fix.patch
