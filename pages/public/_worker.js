@@ -722,6 +722,24 @@ function computerPanelScript(rebrandEnabled) {
     /* AGENTX-REBRAND-START */
     var AGENTX_MENU_LABELS = ["Tutorial", "Feature Demos", "Changelog", "FAQ", "GitHub", "Documentation", "Import"];
     var AGENTX_CHINA_LABELS = ["DashScope", "SiliconFlow", "ModelScope", "Alibaba", "Alibaba Cloud", "Aliyun", "WeCom", "DingTalk", "Feishu", "QQ", "WeChat", "XiaoYi", "Yuanbao"];
+    // Upstream hosts the rebrand blocks (block-links-v2, sidebar-help).
+    // Host-substring match on the lowercased URL: the two hosts the old
+    // block-links covered by prefix (qwenpaw.agentscope.io docs,
+    // github.com/agentscope-ai) are included here too, so one helper
+    // answers "is this link upstream?" for every caller. The console's
+    // own origins (instabox.tech, pages.dev) contain none of these.
+    var AGENTX_UPSTREAM_HOSTS = ["qwenpaw.com", "qwenlm.github.io", "github.com/QwenLM", "discord.gg", "alibabacloud.com", "dashscope.aliyuncs.com", "chat.qwen.ai", "qwenpaw.agentscope.io", "github.com/agentscope-ai"];
+    // Model display-name map (model-labels, DISPLAY ONLY — text nodes in
+    // the picker/composer; never option values, input values, or anything
+    // sent to the API). DOCUMENTED JUDGMENT CALL, needs user
+    // confirmation (see features/rebrand/README.md): flash = small/fast
+    // tier, so deepseek-v4.1-flash-free displays as AgentX-1-Mini and
+    // nex-n2.6 displays as AgentX-1. A label matching neither is left
+    // alone. The real model ids are unchanged upstream.
+    var AGENTX_MODEL_LABELS = [["deepseek-v4.1-flash-free", "AgentX-1-Mini"], ["nex-n2.6", "AgentX-1"]];
+    // Inline favicon (head-rebrand): a minimal URL-encoded SVG with the
+    // "AX" mark. Inline data-URI, no external URL, no fetch.
+    var AGENTX_FAVICON_DATA = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2316a34a'/%3E%3Ctext x='16' y='21' font-size='13' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'%3EAX%3C/text%3E%3C/svg%3E";
     var AGENTX_LOAD_BEARING = ["qwenpaw[codex]", "qwenpaw[whisper]", "QWENPAW_AUTH_ENABLED", "~/.qwenpaw", "qwenpaw_auth_token", "qwenpaw-agent-storage", "qwenpaw-last-used-agent", "qwenpaw:", "qwenpaw-"];
     var agentxLinkBlockerInstalled = false;
     var agentxLastRun = 0;
@@ -1048,22 +1066,177 @@ function computerPanelScript(rebrandEnabled) {
         return 1;
       } catch (e) { return 0; }
     }
+    // Upstream-host test (block-links-v2, sidebar-help): host-substring
+    // match on the lowercased URL, so casing and path/query never matter.
+    // A relative URL has no host and never matches.
+    function agentxIsUpstreamHref(href) {
+      if (!href) return false;
+      var h = "";
+      try { h = href.toLowerCase(); } catch (e) { h = href; }
+      for (var i = 0; i < AGENTX_UPSTREAM_HOSTS.length; i++) {
+        if (h.indexOf(AGENTX_UPSTREAM_HOSTS[i].toLowerCase()) !== -1) return true;
+      }
+      return false;
+    }
     function agentxBlockUpstreamLinks() {
       if (agentxLinkBlockerInstalled) return;
       try {
         document.addEventListener("click", function (ev) {
           try {
-            var a = ev.target && ev.target.closest ? ev.target.closest("a[href]") : null;
-            if (!a) return;
-            var href = a.getAttribute("href") || "";
-            if (href.indexOf(AGENTX_UPSTREAM_DOC) === 0 || href.indexOf(AGENTX_UPSTREAM_GITHUB) === 0) {
-              ev.preventDefault();
-              ev.stopPropagation();
+            var t = ev.target;
+            var el = null;
+            try { el = t && t.closest ? t.closest("a[href], [data-url], [data-href], form[action]") : null; } catch (e) {}
+            if (!el) return;
+            // Every URL the clicked element carries: a link can show a
+            // harmless href while its data-url / data-href / form action
+            // points upstream, so check all of them, not just the first.
+            var urls = [];
+            try {
+              var href = el.getAttribute("href") || "";
+              var durl = el.getAttribute("data-url") || "";
+              var dhref = el.getAttribute("data-href") || "";
+              var act = el.getAttribute("action") || "";
+              if (href) urls.push(href);
+              if (durl) urls.push(durl);
+              if (dhref) urls.push(dhref);
+              if (act) urls.push(act);
+            } catch (e) {}
+            for (var i = 0; i < urls.length; i++) {
+              if (urls[i].indexOf(AGENTX_UPSTREAM_DOC) === 0 || urls[i].indexOf(AGENTX_UPSTREAM_GITHUB) === 0 || agentxIsUpstreamHref(urls[i])) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                return;
+              }
             }
           } catch (e) {}
         }, true);
         agentxLinkBlockerInstalled = true;
       } catch (e) {}
+    }
+    // Hide the ROW/CARD holding a short label (hide-powered-by,
+    // hide-upgrade, hide-run-in, hide-onboarding, hide-update-banner,
+    // hide-shortcuts-dialog). LEAF-ONLY: an element with element children
+    // is skipped, so a big container whose text merely contains the label
+    // among other content is never hidden — only the leaf holding the
+    // label, climbed to its row/card, is. A multi-word label matches as
+    // a substring ("Update available" inside "Update available — v2.3.1");
+    // a single-word label must match the whole trimmed text, so
+    // "Upgrades" never matches "Upgrade" and "Shortcut keys" never
+    // matches "Shortcuts". The climb never returns a list container
+    // (agentxClimbToContainer skips lists; the closest() selector names
+    // rows/cards only). React-safe: display:none on the row, no node
+    // moves, no removals. Labels carrying QwenPaw are listed in BOTH
+    // spellings: rename-text runs before these rules and already made
+    // them "AgentX", so matching only "QwenPaw" would never fire.
+    function agentxHideRowByText(substrings, itemSelector, containerSelector) {
+      var found = 0;
+      var els;
+      try { els = document.querySelectorAll(itemSelector); } catch (e) { return 0; }
+      for (var i = 0; i < els.length; i++) {
+        try {
+          var el = els[i];
+          if (el.children && el.children.length) continue;
+          var t = "";
+          try { t = (el.textContent || "").trim(); } catch (e) {}
+          if (!t || t.length > 160) continue;
+          var tLower = "";
+          try { tLower = t.toLowerCase(); } catch (e) { tLower = t; }
+          var matched = false;
+          for (var j = 0; j < substrings.length; j++) {
+            var s = substrings[j];
+            var sLower = "";
+            try { sLower = s.toLowerCase(); } catch (e) { sLower = s; }
+            if (sLower.indexOf(" ") !== -1) { if (tLower.indexOf(sLower) !== -1) { matched = true; break; } }
+            else if (tLower === sLower) { matched = true; break; }
+          }
+          if (!matched) continue;
+          var target = null;
+          try { target = el.closest ? el.closest(containerSelector) : null; } catch (e) {}
+          if (!target) { try { target = agentxClimbToContainer(el, containerSelector); } catch (e) {} }
+          if (!target) target = el;
+          if (target.getAttribute && target.getAttribute("data-agentx-hidden")) continue;
+          target.style.display = "none";
+          if (target.setAttribute) target.setAttribute("data-agentx-hidden", "1");
+          found += 1;
+        } catch (e) {}
+      }
+      return found;
+    }
+    // Rename a NEEDLE ("QwenPaw", or a longer phrase) in text nodes whose
+    // ancestor chain matches markerFn — the scoped rename used by the
+    // Settings / account / workspace / auth / error rules. React-safe:
+    // text-node VALUES only, never attributes, never inputs, never
+    // load-bearing strings (install commands, env vars, storage keys).
+    // The REPLACEMENT is the needle's renamed form ("About AgentX" for
+    // the needle "About QwenPaw" — splitting on the needle and joining
+    // with plain "AgentX" would drop the word "About").
+    function agentxRenameScoped(needle, markerFn, replacement) {
+      var rep = replacement || "AgentX";
+      var renamed = 0;
+      var walker;
+      try { walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null); } catch (e) { return 0; }
+      var node;
+      while ((node = walker.nextNode())) {
+        try {
+          var t = node.nodeValue;
+          if (!t || t.indexOf(needle) === -1) continue;
+          var parent = node.parentNode;
+          if (parent && (parent.nodeName === "SCRIPT" || parent.nodeName === "STYLE" || parent.nodeName === "TEXTAREA" || parent.nodeName === "INPUT")) continue;
+          if (agentxIsLoadBearing(t)) continue;
+          var cur = parent;
+          var scoped = false;
+          for (var d = 0; cur && d < 8; d++) {
+            try { if (markerFn(cur)) { scoped = true; break; } } catch (e) {}
+            cur = cur.parentNode;
+          }
+          if (!scoped) continue;
+          node.nodeValue = t.split(needle).join(rep);
+          renamed += 1;
+        } catch (e) {}
+      }
+      return renamed;
+    }
+    // Rename a NEEDLE in every text node in the body (same guards as
+    // agentxRenameScoped, no scope check). Used when the page itself is
+    // the scope — e.g. the rule already knows the pathname is
+    // /settings/models — so the scoped walk would only repeat the test.
+    function agentxRenameNeedleInBody(needle, replacement) {
+      var rep = replacement || "AgentX";
+      var renamed = 0;
+      var walker;
+      try { walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null); } catch (e) { return 0; }
+      var node;
+      while ((node = walker.nextNode())) {
+        try {
+          var t = node.nodeValue;
+          if (!t || t.indexOf(needle) === -1) continue;
+          var parent = node.parentNode;
+          if (parent && (parent.nodeName === "SCRIPT" || parent.nodeName === "STYLE" || parent.nodeName === "TEXTAREA" || parent.nodeName === "INPUT")) continue;
+          if (agentxIsLoadBearing(t)) continue;
+          node.nodeValue = t.split(needle).join(rep);
+          renamed += 1;
+        } catch (e) {}
+      }
+      return renamed;
+    }
+    // Scope marker shared by the Settings rules: an ancestor whose
+    // class / aria-label / title names the section (word). Deliberately
+    // NOT textContent: a shared ancestor's text contains every label in
+    // its subtree ("Settings" in a menu that also holds an About row
+    // would false-positive), while a class/aria-label names the section
+    // itself. Sibling headings are never ancestors, so they cannot scope
+    // a rule — the section's own class/aria-label must carry the name.
+    function agentxScopeMarker(el, words) {
+      try {
+        var cls = "";
+        try { cls = (el.getAttribute("class") || "").toLowerCase(); } catch (e) {}
+        var lab = "";
+        try { lab = ((el.getAttribute("aria-label") || "") + " " + (el.getAttribute("title") || "")).toLowerCase(); } catch (e) {}
+        for (var i = 0; i < words.length; i++) {
+          if (cls.indexOf(words[i]) !== -1 || lab.indexOf(words[i]) !== -1) return true;
+        }
+      } catch (e) {}
+      return false;
     }
     // Per-chat thinking level (2026-11-18): state + API helpers for the
     // "thinking-selector" rule. The backend already supports per-chat
@@ -1176,17 +1349,28 @@ function computerPanelScript(rebrandEnabled) {
         if (document.title && document.title.indexOf("QwenPaw") !== -1) document.title = document.title.split("QwenPaw").join("AgentX");
       } },
       { id: "rename-attrs", run: function () {
+        // rename-attrs-v2 (2026-11-19): also covers alt and data-tooltip.
+        // IMG elements are SKIPPED here — the logo rule owns img
+        // attributes (alt/title/aria-label): if this rule renamed the
+        // logo img's alt to AgentX first, rename-logo's
+        // img[alt*="QwenPaw"] selector would never match and the logo
+        // would never be swapped for the AgentX wordmark.
         var els;
-        try { els = document.querySelectorAll('[aria-label*="QwenPaw"], [placeholder*="QwenPaw"], [title*="QwenPaw"]'); } catch (e) { return; }
+        try { els = document.querySelectorAll('[aria-label*="QwenPaw"], [placeholder*="QwenPaw"], [title*="QwenPaw"], [alt*="QwenPaw"], [data-tooltip*="QwenPaw"]'); } catch (e) { return; }
         for (var i = 0; i < els.length; i++) {
           try {
             var el = els[i];
+            if (el.tagName === "IMG") continue;
             var a = el.getAttribute("aria-label");
             if (a && a.indexOf("QwenPaw") !== -1) el.setAttribute("aria-label", a.split("QwenPaw").join("AgentX"));
             var p = el.getAttribute("placeholder");
             if (p && p.indexOf("QwenPaw") !== -1) el.setAttribute("placeholder", p.split("QwenPaw").join("AgentX"));
             var t = el.getAttribute("title");
             if (t && t.indexOf("QwenPaw") !== -1) el.setAttribute("title", t.split("QwenPaw").join("AgentX"));
+            var al = el.getAttribute("alt");
+            if (al && al.indexOf("QwenPaw") !== -1) el.setAttribute("alt", al.split("QwenPaw").join("AgentX"));
+            var dt = el.getAttribute("data-tooltip");
+            if (dt && dt.indexOf("QwenPaw") !== -1) el.setAttribute("data-tooltip", dt.split("QwenPaw").join("AgentX"));
           } catch (e) {}
         }
       } },
@@ -1597,6 +1781,11 @@ function computerPanelScript(rebrandEnabled) {
             } catch (e) {}
           }
           if (!toolbar) return;
+          // thinking-text merge (2026-11-19): the console's own thinking
+          // label/option text in this toolbar is renamed here, inside the
+          // thinking-selector rule — no separate rule. Text-node values
+          // only; the select we create below is our own element.
+          try { agentxRenameTextIn(toolbar); } catch (e) {}
           var sel = null;
           try { sel = toolbar.querySelector ? toolbar.querySelector("[data-agentx-thinking]") : null; } catch (e) {}
           var created = false;
@@ -1717,12 +1906,22 @@ function computerPanelScript(rebrandEnabled) {
         // size is not known yet (not laid out, width 0) is left alone —
         // it still matches the selector on a later pass, once laid out,
         // so the decision is made with a real size.
+        // rename-logo-v2 (2026-11-19): also match imgs by title and
+        // aria-label, not only alt — the brand logo may carry its name
+        // on either attribute. The same size gate applies. Non-img
+        // elements matched by title/aria-label get an attribute rename
+        // only (no swap: a button is not a logo). rename-attrs skips
+        // IMG elements, so the img's QwenPaw attributes survive until
+        // this rule runs and the swap can still match them.
         var imgs;
-        try { imgs = document.querySelectorAll('img[alt*="QwenPaw"]'); } catch (e) { return; }
+        try { imgs = document.querySelectorAll('img[alt*="QwenPaw"], img[title*="QwenPaw"], img[aria-label*="QwenPaw"], [title*="QwenPaw"], [aria-label*="QwenPaw"]'); } catch (e) { return; }
         for (var i = 0; i < imgs.length; i++) {
           try {
             var img = imgs[i];
             if (img.getAttribute && img.getAttribute("data-agentx-logo")) continue;
+            try { var ti = img.getAttribute("title"); if (ti && ti.indexOf("QwenPaw") !== -1) img.setAttribute("title", ti.split("QwenPaw").join("AgentX")); } catch (e) {}
+            try { var ai = img.getAttribute("aria-label"); if (ai && ai.indexOf("QwenPaw") !== -1) img.setAttribute("aria-label", ai.split("QwenPaw").join("AgentX")); } catch (e) {}
+            if (img.tagName !== "IMG") continue;
             var w = 0;
             try { w = img.getBoundingClientRect ? img.getBoundingClientRect().width : 0; } catch (e) {}
             if (!w) { try { w = img.width || 0; } catch (e) {} }
@@ -1782,6 +1981,308 @@ function computerPanelScript(rebrandEnabled) {
         // agentxClimbToChinaCard, not the generic climb: the generic
         // climb hid the whole provider list (see agentxClimbToChinaCard).
         agentxHideByName(AGENTX_CHINA_LABELS, "li, button, a, [role='menuitem'], [role='listitem'], span, div, h1, h2, h3, h4, img", null, agentxClimbToChinaCard);
+      } },
+      { id: "footer-rebrand", run: function () {
+        // Part 3 (2026-11-19): rename QwenPaw in page footers to AgentX.
+        // Text-node VALUES only, footer scope only — the same text
+        // elsewhere is rename-text's job, not this rule's.
+        var footers;
+        try { footers = document.querySelectorAll("footer, [role='contentinfo']"); } catch (e) { return; }
+        for (var i = 0; i < footers.length; i++) {
+          try { agentxRenameTextIn(footers[i]); } catch (e) {}
+        }
+      } },
+      { id: "block-links-v2", run: function () {
+        // Part 3 (2026-11-19): the extended upstream-link blocker.
+        // agentxBlockUpstreamLinks now matches by host substring and
+        // checks href + data-url + data-href + form action. Install-once
+        // (agentxLinkBlockerInstalled), so this rule and block-links
+        // share one listener and never double-install.
+        agentxBlockUpstreamLinks();
+      } },
+      { id: "hide-powered-by", run: function () {
+        // Part 3 (2026-11-19): hide "Powered by QwenPaw" badges. Both
+        // spellings are listed: rename-text runs first and already made
+        // it "Powered by AgentX", so the QwenPaw spelling alone would
+        // never fire. The whole badge container is hidden, not the text.
+        agentxHideRowByText(["Powered by QwenPaw", "Powered by AgentX"], "span, div, p, li, a, button, footer", "li, section, [role='menuitem'], button, [class*='card'], [class*='row'], [class*='banner'], [class*='badge'], [class*='item'], footer");
+      } },
+      { id: "hide-feedback", run: function () {
+        // Part 3 (2026-11-19): hide Feedback / "Send feedback"
+        // affordances. agentxHideByName (exact text match for
+        // text-sourced names) so a paragraph merely mentioning feedback
+        // is never hidden — only the affordance itself.
+        agentxHideByName(["Feedback", "Send feedback"], "button, a, li, [role='menuitem'], [role='button']", "button, a, li, [role='menuitem']");
+      } },
+      { id: "settings-about", run: function () {
+        // Part 3 (2026-11-19): in Settings, rename "About QwenPaw" rows
+        // to "About AgentX". rename-text already renames globally; this
+        // rule is the scoped guarantee for the Settings row. The
+        // hide-about capture listener (which intercepts the click to
+        // /status) is untouched — this rule only renames text nodes.
+        var inSettings = false;
+        try { inSettings = (window.location && window.location.pathname ? window.location.pathname : "").indexOf("/settings") !== -1; } catch (e) {}
+        if (inSettings) { agentxRenameNeedleInBody("About QwenPaw", "About AgentX"); return; }
+        agentxRenameScoped("About QwenPaw", function (el) { return agentxScopeMarker(el, ["setting"]); }, "About AgentX");
+      } },
+      { id: "settings-language", run: function () {
+        // Part 3 (2026-11-19): hide the language switcher in Settings.
+        // Broader than hide-language (aria-label/title "Language"): also
+        // hide a Settings row whose VISIBLE label is exactly "Language".
+        // Exact match only — "Language: English" and "Languages" stay.
+        var els;
+        try { els = document.querySelectorAll("li, button, a, [role='menuitem'], span, div"); } catch (e) { return; }
+        for (var i = 0; i < els.length; i++) {
+          try {
+            var el = els[i];
+            var t = "";
+            try { t = (el.textContent || "").trim(); } catch (e) {}
+            if (t !== "Language") continue;
+            var target = null;
+            try { target = el.closest ? el.closest("li, [role='menuitem'], section, [class*='row'], [class*='setting']") : null; } catch (e) {}
+            if (!target) { try { target = agentxClimbToContainer(el, "li, [role='menuitem'], section"); } catch (e) {} }
+            if (!target) target = el;
+            if (target.getAttribute && target.getAttribute("data-agentx-hidden")) continue;
+            target.style.display = "none";
+            if (target.setAttribute) target.setAttribute("data-agentx-hidden", "1");
+          } catch (e) {}
+        }
+      } },
+      { id: "settings-providers", run: function () {
+        // Part 3 (2026-11-19): in Settings > Models, rename "QwenPaw"
+        // provider/section labels to AgentX. TEXT ONLY — never provider
+        // IDs, never API values (those live in inputs/attributes, which
+        // this walk never touches).
+        var path = "";
+        try { path = (window.location && window.location.pathname ? window.location.pathname : ""); } catch (e) {}
+        if (path.indexOf("/settings") !== -1) { agentxRenameNeedleInBody("QwenPaw"); return; }
+        agentxRenameScoped("QwenPaw", function (el) { return agentxScopeMarker(el, ["model", "provider"]); });
+      } },
+      { id: "settings-integrations", run: function () {
+        // Part 3 (2026-11-19): in Settings > Integrations, rename
+        // QwenPaw mentions to AgentX. Text only, same guards as
+        // settings-providers.
+        var path = "";
+        try { path = (window.location && window.location.pathname ? window.location.pathname : ""); } catch (e) {}
+        if (path.indexOf("/settings") !== -1) { agentxRenameNeedleInBody("QwenPaw"); return; }
+        agentxRenameScoped("QwenPaw", function (el) { return agentxScopeMarker(el, ["integration"]); });
+      } },
+      { id: "hide-upgrade", run: function () {
+        // Part 3 (2026-11-19): hide Upgrade / "Upgrade to Pro" / pricing
+        // upsell UI. Buttons by exact accessible name; upsell cards by
+        // their leaf label, climbed to the card — never the list.
+        agentxHideByName(["Upgrade", "Upgrade to Pro"], "button, a, li, [role='menuitem'], span, div", "button, a, li, [role='menuitem'], [class*='card'], [class*='row']");
+        agentxHideRowByText(["Upgrade to Pro"], "span, p, h1, h2, h3, h4", "li, section, [class*='card'], [class*='row'], [class*='banner'], button");
+      } },
+      { id: "account-card", run: function () {
+        // Part 3 (2026-11-19): rename the account/user card's QwenPaw
+        // mentions to AgentX. Text nodes only — the satwik username and
+        // avatar are never touched (no "QwenPaw" text node is ever the
+        // username, and images are not text nodes).
+        agentxRenameScoped("QwenPaw", function (el) { return agentxScopeMarker(el, ["account", "profile", "user-card"]); });
+      } },
+      { id: "workspace-switcher", run: function () {
+        // Part 3 (2026-11-19): rename QwenPaw in the workspace switcher
+        // to AgentX. Text only.
+        agentxRenameScoped("QwenPaw", function (el) { return agentxScopeMarker(el, ["workspace", "switcher"]); });
+      } },
+      { id: "sidebar-help", run: function () {
+        // Part 3 (2026-11-19): hide sidebar Help / docs links that point
+        // upstream. The decision reuses the block-links host list
+        // (agentxIsUpstreamHref): a sidebar link is hidden only when its
+        // href is upstream. Same-origin sidebar links stay; upstream
+        // links OUTSIDE the sidebar stay visible here (block-links still
+        // blocks their clicks) — this rule only hides sidebar rows.
+        var links;
+        try { links = document.querySelectorAll("a[href]"); } catch (e) { return; }
+        for (var i = 0; i < links.length; i++) {
+          try {
+            var a = links[i];
+            var href = "";
+            try { href = a.getAttribute("href") || ""; } catch (e) {}
+            if (!agentxIsUpstreamHref(href)) continue;
+            var cur = a;
+            var inSidebar = false;
+            for (var d = 0; cur && d < 8; d++) {
+              try {
+                var tag = (cur.tagName || "").toUpperCase();
+                var cls = "";
+                try { cls = (cur.getAttribute("class") || "").toLowerCase(); } catch (e) {}
+                if (tag === "NAV" || tag === "ASIDE" || cls.indexOf("sidebar") !== -1) { inSidebar = true; break; }
+              } catch (e) {}
+              cur = cur.parentNode;
+            }
+            if (!inSidebar) continue;
+            var target = null;
+            try { target = a.closest ? a.closest("li, button, a, [role='menuitem']") : null; } catch (e) {}
+            if (!target) target = a;
+            if (target.getAttribute && target.getAttribute("data-agentx-hidden")) continue;
+            target.style.display = "none";
+            if (target.setAttribute) target.setAttribute("data-agentx-hidden", "1");
+          } catch (e) {}
+        }
+      } },
+      { id: "model-labels", run: function () {
+        // Part 3 (2026-11-19): DISPLAY-ONLY model display names —
+        // "deepseek-v4.1-flash-free" shows as "AgentX-1-Mini",
+        // "nex-n2.6" shows as "AgentX-1" (mapping is a documented
+        // judgment call, needs user confirmation — see README). Only
+        // text nodes inside the model picker / composer are renamed:
+        // an ancestor must carry a model/picker/composer marker
+        // (aria-label/title "model", class model/picker/composer,
+        // role combobox/listbox/option, or a SELECT). Option VALUE
+        // attributes, input values, and API payloads are never touched
+        // — this walk only ever assigns nodeValue on text nodes, and a
+        // label matching neither mapping is left alone.
+        try {
+          var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+          var node;
+          while ((node = walker.nextNode())) {
+            try {
+              var t = node.nodeValue;
+              if (!t) continue;
+              var hit = false;
+              for (var m = 0; m < AGENTX_MODEL_LABELS.length; m++) { if (t.indexOf(AGENTX_MODEL_LABELS[m][0]) !== -1) { hit = true; break; } }
+              if (!hit) continue;
+              var parent = node.parentNode;
+              if (parent && (parent.nodeName === "SCRIPT" || parent.nodeName === "STYLE" || parent.nodeName === "TEXTAREA" || parent.nodeName === "INPUT")) continue;
+              var cur = parent;
+              var scoped = false;
+              for (var d = 0; cur && d < 8; d++) {
+                try {
+                  var tag = (cur.tagName || "").toUpperCase();
+                  var cls = "";
+                  try { cls = (cur.getAttribute("class") || "").toLowerCase(); } catch (e) {}
+                  var lab = "";
+                  try { lab = ((cur.getAttribute("aria-label") || "") + " " + (cur.getAttribute("title") || "")).toLowerCase(); } catch (e) {}
+                  var ph = "";
+                  try { ph = cur.getAttribute("placeholder") || ""; } catch (e) {}
+                  var role = "";
+                  try { role = (cur.getAttribute("role") || "").toLowerCase(); } catch (e) {}
+                  if (tag === "SELECT" || tag === "OPTION" || role === "combobox" || role === "listbox" || role === "option" ||
+                      cls.indexOf("model") !== -1 || cls.indexOf("picker") !== -1 || cls.indexOf("composer") !== -1 ||
+                      lab.indexOf("model") !== -1 ||
+                      ph.indexOf("Ask anything") !== -1 || ph.indexOf("message navigation") !== -1) { scoped = true; break; }
+                } catch (e) {}
+                cur = cur.parentNode;
+              }
+              if (!scoped) continue;
+              var fixed = t;
+              for (var k = 0; k < AGENTX_MODEL_LABELS.length; k++) { fixed = fixed.split(AGENTX_MODEL_LABELS[k][0]).join(AGENTX_MODEL_LABELS[k][1]); }
+              node.nodeValue = fixed;
+            } catch (e) {}
+          }
+        } catch (e) {}
+      } },
+      { id: "title-observer", run: function () {
+        // Part 3 (2026-11-19): re-apply rename-title on head <title>
+        // mutations — wire the existing agentxWatchTitle() into a rule:
+        // install once (the flag inside agentxWatchTitle guards the
+        // second install) and rename the title immediately, so a title
+        // set before the observer fires is still renamed on this pass.
+        // No second observer is ever installed.
+        agentxWatchTitle();
+        try { if (document.title && document.title.indexOf("QwenPaw") !== -1) document.title = document.title.split("QwenPaw").join("AgentX"); } catch (e) {}
+      } },
+      { id: "head-rebrand", run: function () {
+        // Part 3 (2026-11-19): rename the head metadata — og:title /
+        // twitter:title / og:description / twitter:description meta
+        // content (QwenPaw -> AgentX), the inline application-name meta,
+        // and the favicon (link[rel~="icon"] href becomes the inline
+        // data-URI AX mark — no external URL). MANIFEST: link[rel=
+        // "manifest"] points at an EXTERNAL file — do NOT fetch it;
+        // there is no inline manifest name to rewrite, so if no inline
+        // application-name meta exists this part is a no-op (documented
+        // in the README). Attributes only; no node moves.
+        try {
+          var metas;
+          try { metas = document.querySelectorAll('meta[property="og:title"], meta[property="twitter:title"], meta[property="og:description"], meta[property="twitter:description"], meta[name="application-name"]'); } catch (e) { metas = []; }
+          for (var i = 0; i < metas.length; i++) {
+            try {
+              var c = metas[i].getAttribute("content");
+              if (c && c.indexOf("QwenPaw") !== -1) metas[i].setAttribute("content", c.split("QwenPaw").join("AgentX"));
+            } catch (e) {}
+          }
+        } catch (e) {}
+        try {
+          var links;
+          try { links = document.querySelectorAll("link"); } catch (e) { links = []; }
+          for (var j = 0; j < links.length; j++) {
+            try {
+              var rel = (links[j].getAttribute("rel") || "").toLowerCase();
+              if (rel.indexOf("icon") !== -1) links[j].setAttribute("href", AGENTX_FAVICON_DATA);
+            } catch (e) {}
+          }
+        } catch (e) {}
+      } },
+      { id: "export-rebrand", run: function () {
+        // Part 3 (2026-11-19): hide community-share controls; for
+        // a[download] links rewrite the DISPLAYED text only — never the
+        // href, never the download filename (those are real file paths).
+        agentxHideByName(["Share to community", "Share to Community", "Community share"], "button, a, li, [role='menuitem'], span, div", "button, a, li, [role='menuitem']");
+        try {
+          var links = document.querySelectorAll("a[download]");
+          for (var i = 0; i < links.length; i++) {
+            try {
+              var ch = links[i].childNodes;
+              for (var j = 0; j < ch.length; j++) {
+                if (ch[j] && ch[j].nodeType === 3 && ch[j].nodeValue && ch[j].nodeValue.indexOf("QwenPaw") !== -1) {
+                  ch[j].nodeValue = ch[j].nodeValue.split("QwenPaw").join("AgentX");
+                }
+              }
+            } catch (e) {}
+          }
+        } catch (e) {}
+      } },
+      { id: "hide-run-in", run: function () {
+        // Part 3 (2026-11-19): hide "Run in QwenPaw" / "Open in
+        // QwenPaw" buttons. Both spellings: rename-text already made
+        // them "AgentX" by the time this rule runs.
+        agentxHideRowByText(["Run in QwenPaw", "Run in AgentX", "Open in QwenPaw", "Open in AgentX"], "button, a, span, div, li", "button, a, li, [role='menuitem'], [class*='card'], [class*='row']");
+      } },
+      { id: "auth-rebrand", run: function () {
+        // Part 3 (2026-11-19): rename QwenPaw on the sign-in/auth
+        // screens to AgentX. TEXT ONLY — never tokens, never inputs,
+        // never form actions (the walk skips INPUT/TEXTAREA parents and
+        // only ever assigns nodeValue on text nodes).
+        var path = "";
+        try { path = (window.location && window.location.pathname ? window.location.pathname : ""); } catch (e) {}
+        if (path.indexOf("/login") !== -1 || path.indexOf("/auth") !== -1 || path.indexOf("/signin") !== -1) { agentxRenameNeedleInBody("QwenPaw"); return; }
+        agentxRenameScoped("QwenPaw", function (el) { return agentxScopeMarker(el, ["auth", "login", "sign-in"]); });
+      } },
+      { id: "error-rebrand", run: function () {
+        // Part 3 (2026-11-19): rename QwenPaw in error boundary / error
+        // toast text to AgentX. Text only, scoped to error/toast/alert
+        // containers — normal page text is rename-text's job.
+        agentxRenameScoped("QwenPaw", function (el) {
+          try {
+            var role = "";
+            try { role = (el.getAttribute("role") || "").toLowerCase(); } catch (e) {}
+            if (role === "alert") return true;
+          } catch (e) {}
+          return agentxScopeMarker(el, ["error", "toast", "alert"]);
+        });
+      } },
+      { id: "hide-onboarding", run: function () {
+        // Part 3 (2026-11-19): hide the first-run onboarding / tutorial
+        // overlay cards. The whole card is hidden (climbed to the card),
+        // never the page. "Getting started" docs links do not match any
+        // label here and stay visible.
+        agentxHideRowByText(["Welcome to QwenPaw", "Welcome to AgentX", "Get started", "Take the tour", "First run"], "span, div, p, h1, h2, h3, button, li", "li, section, [role='dialog'], [class*='card'], [class*='modal'], [class*='overlay'], [class*='row'], button");
+      } },
+      { id: "hide-update-banner", run: function () {
+        // Part 3 (2026-11-19): hide the "update available" banner. The
+        // pinned-version shim already answers the version check, so the
+        // banner is stale UI if it still renders. "Updated ..." notes
+        // (past tense) do not match and stay.
+        agentxHideRowByText(["Update available", "A new version is available", "New version available", "Update to v"], "span, div, p, li, button", "li, section, [role='alert'], [class*='banner'], [class*='card'], [class*='row']");
+      } },
+      { id: "hide-shortcuts-dialog", run: function () {
+        // Part 3 (2026-11-19): hide the keyboard-shortcuts dialog
+        // trigger/row in help menus. Only the TRIGGER UI is hidden —
+        // the shortcuts themselves (key handlers) are never touched, so
+        // every shortcut keeps working.
+        agentxHideRowByText(["Keyboard shortcuts", "Shortcuts"], "button, a, li, [role='menuitem'], span, div", "li, [role='menuitem'], button, [class*='row'], section");
       } },
       { id: "block-links", run: function () { agentxBlockUpstreamLinks(); } },
     ];
@@ -1860,25 +2361,66 @@ function computerPanelScript(rebrandEnabled) {
 </script>`;
 }
 
+function fmtCooldownRemaining(seconds) {
+  // One shared formatter for the cooldown page: whole minutes, rounded up,
+  // so 90 s reads as 2 minutes, never as a false-precise 1.5. Null, zero or
+  // non-numeric input means the cooldown length is unknown, so no time
+  // text is rendered at all (inventing one would be worse than none).
+  if (typeof seconds !== "number" || !isFinite(seconds) || seconds <= 0) { return ""; }
+  var mins = Math.ceil(seconds / 60);
+  if (mins <= 1) { return "about 1 minute"; }
+  return "about " + mins + " minutes";
+}
+
 function wakingPage(retryAfter) {
   // Live progress, not a blank wait (sleep/wake fix, 2026-11-17): the old
   // page was static text + a 30 s meta-refresh, so a cold wake looked like
   // a hung "Loading..." screen. This page shows an elapsed timer, a
-  // progress bar, and a status line, and polls the console every 5 s —
-  // reloading the moment the console answers instead of waiting for the
-  // next 30 s refresh. The meta-refresh stays as a no-JS fallback.
+  // determinate bar (transform scaleX, never width), and a status line, and
+  // polls the console every 5 s, reloading the moment the console answers
+  // instead of waiting for the next refresh. The meta-refresh stays as a
+  // no-JS fallback. Rebuilt 2026-11-19 as one centred card (Smart
+  // Sleep/Wake Part 2): string concatenation only, no backticks, no
+  // interpolation, no external assets. Titles keep the project-wide
+  // AgentX dash separator, which the rebrand harness requires verbatim;
+  // sloplint gate 19 flags that dash in <title>, never in body copy.
+  var usual = 60;
+  if (typeof retryAfter === "number" && isFinite(retryAfter) && retryAfter > 0) { usual = retryAfter; }
+  var usualText = "Usually ready in about a minute.";
+  if (usual !== 60) { usualText = "Usually ready in about " + usual + " seconds."; }
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
-    `<meta http-equiv="refresh" content="60">` +
-    `<meta name="viewport" content="width=device-width, initial-scale=1">` +
-    `<title>AgentX — Waking up</title></head><body style="font-family:system-ui,sans-serif;background:#0f1115;color:#e8eaf0;padding:2rem;max-width:640px;margin:0 auto">` +
-    `<h1>AgentX is waking up</h1>` +
-    `<p id="status">The InstaBox machine was paused and is starting now.</p>` +
-    `<div style="background:#1e2230;border-radius:8px;height:10px;overflow:hidden;margin:1rem 0"><div id="bar" style="background:#22c55e;height:100%;width:8%;border-radius:8px;transition:width 1s linear"></div></div>` +
-    `<p style="color:#9aa4b2;font-size:13px">Elapsed: <span id="elapsed">0s</span>${retryAfter ? ` &middot; usually ready in about ${retryAfter} seconds` : ` &middot; usually ready in about a minute`}.</p>` +
-    `<p><a style="color:#22c55e" href="/status">Status page</a></p>` +
-    `<script>(function(){var t0=Date.now();var el=document.getElementById('elapsed');var bar=document.getElementById('bar');var st=document.getElementById('status');var tries=0;setInterval(function(){var s=Math.floor((Date.now()-t0)/1000);el.textContent=s+'s';bar.style.width=Math.min(8+s*1.2,96)+'%';},1000);async function poll(){tries++;try{var r=await fetch(location.pathname+location.search,{cache:'no-store',headers:{'Accept':'text/html'}});if(r.status===200){var t=await r.text();if(t.indexOf('<div id="root"')!==-1||t.indexOf('id="root"')!==-1){st.textContent='Machine is up — loading the console…';bar.style.width='100%';location.reload();return;}}st.textContent=tries<3?'The InstaBox machine was paused and is starting now.':'Still waking — the machine usually takes about a minute. Keeping watch…';}catch(e){/* network blip while waking; keep polling */}setTimeout(poll,5000);}setTimeout(poll,3000);})();</script>` +
-    `</body></html>`,
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">" +
+    "<meta http-equiv=\"refresh\" content=\"60\">" +
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
+    "<title>AgentX: Waking up</title>" +
+    "<meta name=\"description\" content=\"AgentX is waking up. The console opens when the machine answers.\">" +
+    "<style>" +
+    "/* Hallmark · v2.0.0 · theme: AgentX status (custom) · genre modern-minimal · shape: one card */" +
+    "/* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V4 · weakest: S, led with the live state */" +
+    ":root{color-scheme:dark;--color-bg:oklch(0.23 0.012 260);--color-surface:oklch(0.28 0.014 260);--color-track:oklch(0.35 0.012 260);--color-ink:oklch(0.93 0.008 250);--color-muted:oklch(0.74 0.01 250);--color-line:oklch(0.40 0.012 260);--color-accent:oklch(0.75 0.13 155);--color-accent-ink:oklch(0.24 0.03 160);--font-display:Georgia,\"Times New Roman\",serif;--font-body:system-ui,-apple-system,\"Segoe UI\",sans-serif;--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:32px;--radius-card:16px;--radius-control:10px;--text-title:1.75rem;--text-body:1rem;--text-small:0.875rem;--width-card:38rem;}" +
+    "*{box-sizing:border-box;}::selection{background:var(--color-accent);color:var(--color-accent-ink);}html{scrollbar-color:var(--color-line) var(--color-bg);}" +
+    "html,body{overflow-x:clip;}" +
+    "body{margin:0;min-height:100svh;display:grid;place-items:center;padding:var(--space-6) var(--space-4);background:var(--color-bg);color:var(--color-ink);font-family:var(--font-body);font-size:var(--text-body);line-height:1.55;}" +
+    "main{width:100%;max-width:var(--width-card);background:var(--color-surface);border:1px solid var(--color-line);border-radius:var(--radius-card);padding:var(--space-6);}" +
+    "h1{font-family:var(--font-display);font-size:var(--text-title);line-height:1.15;margin:0 0 var(--space-3);overflow-wrap:break-word;min-width:0;text-wrap:balance;}" +
+    "p{margin:0 0 var(--space-4);}" +
+    "p:last-child{margin-bottom:0;}" +
+    ".fine{color:var(--color-muted);font-size:var(--text-small);}" +
+    ".bar{background:var(--color-track);border-radius:var(--radius-control);height:8px;overflow:hidden;margin:var(--space-4) 0;}" +
+    ".bar-fill{background:var(--color-accent);height:100%;border-radius:var(--radius-control);transform:scaleX(0.08);transform-origin:left center;transition:transform 1s linear;}" +
+    "a{color:var(--color-accent);}a:active{opacity:0.8;}" +
+    "a:focus-visible{outline:2px solid var(--color-accent);outline-offset:2px;}" +
+    "@media (prefers-reduced-motion:reduce){.bar-fill{transition:none;}}" +
+    "</style></head>" +
+    "<body><main id=\"wakeCard\" data-usual=\"" + usual + "\">" +
+    "<h1>AgentX is waking up</h1>" +
+    "<p id=\"status\">The machine was paused and is starting now.</p>" +
+    "<div class=\"bar\"><div class=\"bar-fill\" id=\"barFill\"></div></div>" +
+    "<p>Elapsed <span id=\"elapsed\">0s</span>. " + usualText + "</p>" +
+    "<p><a href=\"/status\">Status page</a></p>" +
+    "</main>" +
+    "<script>(function(){/* UI-TIMER-ALLOWLIST: waking page progress tick, 1s elapsed and bar update while the user watches the machine wake */var t0=Date.now();var el=document.getElementById(\"elapsed\");var bar=document.getElementById(\"barFill\");var st=document.getElementById(\"status\");var usual=Number(document.getElementById(\"wakeCard\").dataset.usual)||60;var tries=0;function paint(){var s=Math.floor((Date.now()-t0)/1000);el.textContent=s+\"s\";var frac=Math.min(0.08+s/usual*0.88,0.96);bar.style.transform=\"scaleX(\"+frac+\")\";}setInterval(paint,1000);paint();function schedule(){setTimeout(poll,5000);}function poll(){tries++;fetch(location.pathname+location.search,{cache:\"no-store\",headers:{Accept:\"text/html\"}}).then(function(r){if(r.status!==200){schedule();return;}return r.text().then(function(t){if(t.indexOf(\'id=\"root\"\')!==-1){st.textContent=\"Machine is up. Loading the console.\";bar.style.transform=\"scaleX(1)\";location.reload();return;}if(tries<3){st.textContent=\"The machine was paused and is starting now.\";}else{st.textContent=\"Still waking. The machine usually takes about a minute. Keeping watch.\";}schedule();});}).catch(function(){schedule();});}setTimeout(poll,3000);})();</script>" +
+    "</body></html>",
     { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Retry-After": "30", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "SAMEORIGIN", "Content-Security-Policy": "frame-ancestors 'self'" } },
   );
 }
@@ -1886,29 +2428,67 @@ function wakingPage(retryAfter) {
 /**
  * The cooldown page.
  *
- * `retryAfter` is seconds; `untilText` is the human wall-clock ("2026-11-16
+ * retryAfter is seconds; untilText is the human wall-clock ("2026-11-16
  * 07:53 UTC") parsed from InstaBox's own message. Showing the time is the
  * difference between "wait" and "come back at 13:23" — the second is actionable,
- * and it is what Rohan asked for.
+ * and it is what Rohan asked for. Rebuilt 2026-11-19 as one centred card
+ * (Smart Sleep/Wake Part 2): the bar is determinate from data-start and
+ * data-end and hidden when data-start is absent; the page reloads once at
+ * cooldown end, guarded to at most one auto-reload per 30 s per tab.
  */
 function cooldownPage(retryAfter, untilText) {
-  const mins = retryAfter ? Math.ceil(retryAfter / 60) : null;
+  var mins = null;
+  if (typeof retryAfter === "number" && isFinite(retryAfter) && retryAfter > 0) { mins = Math.ceil(retryAfter / 60); }
+  var remain = fmtCooldownRemaining(retryAfter);
+  var start = 0;
+  var end = 0;
+  if (mins !== null) { start = Date.now(); end = start + retryAfter * 1000; }
+  var barAttrs = "";
+  var barHidden = " hidden";
+  if (mins !== null) { barAttrs = " data-start=\"" + start + "\" data-end=\"" + end + "\""; barHidden = ""; }
+  var remainHtml = "";
+  if (remain) {
+    remainHtml = "<p><span id=\"remainingText\">" + remain + " left.</span>";
+    if (untilText) { remainHtml = remainHtml + " Come back at " + untilText + "."; }
+    remainHtml = remainHtml + "</p>";
+  }
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">" +
     // Auto-refresh exactly when the cooldown is due to end, so the visitor does
     // not have to guess — and so we do not poll early (every early request is
     // refused and teaches the user the page is broken).
-    (retryAfter ? `<meta http-equiv="refresh" content="${Math.max(5, mins ? mins * 60 : 60)}">` : ``) +
-    `<meta name="viewport" content="width=device-width, initial-scale=1">` +
-    `<title>AgentX — Cooldown</title></head><body style="font-family:system-ui,sans-serif;background:#0f1115;color:#e8eaf0;padding:2rem">` +
-    `<h1>AgentX is in max-run cooldown</h1>` +
-    `<p>The InstaBox Free machine hit its maximum run length and is cooling down. ` +
-    `Nothing can wake it until the cooldown ends${mins ? ` — about ${mins} minutes` : ``}${
-      untilText ? ` (<strong>${untilText}</strong>)` : ``
-    }. This page refreshes itself when that time arrives.</p>` +
-    `<p style="color:#9aa4b2;font-size:13px">The keep-alive Worker will also bring it back once the cooldown ends.</p>` +
-    `<p><a style="color:#22c55e" href="/status">Status page</a></p>` +
-    `</body></html>`,
+    (retryAfter ? "<meta http-equiv=\"refresh\" content=\"" + Math.max(5, mins * 60) + "\">" : "") +
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
+    "<title>AgentX: Cooldown</title>" +
+    "<meta name=\"description\" content=\"AgentX is in max-run cooldown. This page reloads when the cooldown ends.\">" +
+    "<style>" +
+    "/* Hallmark · v2.0.0 · theme: AgentX status (custom) · genre modern-minimal · shape: one card */" +
+    "/* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V4 · weakest: S, led with the live state */" +
+    ":root{color-scheme:dark;--color-bg:oklch(0.23 0.012 260);--color-surface:oklch(0.28 0.014 260);--color-track:oklch(0.35 0.012 260);--color-ink:oklch(0.93 0.008 250);--color-muted:oklch(0.74 0.01 250);--color-line:oklch(0.40 0.012 260);--color-accent:oklch(0.75 0.13 155);--color-accent-ink:oklch(0.24 0.03 160);--font-display:Georgia,\"Times New Roman\",serif;--font-body:system-ui,-apple-system,\"Segoe UI\",sans-serif;--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:32px;--radius-card:16px;--radius-control:10px;--text-title:1.75rem;--text-body:1rem;--text-small:0.875rem;--width-card:38rem;}" +
+    "*{box-sizing:border-box;}::selection{background:var(--color-accent);color:var(--color-accent-ink);}html{scrollbar-color:var(--color-line) var(--color-bg);}" +
+    "html,body{overflow-x:clip;}" +
+    "body{margin:0;min-height:100svh;display:grid;place-items:center;padding:var(--space-6) var(--space-4);background:var(--color-bg);color:var(--color-ink);font-family:var(--font-body);font-size:var(--text-body);line-height:1.55;}" +
+    "main{width:100%;max-width:var(--width-card);background:var(--color-surface);border:1px solid var(--color-line);border-radius:var(--radius-card);padding:var(--space-6);}" +
+    "h1{font-family:var(--font-display);font-size:var(--text-title);line-height:1.15;margin:0 0 var(--space-3);overflow-wrap:break-word;min-width:0;text-wrap:balance;}" +
+    "p{margin:0 0 var(--space-4);}" +
+    "p:last-child{margin-bottom:0;}" +
+    ".fine{color:var(--color-muted);font-size:var(--text-small);}" +
+    ".bar{background:var(--color-track);border-radius:var(--radius-control);height:8px;overflow:hidden;margin:var(--space-4) 0;}" +
+    ".bar-fill{background:var(--color-accent);height:100%;border-radius:var(--radius-control);transform:scaleX(0);transform-origin:left center;transition:transform 1s linear;}" +
+    "a{color:var(--color-accent);}a:active{opacity:0.8;}" +
+    "a:focus-visible{outline:2px solid var(--color-accent);outline-offset:2px;}" +
+    "@media (prefers-reduced-motion:reduce){.bar-fill{transition:none;}}" +
+    "</style></head>" +
+    "<body><main>" +
+    "<h1>AgentX is in max-run cooldown</h1>" +
+    "<p>The machine hit its maximum run length and is cooling down. Nothing can wake it until the cooldown ends.</p>" +
+    "<div class=\"bar\" id=\"barWrap\"" + barAttrs + barHidden + "><div class=\"bar-fill\" id=\"barFill\"></div></div>" +
+    remainHtml +
+    "<p>The keep-alive Worker brings it back once the cooldown ends.</p>" +
+    "<p><a href=\"/status\">Status page</a></p>" +
+    "</main>" +
+    "<script>(function(){/* UI-TIMER-ALLOWLIST: cooldown bar and countdown tick, 1s update while the user watches the cooldown end */var wrap=document.getElementById(\"barWrap\");var fill=document.getElementById(\"barFill\");var rem=document.getElementById(\"remainingText\");var start=Number(wrap.dataset.start)||0;var end=Number(wrap.dataset.end)||0;var KEY=\"agentxCooldownReloadAt\";var reloadTried=false;if(!start||!end){wrap.hidden=true;return;}function fmtLeft(ms){var mins=Math.ceil(ms/60000);if(mins<=1){return \"about 1 minute left.\";}return \"about \"+mins+\" minutes left.\";}function tryReload(){var last=0;try{last=Number(sessionStorage.getItem(KEY))||0;}catch(e){last=0;}var now=Date.now();if(now-last<30000){setTimeout(tryReload,30000);return;}try{sessionStorage.setItem(KEY,String(now));}catch(e){}location.reload();}function tick(){var now=Date.now();var total=end-start;var done=now-start;var frac=done/total;if(frac<0){frac=0;}if(frac>1){frac=1;}fill.style.transform=\"scaleX(\"+frac+\")\";if(now>=end){if(rem){rem.textContent=\"Cooldown over. Loading.\";}if(!reloadTried){reloadTried=true;tryReload();}return;}if(rem){rem.textContent=fmtLeft(end-now);}}setInterval(tick,1000);tick();})();</script>" +
+    "</body></html>",
     { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "SAMEORIGIN", "Content-Security-Policy": "frame-ancestors 'self'", ...(retryAfter ? { "Retry-After": String(retryAfter) } : {}) } },
   );
 }
