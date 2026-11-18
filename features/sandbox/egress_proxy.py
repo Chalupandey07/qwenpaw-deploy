@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 """Egress proxy for the sandbox network (gap #6, T139).
 
-The sandbox container has no direct route to the internet. Its only
-egress is this proxy, which runs as a second container on the same
-isolated bridge (``qwenpaw-sandbox-net``) and forwards a request only
-when the destination host is on the T123 allowlist. The proxy is the
+The sandbox container's intended egress is this proxy, which runs
+as a second container on the same isolated bridge
+(``qwenpaw-sandbox-net``) and forwards a request only when the
+destination host is on the T123 allowlist. The proxy is the
 enforcement point the in-process guard (T123) could never be: a
 hostile shell inside the sandbox can bypass an in-process check, but
 it cannot bypass a proxy it must route through — there is no other
-route out of the bridge.
+*intended* route out of the bridge.
+
+Measured 2026-11-19, and the reason this docstring was corrected:
+a plain Docker bridge NATs direct egress, so a sandbox container
+CAN reach the internet directly today (``api.github.com:443``
+reachable from a throwaway container on the bridge). The proxy is
+the only intended route, not the only route, until the
+egress-default-deny DOCKER-USER rule lands (pin the proxy to a fixed
+IP first — a blanket subnet DROP would block the proxy's own
+outbound). See features/sandbox/README.md §5 / DONE vs REMAINING.
 
 Allowlist source: the T123 allowlist, and ONLY that. The proxy loads
 its host list from ``proxy-allowlist.txt`` next to this file, which is
