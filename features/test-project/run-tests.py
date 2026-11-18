@@ -2413,24 +2413,28 @@ def t135():
 
 
 def t136():
-    """Eval harness, LLM judge: judge.py + versioned rubric + calibration set (44).
+    """Eval harness, LLM judge: judge.py + versioned rubric + calibration set (46).
 
     Machine-free test (features/infra/evals/test_judge.py) for the
     all-20 gap #13. judge_reply(reply, rubric, task, *, transport=None,
     case_id=None) -> verdict dict {pass, reason, evidence, qualified,
     error_kind, rubric_version, rubric_sha256, judge_prompt_version,
     model, reply_truncated}. The judge runs over the same console
-    chat-task API as run-evals.py (login once, an
-    eval-judge-<case-id> session so judging never contaminates the case
-    chat, 423 aborts, 429 backoff, 401 one re-login), on the existing
-    model (mosicn nex-n2.6 expected), no new key, per-transport cap of
-    50 calls. The versioned rubric (evals/rubrics/v1.md, criteria
-    R1-R6) is immutable — a change means a new v2.md file, never an
-    edit. Fail-closed: non-JSON / missing field / pass not a bool /
-    empty reason / pass with no quoted evidence / judge error / timeout
-    / empty reply -> unqualified, never pass; in grade_case that
-    surfaces as verdict "unqualified", not "fail", so an outage never
-    looks like a quality regression; task is mandatory.
+    chat-task API as run-evals.py (login once — or a supplied
+    QWENPAW_TOKEN, which skips login; an eval-judge-<case-id> session
+    so judging never contaminates the case chat, 423 aborts, 429
+    backoff, 401 one re-login when the token came from a login, a
+    supplied token rejected with 401 is an infra failure), on the
+    existing model (deepseek-v4.1-flash-free, verified 2026-11-19 —
+    NOT mosicn/nex-n2.6 as this file said before), no new key,
+    per-transport cap of 50 calls. The versioned rubric
+    (evals/rubrics/v1.md, criteria R1-R6) is immutable — a change
+    means a new v2.md file, never an edit. Fail-closed: non-JSON /
+    missing field / pass not a bool / empty reason / pass with no
+    quoted evidence / judge error / timeout / empty reply ->
+    unqualified, never pass; in grade_case that surfaces as verdict
+    "unqualified", not "fail", so an outage never looks like a quality
+    regression; task is mandatory.
     Injection-resistant: the reply is fenced as data, never
     instructions; the parser takes only the judge's own (last)
     <verdict> block, else whole-output JSON — no substring search for
@@ -2448,16 +2452,20 @@ def t136():
     well-formedness, and that the old substring grader disagrees with
     the humans on 5/12 examples (--old-grader exits non-zero by
     design; the injection case fools the substring grader too, since
-    the smuggled block itself contains "Paris"). Fail-first proven:
-    the test failed with ModuleNotFoundError before judge.py existed.
-    The live half (live-model agreement with the calibration set:
-    QWENPAW_USER=satwik QWENPAW_PASS='...' python3 judge.py
-    --calibrate --live, requiring 12/12 agreement before the judge is
-    called trusted, and confirming the serving model is actually
-    mosicn/nex-n2.6) is verified by Muse after deploy.
+    the smuggled block itself contains "Paris"). Token path (F5/F6,
+    added 2026-11-19): a supplied token skips the login call and is
+    sent as the Bearer token; a 401 on a supplied token fails as infra
+    without a re-login. Fail-first proven: the test failed with
+    ModuleNotFoundError before judge.py existed. The live half
+    (live-model agreement with the calibration set:
+    QWENPAW_TOKEN=<token minted in the container>
+    python3 judge.py --calibrate --live, requiring 12/12 agreement
+    before the judge is called trusted, and confirming the serving
+    model is actually deepseek-v4.1-flash-free) is verified by Muse
+    after deploy.
     """
     return _py_script_harness(
-        ["features/infra/evals/test_judge.py"], 44)
+        ["features/infra/evals/test_judge.py"], 46)
 
 
 def t137():
