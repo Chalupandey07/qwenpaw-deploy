@@ -129,28 +129,143 @@ and the run stops after the second batch (~100 executed). The
 `last_only` result form counts via `total` (no per-tool attribution
 there, but the total cap still fires).
 
-A strict 30 would additionally require execution-time enforcement
-(deny tool calls beyond the budget as they execute, e.g. a
-ToolCoordinator `before` hook or a resource-governor check) or
-aborting the model call mid-stream. Both are invasive changes to
-shared execution paths and are out of scope for this fix. Do not
-claim 30 unless a live test shows 30.
+## The bug (round 3: the single-response burst)
+
+The round-2 fix (image `qwenpaw-agentx:2.3.0-gatefix2`) was deployed
+and live-tested in a fresh ordinary chat (echo 1–200). **The agent
+reached 200 again.** This time it did NOT use the batch runner — it
+issued all 200 as DIRECT parallel calls in a SINGLE model response
+("I'll issue all 200 echo calls — each as its own
+execute_shell_command tool call, in parallel since they're
+independent"). Turn header "Completed 201 steps" (Run echo 1 through
+Run echo 200). Stop message "Tool call budget reached (200 calls)" —
+the counted total, so the gate DID fire (200 exceeds the max_calls 30
+limit) but too late.
+
+## Root cause, round 3 (read from the source)
+
+Structural, not a bypass. The gate checks AFTER a model response, and
+a TERMINATE on a tool-call iteration is DEFERRED
+(`loop/gates/runner.py` `apply_stop_result` sets
+`agent._gate_pending_stop`; the batch still executes; the deferred
+stop applies at the next reasoning step via `check_pending_gates`).
+When the model emits all 200 calls in one response, the gate counts
+200 and fires, but the deferred TERMINATE cannot prevent those 200
+calls from executing — they are already in the response and all
+execute. The gate only stops MULTI-RESPONSE runaways (calls spread
+across several responses, so it can fire between responses and prevent
+the next batch). It cannot stop a SINGLE-RESPONSE burst. Gatefix2's
+batch-expansion is correct for the batch-runner path but was not
+exercised here (no batch runner used).
+
+## The fix (round 3, image `qwenpaw-agentx:2.3.0-gatefix3`)
+
+Enforce the budget BEFORE each tool call executes, at the single
+funnel both the sequential and concurrent paths reach. Two files
+change (the `mode.py` / `config.py` wiring is unchanged from round 1;
+`limits.py` gains the enforcer):
+
+- `src/qwenpaw/loop/gates/limits.py` — a per-turn execution counter
+  (`_ToolCallBudgetExec`: `reply_id`, `total`, `by_tool`, `max_calls`,
+  `per_tool`), stored ON the agent as `_tool_call_budget_exec`, keyed
+  by `reply_id` (the same turn-scoping the gate uses — one reply_id
+  per user turn, shared by all rounds of that turn). The gate's
+  `check()` installs/refreshes it (`install_execution_budget`) before
+  any return, so it is in place before any call of the round executes
+  — including when the gate fires (the live failure is exactly the
+  case where it fires). Counters reset only when `reply_id` changes,
+  so they accumulate across rounds of one turn.
+  `try_reserve_execution(agent, tool_call)` reserves a slot
+  synchronously and returns None when the call may execute, or a
+  refusal reason when the total cap or a per-tool cap would be
+  exceeded. A `run_tool_batch` call is expanded into the sub-calls it
+  will execute (the same expansion the gate uses) and reserves all of
+  them; when the batch would exceed the budget the WHOLE batch is
+  refused (none of its sub-calls execute). When a batch cannot be
+  expanded (unreadable file) only the batch call itself is reserved,
+  and the gate's result-JSON fallback bounds that case to one batch.
+  Fail-open: when no enforcement state is installed (gate inactive,
+  `reply_id` missing) the call is allowed, so a missing enforcer can
+  never break normal execution.
+- `src/qwenpaw/agents/react_agent.py` — `ReactAgent._execute_tool_call`
+  (the single funnel; its docstring confirms both paths reach it)
+  now reserves a budget slot after `_coerce_tool_call_input` and
+  before the first await, then delegates to `super()` as before. When
+  the reserve refuses, it yields `self._handle_error_tool_call(...)`
+  with `state=ToolResultState.DENIED` (the same helper the base uses
+  for denied calls) and returns WITHOUT calling `super()`, so the
+  refused call produces exactly one DENIED tool result the model can
+  read and never executes. `ToolResultState` is added to the existing
+  `agentscope.message` import.
+
+Why the reserve is in-order for concurrent batches: the parent
+AgentScope runs `asyncio.gather(*[self._into_queue(tc, ...) ...])`
+and `_into_queue` does `async for evt in self._execute_tool_call(...)`.
+Tasks run in creation order on the single-threaded event loop, each
+running synchronously until its first await. The reserve is plain
+synchronous counter mutation before the first await (the `async for`
+on `super()`), and `_coerce_tool_call_input` is a plain sync `def`,
+so all 200 reservations happen in call order before any tool
+executes. A DeepSeek design review (2026-11-18) confirmed this
+reasoning and the DENIED-result mechanism, and flagged three points
+that are handled: (1) `reply_id` is turn-scoped, not per-round — the
+gate's own tests D/F and the live counts prove it (one reply_id per
+user turn, shared by all rounds); the pending stop is applied at the
+start of the next `_reasoning`, which returns the stop text without
+a new model call, so no fresh allowance is granted. (2) A call that
+stays PENDING (ASK de-dup) and is re-emitted later is a NEW block
+with a new id, so it reserves a new slot — correct, because a retry
+is a real execution. (3) The 180 DENIED results are saved to context
+(~5k tokens); the turn ends at the pending stop, so they are never
+fed to a new model call in that turn, and normal context compression
+cleans them up later.
+
+## What bound this actually enforces — read this before claiming 30
+
+**About 20 executed calls for a shell-only burst (the per-tool cap),
+about 30 for a mixed-tool burst (the total cap) — NOT 50, and NOT a
+strict 30 for every shape.** The enforcer reserves before execution,
+so a 200-echo run executes 20 shell calls (per-tool
+`execute_shell_command` 20 binds first) and refuses 180; a mixed
+burst executes 30 (total `max_calls` 30) and refuses the rest. A
+batch of 50 sub-calls is refused whole at reserve time (51 > 30), so
+0 of its sub-calls execute. The gate still fires at check time
+("Tool call budget reached (200 calls)") and its deferred stop ends
+the turn after the batch, so the agent sees the refusals plus the
+stop message.
+
+The remaining gap: a batch whose steps cannot be read from its
+arguments (unreadable file) is reserved as 1 call only; its sub-calls
+bypass `_execute_tool_call` (the batch runner calls
+`toolkit.call_tool` directly), so up to 50 sub-calls can execute
+before the gate's result-JSON fallback fires at the next check and
+bounds it to one batch (~50). That is the pre-existing gatefix2
+behaviour for that edge case, not a regression. A strict 30 in every
+shape would additionally require a guard inside the batch runner
+itself; that is out of scope for this fix. Do not claim 30 unless a
+live test shows 30.
 
 ## Test
 
-`test_gate.py` is a machine-free unit test for the counting fix. It
-builds a minimal fake `qwenpaw` package (pristine `base.py` /
-`loop_gate.py`, a stub `agent_context`, and the `limits.py` under
-test) and drives the gate with fake agents whose context mimics the
-parent's merged-message behaviour.
+`test_gate.py` is a machine-free unit test for the counting fix and
+the execution-time enforcer. It builds a minimal fake `qwenpaw`
+package (pristine `base.py` / `loop_gate.py`, a stub `agent_context`,
+and the `limits.py` under test) and drives the gate with fake agents
+whose context mimics the parent's merged-message behaviour. The
+execution tests simulate `ReactAgent._execute_tool_call` with a fake
+executor that reserves via `try_reserve_execution` and executes only
+when allowed; on a `limits.py` without the enforcer (gatefix2) it
+executes everything, reproducing the live single-response failure.
 
 ```bash
 # Fail-first: the pristine gate must FAIL (it reproduces the live bug)
-python3 test_gate.py --limits src/pristine/limits.py   # 11/29
-# The gatefix1 gate must FAIL only the workflow-bypass tests
-python3 test_gate.py --limits src/gatefix1/limits.py   # 15/29, H fails
+python3 test_gate.py --limits src/pristine/limits.py   # 18/47
+# The gatefix1 gate must FAIL only the workflow-bypass + execution tests
+python3 test_gate.py --limits src/gatefix1/limits.py   # 22/47, H + I fail
+# The gatefix2 gate must FAIL only the execution-time tests
+python3 test_gate.py --limits src/gatefix2/limits.py   # 36/47, I fails
 # The patched gate must PASS
-python3 test_gate.py --limits src/patched/limits.py    # 29/29
+python3 test_gate.py --limits src/patched/limits.py    # 47/47
 python3 test_gate.py                                   # defaults to patched
 ```
 
@@ -162,24 +277,40 @@ the live test); a completed batch is counted from its result JSON
 when its call could not be expanded (H4, H8 `last_only`); a batch
 is never counted twice (H5: call + result = 51, not 101); the
 per-tool cap fires through a batch (H6); a small batch (3 steps)
-does NOT fire (H7, no false positive). Regression tests B–D, F, G
+does NOT fire (H7, no false positive).
+**I** (execution-time enforcement, the round-3 live failure): a single
+response with 200 direct shell calls executes 20 and refuses 180
+(I1, per-tool cap); 25 shell + 175 web_search executes 30 and refuses
+170 (I2, total cap after the shell cap); a 5-call run executes all 5
+(I3, no false positive); the counter persists across rounds of one
+turn (I4: 25 + 5 = 30) and resets on a new turn (I5: 20 again); a
+batch of 50 steps is refused whole (I6 big) while a batch of 3 is
+allowed (I6 small); the gate's reason names the true total 200 and
+the refusal reason names the budget (I7). Regression tests B–D, F, G
 cover firing, the per-tool cap, the separate-message-per-round
 layout, previous-turn exclusion, and the `reply_id`-missing
 fallback.
 
 `src/pristine/` holds the exact upstream files (sha256-verified
 against the pinned image), `src/gatefix1/` holds the round-1 gate
-(which passes A–G but fails H — the live workflow bypass), and
-`src/patched/limits.py` is the fixed gate the test runs against.
-The patch file is the authoritative diff; it was verified to apply
-cleanly to the pristine files and reproduce the patched files
-byte-for-byte.
+(which passes A–G but fails H and I), `src/gatefix2/` holds the
+round-2 gate (which passes A–H but fails I — the live
+single-response burst), and `src/patched/limits.py` is the fixed gate
+the test runs against. The patch file is the authoritative diff; it
+was verified to apply cleanly to the pristine files and reproduce the
+patched files byte-for-byte (limits.py verified locally;
+react_agent.py verified on the machine against the container's
+pristine copy, which is identical in `/app/src` and site-packages
+because gatefix2 did not touch it).
 
-The default-chain wiring (`mode.py` + `config.py`) is not covered by
-the machine-free unit test (it needs the full QwenPaw import chain).
-It is verified after the derived image is built, inside the image:
+The default-chain wiring (`mode.py` + `config.py`) and the
+`react_agent.py` funnel change are not covered by the machine-free
+unit test (they need the full QwenPaw import chain). They are
+verified after the derived image is built, inside the image:
 import the default mode, build the gates from a config, and assert a
-`ToolCallBudgetGate` is present — see "Verify the image" below.
+`ToolCallBudgetGate` is present, and call `try_reserve_execution`
+against a fake agent to confirm the enforcer refuses past the budget
+— see "Verify the image" below.
 
 ## Build the derived image (on the InstaBox machine)
 
@@ -193,8 +324,8 @@ one more image layer), then:
 
 ```bash
 cd /data/home/qwenpaw/loop-gate-fix   # or wherever the files were synced
-docker build -t qwenpaw-agentx:2.3.0-gatefix2 .
-docker images qwenpaw-agentx:2.3.0-gatefix2   # record the digest
+docker build -t qwenpaw-agentx:2.3.0-gatefix3 .
+docker images qwenpaw-agentx:2.3.0-gatefix3   # record the digest
 ```
 
 The Dockerfile fails the build if the patch does not apply cleanly.
@@ -219,15 +350,33 @@ actually runs.
 
 ```bash
 # The patched modules import and the gate is in the default chain
-docker run --rm qwenpaw-agentx:2.3.0-gatefix2 python3 -c "
+docker run --rm qwenpaw-agentx:2.3.0-gatefix3 python3 -c "
 from qwenpaw.loop.gates.limits import ToolCallBudgetGate
 from qwenpaw.modes.default.mode import DefaultMode
 print('gate imports OK')
 "
+# The enforcer refuses past the budget (machine-side, no browser):
+# install it for a fake turn, reserve 200 shell calls, expect 20
+# allowed and 180 refused, and a fresh turn to allow 20 again.
+docker run --rm qwenpaw-agentx:2.3.0-gatefix3 python3 -c "
+from qwenpaw.loop.gates.limits import (
+    install_execution_budget, try_reserve_execution)
+class S:
+    reply_id = 'r1'
+class A:
+    state = S()
+a = A()
+install_execution_budget(a, 'r1', 30, {'execute_shell_command': 20})
+ok = sum(1 for _ in range(200)
+         if try_reserve_execution(
+             a, {'type': 'tool_call', 'name': 'execute_shell_command',
+                 'input': {}}) is None)
+print('executed:', ok, '(expect 20)')
+"
 # Start it briefly on a scratch port and confirm the console serves
 # (do NOT point it at the live data dir for this check)
 docker run -d --name gatefix-smoke -p 18099:8080 \
-  qwenpaw-agentx:2.3.0-gatefix2
+  qwenpaw-agentx:2.3.0-gatefix3
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:18099/
 docker rm -f gatefix-smoke
 ```
@@ -249,7 +398,7 @@ these checks.
 #    snapshot first per Rohan's standing delegation. Never delete
 #    qwenpaw-phase0-verified.
 # 2. Edit /data/home/qwenpaw/docker-compose.yml: change only the image
-#    line to qwenpaw-agentx:2.3.0-gatefix2. Keep every mount, env var,
+#    line to qwenpaw-agentx:2.3.0-gatefix3. Keep every mount, env var,
 #    and port. Keep the pinned upstream image available for rollback.
 # 3. Restart and confirm the console comes back:
 docker compose -f /data/home/qwenpaw/docker-compose.yml up -d
@@ -279,13 +428,15 @@ Sign in as satwik, open a **fresh ordinary chat** (do NOT activate
 send: "Please print the numbers from 1 to 200, one number per shell
 echo call, each echo as its own tool call." Let it run until it stops
 by itself. Report: how many tool calls executed, the exact stop
-message, whether it reached 200. **Target: ~50 executed (one batch),
-not 30** — report the real number honestly. If it still executes
-~100, the fix did not work; say so plainly. Also confirm normal
-function: one short harmless message gets a reply, and the console
-loads normally.
+message, whether it reached 200. **Target: ~20 executed (the per-tool
+shell cap), not 30 and not 200** — report the real number honestly.
+If it still executes ~100 or 200, the fix did not work; say so
+plainly. Also confirm normal function: one short harmless message
+gets a reply, and the console loads normally.
 
-Note the model may route through the batch runner again (that is the
-path this round fixes) or through direct calls (fixed in round 1).
-Either way the run must stop after about one batch. If it completes
-200 by any path, the gate is still bypassed — say so plainly.
+Note the model may route through the batch runner again (that path is
+bounded by the gate at ~50, and by the enforcer at reserve time — a
+batch of 50 is refused whole) or through direct calls (bounded at
+~20 by the enforcer). Either way the run must stop well before 200.
+If it completes 200 by any path, the gate is still bypassed — say so
+plainly.
