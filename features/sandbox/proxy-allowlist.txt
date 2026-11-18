@@ -1,0 +1,24 @@
+# Sandbox egress-proxy allowlist (GENERATED — do not edit by hand).
+# Source of truth: features/egress-guard/egress_guard.py DEFAULT_ALLOWLIST
+# + features/egress-guard/allowlist.txt (T123). Regenerate with:
+#   python3 -c "import importlib.util; ..." (see features/sandbox/README.md)
+# T139 asserts this file equals load_allowlist() exactly, so a drift
+# fails the test instead of silently opening (or closing) a host.
+# One bare host per line. No China host may ever appear here: the
+# egress guard denies China hosts BEFORE the allowlist.
+api.anthropic.com
+api.anysearch.com
+api.cloudflare.com
+api.deepseek.com
+api.duckduckgo.com
+api.fetch.tinyfish.ai
+api.github.com
+api.groq.com
+api.kilo.ai
+api.mistral.ai
+api.openai.com
+api.openrouter.ai
+api.search.tinyfish.ai
+api.x.ai
+generativelanguage.googleapis.com
+raw.githubusercontent.com
