@@ -1117,70 +1117,93 @@ function computerPanelScript(rebrandEnabled) {
         } catch (e) {}
       } },
       { id: "sidebar-ellipsis", run: function () {
-        // Sidebar conversation titles (2026-11-18 QA): titles are cut
-        // mid-word with NO ellipsis ("Print Numbers 1 to 20C", "Checking
-        // assistant avai"), and the "…" More actions button sits on top
-        // of the last character. Conversation rows are links to
-        // /chat/<id>; give the link and its title child an ellipsis and
-        // right padding so the actions button has room and the cut reads
-        // as "…" instead of a clipped word.
+        // Sidebar conversation titles (2026-11-18 QA + DOM inspection):
+        // titles are cut mid-word with NO ellipsis ("Print Numbers 1 to
+        // 20C", "Checking assistant avai"), and the "…" More actions
+        // button sits on top of the last character. The rows are NOT
+        // <a href="/chat/..."> — they are <button> elements (role
+        // button, no href) in the left sidebar, each holding the title
+        // text plus a small status <img> (alt "Idle") and a duplicate
+        // title for the tooltip. The title is clipped at ~x200 by the
+        // button's own overflow (not only by the More actions button,
+        // which is a separate sibling that appears on hover). Give the
+        // row buttons an ellipsis and right padding so the More actions
+        // button has room and the cut reads as "…" instead of a clipped
+        // word. Sidebar rows live at x<260; the "More actions" button
+        // itself and the sidebar header buttons are excluded.
         try {
-          var links = document.querySelectorAll('a[href^="/chat/"]');
-          for (var i = 0; i < links.length; i++) {
+          var btns = document.querySelectorAll("button");
+          for (var i = 0; i < btns.length; i++) {
             try {
-              var link = links[i];
-              if (link.getAttribute && link.getAttribute("data-agentx-ellipsis")) continue;
-              if (link.setAttribute) link.setAttribute("data-agentx-ellipsis", "1");
-              link.style.overflow = "hidden";
-              link.style.textOverflow = "ellipsis";
-              link.style.whiteSpace = "nowrap";
-              link.style.paddingRight = "30px";
-              link.style.boxSizing = "border-box";
-              var kids = link.querySelectorAll ? link.querySelectorAll("span, div") : [];
-              for (var j = 0; j < kids.length; j++) {
-                try {
-                  var k = kids[j];
-                  if (!k.textContent || !k.textContent.trim()) continue;
-                  k.style.overflow = "hidden";
-                  k.style.textOverflow = "ellipsis";
-                  k.style.whiteSpace = "nowrap";
-                  k.style.maxWidth = "100%";
-                } catch (e) {}
-              }
+              var b = btns[i];
+              if (b.getAttribute && b.getAttribute("data-agentx-ellipsis")) continue;
+              var name = "";
+              try { name = (b.getAttribute("aria-label") || "") + " " + (b.textContent || ""); } catch (e) {}
+              if (/more actions/i.test(name)) continue;
+              if (/^\s*(new task|new group|conversation history|by source|manage group)\s*$/i.test((b.textContent || "").trim())) continue;
+              var left = -1;
+              try { left = b.getBoundingClientRect ? b.getBoundingClientRect().left : -1; } catch (e) {}
+              if (left < 0 || left > 260) continue;
+              var txt = (b.textContent || "").trim();
+              if (txt.length < 3) continue;
+              if (b.setAttribute) b.setAttribute("data-agentx-ellipsis", "1");
+              b.style.overflow = "hidden";
+              b.style.textOverflow = "ellipsis";
+              b.style.whiteSpace = "nowrap";
+              b.style.paddingRight = "30px";
+              b.style.boxSizing = "border-box";
+              b.style.maxWidth = "100%";
             } catch (e) {}
           }
         } catch (e) {}
       } },
       { id: "chat-input-fixes", run: function () {
-        // Chat composer (2026-11-18 QA): the blue "This tab queues
-        // only" banner touches the input box with zero gap, and the
-        // "Context usage" control shows only a tiny green icon while
-        // its text ("Context usage 10%, cache hit rate 81%") sits
-        // invisible in the page. Give the banner a gap below it, and
-        // let the context-usage control show its text instead of
-        // clipping it to the icon.
+        // Chat composer (2026-11-18 QA + DOM inspection).
+        // (a) The blue "This tab queues only" banner has NO container
+        // element — it is a bare text node + an info-circle img, both
+        // direct children of <main>, directly above the input textbox,
+        // with a 0–1 px rendered gap. There is no element to give a
+        // margin-bottom to, so the gap goes on the INPUT box instead:
+        // margin-top on the textbox (placeholder "for message
+        // navigation").
+        // (b) The "Context usage" control is a <button> with NO child
+        // elements — its text ("Context usage 10%, cache hit rate 81%")
+        // lives only in its accessible name / description, and the only
+        // visible content is a 16–18 px circular ring. It is not
+        // clipped by an overflow-hidden parent; the text is simply not
+        // rendered. Inject a small visible percentage label into the
+        // button next to the ring.
         try {
-          var els = document.querySelectorAll("div, p, span, section, button");
-          for (var i = 0; i < els.length; i++) {
+          var inputs = document.querySelectorAll("textarea, input[type='text'], [contenteditable='true'], [role='textbox']");
+          for (var i = 0; i < inputs.length; i++) {
             try {
-              var el = els[i];
-              var t = el.textContent || "";
-              if (t.indexOf("This tab queues only") !== -1) {
-                // Only the innermost element holding the banner text.
-                var childHas = false;
-                try {
-                  var kids = el.querySelectorAll ? el.querySelectorAll("*") : [];
-                  for (var c = 0; c < kids.length; c++) {
-                    if ((kids[c].textContent || "").indexOf("This tab queues only") !== -1) { childHas = true; break; }
-                  }
-                } catch (e2) {}
-                if (!childHas) el.style.marginBottom = "8px";
-              }
-              if (t.indexOf("Context usage") !== -1) {
-                el.style.whiteSpace = "nowrap";
-                el.style.overflow = "visible";
-                el.style.maxWidth = "none";
-              }
+              var inp = inputs[i];
+              var ph = "";
+              try { ph = inp.getAttribute ? (inp.getAttribute("placeholder") || "") : ""; } catch (e) {}
+              if (ph.indexOf("message navigation") === -1) continue;
+              if (inp.getAttribute && inp.getAttribute("data-agentx-banner-gap")) continue;
+              if (inp.setAttribute) inp.setAttribute("data-agentx-banner-gap", "1");
+              inp.style.marginTop = "8px";
+            } catch (e) {}
+          }
+          var btns = document.querySelectorAll("button");
+          for (var j = 0; j < btns.length; j++) {
+            try {
+              var b = btns[j];
+              if (b.getAttribute && b.getAttribute("data-agentx-ctx-label")) continue;
+              var label = "";
+              try { label = (b.getAttribute("aria-label") || "") + " " + (b.getAttribute("title") || "") + " " + (b.textContent || ""); } catch (e) {}
+              if (label.indexOf("Context usage") === -1) continue;
+              if (b.setAttribute) b.setAttribute("data-agentx-ctx-label", "1");
+              var m = label.match(/Context usage\s*(\d+)\s*%/);
+              var pct = m ? m[1] + "%" : "";
+              if (!pct) continue;
+              var span = document.createElement("span");
+              span.textContent = pct;
+              span.style.cssText = "font-size:11px;line-height:1;color:#16a34a;font-weight:600;margin-left:4px;white-space:nowrap;";
+              b.appendChild(span);
+              b.style.display = "inline-flex";
+              b.style.alignItems = "center";
             } catch (e) {}
           }
         } catch (e) {}
@@ -1293,7 +1316,12 @@ function computerPanelScript(rebrandEnabled) {
     /* AGENTX-REBRAND-END */
     try {
       var vaultMenuObserver = new MutationObserver(function () { addVaultMenuItem(); agentxRunRules(); });
-      vaultMenuObserver.observe(document.body, { childList: true, subtree: true });
+      // characterData: React updates a text node in place (nodeValue)
+      // when it re-renders — e.g. the Models page resetting "1 provider
+      // online" back to "1 providers online". A childList-only observer
+      // never fires for that, so the grammar fix was never re-applied
+      // after the first React re-render (2026-11-18 DOM inspection).
+      vaultMenuObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
       addVaultMenuItem();
       agentxRunRules();
       agentxWatchTitle();
