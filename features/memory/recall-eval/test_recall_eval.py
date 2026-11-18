@@ -138,12 +138,13 @@ def test_recall() -> None:
         check(f"{qid}: target in the candidate pool",
               r["pool_hit"] is True, str(r))
     agg = report["aggregate"]
-    check("hit@1 >= 0.8 (5/6 measured; Q1 misses, see README)",
-          agg["hit_at_1"] >= 0.8, str(agg))
+    check("hit@1 == 1.0 (6/6 measured since the T137 hyphen fix; "
+          "the loop-gate query used to miss, see README)",
+          agg["hit_at_1"] == 1.0, str(agg))
     check("hit@3 == 1.0", agg["hit_at_3"] == 1.0, str(agg))
     check("MRR >= 0.9", agg["mrr"] >= 0.9, str(agg))
-    check("false-top rate <= 1/6 (only the Q1 distractor wins)",
-          agg["false_top_rate"] <= 1 / 6 + 1e-9, str(agg))
+    check("false-top rate == 0 (no distractor wins since the T137 fix)",
+          agg["false_top_rate"] == 0.0, str(agg))
     check("candidate-pool hit rate == 1.0",
           agg["pool_hit_rate"] == 1.0, str(agg))
     check("hit@5 is reported (informational, not thresholded)",
