@@ -1,0 +1,10 @@
+[Unit]
+Description=Approval TTL sweep: resolve pending approvals past their TTL
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /data/home/qwenpaw/working/approval-ttl/ttl.py sweep --store /data/home/qwenpaw/working/approval-ttl/pending.json
+StandardOutput=journal
+StandardError=journal
