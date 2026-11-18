@@ -1065,6 +1065,112 @@ function computerPanelScript(rebrandEnabled) {
         agentxLinkBlockerInstalled = true;
       } catch (e) {}
     }
+    // Per-chat thinking level (2026-11-18): state + API helpers for the
+    // "thinking-selector" rule. The backend already supports per-chat
+    // thinking end to end (GET/PUT /api/chats/{id}/thinking); the rule
+    // only surfaces it as a selector next to the composer controls.
+    // Levels offered: Default (inherit), Off, Low, Medium, High, XHigh.
+    // A level the server reports outside that set (minimal/max/budget)
+    // is shown by adding an option for it, so the select never lies.
+    var agentxThinkingState = { chatId: null, level: null, modelKey: null, pending: null, syncChatId: null, seq: 0 };
+    function agentxThinkingHeaders() {
+      var t = "";
+      try { t = window.localStorage ? (window.localStorage.getItem("qwenpaw_auth_token") || "") : ""; } catch (e) {}
+      var h = { "Content-Type": "application/json" };
+      if (t) h["Authorization"] = "Bearer " + t;
+      return h;
+    }
+    function agentxThinkingChatId() {
+      try {
+        var p = window.location ? window.location.pathname || "" : "";
+        var parts = p.split("/");
+        if (parts.length > 2 && parts[1] === "chat" && parts[2]) return parts[2];
+      } catch (e) {}
+      return null;
+    }
+    function agentxThinkingShow(level) {
+      try {
+        var sel = document.querySelector ? document.querySelector("[data-agentx-thinking]") : null;
+        if (!sel || !level) return;
+        var has = false;
+        for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === level) { has = true; break; } }
+        if (!has) {
+          var o = document.createElement("option");
+          o.value = level;
+          o.textContent = level.charAt(0).toUpperCase() + level.slice(1);
+          sel.appendChild(o);
+        }
+        sel.value = level;
+      } catch (e) {}
+    }
+    function agentxThinkingSync(force) {
+      // Pull the server's stored level for the current chat and show it.
+      // Applies a pending level (picked on a brand-new chat with no id
+      // yet) once the chat has an id. Skips when a sync for this chat is
+      // already in flight, and never overwrites a choice the user made
+      // meanwhile (generation counter).
+      try {
+        var chatId = agentxThinkingChatId();
+        var st = agentxThinkingState;
+        if (!chatId) return;
+        if (!force && st.chatId === chatId && st.level !== null) return;
+        if (st.syncChatId === chatId) return;
+        st.chatId = chatId;
+        st.syncChatId = chatId;
+        var seq = st.seq;
+        fetch("/api/chats/" + chatId + "/thinking", { headers: agentxThinkingHeaders() })
+          .then(function (r) { if (!r.ok) return null; return r.json(); })
+          .then(function (v) {
+            st.syncChatId = null;
+            if (!v || seq !== st.seq) return;
+            if (v.model_key) st.modelKey = v.model_key;
+            var lvl = (v.value && v.value.level) ? v.value.level : "inherit";
+            st.level = lvl;
+            agentxThinkingShow(lvl);
+            if (st.pending && st.pending !== lvl) {
+              var pend = st.pending;
+              st.pending = null;
+              try { window.localStorage.removeItem("agentx_thinking_pending"); } catch (e) {}
+              agentxThinkingSave(pend);
+            }
+          })
+          .catch(function () { st.syncChatId = null; });
+      } catch (e) {}
+    }
+    function agentxThinkingSave(level) {
+      // Persist the user's choice for the current chat. No id yet (new
+      // chat): hold it as pending — the next sync, once the first message
+      // creates the chat, applies it. The first turn of a brand-new chat
+      // therefore still uses the default; the second turn uses the pick.
+      try {
+        var st = agentxThinkingState;
+        var prev = st.level;
+        st.seq++;
+        st.level = level;
+        var chatId = agentxThinkingChatId();
+        if (!chatId) {
+          st.pending = level;
+          try { window.localStorage.setItem("agentx_thinking_pending", level); } catch (e) {}
+          return;
+        }
+        st.pending = null;
+        try { window.localStorage.removeItem("agentx_thinking_pending"); } catch (e) {}
+        var url = "/api/chats/" + chatId + "/thinking";
+        if (st.modelKey) url += "?model_key=" + encodeURIComponent(st.modelKey);
+        fetch(url, { method: "PUT", headers: agentxThinkingHeaders(), body: JSON.stringify({ level: level }) })
+          .then(function (r) {
+            if (r.status === 409 || r.status === 422) { st.level = null; st.chatId = null; agentxThinkingSync(true); return null; }
+            if (!r.ok) { st.level = prev; agentxThinkingShow(prev); return null; }
+            return r.json();
+          })
+          .then(function (v) {
+            if (!v) return;
+            if (v.model_key) st.modelKey = v.model_key;
+            if (v.value && v.value.level) { st.level = v.value.level; agentxThinkingShow(st.level); }
+          })
+          .catch(function () { st.level = prev; agentxThinkingShow(prev); });
+      } catch (e) {}
+    }
     var AGENTX_RULES = [
       { id: "rename-title", run: function () {
         if (document.title && document.title.indexOf("QwenPaw") !== -1) document.title = document.title.split("QwenPaw").join("AgentX");
@@ -1430,6 +1536,84 @@ function computerPanelScript(rebrandEnabled) {
           }
         } catch (e) {}
       } },
+      { id: "thinking-selector", run: function () {
+        // Per-chat thinking level (2026-11-18, user request: "like in
+        // coding agent" — enable/disable + low/medium/high/xhigh).
+        // A selector next to the composer controls (same toolbar as the
+        // "Context usage" button): Default / Off / Low / Medium / High /
+        // XHigh, stored per chat via the backend's own endpoint. React-
+        // safe by construction: the select is OUR element, appended (never
+        // moved) into the toolbar; React may remove it on a re-render, so
+        // the rule re-creates it on every run and re-syncs from the server.
+        // No polling: the rule runs on the existing MutationObserver and
+        // only fetches when the chat changes (or a save forces a sync).
+        try {
+          var path = "";
+          try { path = window.location ? window.location.pathname || "" : ""; } catch (e) {}
+          if (path.indexOf("/chat") !== 0) return;
+          var st = agentxThinkingState;
+          if (!st.pending) { try { st.pending = window.localStorage ? (window.localStorage.getItem("agentx_thinking_pending") || null) : null; } catch (e) {} }
+          var toolbar = null;
+          try {
+            var btns = document.querySelectorAll("button");
+            for (var i = 0; i < btns.length; i++) {
+              try {
+                var b = btns[i];
+                var lab = "";
+                try { lab = (b.getAttribute("aria-label") || "") + " " + (b.getAttribute("title") || "") + " " + (b.textContent || ""); } catch (e) {}
+                if (lab.indexOf("Context usage") !== -1) { toolbar = b.parentElement; break; }
+              } catch (e) {}
+            }
+          } catch (e) {}
+          if (!toolbar) {
+            try {
+              var inputs = document.querySelectorAll("[placeholder]");
+              for (var j = 0; j < inputs.length; j++) {
+                try {
+                  var ph = inputs[j].getAttribute ? (inputs[j].getAttribute("placeholder") || "") : "";
+                  if (ph.indexOf("message navigation") !== -1 || ph.indexOf("Ask anything") !== -1) {
+                    var p = inputs[j].parentElement;
+                    toolbar = p && p.parentElement ? p.parentElement : p;
+                    break;
+                  }
+                } catch (e) {}
+              }
+            } catch (e) {}
+          }
+          if (!toolbar) return;
+          var sel = null;
+          try { sel = toolbar.querySelector ? toolbar.querySelector("[data-agentx-thinking]") : null; } catch (e) {}
+          var created = false;
+          if (!sel) {
+            var label = document.createElement("span");
+            label.textContent = "Thinking";
+            label.setAttribute("data-agentx-thinking-label", "1");
+            label.style.cssText = "font-size:12px;color:#9aa4b2;margin-left:8px;white-space:nowrap;flex:none;";
+            sel = document.createElement("select");
+            sel.setAttribute("data-agentx-thinking", "1");
+            sel.setAttribute("aria-label", "Thinking level for this chat");
+            sel.title = "Thinking level for this chat — Default follows the model, Off disables thinking";
+            sel.style.cssText = "font-size:12px;color:#e8eaf0;background:#171a21;border:1px solid #343945;border-radius:8px;padding:4px 6px;margin-left:4px;flex:none;cursor:pointer;";
+            var opts = [["inherit", "Default"], ["off", "Off"], ["low", "Low"], ["medium", "Medium"], ["high", "High"], ["xhigh", "XHigh"]];
+            for (var k = 0; k < opts.length; k++) {
+              var o = document.createElement("option");
+              o.value = opts[k][0];
+              o.textContent = opts[k][1];
+              sel.appendChild(o);
+            }
+            sel.addEventListener("change", function () { agentxThinkingSave(sel.value); });
+            sel.value = "inherit";
+            toolbar.appendChild(label);
+            toolbar.appendChild(sel);
+            created = true;
+          }
+          var chatId = agentxThinkingChatId();
+          if (chatId && st.chatId === chatId && st.level) agentxThinkingShow(st.level);
+          else if (chatId) agentxThinkingSync(false);
+          else if (st.pending) agentxThinkingShow(st.pending);
+          else if (created) agentxThinkingShow("inherit");
+        } catch (e) {}
+      } },
       { id: "page-bottom-padding", run: function () {
         // The three floating pills (Vault / Rest machine / Computer) are
         // fixed at the bottom-right and overlay whatever content sits
@@ -1623,6 +1807,7 @@ function computerPanelScript(rebrandEnabled) {
         agentxRunRuleNow("fix-grammar");
         agentxRunRuleNow("sidebar-ellipsis");
         agentxRunRuleNow("chat-input-fixes");
+        agentxRunRuleNow("thinking-selector");
         agentxRunRuleNow("page-bottom-padding");
         agentxRunRuleNow("pill-positions");
         agentxRunRules();
