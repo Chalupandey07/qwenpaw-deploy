@@ -2159,6 +2159,24 @@ def t129():
         ["features/skills/test_skills_packages.py"], 46)
 
 
+def t130():
+    """Drex decision model: NACE endpoint configurable, slot fragment (21).
+
+    Machine-free test (features/decisions/test_drex.py) for the Drex
+    wiring: decide.py reads NACE_BASE_URL (arg > env > default,
+    https-or-loopback only), per-provider scoping (a stray NACE_BASE_URL
+    can never retarget Jev), decision_model_drex.json fragment
+    {provider_id: nace, model: drex-max-v1.1}, apply script dry-run
+    default + key-gated, live-test script fails closed without a key
+    (exit 2). Fail-first proven: 8 passed / 12 failed (env override +
+    fragment/scripts missing). T84 still 33/33. NOT verified live: no
+    real NACE call (no key yet); 'nace' provider registration in the
+    deployed image unverified; calibration unverified.
+    """
+    return _py_script_harness(
+        ["features/decisions/test_drex.py"], 21)
+
+
 def t131():
     """Telegram full-feature bot: token-only setup, menus, chats (66).
 
@@ -2705,6 +2723,7 @@ TESTS = [
     ("T127", "checkpoints + rollback: per-run workspace snapshot (tarball + manifest) tagged with run id, restore refuses on drift without --force, automatic pre-restore safety snapshot, list command (harness)", "checkpoints", "protocol", t127),
     ("T128", "MCP client: stdio + streamable HTTP, servers disabled by default, per-server allowlist, namespaced tools mcp.<server>.<tool>, HTTP egress limited to declared hosts, no auto-install (harness)", "mcp-client", "protocol", t128),
     ("T129", "skills as progressive-disclosure packages: frontmatter schema + tool-scope enforcement, index-only default load, self-written skill writer with secret/China/unbounded refusals, mechanical converter", "skills", "protocol", t129),
+    ("T130", "drex decision model: NACE endpoint configurable via env (arg > NACE_BASE_URL > default), decision_model slot fragment for both agents, live-test script fails closed without a key (harness)", "decisions", "protocol", t130),
     ("T131", "telegram full-feature bot: token-only setup (no numeric id), owner = first whitelist entry, guests read-only, strangers refused; new chat, list + preview + continue an existing console chat (task API); settings via button callbacks (model PATCH, approval PUT); menu grammar + token cache; outbound redaction + inbound untrusted wrapping; driver patch applies cleanly to the pinned v2.3.0 platform.py and reproduces the patched file byte-for-byte (selftest)", "telegram", "protocol", t131),
 ]
 
