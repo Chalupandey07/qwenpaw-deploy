@@ -244,9 +244,14 @@ function computerPanelScript(rebrandEnabled) {
       "#agentxSidebarActions .agentx-action-icon svg,#agentxSidebarActions .agentx-head-icon svg,#agentxSidebarActions .agentx-caret svg{width:100%;height:100%;display:block;}" +
       "#agentxSidebarActions .agentx-action-label{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}" +
       "button[class*='identity']{display:flex;align-items:center;flex-wrap:nowrap;gap:10px;width:100%;box-sizing:border-box;overflow:visible;flex:none;}" +
-      "button[class*='identity'] span[class*='identityText']{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;overflow:hidden;text-align:left;}" +
-      "button[class*='identity'] span[class*='identityText'] > strong{font-size:13px;line-height:1.25;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}" +
-      "button[class*='identity'] span[class*='identityText'] > small{font-size:11px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.72;}";
+      "button[class*='identity'] span[class*='identityText']{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;overflow:visible;text-align:left;}" +
+      "button[class*='identity'] span[class*='identityText'] > strong{font-size:13px;line-height:1.3;font-weight:600;white-space:nowrap;overflow:visible;text-overflow:clip;max-width:none;}" +
+      "button[class*='identity'] span[class*='identityText'] > small{font-size:11px;line-height:1.3;white-space:nowrap;overflow:visible;text-overflow:clip;max-width:none;opacity:.75;}" +
+      "[data-agentx-account-row]{display:flex!important;align-items:center;min-height:48px!important;overflow:visible!important;flex:none!important;width:100%;box-sizing:border-box;}" +
+      "[data-agentx-identity-text]{display:flex!important;flex-direction:column!important;align-items:flex-start;justify-content:center;gap:2px;overflow:visible!important;min-width:0;flex:1 1 auto;text-align:left;}" +
+      "[data-agentx-identity-text] strong,[data-agentx-identity-text] small{overflow:visible!important;text-overflow:clip!important;max-width:none!important;white-space:nowrap;}" +
+      "[data-agentx-composer] button,[data-agentx-composer] select{min-height:32px;height:32px;box-sizing:border-box;}" +
+      ".agentx-unclip{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;}";
     var ICON_COMPUTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="13" rx="2"></rect><path d="M8.5 20.5h7M12 17v3.5"></path></svg>';
     var ICON_REST = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 13.2A8.5 8.5 0 1 1 10.8 3.5a6.8 6.8 0 0 0 9.7 9.7z"></path></svg>';
     var ICON_VAULT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="11" width="17" height="10" rx="2"></rect><path d="M7.5 11V7.5a4.5 4.5 0 0 1 9 0V11"></path></svg>';
@@ -724,6 +729,47 @@ function computerPanelScript(rebrandEnabled) {
       } catch (e) {}
     }
 
+    // The top-level child of the sidebar whose subtree contains the text. The
+    // sidebar's direct children are its major blocks (header, nav, history,
+    // footer), so anchoring on a BLOCK — never a deep node — is what keeps
+    // the menu inside the nav area instead of floating above the header.
+    function sidebarTopSection(side, text) {
+      try {
+        var kids = side.children;
+        for (var i = 0; i < kids.length; i++) {
+          if ((kids[i].textContent || "").indexOf(text) !== -1) return kids[i];
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    // The console renders its OWN "More actions" button on every conversation
+    // row (24 of them at 1919x998). That is exactly the clutter the user
+    // asked to remove: the machine actions live in ONE menu now, so the
+    // per-row copies are hidden. Only buttons inside the sidebar are touched,
+    // and this menu's own header plus the three action rows are exempt.
+    function hidePerRowMoreButtons() {
+      try {
+        var side = findSidebarEl();
+        if (!side) return;
+        var btns = side.querySelectorAll("button");
+        for (var i = 0; i < btns.length; i++) {
+          var b = btns[i];
+          if (b.id === "agentxSidebarActions") continue;
+          var cls = "";
+          try { cls = String(b.className || ""); } catch (e) {}
+          if (cls.indexOf("agentx-actions-head") !== -1) continue;
+          if (b.getAttribute && b.getAttribute("data-agentx-action") === "1") continue;
+          var name = "";
+          try { name = (b.getAttribute("aria-label") || "") + " " + (b.textContent || ""); } catch (e) {}
+          if (/more actions/i.test(name)) {
+            b.style.display = "none";
+            b.setAttribute("data-agentx-hidden-more", "1");
+          }
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
     // Build (or refresh) the "More actions" menu inside the left sidebar.
     // Default OPEN: the three actions must never be hidden behind a hunt.
     function addSidebarActions() {
@@ -756,21 +802,26 @@ function computerPanelScript(rebrandEnabled) {
           menu.appendChild(vaultBtn);
           box.appendChild(head);
           box.appendChild(menu);
-          // Place it in the sidebar's own action area: directly above the
-          // conversation-history section, i.e. just under the nav links.
-          var placed = false;
-          try {
-            var kids = side.children;
-            for (var i = 0; i < kids.length; i++) {
-              if ((kids[i].textContent || "").indexOf("Conversation History") !== -1) {
-                side.insertBefore(box, kids[i]);
-                placed = true;
-                break;
-              }
-            }
-          } catch (e) {}
-          if (!placed) side.insertBefore(box, side.firstChild);
         }
+        // POSITION (v3 fix): the menu must sit AMONG the nav links, BELOW the
+        // AgentX header — never above it. v2 anchored on "Conversation
+        // History" as a direct child and, when that missed, fell back to
+        // firstChild, which parked the menu ABOVE the header (measured
+        // x~15-255, y~8-48). Anchor on the nav blocks instead, and re-assert
+        // the position on EVERY pass because React can move the box on
+        // re-render. Never place it before the sidebar's first block.
+        if (box.parentNode && box.parentNode !== side) { try { box.remove(); } catch (e) {} }
+        var placed = false;
+        var navSec = sidebarTopSection(side, "New task") || sidebarTopSection(side, "Conversation History");
+        if (navSec === side.firstChild) navSec = (side.children.length > 1 ? side.children[1] : null);
+        if (navSec && navSec !== box && navSec.parentNode === side) {
+          side.insertBefore(box, navSec);
+          placed = true;
+        } else if (side.children.length > 1) {
+          side.insertBefore(box, side.children[1]);
+          placed = true;
+        }
+        if (!placed) side.appendChild(box);
         // A re-render may have detached the rows; re-append them.
         var menu2 = box.querySelector(".agentx-actions-menu");
         if (menu2) {
@@ -779,6 +830,7 @@ function computerPanelScript(rebrandEnabled) {
           if (vaultBtn.parentNode !== menu2) menu2.appendChild(vaultBtn);
         }
         paintComputerRow();
+        hidePerRowMoreButtons();
       } catch (e) { /* never break the console */ }
     }
 
@@ -796,12 +848,21 @@ function computerPanelScript(rebrandEnabled) {
         for (var i = 0; i < smalls.length; i++) {
           var t = (smalls[i].textContent || "").trim();
           if (t === "Console account" || t === "Local workspace" || t === "QwenPaw Hub") {
+            // The row is the subtitle's nearest button-like ancestor. Do NOT
+            // require an <img> here: if the avatar renders as a background or
+            // an inline svg, requiring one made the whole fix silently no-op
+            // and the row stayed one clipped line (v2 browser FAIL).
             var b = smalls[i].closest ? smalls[i].closest("button") : null;
-            if (b && b.querySelector("img")) { row = b; break; }
+            if (!b) b = smalls[i].parentElement ? smalls[i].parentElement.parentElement : null;
+            if (b) { row = b; break; }
           }
         }
         if (!row) return;
-        row.style.display = "flex";
+        // Mark the row and its text block so the injected CSS (which uses
+        // !important) reinforces these inline styles even after React
+        // re-renders and drops the inline ones.
+        row.setAttribute("data-agentx-account-row", "1");
+        row.style.setProperty("display", "flex", "important");
         row.style.alignItems = "center";
         row.style.flexWrap = "nowrap";
         row.style.gap = "10px";
@@ -809,7 +870,10 @@ function computerPanelScript(rebrandEnabled) {
         row.style.boxSizing = "border-box";
         row.style.overflow = "visible";
         row.style.flex = "none";
-        row.style.minHeight = "0";
+        // Tall enough for the avatar AND both stacked text lines, so the
+        // subtitle is never pushed out of the pill.
+        row.style.minHeight = "48px";
+        row.style.padding = "8px 12px";
         var spans = row.querySelectorAll("span");
         for (var s = 0; s < spans.length; s++) {
           var sp = spans[s];
@@ -826,31 +890,42 @@ function computerPanelScript(rebrandEnabled) {
             img.style.objectFit = "cover";
             img.style.display = "block";
           } else if (sp.querySelector && sp.querySelector("small")) {
+            // STACK the name above the subtitle — this is the whole fix. The
+            // pill is too narrow for both on one line (measured 'satwik' +
+            // 'Conso…' sharing y~945-985), so they must be two lines.
+            // !important beats the console's own row layout.
+            sp.setAttribute("data-agentx-identity-text", "1");
+            sp.style.setProperty("display", "flex", "important");
+            sp.style.setProperty("flex-direction", "column", "important");
+            sp.style.alignItems = "flex-start";
+            sp.style.justifyContent = "center";
             sp.style.flex = "1 1 auto";
             sp.style.minWidth = "0";
-            sp.style.display = "flex";
-            sp.style.flexDirection = "column";
-            sp.style.gap = "1px";
-            sp.style.overflow = "hidden";
+            sp.style.gap = "2px";
+            sp.style.overflow = "visible";
             sp.style.textAlign = "left";
           }
         }
         var strongs = row.querySelectorAll("strong");
         for (var g = 0; g < strongs.length; g++) {
           strongs[g].style.whiteSpace = "nowrap";
-          strongs[g].style.overflow = "hidden";
-          strongs[g].style.textOverflow = "ellipsis";
+          // No ellipsis — the user must read the name in full.
+          strongs[g].style.overflow = "visible";
+          strongs[g].style.textOverflow = "clip";
+          strongs[g].style.maxWidth = "none";
           strongs[g].style.fontSize = "13px";
-          strongs[g].style.lineHeight = "1.25";
+          strongs[g].style.lineHeight = "1.3";
           strongs[g].style.fontWeight = "600";
         }
         var smalls2 = row.querySelectorAll("small");
         for (var m = 0; m < smalls2.length; m++) {
           smalls2[m].style.whiteSpace = "nowrap";
-          smalls2[m].style.overflow = "hidden";
-          smalls2[m].style.textOverflow = "ellipsis";
+          smalls2[m].style.overflow = "visible";
+          smalls2[m].style.textOverflow = "clip";
+          smalls2[m].style.maxWidth = "none";
           smalls2[m].style.fontSize = "11px";
           smalls2[m].style.lineHeight = "1.3";
+          smalls2[m].style.opacity = "0.75";
         }
         var svg = row.querySelector("svg");
         if (svg) svg.style.flex = "0 0 auto";
@@ -2554,82 +2629,112 @@ function computerPanelScript(rebrandEnabled) {
         try { addSidebarActions(); } catch (e) {}
         try { fixAccountRow(); } catch (e) {}
       } },
-      { id: "composer-symmetry", run: function () {
-        // 2026-11-20 (user): the composer toolbar had no symmetry — the
-        // model/agent dropdown, Smart Mode, Thinking select, context
-        // ring, mic, attach and Send were spread over two uneven rows
-        // with different heights and gaps. Make the toolbar ONE clean
-        // flex row: every control vertically centered, an even 8px gap,
-        // a consistent 32px control height, and the input's own row
-        // untouched. Only layout styles are set (never text or structure),
-        // so React reconciliation is unaffected. The Thinking select keeps
-        // its place next to Smart Mode (user anchor) but is sized to match
-        // the other controls instead of dominating the row.
-        // Kept in the 2026-11-20 beauty-pass merge: Pi's sidebar-actions
-        // supersedes the three-dots menu, but the composer row still needs
-        // this rule — Pi's diff did not carry it.
+      { id: "composer-row", run: function () {
+        // FIX (beauty v3): the composer toolbar rendered as TWO uneven rows
+        // (row 1 mic/attach/Default at y~832-871; row 2 the '0%' context
+        // pill, mode pills, the model select and Send at y~888-922), heights
+        // 32-38px, uneven gaps, second row right-shifted. Normalise every
+        // control inside the composer to ONE 32px height with an even 8px
+        // gap and centred alignment. Scoped by a data attribute set here, so
+        // nothing outside the composer is touched, and the text input itself
+        // is left alone (only button/select get the height).
         try {
-          if (window.location && window.location.pathname && window.location.pathname.indexOf("/chat") !== 0) return;
-          var toolbar = null;
-          try {
-            var btns = document.querySelectorAll("button");
-            for (var i = 0; i < btns.length; i++) {
-              try {
-                var b = btns[i];
-                var lab = "";
-                try { lab = (b.getAttribute("aria-label") || "") + " " + (b.getAttribute("title") || "") + " " + (b.textContent || ""); } catch (e) {}
-                if (lab.indexOf("Smart Mode") !== -1) { toolbar = b.parentElement; break; }
-              } catch (e) {}
-            }
-            if (!toolbar) {
-              for (var ci = 0; ci < btns.length; ci++) {
-                try {
-                  var cb = btns[ci];
-                  var clab = "";
-                  try { clab = (cb.getAttribute("aria-label") || "") + " " + (cb.getAttribute("title") || "") + " " + (cb.textContent || ""); } catch (e) {}
-                  if (clab.indexOf("Context usage") !== -1) { toolbar = cb.parentElement; break; }
-                } catch (e) {}
+          var inputs = document.querySelectorAll ? document.querySelectorAll("[placeholder]") : [];
+          var input = null;
+          for (var i = 0; i < inputs.length; i++) {
+            var ph = "";
+            try { ph = inputs[i].getAttribute("placeholder") || ""; } catch (e) {}
+            if (ph.indexOf("Ask anything") !== -1) { input = inputs[i]; break; }
+          }
+          if (!input) return;
+          // Walk up to the composer: the ancestor that also holds a Send
+          // control. Bounded so a changed DOM cannot spin this for long.
+          var comp = null, n = input, d = 0;
+          while (n && d < 8) {
+            if (n.querySelectorAll) {
+              var bs = n.querySelectorAll("button");
+              for (var j = 0; j < bs.length; j++) {
+                var st = "";
+                try { st = ((bs[j].textContent || "") + " " + (bs[j].getAttribute("aria-label") || "")).trim(); } catch (e) {}
+                if (/^send$/i.test(st) || (bs[j].type || "").toLowerCase() === "submit") { comp = n; break; }
               }
+              if (comp) break;
             }
-          } catch (e) {}
-          if (!toolbar) return;
-          try {
-            toolbar.style.display = "flex";
-            toolbar.style.alignItems = "center";
-            toolbar.style.gap = "8px";
-            toolbar.style.flexWrap = "nowrap";
-            toolbar.style.padding = "6px 8px";
-          } catch (e) {}
-          // Every direct control: same height, vertically centered, never
-          // shrinking the Send button out of the row.
-          try {
-            var kids = toolbar.children;
-            for (var k = 0; k < kids.length; k++) {
-              try {
-                var ch = kids[k];
-                ch.style.flex = "0 0 auto";
-                ch.style.alignSelf = "center";
-                ch.style.margin = "0";
-                if (ch.tagName === "SELECT" || ch.tagName === "BUTTON") {
-                  ch.style.height = "32px";
-                  ch.style.minHeight = "32px";
-                }
-              } catch (e2) {}
+            n = n.parentElement; d++;
+          }
+          if (!comp) return;
+          comp.setAttribute("data-agentx-composer", "1");
+          var ctrls = comp.querySelectorAll("button, select");
+          for (var k = 0; k < ctrls.length; k++) {
+            var c = ctrls[k];
+            c.style.setProperty("min-height", "32px", "important");
+            c.style.setProperty("height", "32px", "important");
+            c.style.setProperty("box-sizing", "border-box", "important");
+          }
+          // Even 8px gaps and centred baselines on the composer's flex rows.
+          var rows = comp.querySelectorAll("div");
+          for (var m = 0; m < rows.length; m++) {
+            var r = rows[m];
+            var disp = "";
+            try { disp = window.getComputedStyle(r).display; } catch (e2) {}
+            if (disp === "flex" || disp === "inline-flex") {
+              r.style.setProperty("gap", "8px", "important");
+              r.style.setProperty("align-items", "center", "important");
             }
-          } catch (e) {}
-          // Thinking select: compact so it matches the other controls.
-          try {
-            var sel = document.querySelector ? document.querySelector("[data-agentx-thinking]") : null;
-            if (sel) {
-              sel.style.height = "32px";
-              sel.style.minHeight = "32px";
-              sel.style.padding = "4px 6px";
-              sel.style.fontSize = "12px";
+          }
+        } catch (e) { /* never break the console */ }
+      } },
+      { id: "label-truncation", run: function () {
+        // FIX (beauty v3): settings nav labels and control buttons were
+        // truncated to '...' ('Community & mes...', 'Voice Transcrip...',
+        // 'Pending Approva...', 'Connect QwenPaw...', and the Security rule
+        // titles). A label the user must read is never ellipsised away: let
+        // those elements wrap instead. Scoped to /settings (where every
+        // reported case lives) and to the exact labels reported, so the
+        // DELIBERATE conversation-title truncation is untouched. Also fixes
+        // the 'Bot Prefix:Not set' missing space.
+        try {
+          if ((window.location.pathname || "").indexOf("/settings") === -1) return;
+        } catch (e) { return; }
+        var labels = [
+          "Community & messaging", "Voice Transcription", "Pending Approvals",
+          "Connect QwenPaw", "Command Injection", "Sensitive File",
+          "Privilege Escalation", "Token Usage", "Agent Management",
+          "Tool Offload", "Skill Pool", "Environments", "Cron Jobs",
+          "Heartbeat", "Backups", "Debug",
+        ];
+        try {
+          if (!document.createTreeWalker) return;
+          var walker = document.createTreeWalker(document.body, 4, null, false);
+          var hits = [];
+          var node;
+          while ((node = walker.nextNode())) {
+            var t = node.nodeValue || "";
+            // 'Bot Prefix:Not set' -> 'Bot Prefix: Not set' (missing space).
+            if (t.indexOf("Bot Prefix:Not set") !== -1) {
+              node.nodeValue = t.replace(/Bot Prefix:Not set/g, "Bot Prefix: Not set");
+              t = node.nodeValue;
             }
-            var tlab = document.querySelector ? document.querySelector("[data-agentx-thinking-label]") : null;
-            if (tlab) { tlab.style.fontSize = "12px"; tlab.style.marginLeft = "4px"; }
-          } catch (e) {}
-        } catch (e) {}
+            for (var i = 0; i < labels.length; i++) {
+              if (t.indexOf(labels[i]) !== -1 && node.parentElement) { hits.push(node.parentElement); break; }
+            }
+          }
+          for (var k = 0; k < hits.length; k++) {
+            // The label element and its truncating ancestors may all clip.
+            var cur = hits[k], hops = 0;
+            while (cur && hops < 4) {
+              var cs = "";
+              try { cs = window.getComputedStyle(cur).textOverflow; } catch (e3) {}
+              if (cs === "ellipsis") {
+                cur.classList.add("agentx-unclip");
+                cur.style.setProperty("white-space", "normal", "important");
+                cur.style.setProperty("overflow", "visible", "important");
+                cur.style.setProperty("text-overflow", "clip", "important");
+              }
+              cur = cur.parentElement; hops++;
+            }
+          }
+        } catch (e) { /* never break the console */ }
       } },
       { id: "rename-logo", run: function () {
         // Sidebar logo: an <img> with alt "QwenPaw" (browser verification
@@ -3090,7 +3195,8 @@ function computerPanelScript(rebrandEnabled) {
           agentxRunRuleNow("settings-white-area");
           agentxRunRuleNow("page-bottom-padding");
           agentxRunRuleNow("sidebar-actions");
-          agentxRunRuleNow("composer-symmetry");
+          agentxRunRuleNow("composer-row");
+          agentxRunRuleNow("label-truncation");
           agentxRunRules();
         } finally {
           // Clear the flag on the next task, not immediately: MutationObserver
