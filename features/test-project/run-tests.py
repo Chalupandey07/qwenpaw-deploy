@@ -2445,7 +2445,7 @@ def t135():
 
 
 def t136():
-    """Eval harness, LLM judge: judge.py + versioned rubric + calibration set (49).
+    """Eval harness, LLM judge: judge.py + versioned rubric + calibration set (57).
 
     Machine-free test (features/infra/evals/test_judge.py) for the
     all-20 gap #13. judge_reply(reply, rubric, task, *, transport=None,
@@ -2489,12 +2489,28 @@ def t136():
     sent as the Bearer token; a 401 on a supplied token fails as infra
     without a re-login. Poll window (G1-G3, added 2026-11-19):
     MAX_POLLS 72 to 180 (15-min window) in judge.py and run-evals.py
-    - live calibration run 1 (2026-11-19 ~04:08 IST) finished 0/12 NOT
-    TRUSTED on transport, not substance (cal-01..09 poll timeout at
-    360s, cal-10/11 token 401, cal-12 empty reply); run 2 launched
-    with the longer window and a 2h token, needs 12/12. Fail-first
-    proven: the test failed with
-    ModuleNotFoundError before judge.py existed. The live half
+    - the window is a safety net only, NOT the fix for the run-1
+    timeouts (those were misdiagnosed as "turns take ~6 min"). Poll
+    terminal status + task-shape extraction (H1-H8, added 2026-11-19):
+    live calibration run 4 (2026-11-19 ~08:38 IST) finished 0/12 NOT
+    TRUSTED on transport — 11 cases hit "judge poll timed out after
+    900s" even though the grading turns had completed in seconds.
+    Root cause, proven from the console source
+    (app/routers/console.py: get_console_chat_task returns bg.status;
+    _BackgroundTask.status is only "running" in flight and "finished"
+    on every completion path) and by a live probe
+    (task-320a0aa106b8: running -> finished in 12.4s): the poll
+    waited for done/completed/success/..., a set that never contains
+    "finished". Second bug from the same probe body: the generic
+    extractor returned the FIRST text found — the "reasoning" item,
+    the model's deliberation, not its reply. Fix: _poll returns on
+    "finished" (TERMINAL_TASK_STATUSES, kept in sync between judge.py
+    and run-evals.py) and _extract_text takes the last "message" item
+    of result.output, never reasoning; a task-shaped body with no
+    final message yields no reply text. Fail-first proven for H:
+    50/57 against the pre-fix code (H1/H2/H4/H5/H6/H7/H8 fail, H3
+    passes), 57/57 after the fix. Fail-first proven: the test failed
+    with ModuleNotFoundError before judge.py existed. The live half
     (live-model agreement with the calibration set:
     QWENPAW_TOKEN=<token minted in the container>
     python3 judge.py --calibrate --live, requiring 12/12 agreement
@@ -2503,7 +2519,7 @@ def t136():
     after deploy.
     """
     return _py_script_harness(
-        ["features/infra/evals/test_judge.py"], 49)
+        ["features/infra/evals/test_judge.py"], 57)
 
 
 def t137():
