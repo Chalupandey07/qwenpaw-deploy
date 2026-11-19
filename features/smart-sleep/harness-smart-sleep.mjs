@@ -502,5 +502,171 @@ console.log("GET /status + GET /sleepwake/state — toggle fields");
   }
 }
 
+console.log("stuck-state recovery — reporter_up (2026-11-19)");
+{
+  // Stuck setup: state says "sleeping" (reason probe_cooldown, as live
+  // 2026-11-19) while the machine is up. The report is the machine-side
+  // reporter (every 2 min). reportAgeMin overrides the report's age;
+  // lastUpMin overrides the cached lastUpAt (the uptime lower bound).
+  // The live reporter posts uptimeSec null (it cannot know run start),
+  // so the default report below carries uptimeSec 3600 only when the
+  // case says so — see the null-uptime case.
+  function stuckSetup(d1, over = {}) {
+    const RT = Date.now();
+    const report = {
+      nextNativeRun: null, agentActive: false,
+      agentLastActiveAt: RT - 20 * MIN, uptimeSec: 3600, reportedAt: RT - 60_000,
+      ...(over.report || {}),
+    };
+    if (over.reportAgeMin !== undefined) report.reportedAt = RT - over.reportAgeMin * MIN;
+    d1.status.set("qwenpaw:status", JSON.stringify({ status: "up", httpStatus: 200, lastUpAt: new Date(RT - (over.lastUpMin ?? 60) * MIN).toISOString(), checkedAt: new Date(RT - 5 * MIN).toISOString() }));
+    if (!over.noReport) d1.meta.set("sleepwake:report", JSON.stringify(report));
+    d1.meta.set("sleepwake:state", JSON.stringify({ mode: "sleeping", since: RT - 30 * MIN, reason: "probe_cooldown", lastWakeAt: RT - 60 * MIN, ...(over.state || {}) }));
+    if (over.lastVisitAt !== undefined && over.lastVisitAt !== null) d1.meta.set("sleepwake:last-visit", String(over.lastVisitAt));
+    if (over.toggle !== undefined) d1.meta.set("keepalive:enabled", over.toggle);
+    return RT;
+  }
+  const probeCalls = (calls) => calls.filter((c) => c.url.includes("8088-test.instabox.tech"));
+  const sleepCalls = (calls) => calls.filter((c) => c.url.includes("/api/machine/sleep"));
+  const readState = (d1) => JSON.parse(d1.meta.get("sleepwake:state") || "{}");
+
+  // A. Fresh reporter (1 min) + recent visit -> recovery flips to
+  // running, the decision holds (recent visit blocks idle sleep), the
+  // tick probes once (normal running-state path), no Pages sleep.
+  {
+    const d1 = new MockD1();
+    stuckSetup(d1, { reportAgeMin: 1, lastVisitAt: Date.now() - 5 * MIN });
+    const { calls } = await runTick(makeEnv(d1));
+    const s = readState(d1);
+    check("stuck + fresh reporter (1 min) + recent visit -> state running (recovered)", s.mode === "running", `mode=${s.mode}`);
+    check("stuck + fresh reporter -> reason reporter_up", s.reason === "reporter_up", `reason=${s.reason}`);
+    check("stuck + fresh reporter -> state carries reporter uptimeSec 3600", s.uptimeSec === 3600, `uptimeSec=${s.uptimeSec}`);
+    check("stuck + fresh reporter -> exactly 1 console probe (post-recovery hold path)", probeCalls(calls).length === 1, `probes=${probeCalls(calls).length}`);
+    check("stuck + fresh reporter -> ZERO Pages sleep calls", sleepCalls(calls).length === 0, `sleep=${sleepCalls(calls).length}`);
+  }
+  // B. Reporter 6 min old: past the 5-min recovery window but inside
+  // the 10-min staleness window — the tighter recovery bar must hold.
+  {
+    const d1 = new MockD1();
+    stuckSetup(d1, { reportAgeMin: 6, lastVisitAt: Date.now() - 5 * MIN });
+    const { calls } = await runTick(makeEnv(d1));
+    const s = readState(d1);
+    check("reporter 6 min old (past 5-min recovery, inside 10-min stale) -> state stays sleeping", s.mode === "sleeping", `mode=${s.mode}`);
+    check("reporter 6 min old -> reason stays probe_cooldown", s.reason === "probe_cooldown", `reason=${s.reason}`);
+    check("reporter 6 min old -> ZERO fetch calls", calls.length === 0, `calls=${calls.length}`);
+  }
+  // C. Reporter 11 min old: stale by the 10-min rule too.
+  {
+    const d1 = new MockD1();
+    stuckSetup(d1, { reportAgeMin: 11, lastVisitAt: Date.now() - 5 * MIN });
+    const { calls } = await runTick(makeEnv(d1));
+    const s = readState(d1);
+    check("reporter 11 min old (stale) -> state stays sleeping", s.mode === "sleeping", `mode=${s.mode}`);
+    check("reporter 11 min old -> ZERO fetch calls", calls.length === 0, `calls=${calls.length}`);
+  }
+  // D. No report at all: nothing proves the machine is up.
+  {
+    const d1 = new MockD1();
+    stuckSetup(d1, { noReport: true, lastVisitAt: Date.now() - 5 * MIN });
+    const { calls } = await runTick(makeEnv(d1));
+    const s = readState(d1);
+    check("no report at all -> state stays sleeping", s.mode === "sleeping", `mode=${s.mode}`);
+    check("no report at all -> ZERO fetch calls", calls.length === 0, `calls=${calls.length}`);
+  }
+  // E. The live 2026-11-19 case: stuck + fresh reporter + 7h uptime +
+  // recent visit/agent (which block idle sleep but NOT the guard) ->
+  // the guard fires in the SAME tick, with NO console probe at all:
+  // the flip and the guard both run on reporter evidence alone.
+  {
+    const d1 = new MockD1();
+    stuckSetup(d1, {
+      reportAgeMin: 1, report: { uptimeSec: 420 * 60, agentLastActiveAt: Date.now() - 5 * MIN },
+      lastVisitAt: Date.now() - 5 * MIN,
+    });
+    const { calls } = await runTick(makeEnv(d1));
+    const s = readState(d1);
+    check("stuck + fresh reporter + uptime 420 + recent activity -> Pages sleep exactly once (guard fires same tick)",
+      sleepCalls(calls).length === 1, `sleep=${sleepCalls(calls).length}`);
+    check("stuck + fresh reporter + uptime 420 -> ZERO console probes (flip + guard need no probe)", probeCalls(calls).length === 0, `probes=${probeCalls(calls).length}`);
+    check("stuck + fresh reporter + uptime 420 -> final state sleeping", s.mode === "sleeping", `mode=${s.mode}`);
+    check("stuck + fresh reporter + uptime 420 -> final reason max_run_guard", s.reason === "max_run_guard", `reason=${s.reason}`);
+  }
+  // F. Stale reporter claiming 7h uptime: the guard must NOT fire on
+  // stale data — uptime falls back to lastUpAt (60 min) and the state
+  // stays sleeping, so the guard never sees "running".
+  {
+    const d1 = new MockD1();
+    stuckSetup(d1, {
+      reportAgeMin: 11, report: { uptimeSec: 420 * 60 },
+      lastVisitAt: Date.now() - 5 * MIN,
+    });
+    const { calls } = await runTick(makeEnv(d1));
+    const s = readState(d1);
+    check("stuck + stale reporter (11 min) claiming uptime 420 -> NO Pages sleep (guard inert on stale data)", sleepCalls(calls).length === 0, `sleep=${sleepCalls(calls).length}`);
+    check("stuck + stale reporter claiming uptime 420 -> ZERO fetch calls", calls.length === 0, `calls=${calls.length}`);
+    check("stuck + stale reporter claiming uptime 420 -> state stays sleeping", s.mode === "sleeping", `mode=${s.mode}`);
+  }
+  // G. 419 min boundary: recovery flips, guard does not fire.
+  {
+    const d1 = new MockD1();
+    stuckSetup(d1, { reportAgeMin: 1, report: { uptimeSec: 419 * 60 }, lastVisitAt: Date.now() - 5 * MIN });
+    const { calls } = await runTick(makeEnv(d1));
+    const s = readState(d1);
+    check("stuck + fresh reporter + uptime 419 -> state running (recovered)", s.mode === "running", `mode=${s.mode}`);
+    check("stuck + fresh reporter + uptime 419 -> reason reporter_up", s.reason === "reporter_up", `reason=${s.reason}`);
+    check("stuck + fresh reporter + uptime 419 -> ZERO Pages sleep calls (419 < 420)", sleepCalls(calls).length === 0, `sleep=${sleepCalls(calls).length}`);
+  }
+  // H. The LIVE reporter shape: it posts uptimeSec null (it cannot know
+  // run start) — the recovery must still flip on reporter freshness
+  // alone, and the state carries the lastUpAt lower bound instead.
+  {
+    const d1 = new MockD1();
+    stuckSetup(d1, { reportAgeMin: 1, report: { uptimeSec: null }, lastVisitAt: Date.now() - 5 * MIN });
+    const { calls } = await runTick(makeEnv(d1));
+    const s = readState(d1);
+    check("stuck + fresh reporter with uptimeSec null (live reporter shape) -> state running", s.mode === "running", `mode=${s.mode}`);
+    check("stuck + fresh reporter with uptimeSec null -> reason reporter_up", s.reason === "reporter_up", `reason=${s.reason}`);
+    check("stuck + fresh reporter with uptimeSec null -> state uptimeSec 3600 from lastUpAt fallback", s.uptimeSec === 3600, `uptimeSec=${s.uptimeSec}`);
+    void calls;
+  }
+  // I. A finite reporter uptimeSec wins over lastUpAt.
+  {
+    const d1 = new MockD1();
+    stuckSetup(d1, { reportAgeMin: 1, report: { uptimeSec: 5400 }, lastUpMin: 60, lastVisitAt: Date.now() - 5 * MIN });
+    await runTick(makeEnv(d1));
+    const s = readState(d1);
+    check("stuck + fresh reporter uptimeSec 5400, lastUpAt 60 min -> state running", s.mode === "running", `mode=${s.mode}`);
+    check("stuck + fresh reporter uptimeSec 5400 -> state uptimeSec 5400 (reporter wins over lastUpAt)", s.uptimeSec === 5400, `uptimeSec=${s.uptimeSec}`);
+  }
+  // J. Already running + fresh reporter: no recovery write at all.
+  {
+    const d1 = new MockD1();
+    stuckSetup(d1, { reportAgeMin: 1, state: { mode: "running", reason: "probe_up" }, lastVisitAt: Date.now() - 5 * MIN });
+    const before = d1.metaWrites;
+    await runTick(makeEnv(d1));
+    const s = readState(d1);
+    check("already running + fresh reporter -> reason stays probe_up (no recovery overwrite)", s.reason === "probe_up", `reason=${s.reason}`);
+    check("already running + fresh reporter -> state has no uptimeSec (recovery did not touch it)", !("uptimeSec" in s), `uptimeSec=${s.uptimeSec}`);
+    check("already running + fresh reporter -> ZERO D1 meta writes during the tick", d1.metaWrites === before, `writes=${d1.metaWrites - before}`);
+  }
+  // K. GET /sleepwake/state exposes the recorded uptime.
+  {
+    const d1 = new MockD1();
+    stuckSetup(d1, { reportAgeMin: 1, lastVisitAt: Date.now() - 5 * MIN });
+    await runTick(makeEnv(d1));
+    const r = await worker.fetch(req("/sleepwake/state"), makeEnv(d1));
+    const j = await r.json();
+    check("GET /sleepwake/state after recovery -> uptimeSec 3600", j.uptimeSec === 3600, `uptimeSec=${j.uptimeSec}`);
+    check("GET /sleepwake/state after recovery -> mode running + reason reporter_up", j.mode === "running" && j.reason === "reporter_up", `mode=${j.mode} reason=${j.reason}`);
+  }
+  {
+    const d1 = new MockD1();
+    idleTickSetup(d1, {});
+    const r = await worker.fetch(req("/sleepwake/state"), makeEnv(d1));
+    const j = await r.json();
+    check("GET /sleepwake/state with no recovery -> uptimeSec null", j.uptimeSec === null, `uptimeSec=${j.uptimeSec}`);
+  }
+}
+
 console.log(`\nsmart-sleep harness: ${passed} passed, ${failed.length} failed`);
 if (failed.length) { for (const f of failed) console.log("  FAILED:", f); process.exitCode = 1; }
