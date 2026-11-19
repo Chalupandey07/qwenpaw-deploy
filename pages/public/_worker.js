@@ -226,23 +226,14 @@ function computerPanelScript(rebrandEnabled) {
       ":focus-visible{outline:2px solid var(--ax-accent);outline-offset:2px;}" +
       "::selection{background:var(--ax-accent);color:var(--ax-bg);}" +
       "@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important;}}" +
-      "#agentxSidebarActions{flex:none;margin:8px 10px;padding:4px;border:1px solid var(--ax-line);border-radius:var(--ax-radius);background:var(--ax-surface);}" +
-      "#agentxSidebarActions .agentx-actions-head{display:flex;align-items:center;gap:var(--ax-gap);width:100%;box-sizing:border-box;padding:7px 8px;border:0;border-radius:var(--ax-radius-sm);background:transparent;color:var(--ax-faint);font:600 12px/1 var(--ax-font);cursor:pointer;text-align:left;}" +
-      "#agentxSidebarActions .agentx-actions-head:hover{background:var(--ax-surface-2);color:var(--ax-ink);}" +
-      "#agentxSidebarActions .agentx-head-icon{flex:none;display:inline-flex;width:16px;height:16px;}" +
-      "#agentxSidebarActions .agentx-caret{flex:none;display:inline-flex;width:14px;height:14px;margin-left:auto;transition:transform .15s ease;}" +
-      "#agentxSidebarActions[data-open='1'] .agentx-caret{transform:rotate(180deg);}" +
-      "#agentxSidebarActions .agentx-actions-menu{display:none;margin:2px 0 0;padding:0;list-style:none;}" +
-      "#agentxSidebarActions[data-open='1'] .agentx-actions-menu{display:block;}" +
-      "#agentxSidebarActions .agentx-action{display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;min-height:34px;padding:7px 9px;margin:2px 0;border:0;border-radius:var(--ax-radius-sm);background:transparent;color:var(--ax-ink);font:500 13px/1.2 var(--ax-font);cursor:pointer;text-align:left;}" +
-      "#agentxSidebarActions .agentx-action:hover{background:var(--ax-surface-2);}" +
-      "#agentxSidebarActions .agentx-action[disabled]{background:var(--ax-bg);color:var(--ax-faint);cursor:default;}" +
-      "#agentxSidebarActions .agentx-action[disabled]:hover{background:var(--ax-bg);color:var(--ax-faint);}" +
-      "#agentxSidebarActions .agentx-action[data-active='1']{background:var(--ax-surface-2);color:var(--ax-accent);}" +
-      "#agentxSidebarActions .agentx-action-icon{flex:none;display:inline-flex;width:17px;height:17px;color:var(--ax-faint);}" +
-      "#agentxSidebarActions .agentx-action:hover .agentx-action-icon,#agentxSidebarActions .agentx-action[data-active='1'] .agentx-action-icon{color:var(--ax-accent);}" +
-      "#agentxSidebarActions .agentx-action-icon svg,#agentxSidebarActions .agentx-head-icon svg,#agentxSidebarActions .agentx-caret svg{width:100%;height:100%;display:block;}" +
-      "#agentxSidebarActions .agentx-action-label{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}" +
+      // Account-popup machine rows (Computer / Rest machine). They are clones
+      // of the Settings row, so they already match the menu's own padding,
+      // hover and icon sizing; only STATE styling is added here — a
+      // three-channel disabled state (fill, ink, cursor), never opacity alone.
+      "[data-qwenpaw-computer-menu][data-active='1']{background:var(--ax-surface-2);color:var(--ax-accent);}" +
+      "[data-qwenpaw-rest-menu][disabled],[data-qwenpaw-rest-menu][data-resting='1']{background:var(--ax-bg);color:var(--ax-faint);cursor:default;}" +
+      "[data-qwenpaw-rest-menu][disabled]:hover,[data-qwenpaw-rest-menu][data-resting='1']:hover{background:var(--ax-bg);color:var(--ax-faint);}" +
+      "[data-qwenpaw-computer-menu] .agentx-menu-label,[data-qwenpaw-rest-menu] .agentx-menu-label{flex:1 1 auto;min-width:0;}" +
       "button[class*='identity']{display:flex;align-items:center;flex-wrap:nowrap;gap:10px;width:100%;box-sizing:border-box;overflow:visible;flex:none;}" +
       "button[class*='identity'] span[class*='identityText']{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;overflow:visible;text-align:left;}" +
       "button[class*='identity'] span[class*='identityText'] > strong{font-size:13px;line-height:1.3;font-weight:600;white-space:nowrap;overflow:visible;text-overflow:clip;max-width:none;}" +
@@ -264,56 +255,24 @@ function computerPanelScript(rebrandEnabled) {
       s.textContent = BEAUTY_CSS;
       (document.head || document.documentElement).appendChild(s);
     }
-    // One row shape for every action: icon + label, one height, one gap.
-    function actionButton(id, icon, label, title) {
-      var b = document.createElement("button");
-      b.id = id;
-      b.type = "button";
-      b.className = "agentx-action";
-      b.title = title;
-      b.setAttribute("data-agentx-action", "1");
-      b.innerHTML = '<span class="agentx-action-icon">' + icon + '</span><span class="agentx-action-label">' + label + '</span>';
-      return b;
-    }
     function setActionLabel(b, text) {
       var l = b.querySelector ? b.querySelector(".agentx-action-label") : null;
       if (l) l.textContent = text; else b.textContent = text;
     }
     injectBeautyStyle();
 
-    // ---- The three machine actions, now in the LEFT SIDEBAR ----
-    // 2026-11-20: these were three floating pills pinned to the
-    // bottom-right of the chat area. User feedback: easy to miss there,
-    // and they read as clutter sitting on top of the composer. They are
-    // now three rows of ONE "More actions" menu in the left sidebar, next
-    // to the console's own navigation links — visible by default, nothing
-    // hidden behind a hunt. The elements, titles, handlers and the resting
-    // state below are unchanged; only where they mount and how they are
-    // styled changed. addSidebarActions() mounts them once the sidebar
-    // exists, and the observer re-mounts them if React re-renders them away.
-    var btn = actionButton("qwenpawComputerBtn", ICON_COMPUTER, "Computer",
-      "AgentX's computer — watch and drive the live desktop");
-
-    // ---- Rest row ----
-    // Deliberately a first-class row in the same menu, NOT buried deeper:
-    // the whole point is that the user can rest the machine in one click
-    // when they are done. It is only meaningful while the machine is
-    // running, so the label reflects state: "Rest machine" when up,
-    // "Resting" (disabled) when already rested. A click never happens by
-    // accident: it asks once, then posts with the console's own bearer
-    // token. If that token is missing the Worker refuses, and the row says
-    // so rather than pretending.
-    var restBtn = actionButton("qwenpawRestBtn", ICON_REST, "Rest machine",
-      "Send the machine to rest when you are done — opening the site wakes it again");
-
-    // ---- Vault row ----
-    // The vault (an API-key store the agent can use but never see) lives at
-    // /vault, but nothing in the console linked to it — the user could not
-    // find it. A visible row in the same menu opens the vault page in a new
-    // tab. No token needed here: /vault mints its own session from the
-    // console's sign-in, like /computer does.
-    var vaultBtn = actionButton("qwenpawVaultBtn", ICON_VAULT, "Vault",
-      "API-key vault — keys the agent can use but never see");
+    // ---- The machine actions live in the console's OWN account popup ----
+    // Rohan, 2026-11-20: the Computer / Rest machine buttons belong in the
+    // account menu that opens from the sidebar's account row (the menu with
+    // Avatar manager, Appearance, Message display, Settings, Vault, About,
+    // Account, Logout) — NOT in a separate sidebar pill and NOT as floating
+    // bottom-right pills (both were tried and rejected). Vault is already
+    // that menu's own entry, so ONLY Computer and Rest machine are added,
+    // cloned from the Settings row by addAccountMenuActions() so they
+    // inherit its exact padding, hover and icon sizing. There are no
+    // persistent button elements here any more: React rebuilds that menu on
+    // every open, so the entries are re-created then, carrying the ids
+    // qwenpawComputerBtn / qwenpawRestBtn so the handlers below keep working.
 
     var panel = document.createElement("div");
     panel.id = "qwenpawComputerPanel";
@@ -335,18 +294,11 @@ function computerPanelScript(rebrandEnabled) {
     // screen session nobody asked for, and every one of those is a request.
     panel.appendChild(bar);
     panel.appendChild(frame);
-    // Only the panel is appended here. The three action rows are mounted
-    // into the LEFT SIDEBAR by addSidebarActions() once the sidebar exists —
-    // they are no longer fixed pills at the bottom-right of the chat.
+    // Only the panel is appended here. The Computer / Rest machine rows are
+    // mounted into the console's OWN account popup by addAccountMenuActions()
+    // when that menu opens — no longer fixed pills at the bottom-right of the
+    // chat, and no longer a sidebar pill either.
     document.body.appendChild(panel);
-    vaultBtn.addEventListener("click", function () {
-      // The floating Vault pill opens the full Vault page (where the
-      // user sees and manages existing keys), not the in-chat add-key
-      // dialog — QA round 3: the pill opening only an empty "Add a
-      // key" form read as the wrong destination. The add-key dialog
-      // stays reachable from the Vault menu item and from /vault.
-      window.open("/vault", "_blank", "noopener");
-    });
 
     // ---- Vault add-key popup (in-chat) ----
     // The Vault button and the Vault menu item open a secure box right in
@@ -613,12 +565,28 @@ function computerPanelScript(rebrandEnabled) {
     }
 
     var resting = false;
+    function restEntry() {
+      try { return document.querySelector("[data-qwenpaw-rest-menu]"); } catch (e) { return null; }
+    }
+    function computerEntry() {
+      try { return document.querySelector("[data-qwenpaw-computer-menu]"); } catch (e) { return null; }
+    }
+    function setMenuLabel(entry, text) {
+      if (!entry) return;
+      var l = entry.querySelector(".agentx-menu-label");
+      if (l) { l.textContent = text; return; }
+      setActionLabel(entry, text);
+    }
     function paintRest() {
-      setActionLabel(restBtn, resting ? "Resting" : "Rest machine");
+      // The Rest entry lives in the account popup; React rebuilds that menu
+      // on every open, so query it fresh instead of holding an element.
+      var e = restEntry();
+      if (!e) return;
+      setMenuLabel(e, resting ? "Resting" : "Rest machine");
       // Disabled state is carried by the [disabled] attribute + the CSS
       // three-channel rule (fill, ink, cursor) — never opacity alone.
-      restBtn.disabled = resting;
-      if (resting) restBtn.setAttribute("data-resting", "1"); else restBtn.removeAttribute("data-resting");
+      e.disabled = resting;
+      if (resting) e.setAttribute("data-resting", "1"); else e.removeAttribute("data-resting");
     }
     function toastRest(text, bad) {
       var t = document.createElement("div");
@@ -630,11 +598,12 @@ function computerPanelScript(rebrandEnabled) {
       document.body.appendChild(t);
       setTimeout(function () { try { t.remove(); } catch (e) {} }, 6000);
     }
-    restBtn.addEventListener("click", async function () {
+    async function doRest() {
       if (resting) return;
       if (!window.confirm("Send the machine to rest? Open the site again to wake it.")) return;
-      setActionLabel(restBtn, "Resting…");
-      restBtn.disabled = true;
+      var entry = restEntry();
+      setMenuLabel(entry, "Resting…");
+      if (entry) entry.disabled = true;
       try {
         var tok = consoleToken();
         var r = await fetch("/api/machine/rest", {
@@ -660,7 +629,7 @@ function computerPanelScript(rebrandEnabled) {
         toastRest("Could not reach the machine: " + (e && e.message ? e.message : "network"), true);
         paintRest();
       }
-    });
+    }
     // Reflect an existing rest on load, so a page reload does not offer to rest
     // a machine that is already resting.
     (async function initRest() {
@@ -686,7 +655,6 @@ function computerPanelScript(rebrandEnabled) {
       try { sessionStorage.setItem("qwenpawComputerOpen", open ? "1" : "0"); } catch (e) {}
       paintComputerRow();
     }
-    btn.addEventListener("click", function () { setOpen(!open); });
     document.getElementById("qwenpawComputerClose").addEventListener("click", function () { setOpen(false); });
     setOpen(open);
 
@@ -725,114 +693,113 @@ function computerPanelScript(rebrandEnabled) {
 
     function paintComputerRow() {
       try {
-        if (open) btn.setAttribute("data-active", "1"); else btn.removeAttribute("data-active");
+        var ce = computerEntry();
+        if (!ce) return;
+        if (open) ce.setAttribute("data-active", "1"); else ce.removeAttribute("data-active");
       } catch (e) {}
     }
 
-    // The top-level child of the sidebar whose subtree contains the text. The
-    // sidebar's direct children are its major blocks (header, nav, history,
-    // footer), so anchoring on a BLOCK — never a deep node — is what keeps
-    // the menu inside the nav area instead of floating above the header.
-    function sidebarTopSection(side, text) {
+    // Icon INNER shapes for the account-menu rows (the svg element is cloned
+    // from the Settings row, so only the shapes are swapped in).
+    var ICON_COMPUTER_PATHS = '<rect x="2.5" y="4" width="19" height="13" rx="2"></rect><path d="M8.5 20.5h7M12 17v3.5"></path>';
+    var ICON_REST_PATHS = '<path d="M20.5 13.2A8.5 8.5 0 1 1 10.8 3.5a6.8 6.8 0 0 0 9.7 9.7z"></path>';
+
+    // ---- Computer / Rest machine entries in the console's account popup ----
+    // Rohan, 2026-11-20: these belong in the account menu that opens from the
+    // sidebar's account row — the SAME menu that already holds Avatar
+    // manager, Appearance, Message display, Settings, Vault, About AgentX,
+    // Account and Logout. Vault is already that menu's own row (added by
+    // addVaultMenuItem), so ONLY Computer and Rest machine are added here,
+    // cloned from the Settings row so they inherit its exact padding, hover
+    // and icon sizing. React rebuilds the popup on every open, so this runs
+    // again each time it appears (idempotent per marker attribute).
+    function addAccountMenuActions() {
       try {
-        var kids = side.children;
-        for (var i = 0; i < kids.length; i++) {
-          if ((kids[i].textContent || "").indexOf(text) !== -1) return kids[i];
+        var dialog = findSettingsDialog();
+        if (!dialog) return;
+        var buttons = dialog.querySelectorAll("button");
+        var settingsBtn = null;
+        for (var i = 0; i < buttons.length; i++) {
+          if ((buttons[i].textContent || "").trim() === "Settings") { settingsBtn = buttons[i]; break; }
         }
-      } catch (e) {}
-      return null;
+        if (!settingsBtn) return;
+        // Insert AFTER the menu's own Vault row so the order reads
+        // Settings, Vault, Computer, Rest machine, About, Account, Logout.
+        var anchor = dialog.querySelector("[data-qwenpaw-vault-menu]") || settingsBtn;
+        addMenuEntry(dialog, settingsBtn, anchor, "qwenpawComputerBtn", "data-qwenpaw-computer-menu",
+          "Computer", ICON_COMPUTER_PATHS, function () {
+            // Close the popup first, exactly like a native menu choice would.
+            try { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+            setOpen(true);
+          });
+        addMenuEntry(dialog, settingsBtn, anchor, "qwenpawRestBtn", "data-qwenpaw-rest-menu",
+          "Rest machine", ICON_REST_PATHS, function () {
+            try { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+            doRest();
+          });
+        paintRest();
+        paintComputerRow();
+      } catch (e) { /* never break the console */ }
     }
 
-    // The console renders its OWN "More actions" button on every conversation
-    // row (24 of them at 1919x998). That is exactly the clutter the user
-    // asked to remove: the machine actions live in ONE menu now, so the
-    // per-row copies are hidden. Only buttons inside the sidebar are touched,
-    // and this menu's own header plus the three action rows are exempt.
-    function hidePerRowMoreButtons() {
+    // One account-menu row, cloned from the Settings row so it matches the
+    // menu's own padding, hover and icon sizing exactly. Idempotent per
+    // marker attribute; carries the requested id so the existing handlers
+    // keep working. The label is normalised into a <span class="agentx-menu-label">
+    // so the resting-state repaint can retext it without re-cloning.
+    function addMenuEntry(dialog, templateBtn, insertAfter, id, marker, label, iconPaths, onClick) {
       try {
-        var side = findSidebarEl();
-        if (!side) return;
-        var btns = side.querySelectorAll("button");
-        for (var i = 0; i < btns.length; i++) {
-          var b = btns[i];
-          if (b.id === "agentxSidebarActions") continue;
-          var cls = "";
-          try { cls = String(b.className || ""); } catch (e) {}
-          if (cls.indexOf("agentx-actions-head") !== -1) continue;
-          if (b.getAttribute && b.getAttribute("data-agentx-action") === "1") continue;
-          var name = "";
-          try { name = (b.getAttribute("aria-label") || "") + " " + (b.textContent || ""); } catch (e) {}
-          if (/more actions/i.test(name)) {
-            b.style.display = "none";
-            b.setAttribute("data-agentx-hidden-more", "1");
+        if (dialog.querySelector("[" + marker + "]")) return;
+        var item = templateBtn.cloneNode(true);
+        item.setAttribute(marker, "1");
+        item.id = id;
+        item.type = "button";
+        // Drop any id carried over from the cloned row's children — a
+        // duplicate id inside the popup would make getElementById ambiguous.
+        var withIds = item.querySelectorAll("[id]");
+        for (var i = 0; i < withIds.length; i++) withIds[i].removeAttribute("id");
+        var svg = item.querySelector("svg");
+        if (svg) {
+          svg.setAttribute("viewBox", "0 0 24 24");
+          svg.setAttribute("fill", "none");
+          svg.setAttribute("stroke", "currentColor");
+          svg.innerHTML = iconPaths;
+        }
+        // Relabel: find where the template's own label text lives (a bare
+        // text node or a child element) and normalise it into a span.
+        var templateLabel = (templateBtn.textContent || "").trim();
+        var labelEl = null;
+        for (var j = 0; j < item.childNodes.length && !labelEl; j++) {
+          var nd = item.childNodes[j];
+          if (nd.nodeType === 3 && (nd.textContent || "").trim() === templateLabel) {
+            labelEl = document.createElement("span");
+            labelEl.className = "agentx-menu-label";
+            nd.parentNode.replaceChild(labelEl, nd);
           }
         }
+        if (!labelEl) {
+          var kids = item.querySelectorAll("*");
+          for (var k = 0; k < kids.length && !labelEl; k++) {
+            if ((kids[k].textContent || "").trim() === templateLabel && !(kids[k].querySelector && kids[k].querySelector("svg"))) {
+              labelEl = kids[k];
+              if (labelEl.classList) labelEl.classList.add("agentx-menu-label");
+            }
+          }
+        }
+        if (!labelEl) return;
+        labelEl.textContent = label;
+        item.addEventListener("click", onClick);
+        if (insertAfter && insertAfter.parentNode) {
+          insertAfter.parentNode.insertBefore(item, insertAfter.nextSibling);
+        } else {
+          dialog.appendChild(item);
+        }
       } catch (e) { /* never break the console */ }
     }
 
-    // Build (or refresh) the "More actions" menu inside the left sidebar.
-    // Default OPEN: the three actions must never be hidden behind a hunt.
-    function addSidebarActions() {
-      try {
-        var side = findSidebarEl();
-        if (!side) return;
-        var box = document.getElementById("agentxSidebarActions");
-        if (box && !side.contains(box)) { try { box.remove(); } catch (e) {} box = null; }
-        if (!box) {
-          box = document.createElement("div");
-          box.id = "agentxSidebarActions";
-          box.setAttribute("data-open", "1");
-          var head = document.createElement("button");
-          head.type = "button";
-          head.className = "agentx-actions-head";
-          head.setAttribute("aria-expanded", "true");
-          head.title = "Machine actions — Computer, Rest, Vault";
-          head.innerHTML = '<span class="agentx-head-icon">' + ICON_DOTS + '</span>' +
-            '<span class="agentx-action-label">More actions</span>' +
-            '<span class="agentx-caret">' + ICON_CARET + '</span>';
-          head.addEventListener("click", function () {
-            var isOpen = box.getAttribute("data-open") === "1";
-            box.setAttribute("data-open", isOpen ? "0" : "1");
-            head.setAttribute("aria-expanded", isOpen ? "false" : "true");
-          });
-          var menu = document.createElement("div");
-          menu.className = "agentx-actions-menu";
-          menu.appendChild(btn);
-          menu.appendChild(restBtn);
-          menu.appendChild(vaultBtn);
-          box.appendChild(head);
-          box.appendChild(menu);
-        }
-        // POSITION (v3 fix): the menu must sit AMONG the nav links, BELOW the
-        // AgentX header — never above it. v2 anchored on "Conversation
-        // History" as a direct child and, when that missed, fell back to
-        // firstChild, which parked the menu ABOVE the header (measured
-        // x~15-255, y~8-48). Anchor on the nav blocks instead, and re-assert
-        // the position on EVERY pass because React can move the box on
-        // re-render. Never place it before the sidebar's first block.
-        if (box.parentNode && box.parentNode !== side) { try { box.remove(); } catch (e) {} }
-        var placed = false;
-        var navSec = sidebarTopSection(side, "New task") || sidebarTopSection(side, "Conversation History");
-        if (navSec === side.firstChild) navSec = (side.children.length > 1 ? side.children[1] : null);
-        if (navSec && navSec !== box && navSec.parentNode === side) {
-          side.insertBefore(box, navSec);
-          placed = true;
-        } else if (side.children.length > 1) {
-          side.insertBefore(box, side.children[1]);
-          placed = true;
-        }
-        if (!placed) side.appendChild(box);
-        // A re-render may have detached the rows; re-append them.
-        var menu2 = box.querySelector(".agentx-actions-menu");
-        if (menu2) {
-          if (btn.parentNode !== menu2) menu2.appendChild(btn);
-          if (restBtn.parentNode !== menu2) menu2.appendChild(restBtn);
-          if (vaultBtn.parentNode !== menu2) menu2.appendChild(vaultBtn);
-        }
-        paintComputerRow();
-        hidePerRowMoreButtons();
-      } catch (e) { /* never break the console */ }
-    }
+    // (The old addSidebarActions() — the left-sidebar "More actions" pill —
+    // was removed by Rohan's 2026-11-20 direction: the machine actions now
+    // live in the console's own account popup instead.)
 
     // The sidebar footer is a <button> holding the avatar, the "satwik"
     // name, the "Console account" subtitle and a settings icon. When the
@@ -960,13 +927,13 @@ function computerPanelScript(rebrandEnabled) {
         }
       } catch (e) { /* never break the console */ }
     }
-    addSidebarActions();
+    addAccountMenuActions();
     fixAccountRow();
     // The sidebar may mount after this script runs (React renders async).
     // The observer covers most of it; these two catch the no-further-
     // mutation case and a late account-row mount.
-    window.addEventListener("load", function () { addSidebarActions(); fixAccountRow(); });
-    setTimeout(function () { addSidebarActions(); fixAccountRow(); }, 800);
+    window.addEventListener("load", function () { addAccountMenuActions(); fixAccountRow(); });
+    setTimeout(function () { addAccountMenuActions(); fixAccountRow(); }, 800);
 
     // ---- Vault item in the account menu ----
     // The account dropdown (Avatar manager, Appearance, Message display,
@@ -2618,16 +2585,18 @@ function computerPanelScript(rebrandEnabled) {
           }
         } catch (e) {}
       } },
-      { id: "sidebar-actions", run: function () {
-        // Keep the sidebar actions menu and the account row correct on
-        // every mutation. React re-renders can drop injected nodes or
-        // re-stack the sidebar footer; both fixes are idempotent, so
-        // re-running them here is what makes them stick (the same reason
-        // the old pill-positions rule re-asserted the pill offsets).
-        // Replaces pill-positions (2026-11-20): the actions are sidebar
-        // rows now, so there are no floating pills to re-position.
-        try { addSidebarActions(); } catch (e) {}
+      { id: "account-row", run: function () {
+        // Keep the satwik account row fully visible on every mutation.
+        // React re-renders can re-stack the sidebar footer; the fix is
+        // idempotent, so re-running it here is what makes it stick (the
+        // same reason the old pill-positions rule re-asserted offsets).
         try { fixAccountRow(); } catch (e) {}
+      } },
+      { id: "account-menu", run: function () {
+        // Rohan (2026-11-20): the Computer / Rest machine rows live in the
+        // console's OWN account popup, which React rebuilds on every open —
+        // so re-add them on every mutation (idempotent per marker).
+        try { addAccountMenuActions(); } catch (e) {}
       } },
       { id: "composer-row", run: function () {
         // FIX (beauty v3): the composer toolbar rendered as TWO uneven rows
@@ -2671,7 +2640,8 @@ function computerPanelScript(rebrandEnabled) {
             c.style.setProperty("height", "32px", "important");
             c.style.setProperty("box-sizing", "border-box", "important");
           }
-          // Even 8px gaps and centred baselines on the composer's flex rows.
+          // Even 8px gaps, centred baselines, and a consistent left edge on
+          // the composer's flex rows (v3 found row 2 right-shifted).
           var rows = comp.querySelectorAll("div");
           for (var m = 0; m < rows.length; m++) {
             var r = rows[m];
@@ -2680,28 +2650,45 @@ function computerPanelScript(rebrandEnabled) {
             if (disp === "flex" || disp === "inline-flex") {
               r.style.setProperty("gap", "8px", "important");
               r.style.setProperty("align-items", "center", "important");
+              r.style.setProperty("justify-content", "flex-start", "important");
             }
+          }
+          // Compact pills (Rohan v4): the wide mode/model pills wasted
+          // horizontal room. Tighter padding + smaller type keeps every
+          // option readable while letting the controls fit one row.
+          var ctrls2 = comp.querySelectorAll("button, select");
+          for (var p = 0; p < ctrls2.length; p++) {
+            var c2 = ctrls2[p];
+            c2.style.setProperty("padding", "4px 8px", "important");
+            c2.style.setProperty("font-size", "12px", "important");
+            c2.style.setProperty("flex", "0 0 auto", "important");
           }
         } catch (e) { /* never break the console */ }
       } },
       { id: "label-truncation", run: function () {
-        // FIX (beauty v3): settings nav labels and control buttons were
-        // truncated to '...' ('Community & mes...', 'Voice Transcrip...',
-        // 'Pending Approva...', 'Connect QwenPaw...', and the Security rule
-        // titles). A label the user must read is never ellipsised away: let
-        // those elements wrap instead. Scoped to /settings (where every
-        // reported case lives) and to the exact labels reported, so the
-        // DELIBERATE conversation-title truncation is untouched. Also fixes
-        // the 'Bot Prefix:Not set' missing space.
-        try {
-          if ((window.location.pathname || "").indexOf("/settings") === -1) return;
-        } catch (e) { return; }
+        // FIX (beauty v3, reworked in v4): settings nav labels and control
+        // buttons were truncated to '...' ('Community & mes...', 'Voice
+        // Transcrip...', 'Pending Approva...', 'Connect AgentX...', and the
+        // Security rule titles). A label the user must read is never
+        // ellipsised away: let those elements wrap instead.
+        // v4 fixes for why v3 did NOT apply in the browser:
+        //  (a) NO pathname guard — the Channels / Security / Community /
+        //      Voice pages are NOT all under /settings, so the old guard
+        //      silently skipped them. The exact-label list is specific
+        //      enough to scope the rule without a path check.
+        //  (b) 'Connect QwenPaw' was renamed to 'Connect AgentX' by the
+        //      rebrand, so the old exact-match list missed it. Both
+        //      spellings are matched now.
+        //  (c) The clip is detected from the ACTUAL rendered overflow
+        //      (scrollWidth > clientWidth) as well as text-overflow:ellipsis,
+        //      because some of these labels are clipped by overflow:hidden
+        //      with no ellipsis at all.
         var labels = [
           "Community & messaging", "Voice Transcription", "Pending Approvals",
-          "Connect QwenPaw", "Command Injection", "Sensitive File",
-          "Privilege Escalation", "Token Usage", "Agent Management",
-          "Tool Offload", "Skill Pool", "Environments", "Cron Jobs",
-          "Heartbeat", "Backups", "Debug",
+          "Connect AgentX", "Connect QwenPaw", "Command Injection",
+          "Sensitive File", "Privilege Escalation", "Token Usage",
+          "Agent Management", "Tool Offload", "Skill Pool", "Environments",
+          "Cron Jobs", "Heartbeat", "Backups", "Debug",
         ];
         try {
           if (!document.createTreeWalker) return;
@@ -2722,16 +2709,63 @@ function computerPanelScript(rebrandEnabled) {
           for (var k = 0; k < hits.length; k++) {
             // The label element and its truncating ancestors may all clip.
             var cur = hits[k], hops = 0;
-            while (cur && hops < 4) {
-              var cs = "";
-              try { cs = window.getComputedStyle(cur).textOverflow; } catch (e3) {}
-              if (cs === "ellipsis") {
+            while (cur && cur !== document.body && hops < 6) {
+              var clipped = false;
+              try {
+                var cs = window.getComputedStyle(cur);
+                if (cs.textOverflow === "ellipsis") clipped = true;
+                else if ((cs.overflowX === "hidden" || cs.overflow === "hidden") && cur.scrollWidth > cur.clientWidth + 1) clipped = true;
+              } catch (e3) {}
+              if (clipped) {
                 cur.classList.add("agentx-unclip");
                 cur.style.setProperty("white-space", "normal", "important");
                 cur.style.setProperty("overflow", "visible", "important");
                 cur.style.setProperty("text-overflow", "clip", "important");
               }
               cur = cur.parentElement; hops++;
+            }
+          }
+        } catch (e) { /* never break the console */ }
+      } },
+      { id: "system-preview", run: function () {
+        // FIX (beauty v4): the Settings > Appearance "System" theme preview
+        // card rendered a jagged diagonal light/black split with the accent
+        // bar cut off at the diagonal — a gradient (or clip) on the preview
+        // card. The Light and Dark cards are clean rectangles, so make System
+        // one too: replace whatever paints the diagonal with a clean
+        // two-tone split (left light, right dark) and clip it square. Found
+        // from the exact "System" label, walking up to a small gradient
+        // card, so no other gradient on the page is touched.
+        try {
+          if (!document.createTreeWalker || !document.body) return;
+          var names = ["System", "System theme", "Use system theme"];
+          var walker2 = document.createTreeWalker(document.body, 4, null, false);
+          var cards = [];
+          var node2;
+          while ((node2 = walker2.nextNode())) {
+            var tv = (node2.nodeValue || "").trim();
+            for (var i2 = 0; i2 < names.length; i2++) {
+              if (tv === names[i2] && node2.parentElement) { cards.push(node2.parentElement); break; }
+            }
+          }
+          for (var k2 = 0; k2 < cards.length; k2++) {
+            var card = cards[k2], hops2 = 0;
+            while (card && card !== document.body && hops2 < 6) {
+              var bg = "";
+              try { bg = window.getComputedStyle(card).backgroundImage; } catch (e4) {}
+              if (bg && bg.indexOf("gradient") !== -1) {
+                var r2 = card.getBoundingClientRect();
+                // Only a preview-card-sized box, so a page hero gradient is
+                // never mistaken for the theme preview.
+                if (r2.width > 40 && r2.width < 500 && r2.height > 24 && r2.height < 200) {
+                  card.style.setProperty("background-image", "none", "important");
+                  card.style.setProperty("background", "linear-gradient(90deg,#f5f5f4 0 50%,#1f1f1f 50% 100%)", "important");
+                  card.style.setProperty("clip-path", "none", "important");
+                  card.style.setProperty("overflow", "hidden", "important");
+                }
+                break;
+              }
+              card = card.parentElement; hops2++;
             }
           }
         } catch (e) { /* never break the console */ }
@@ -3194,9 +3228,11 @@ function computerPanelScript(rebrandEnabled) {
           agentxRunRuleNow("queue-takeover");
           agentxRunRuleNow("settings-white-area");
           agentxRunRuleNow("page-bottom-padding");
-          agentxRunRuleNow("sidebar-actions");
+          agentxRunRuleNow("account-row");
+          agentxRunRuleNow("account-menu");
           agentxRunRuleNow("composer-row");
           agentxRunRuleNow("label-truncation");
+          agentxRunRuleNow("system-preview");
           agentxRunRules();
         } finally {
           // Clear the flag on the next task, not immediately: MutationObserver
