@@ -1733,7 +1733,7 @@ def t113():
 
 
 def t114():
-    """AgentX rebrand (DOM injection, 198 checks).
+    """AgentX rebrand (DOM injection, 205 checks).
 
     Machine-free harness (features/rebrand/harness-rebrand.mjs) for the
     AgentX rebrand (features/rebrand/README.md). Static checks on the real
@@ -1824,6 +1824,19 @@ def t114():
     and records a diagnostic probe (window.__agentxSettingsDiag +
     body[data-agentx-settings-diag]) for the browser check; 12 checks:
     fail-first 190/198 against the round-1 rule, 198/198 after the
+    rewrite. Round 3 (2026-11-19 ~09:0x IST): the round-2 browser
+    check showed ZERO change — the strip stayed ~104px even though
+    the new code shipped; diagnosis from the SERVED console bundle
+    (index-tgCT4NPx.css): the shell (.page-content) is transparent
+    inside a WHITE full-height .index-module__mainContentLayout
+    wrapper (background:var(--app-surface)) that covers the
+    <html>/<body> paint, so the rule now paints the shell AND every
+    ancestor with the theme paint and writes a TEMPORARY visible
+    diagnostic line (elementFromPoint strip probes) readable as page
+    text; 7 new checks (2 static + 5 dynamic: the realistic-DOM
+    light/dark paint, the diag line, its no-duplicate re-run, and
+    the ancestor-paint cleanup; T114 198 → 205, T144 12 → 19):
+    fail-first 198/205 against the round-2 rule, 205/205 after the
     rewrite). The rule
     table grew 42 -> 44 with queue-takeover (multi-tab takeover
     affordance, post-reset cron Step 10; its own tests live under
@@ -1831,7 +1844,7 @@ def t114():
     live half (a real browser on the deployed console) is verified by
     Muse after deploy.
     """
-    return _harness("features/rebrand/harness-rebrand.mjs", 198)
+    return _harness("features/rebrand/harness-rebrand.mjs", 205)
 
 
 def t115():
@@ -2822,11 +2835,11 @@ def t143():
 
 
 def t144():
-    """Settings white-area fix round 2: the settings-white-area rule only (12 checks).
+    """Settings white-area fix round 3: the settings-white-area rule only (19 checks).
 
     Subset of the T114 rebrand harness (features/rebrand/
-    harness-rebrand.mjs): re-runs it and requires exactly the 12 lines
-    naming the settings-white-area rule to be "ok" (2 static + 10
+    harness-rebrand.mjs): re-runs it and requires exactly the 19 lines
+    naming the settings-white-area rule to be "ok" (4 static + 15
     dynamic). The rule (2026-11-19, browser-verified PARTIAL on
     qwenpawx.pages.dev/settings/general at 1919x998): round 1
     stretched the nav-anchored shell to 100dvh and painted <html> +
@@ -2848,17 +2861,37 @@ def t144():
     190/198 against the round-1 rule (all 8 new round-2 checks
     failed — the white-shell regression, the ancestor stretch, the
     dark/light fallbacks, the paint-source check, the probe, and the
-    theme-variable static check), 198/198 after the rewrite. The
-    live half (a real browser on the deployed console, light + dark,
-    top scroll and max scroll, plus reading the probe) is verified by
-    Muse after deploy.
+    theme-variable static check), 198/198 after the rewrite. Round 3
+    (2026-11-19 ~09:0x IST): the round-2 browser check showed ZERO
+    change — the strip stayed ~104px in light mode even though curl
+    showed the new code in the served HTML. Diagnosis from the SERVED
+    console bundle (index-tgCT4NPx.css): the shell (.page-content) is
+    transparent inside a WHITE full-height
+    .index-module__mainContentLayout wrapper
+    (background:var(--app-surface), height:100%) that covers the
+    <html>/<body> paint, so the rule now paints the shell AND every
+    ancestor with the theme paint, and writes a TEMPORARY visible
+    diagnostic line (AX-DIAG, elementFromPoint strip probes) readable
+    as page text — the cloud browser has no DevTools, so the probe
+    must be readable as text; the line is removed in the follow-up
+    round once the values are read. The mock now models the realistic
+    DOM (transparent shell inside the white wrapper, offsetHeight
+    894 in a 998 viewport, elementFromPoint) — the round-2 mock had
+    no covering wrapper, so it passed while live failed. Fail-first
+    proven: 198/205 against the round-2 rule (all 7 new round-3
+    checks failed — the ancestor paint, the diag line, its
+    no-duplicate re-run, the dark realistic paint, the
+    ancestor-paint cleanup, and the 2 static checks), 205/205 after
+    the rewrite. The live half (a real browser on the deployed
+    console, light + dark, top scroll and max scroll, plus reading
+    the visible diagnostic line) is verified by Muse after deploy.
     """
     rc, out, err = run_local(["node", str(REPO / "features/rebrand/harness-rebrand.mjs")], timeout=180)
     lines = [l for l in out.splitlines() if "settings-white-area" in l]
     ok = [l for l in lines if l.strip().startswith("ok")]
-    good = rc == 0 and len(lines) == 12 and len(ok) == 12
+    good = rc == 0 and len(lines) == 19 and len(ok) == 19
     return ("PASS" if good else "FAIL",
-            f"settings-white-area subset: {len(ok)}/12 ok "
+            f"settings-white-area subset: {len(ok)}/19 ok "
             f"(tally={one_line(out.strip().splitlines()[-1] if out.strip() else err, 80)})")
 
 
@@ -3429,7 +3462,7 @@ TESTS = [
     ("T141", "realistic resume messages resume the current task (gatefix6): _is_continuation matches a continuation phrase at the START of the message at a word boundary, not just an exact match -- 'hello, are you working?' and 'Yes, continue from 21' resume the echo task (20 shell, then 20 more to 40 and finalise, then 0); 'yesterday' / 'history' / 'surely' / 'thanksgiving' are NOT continuations; a genuinely new instruction after finalisation still mints a fresh task (harness, section Q of test_task_cap.py)", "loop-gate", "protocol", t141),
     ("T142", "per-chat thinking selector (Default/Off/Low/Medium/High/XHigh): the rule surfaces the backend's GET/PUT /api/chats/{id}/thinking as a selector in the chat composer toolbar itself, in the Smart Mode row next to Smart Mode (user screenshot 2026-11-19), appended into that row (React-safe), Bearer from localStorage, model_key on PUT, pending level applied once a new chat gets an id, 422 revert + re-sync with the server's reason shown next to the selector, lock-hint title when the model takes no thinking level, out-of-set levels shown truthfully, one select per document (moves into the Smart Mode row when it mounts, never a second) (harness)", "thinking", "protocol", t142),
     ("T143", "smart sleep/wake: keep-alive ON/OFF toggle (POST /keepalive, Bearer <redacted>, D1 keepalive:enabled, tick early-return fail-closed, /status + /sleepwake/state keepAlive fields) + max-run guard (sleep at 7h uptime even when busy, WAKE/rest still win) + Hallmark waking/cooldown/status pages (no polling, scaleX bars, keep-alive switch, /status sleepwake.nextRoutineAt) (harness)", "sleepwake", "protocol", t143),
-    ("T144", "settings white-area fix round 2: settings-white-area rule only — nav-anchored shell + ancestors stretched to 100dvh (!important), html + body painted from the --app-bg theme variable (#f9f8f4 light / #141414 dark, class fallback), never from the shell's white .page-content background, diagnostic probe for the browser check, no-op off /settings and before nav mounts, cleanup on leaving Settings (harness subset, 12 checks)", "rebrand", "protocol", t144),
+    ("T144", "settings white-area fix round 3: settings-white-area rule only — nav-anchored shell + ancestors stretched to 100dvh (!important) and painted with the --app-bg theme variable (#f9f8f4 light / #141414 dark, class fallback), never from the shell's background (the shell is transparent inside a WHITE full-height .index-module__mainContentLayout wrapper that covers the html/body paint), TEMPORARY visible diagnostic line (AX-DIAG, elementFromPoint strip probes) readable as page text, no-op off /settings and before nav mounts, cleanup removes ancestor paint + diagnostic line on leaving Settings (harness subset, 19 checks)", "rebrand", "protocol", t144),
     ("T145", "multi-tab takeover (Step 10): the bundle patch registers the owner AbortController and aborts it on BroadcastChannel release-ownership; the Pages queue-takeover rule adds a Take over sending button on the queue-only banner and hides the dead Interrupt & send while the banner is up (harness, 26 checks)", "queue", "protocol", t145),
 ]
 
