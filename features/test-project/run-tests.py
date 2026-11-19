@@ -2458,7 +2458,7 @@ def t135():
 
 
 def t136():
-    """Eval harness, LLM judge: judge.py + versioned rubric + calibration set (57).
+    """Eval harness, LLM judge: judge.py + versioned rubric + calibration set (68).
 
     Machine-free test (features/infra/evals/test_judge.py) for the
     all-20 gap #13. judge_reply(reply, rubric, task, *, transport=None,
@@ -2522,7 +2522,20 @@ def t136():
     of result.output, never reasoning; a task-shaped body with no
     final message yields no reply text. Fail-first proven for H:
     50/57 against the pre-fix code (H1/H2/H4/H5/H6/H7/H8 fail, H3
-    passes), 57/57 after the fix. Fail-first proven: the test failed
+    passes), 57/57 after the fix. Calibration agreement (I1-I11,
+    2026-11-19): live re-run 5 finished 11/12 — cal-01..cal-11 all
+    agree, cal-12 (empty-reply-fail, reply empty by construction)
+    counted DISAGREE only because the rule required qualified=True,
+    though its pass=False matches the human fail. Fix: _calibration_agrees
+    counts a case when the human verdict is fail AND the judge returns
+    pass=False with error_kind "empty_reply" (fail-closed is the correct
+    verdict there); an empty reply on a pass-case, and every other
+    unqualified verdict, still count as disagreement. test_judge.py
+    --live grades with the same function, so the two cannot drift.
+    Fail-first proven for I: 59/68 against the pre-fix code (I1-I8 + I9
+    fail, I10/I11 pass as the negative control / drift guard), 68/68
+    after the fix. The re-run (run 6) with this rule must report 12/12
+    TRUSTED. Fail-first proven: the test failed
     with ModuleNotFoundError before judge.py existed. The live half
     (live-model agreement with the calibration set:
     QWENPAW_TOKEN=<token minted in the container>
@@ -2532,7 +2545,7 @@ def t136():
     after deploy.
     """
     return _py_script_harness(
-        ["features/infra/evals/test_judge.py"], 57)
+        ["features/infra/evals/test_judge.py"], 68)
 
 
 def t137():
