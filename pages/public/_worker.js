@@ -196,43 +196,56 @@ function computerPanelScript(rebrandEnabled) {
   var AGENTX_UPSTREAM_GITHUB = ${JSON.stringify(UPSTREAM_GITHUB_URL)};
   try {
     if (!document.getElementById("root")) return;
-    if (document.getElementById("qwenpawComputerBtn")) return;
-    var btn = document.createElement("button");
-    btn.id = "qwenpawComputerBtn";
-    btn.type = "button";
-    btn.textContent = "Computer";
-    btn.title = "AgentX's computer — watch and drive the live desktop";
-    btn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483647;width:150px;box-sizing:border-box;text-align:center;padding:10px 16px;border-radius:999px;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
-
-    // ---- Rest button ----
-    // Deliberately a visible button next to "Computer", NOT a menu item: the
-    // whole point is that the user can rest the machine in one click when they
-    // are done. Hiding it in a submenu is how a feature gets forgotten.
-    //
-    // It is only meaningful while the machine is running, so the label reflects
-    // state: "Rest machine" when up, "Resting" (disabled) when already rested.
-    // A click never happens by accident: it asks once, then posts with the
-    // console's own bearer token. If that token is missing the Worker refuses,
-    // and the button says so rather than pretending.
-    var restBtn = document.createElement("button");
-    restBtn.id = "qwenpawRestBtn";
-    restBtn.type = "button";
-    restBtn.textContent = "Rest machine";
-    restBtn.title = "Send the machine to rest when you are done — opening the site wakes it again";
-    restBtn.style.cssText = "position:fixed;right:16px;bottom:64px;z-index:2147483647;width:150px;box-sizing:border-box;text-align:center;padding:10px 16px;border-radius:999px;border:1px solid #34404f;background:#171a21;color:#c8d1dc;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
-
-    // ---- Vault button ----
-    // The vault (an API-key store the agent can use but never see) lives at
-    // /vault, but nothing in the console linked to it — the user could not
-    // find it. A visible button next to Computer/Rest, same pattern, opens
-    // the vault page in a new tab. No token needed here: /vault mints its
-    // own session from the console's sign-in, like /computer does.
-    var vaultBtn = document.createElement("button");
-    vaultBtn.id = "qwenpawVaultBtn";
-    vaultBtn.type = "button";
-    vaultBtn.textContent = "Vault";
-    vaultBtn.title = "API-key vault — keys the agent can use but never see";
-    vaultBtn.style.cssText = "position:fixed;right:16px;bottom:112px;z-index:2147483647;width:150px;box-sizing:border-box;text-align:center;padding:10px 16px;border-radius:999px;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
+    if (document.getElementById("qwenpawMoreBtn")) return;
+    // ---- Overflow menu (three dots) ----
+    // 2026-11-20 (user): the three floating pills (Computer / Rest
+    // machine / Vault) crowded the composer's Send button and broke the
+    // chat area's symmetry. They are now a single compact ⋮ button at
+    // the bottom-right; clicking it opens a small menu with the same
+    // three actions. The rows keep the ids qwenpawComputerBtn /
+    // qwenpawRestBtn / qwenpawVaultBtn so the handlers below (panel
+    // toggle, rest flow, vault open) and paintRest() keep working
+    // unchanged — only their container changed, from fixed pills to
+    // menu rows.
+    var moreBtn = document.createElement("button");
+    moreBtn.id = "qwenpawMoreBtn";
+    moreBtn.type = "button";
+    moreBtn.textContent = "⋮";
+    moreBtn.title = "Computer, rest, and vault";
+    moreBtn.setAttribute("aria-label", "More actions");
+    moreBtn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483647;width:40px;height:40px;box-sizing:border-box;text-align:center;padding:0;border-radius:50%;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 20px/1 system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
+    var moreMenu = document.createElement("div");
+    moreMenu.id = "qwenpawMoreMenu";
+    moreMenu.style.cssText = "position:fixed;right:16px;bottom:64px;z-index:2147483647;width:180px;box-sizing:border-box;background:#171a21;border:1px solid #343945;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.5);padding:6px;display:none;flex-direction:column;gap:2px;";
+    function moreMenuRow(id, label, title) {
+      var r = document.createElement("button");
+      r.id = id; r.type = "button"; r.textContent = label; r.title = title;
+      r.style.cssText = "display:block;width:100%;text-align:left;background:none;border:none;color:#e8eaf0;font:600 13px system-ui,sans-serif;padding:10px 12px;border-radius:8px;cursor:pointer;";
+      r.addEventListener("mouseenter", function () { r.style.background = "#232833"; });
+      r.addEventListener("mouseleave", function () { r.style.background = "none"; });
+      moreMenu.appendChild(r);
+      return r;
+    }
+    function closeMoreMenu() { try { moreMenu.style.display = "none"; } catch (e) {} }
+    // Computer row — toggles the desktop panel (wired below via setOpen).
+    var btn = moreMenuRow("qwenpawComputerBtn", "Computer", "AgentX's computer — watch and drive the live desktop");
+    // Rest row — the rest flow (confirm + POST) is wired below. The label
+    // reflects state: "Rest machine" when up, "Resting" (disabled) when
+    // already rested. A click never happens by accident: it asks once.
+    var restBtn = moreMenuRow("qwenpawRestBtn", "Rest machine", "Send the machine to rest when you are done — opening the site wakes it again");
+    // Vault row — opens the vault page in a new tab (wired below).
+    var vaultBtn = moreMenuRow("qwenpawVaultBtn", "Vault", "API-key vault — keys the agent can use but never see");
+    moreBtn.addEventListener("click", function (e) {
+      try { if (e && e.stopPropagation) e.stopPropagation(); } catch (e2) {}
+      try { moreMenu.style.display = (moreMenu.style.display === "flex") ? "none" : "flex"; } catch (e3) {}
+    });
+    document.addEventListener("click", function (e) {
+      try {
+        if (moreMenu.style.display !== "flex") return;
+        if (moreMenu.contains(e.target) || moreBtn.contains(e.target)) return;
+        closeMoreMenu();
+      } catch (e2) {}
+    });
 
     var panel = document.createElement("div");
     panel.id = "qwenpawComputerPanel";
@@ -255,15 +268,15 @@ function computerPanelScript(rebrandEnabled) {
     panel.appendChild(bar);
     panel.appendChild(frame);
     document.body.appendChild(panel);
-    document.body.appendChild(btn);
-    document.body.appendChild(restBtn);
-    document.body.appendChild(vaultBtn);
+    document.body.appendChild(moreBtn);
+    document.body.appendChild(moreMenu);
     vaultBtn.addEventListener("click", function () {
-      // The floating Vault pill opens the full Vault page (where the
+      // The Vault menu row opens the full Vault page (where the
       // user sees and manages existing keys), not the in-chat add-key
       // dialog — QA round 3: the pill opening only an empty "Add a
       // key" form read as the wrong destination. The add-key dialog
       // stays reachable from the Vault menu item and from /vault.
+      closeMoreMenu();
       window.open("/vault", "_blank", "noopener");
     });
 
@@ -551,6 +564,7 @@ function computerPanelScript(rebrandEnabled) {
     restBtn.addEventListener("click", async function () {
       if (resting) return;
       if (!window.confirm("Send the machine to rest? Open the site again to wake it.")) return;
+      closeMoreMenu();
       restBtn.textContent = "Resting…";
       restBtn.disabled = true;
       try {
@@ -597,23 +611,14 @@ function computerPanelScript(rebrandEnabled) {
       open = !!v;
       panel.style.display = open ? "flex" : "none";
       // When the 316 px panel is open it covers the right edge, and the
-      // pills (max z-index) would sit on top of it — the Computer pill
-      // over the panel's own content. Shift the whole column left of
-      // the panel while it is open, back to the edge when it closes.
-      // Also lift the column above the composer while the panel is open
-      // (QA round 3): at the bottom edge, shifted left, the pills sat
-      // on the composer's Send button and the toolbar's right end.
-      // Lifted to 200/248/296 (QA round 4): the 140/188/236 lift still
-      // left the bottom pill overlapping the blue banner and the
-      // input box's top-right corner (the composer is ~150px tall
-      // including the banner, so the pills must clear ~200px).
+      // ⋮ button (max z-index) would sit on top of it. Shift the ⋮
+      // button + menu left of the panel while it is open, back to the
+      // edge when it closes. The menu is closed on toggle so it never
+      // floats over the panel's own content.
       var right = open ? "332px" : "16px";
-      btn.style.right = right;
-      restBtn.style.right = right;
-      vaultBtn.style.right = right;
-      btn.style.bottom = open ? "428px" : "16px";
-      restBtn.style.bottom = open ? "476px" : "64px";
-      vaultBtn.style.bottom = open ? "524px" : "112px";
+      moreBtn.style.right = right;
+      moreMenu.style.right = right;
+      closeMoreMenu();
       if (open && !frame.getAttribute("src")) frame.setAttribute("src", "/computer?embed=1");
       try { sessionStorage.setItem("qwenpawComputerOpen", open ? "1" : "0"); } catch (e) {}
     }
@@ -1933,6 +1938,80 @@ function computerPanelScript(rebrandEnabled) {
           else if (created) agentxThinkingShow("inherit");
         } catch (e) {}
       } },
+      { id: "composer-symmetry", run: function () {
+        // 2026-11-20 (user): the composer toolbar had no symmetry — the
+        // model/agent dropdown, Smart Mode, Thinking select, context
+        // ring, mic, attach and Send were spread over two uneven rows
+        // with different heights and gaps. Make the toolbar ONE clean
+        // flex row: every control vertically centered, an even 8px gap,
+        // a consistent 32px control height, and the input's own row
+        // untouched. Only layout styles are set (never text or structure),
+        // so React reconciliation is unaffected. The Thinking select keeps
+        // its place next to Smart Mode (user anchor) but is sized to match
+        // the other controls instead of dominating the row.
+        try {
+          if (window.location && window.location.pathname && window.location.pathname.indexOf("/chat") !== 0) return;
+          var toolbar = null;
+          try {
+            var btns = document.querySelectorAll("button");
+            for (var i = 0; i < btns.length; i++) {
+              try {
+                var b = btns[i];
+                var lab = "";
+                try { lab = (b.getAttribute("aria-label") || "") + " " + (b.getAttribute("title") || "") + " " + (b.textContent || ""); } catch (e) {}
+                if (lab.indexOf("Smart Mode") !== -1) { toolbar = b.parentElement; break; }
+              } catch (e) {}
+            }
+            if (!toolbar) {
+              for (var ci = 0; ci < btns.length; ci++) {
+                try {
+                  var cb = btns[ci];
+                  var clab = "";
+                  try { clab = (cb.getAttribute("aria-label") || "") + " " + (cb.getAttribute("title") || "") + " " + (cb.textContent || ""); } catch (e) {}
+                  if (clab.indexOf("Context usage") !== -1) { toolbar = cb.parentElement; break; }
+                } catch (e) {}
+              }
+            }
+          } catch (e) {}
+          if (!toolbar) return;
+          try {
+            toolbar.style.display = "flex";
+            toolbar.style.alignItems = "center";
+            toolbar.style.gap = "8px";
+            toolbar.style.flexWrap = "nowrap";
+            toolbar.style.padding = "6px 8px";
+          } catch (e) {}
+          // Every direct control: same height, vertically centered, never
+          // shrinking the Send button out of the row.
+          try {
+            var kids = toolbar.children;
+            for (var k = 0; k < kids.length; k++) {
+              try {
+                var ch = kids[k];
+                ch.style.flex = "0 0 auto";
+                ch.style.alignSelf = "center";
+                ch.style.margin = "0";
+                if (ch.tagName === "SELECT" || ch.tagName === "BUTTON") {
+                  ch.style.height = "32px";
+                  ch.style.minHeight = "32px";
+                }
+              } catch (e2) {}
+            }
+          } catch (e) {}
+          // Thinking select: compact so it matches the other controls.
+          try {
+            var sel = document.querySelector ? document.querySelector("[data-agentx-thinking]") : null;
+            if (sel) {
+              sel.style.height = "32px";
+              sel.style.minHeight = "32px";
+              sel.style.padding = "4px 6px";
+              sel.style.fontSize = "12px";
+            }
+            var tlab = document.querySelector ? document.querySelector("[data-agentx-thinking-label]") : null;
+            if (tlab) { tlab.style.fontSize = "12px"; tlab.style.marginLeft = "4px"; }
+          } catch (e) {}
+        } catch (e) {}
+      } },
       { id: "hide-native-thinking", run: function () {
         // The console's own thinking control (2026-11-19 QA round 20 +
         // DOM inspection 2026-11-19 ~07:0x IST): a second Thinking
@@ -2267,21 +2346,21 @@ function computerPanelScript(rebrandEnabled) {
         } catch (e) {}
       } },
       { id: "pill-positions", run: function () {
-        // Re-apply the floating-pill positions on every mutation.
+        // Re-apply the ⋮ button + menu positions on every mutation.
         // setOpen() sets them once when the Computer panel opens/closes,
-        // but a re-render can reset the inline styles back to the
-        // defaults (bottom 16/64/112) while the panel stays open — then
-        // the pills sit on the composer's Send button (QA round 8).
-        // This rule re-asserts the open/closed positions every time.
+        // but a re-render can reset the inline styles while the panel
+        // stays open — then the button sits on top of the panel. This
+        // rule re-asserts the open/closed positions every time.
+        // (2026-11-20: the three floating pills became a single ⋮ menu;
+        // this rule now positions that one button + its menu.)
         try {
           var panel = document.getElementById("qwenpawComputerPanel");
-          var cBtn = document.getElementById("qwenpawComputerBtn");
-          var rBtn = document.getElementById("qwenpawRestBtn");
-          var vBtn = document.getElementById("qwenpawVaultBtn");
-          if (!panel || !cBtn || !rBtn || !vBtn) return;
+          var mBtn = document.getElementById("qwenpawMoreBtn");
+          var mMenu = document.getElementById("qwenpawMoreMenu");
+          if (!panel || !mBtn || !mMenu) return;
           // The panel can be opened by the console's own UI (not only
-          // by the floating pill's setOpen), which may show it via a
-          // CSS class rather than an inline display style — so
+          // by the ⋮ button's setOpen), which may show it via a CSS
+          // class rather than an inline display style — so
           // panel.style.display is "" even while it is visible. Use
           // the COMPUTED display, which reflects the real state either
           // way. (2026-11-18 QA round 9: pills sat on Send because the
@@ -2290,30 +2369,22 @@ function computerPanelScript(rebrandEnabled) {
           try { disp = window.getComputedStyle ? window.getComputedStyle(panel).display : ""; } catch (e) {}
           var isOpen = disp !== "none" && disp !== "";
           var right = isOpen ? "332px" : "16px";
-          cBtn.style.right = right;
-          rBtn.style.right = right;
-          vBtn.style.right = right;
-          // Hide the pills on Settings pages (2026-11-18 QA round 15):
-          // they are fixed-position and persist across pages, where
-          // they cover real Settings controls (e.g. the "Assistant
-          // message collapse" segmented control on /settings/general)
-          // and the open panel hides "1 provider online" on
-          // /settings/models. The pills are a /chat convenience; on
-          // Settings they only get in the way.
+          mBtn.style.right = right;
+          mMenu.style.right = right;
+          // Hide the ⋮ button + menu on Settings pages (2026-11-18 QA
+          // round 15): they are fixed-position and persist across
+          // pages, where they cover real Settings controls. The menu is
+          // a /chat convenience; on Settings it only gets in the way.
           var onSettings = false;
           try { onSettings = (window.location && window.location.pathname ? window.location.pathname : "").indexOf("/settings") !== -1; } catch (e) {}
           if (onSettings) {
-            cBtn.style.display = "none";
-            rBtn.style.display = "none";
-            vBtn.style.display = "none";
+            mBtn.style.display = "none";
+            mMenu.style.display = "none";
             return;
           }
-          cBtn.style.display = "";
-          rBtn.style.display = "";
-          vBtn.style.display = "";
-          cBtn.style.bottom = isOpen ? "428px" : "16px";
-          rBtn.style.bottom = isOpen ? "476px" : "64px";
-          vBtn.style.bottom = isOpen ? "524px" : "112px";
+          mBtn.style.display = "";
+          mBtn.style.bottom = "16px";
+          mMenu.style.bottom = "64px";
         } catch (e) {}
       } },
       { id: "rename-logo", run: function () {
@@ -2510,6 +2581,82 @@ function computerPanelScript(rebrandEnabled) {
         // avatar are never touched (no "QwenPaw" text node is ever the
         // username, and images are not text nodes).
         agentxRenameScoped("QwenPaw", function (el) { return agentxScopeMarker(el, ["account", "profile", "user-card"]); });
+      } },
+      { id: "account-card-layout", run: function () {
+        // 2026-11-20 (user): the sidebar's bottom account row was
+        // congested — the username + "Console account" truncated to
+        // "satwikConsole ..." and the settings/sliders button was
+        // cramped against it with no gap. Give the row a clean flex
+        // layout: avatar fixed, text block truncates cleanly with
+        // ellipsis on ONE line each, and the settings button a fixed
+        // 32px square with a real gap. Text nodes are never renamed
+        // here; only layout styles are set, so React reconciliation
+        // is unaffected.
+        try {
+          if (!document.querySelectorAll) return;
+          var els = document.querySelectorAll("*");
+          var sub = null;
+          for (var i = 0; i < els.length; i++) {
+            try {
+              var t = els[i].textContent || "";
+              if (t === "Console account") { sub = els[i]; break; }
+            } catch (e) {}
+          }
+          if (!sub) return;
+          // Climb to the row: the nearest ancestor that also holds an
+          // avatar image and a button (the settings/sliders control).
+          var row = sub;
+          for (var d = 0; d < 6 && row; d++) {
+            try {
+              var hasImg = row.querySelector ? row.querySelector("img") : null;
+              var hasBtn = row.querySelector ? row.querySelector("button") : null;
+              if (hasImg && hasBtn) break;
+            } catch (e) {}
+            row = row.parentElement;
+          }
+          if (!row) return;
+          try {
+            row.style.display = "flex";
+            row.style.alignItems = "center";
+            row.style.gap = "10px";
+            row.style.padding = "10px 12px";
+            row.style.minWidth = "0";
+          } catch (e) {}
+          // Text block: the element holding the name + subtitle. Let it
+          // shrink (min-width 0) and truncate each line cleanly.
+          try {
+            var txt = sub.parentElement;
+            if (txt) {
+              txt.style.minWidth = "0";
+              txt.style.flex = "1 1 auto";
+              txt.style.overflow = "hidden";
+              var kids = txt.querySelectorAll ? txt.querySelectorAll("*") : [];
+              for (var k = 0; k < kids.length; k++) {
+                try {
+                  kids[k].style.overflow = "hidden";
+                  kids[k].style.textOverflow = "ellipsis";
+                  kids[k].style.whiteSpace = "nowrap";
+                  kids[k].style.maxWidth = "100%";
+                } catch (e2) {}
+              }
+            }
+          } catch (e) {}
+          // Settings button: fixed square, never shrinks, real margin.
+          try {
+            var btns = row.querySelectorAll ? row.querySelectorAll("button") : [];
+            for (var b = 0; b < btns.length; b++) {
+              try {
+                btns[b].style.flex = "0 0 auto";
+                btns[b].style.width = "32px";
+                btns[b].style.height = "32px";
+                btns[b].style.display = "flex";
+                btns[b].style.alignItems = "center";
+                btns[b].style.justifyContent = "center";
+                btns[b].style.marginLeft = "auto";
+              } catch (e2) {}
+            }
+          } catch (e) {}
+        } catch (e) {}
       } },
       { id: "workspace-switcher", run: function () {
         // Part 3 (2026-11-19): rename QwenPaw in the workspace switcher
@@ -2755,6 +2902,8 @@ function computerPanelScript(rebrandEnabled) {
         agentxRunRuleNow("sidebar-ellipsis");
         agentxRunRuleNow("chat-input-fixes");
         agentxRunRuleNow("thinking-selector");
+        agentxRunRuleNow("composer-symmetry");
+        agentxRunRuleNow("account-card-layout");
         agentxRunRuleNow("queue-takeover");
         agentxRunRuleNow("settings-white-area");
         agentxRunRuleNow("page-bottom-padding");
