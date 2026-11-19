@@ -274,31 +274,10 @@ function computerPanelScript(rebrandEnabled) {
     // every open, so the entries are re-created then, carrying the ids
     // qwenpawComputerBtn / qwenpawRestBtn so the handlers below keep working.
 
-    var panel = document.createElement("div");
-    panel.id = "qwenpawComputerPanel";
-    panel.style.cssText = "position:fixed;top:0;right:0;bottom:0;width:316px;max-width:100vw;z-index:2147483646;background:#0f1115;border-left:1px solid #262a33;display:none;flex-direction:column;box-shadow:-12px 0 32px rgba(0,0,0,.4);";
-
-    var bar = document.createElement("div");
-    bar.style.cssText = "display:flex;align-items:center;gap:8px;height:44px;padding:0 10px;background:#171a21;border-bottom:1px solid #262a33;color:#e8eaf0;font:600 13px system-ui,sans-serif;flex:none;";
-    bar.innerHTML = "<span style='flex:1'>Computer</span>" +
-      "<a href='/computer' target='_blank' rel='noopener' style='color:#86efac;text-decoration:none'>Open full</a>" +
-      "<button id='qwenpawComputerClose' type='button' aria-label='Close computer' style='background:none;border:none;color:#e8eaf0;font-size:18px;cursor:pointer;padding:4px 8px'>&times;</button>";
-
-    var frame = document.createElement("iframe");
-    frame.id = "qwenpawComputerFrame";
-    frame.title = "Computer";
-    frame.setAttribute("sandbox", "allow-scripts allow-pointer-lock allow-popups allow-same-origin");
-    frame.setAttribute("allow", "clipboard-read; clipboard-write");
-    frame.style.cssText = "flex:1;width:100%;border:0;background:#000;";
-    // Loaded lazily: an iframe created on every console page view would open a
-    // screen session nobody asked for, and every one of those is a request.
-    panel.appendChild(bar);
-    panel.appendChild(frame);
-    // Only the panel is appended here. The Computer / Rest machine rows are
-    // mounted into the console's OWN account popup by addAccountMenuActions()
-    // when that menu opens — no longer fixed pills at the bottom-right of the
-    // chat, and no longer a sidebar pill either.
-    document.body.appendChild(panel);
+    // NO in-chat Computer drawer (Rohan v5): the old right-hand panel
+    // (qwenpawComputerPanel + its iframe + close button) is gone entirely —
+    // it was the SECOND side screen he flagged (left sidebar + right drawer).
+    // The Computer row in the account popup now NAVIGATES to /computer.
 
     // ---- Vault add-key popup (in-chat) ----
     // The Vault button and the Vault menu item open a secure box right in
@@ -641,22 +620,9 @@ function computerPanelScript(rebrandEnabled) {
       } catch (e) { /* leave the default label */ }
     })();
 
-    var open = false;
-    try { open = sessionStorage.getItem("qwenpawComputerOpen") === "1"; } catch (e) {}
-
-    function setOpen(v) {
-      open = !!v;
-      panel.style.display = open ? "flex" : "none";
-      // The three action rows now live in the LEFT SIDEBAR, so there are no
-      // fixed pills to shift out of the panel's way — the old 200/248/296
-      // bottom lift existed only to keep the pills off the composer. The
-      // panel opens over the right edge; the sidebar is untouched.
-      if (open && !frame.getAttribute("src")) frame.setAttribute("src", "/computer?embed=1");
-      try { sessionStorage.setItem("qwenpawComputerOpen", open ? "1" : "0"); } catch (e) {}
-      paintComputerRow();
-    }
-    document.getElementById("qwenpawComputerClose").addEventListener("click", function () { setOpen(false); });
-    setOpen(open);
+    // NO drawer state any more: there is no panel to open/close, so the old
+    // open/setOpen/sessionStorage machinery and the panel close button are
+    // removed with it.
 
     // ---- Sidebar mounting + account-row rescue ----
     // Both are idempotent and re-run from the observer, because React
@@ -691,13 +657,8 @@ function computerPanelScript(rebrandEnabled) {
       return null;
     }
 
-    function paintComputerRow() {
-      try {
-        var ce = computerEntry();
-        if (!ce) return;
-        if (open) ce.setAttribute("data-active", "1"); else ce.removeAttribute("data-active");
-      } catch (e) {}
-    }
+    // (paintComputerRow was removed in v5: it only marked the Computer row
+    // active while the in-chat drawer was open, and there is no drawer now.)
 
     // Icon INNER shapes for the account-menu rows (the svg element is cloned
     // from the Settings row, so only the shapes are swapped in).
@@ -725,20 +686,26 @@ function computerPanelScript(rebrandEnabled) {
         if (!settingsBtn) return;
         // Insert AFTER the menu's own Vault row so the order reads
         // Settings, Vault, Computer, Rest machine, About, Account, Logout.
-        var anchor = dialog.querySelector("[data-qwenpaw-vault-menu]") || settingsBtn;
-        addMenuEntry(dialog, settingsBtn, anchor, "qwenpawComputerBtn", "data-qwenpaw-computer-menu",
+        // ORDER FIX (v5): both rows used to be inserted after the SAME Vault
+        // row, so the second insert (Rest machine) landed BEFORE the first
+        // (Computer) and the live order read Vault, Rest machine, Computer.
+        // Insert Computer after Vault, then Rest machine after Computer, so
+        // the popup reads Settings, Vault, Computer, Rest machine, About.
+        var vaultRow = dialog.querySelector("[data-qwenpaw-vault-menu]") || settingsBtn;
+        var computerRow = addMenuEntry(dialog, settingsBtn, vaultRow, "qwenpawComputerBtn", "data-qwenpaw-computer-menu",
           "Computer", ICON_COMPUTER_PATHS, function () {
             // Close the popup first, exactly like a native menu choice would.
             try { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
-            setOpen(true);
+            // Rohan v5: Computer must NAVIGATE to the /computer page, not
+            // open the in-chat drawer (that drawer was the second side screen).
+            window.location.assign("/computer");
           });
-        addMenuEntry(dialog, settingsBtn, anchor, "qwenpawRestBtn", "data-qwenpaw-rest-menu",
+        addMenuEntry(dialog, settingsBtn, computerRow || vaultRow, "qwenpawRestBtn", "data-qwenpaw-rest-menu",
           "Rest machine", ICON_REST_PATHS, function () {
             try { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
             doRest();
           });
         paintRest();
-        paintComputerRow();
       } catch (e) { /* never break the console */ }
     }
 
@@ -749,7 +716,8 @@ function computerPanelScript(rebrandEnabled) {
     // so the resting-state repaint can retext it without re-cloning.
     function addMenuEntry(dialog, templateBtn, insertAfter, id, marker, label, iconPaths, onClick) {
       try {
-        if (dialog.querySelector("[" + marker + "]")) return;
+        var existing = dialog.querySelector("[" + marker + "]");
+        if (existing) return existing;
         var item = templateBtn.cloneNode(true);
         item.setAttribute(marker, "1");
         item.id = id;
@@ -794,6 +762,7 @@ function computerPanelScript(rebrandEnabled) {
         } else {
           dialog.appendChild(item);
         }
+        return item;
       } catch (e) { /* never break the console */ }
     }
 
@@ -932,8 +901,20 @@ function computerPanelScript(rebrandEnabled) {
     // The sidebar may mount after this script runs (React renders async).
     // The observer covers most of it; these two catch the no-further-
     // mutation case and a late account-row mount.
-    window.addEventListener("load", function () { addAccountMenuActions(); fixAccountRow(); });
-    setTimeout(function () { addAccountMenuActions(); fixAccountRow(); }, 800);
+    // Re-run the DOM-writing rules. React re-renders and SPA navigation both
+    // drop/re-create the nodes these rules own, so they are re-asserted on
+    // load, on short delays, and on History-API navigation (popstate /
+    // hashchange) — the settings pages render without a full page load, which
+    // is why the label-truncation fixes must not depend on the first pass.
+    function agentxReRunDomRules() {
+      var ids = ["account-row", "account-menu", "composer-row", "label-truncation", "system-preview", "hide-per-row-more"];
+      for (var i = 0; i < ids.length; i++) { try { agentxRunRuleNow(ids[i]); } catch (e) {} }
+    }
+    window.addEventListener("load", agentxReRunDomRules);
+    setTimeout(agentxReRunDomRules, 800);
+    setTimeout(agentxReRunDomRules, 2000);
+    window.addEventListener("popstate", agentxReRunDomRules);
+    window.addEventListener("hashchange", agentxReRunDomRules);
 
     // ---- Vault item in the account menu ----
     // The account dropdown (Avatar manager, Appearance, Message display,
@@ -2599,14 +2580,20 @@ function computerPanelScript(rebrandEnabled) {
         try { addAccountMenuActions(); } catch (e) {}
       } },
       { id: "composer-row", run: function () {
-        // FIX (beauty v3): the composer toolbar rendered as TWO uneven rows
-        // (row 1 mic/attach/Default at y~832-871; row 2 the '0%' context
-        // pill, mode pills, the model select and Send at y~888-922), heights
-        // 32-38px, uneven gaps, second row right-shifted. Normalise every
-        // control inside the composer to ONE 32px height with an even 8px
-        // gap and centred alignment. Scoped by a data attribute set here, so
-        // nothing outside the composer is touched, and the text input itself
-        // is left alone (only button/select get the height).
+        // FULL REBUILD (Rohan v5). The console splits its composer toolbar
+        // across TWO flex containers: row 1 (mic, attach, Default) leaves the
+        // right half EMPTY, row 2 (context %, agent default, Smart Mode,
+        // Thinking, Send) is crowded and Send is pushed to the far right by
+        // margin-left:auto with a ~70px gap. Patching paddings (v3/v4) could
+        // not fix a two-container split, so this rebuilds the LAYOUT, not the
+        // styles: every row container between the controls and their lowest
+        // common ancestor is flattened with display:contents, and that
+        // ancestor becomes ONE wrapping flex row with an even 8px gap. All
+        // controls keep 32px height and compact pills; Send loses its auto
+        // margin so it attaches to the group. Nothing is removed and no node
+        // is re-parented (React is untouched) — display:contents only changes
+        // who lays the children out. flex-wrap means a viewport too narrow
+        // for one row wraps into balanced lines, never sparse + crowded.
         try {
           var inputs = document.querySelectorAll ? document.querySelectorAll("[placeholder]") : [];
           var input = null;
@@ -2616,8 +2603,8 @@ function computerPanelScript(rebrandEnabled) {
             if (ph.indexOf("Ask anything") !== -1) { input = inputs[i]; break; }
           }
           if (!input) return;
-          // Walk up to the composer: the ancestor that also holds a Send
-          // control. Bounded so a changed DOM cannot spin this for long.
+          // The composer root: the ancestor of the text input that also holds
+          // a Send control. Bounded so a changed DOM cannot spin this long.
           var comp = null, n = input, d = 0;
           while (n && d < 8) {
             if (n.querySelectorAll) {
@@ -2633,56 +2620,85 @@ function computerPanelScript(rebrandEnabled) {
           }
           if (!comp) return;
           comp.setAttribute("data-agentx-composer", "1");
-          var ctrls = comp.querySelectorAll("button, select");
-          for (var k = 0; k < ctrls.length; k++) {
-            var c = ctrls[k];
-            c.style.setProperty("min-height", "32px", "important");
-            c.style.setProperty("height", "32px", "important");
-            c.style.setProperty("box-sizing", "border-box", "important");
+
+          // Every toolbar control (the panel close button no longer exists,
+          // but keep the guard in case an old cached page still has one).
+          var ctrls = [];
+          var all = comp.querySelectorAll("button, select");
+          for (var k = 0; k < all.length; k++) {
+            if (all[k].id === "qwenpawComputerClose") continue;
+            ctrls.push(all[k]);
           }
-          // Even 8px gaps, centred baselines, and a consistent left edge on
-          // the composer's flex rows (v3 found row 2 right-shifted).
-          var rows = comp.querySelectorAll("div");
-          for (var m = 0; m < rows.length; m++) {
-            var r = rows[m];
-            var disp = "";
-            try { disp = window.getComputedStyle(r).display; } catch (e2) {}
-            if (disp === "flex" || disp === "inline-flex") {
-              r.style.setProperty("gap", "8px", "important");
-              r.style.setProperty("align-items", "center", "important");
-              r.style.setProperty("justify-content", "flex-start", "important");
+          if (!ctrls.length) return;
+
+          // Lowest common ancestor of the controls = the toolbar wrapper.
+          var lca = ctrls[0];
+          for (var a = 1; a < ctrls.length; a++) {
+            if (lca.contains(ctrls[a])) continue;
+            var cand = lca;
+            while (cand && !cand.contains(ctrls[a])) cand = cand.parentElement;
+            if (!cand) return;
+            lca = cand;
+          }
+          // Safety: if the common ancestor also wraps the text input, do not
+          // flatten (the textarea would be dragged into the control row).
+          if (!lca || lca.contains(input)) return;
+          lca.setAttribute("data-agentx-composer-toolbar", "1");
+          lca.style.setProperty("display", "flex", "important");
+          lca.style.setProperty("flex-wrap", "wrap", "important");
+          lca.style.setProperty("gap", "8px", "important");
+          lca.style.setProperty("align-items", "center", "important");
+          lca.style.setProperty("justify-content", "flex-start", "important");
+
+          // Flatten the intermediate row containers so all controls share the
+          // one flex row. display:contents keeps the nodes in place for React.
+          for (var b = 0; b < ctrls.length; b++) {
+            var up = ctrls[b].parentElement;
+            while (up && up !== lca) {
+              if (up.tagName === "DIV") up.style.setProperty("display", "contents", "important");
+              up = up.parentElement;
             }
           }
-          // Compact pills (Rohan v4): the wide mode/model pills wasted
-          // horizontal room. Tighter padding + smaller type keeps every
-          // option readable while letting the controls fit one row.
-          var ctrls2 = comp.querySelectorAll("button, select");
-          for (var p = 0; p < ctrls2.length; p++) {
-            var c2 = ctrls2[p];
-            c2.style.setProperty("padding", "4px 8px", "important");
-            c2.style.setProperty("font-size", "12px", "important");
-            c2.style.setProperty("flex", "0 0 auto", "important");
+
+          // Uniform 32px controls, compact pills, even spacing, Send attached.
+          for (var c = 0; c < ctrls.length; c++) {
+            var el = ctrls[c];
+            el.style.setProperty("min-height", "32px", "important");
+            el.style.setProperty("height", "32px", "important");
+            el.style.setProperty("box-sizing", "border-box", "important");
+            el.style.setProperty("padding", "4px 8px", "important");
+            el.style.setProperty("font-size", "12px", "important");
+            el.style.setProperty("flex", "0 0 auto", "important");
+            el.style.setProperty("margin-left", "0", "important");
           }
         } catch (e) { /* never break the console */ }
       } },
       { id: "label-truncation", run: function () {
-        // FIX (beauty v3, reworked in v4): settings nav labels and control
-        // buttons were truncated to '...' ('Community & mes...', 'Voice
-        // Transcrip...', 'Pending Approva...', 'Connect AgentX...', and the
-        // Security rule titles). A label the user must read is never
-        // ellipsised away: let those elements wrap instead.
-        // v4 fixes for why v3 did NOT apply in the browser:
-        //  (a) NO pathname guard — the Channels / Security / Community /
-        //      Voice pages are NOT all under /settings, so the old guard
-        //      silently skipped them. The exact-label list is specific
-        //      enough to scope the rule without a path check.
-        //  (b) 'Connect QwenPaw' was renamed to 'Connect AgentX' by the
-        //      rebrand, so the old exact-match list missed it. Both
-        //      spellings are matched now.
-        //  (c) The clip is detected from the ACTUAL rendered overflow
-        //      (scrollWidth > clientWidth) as well as text-overflow:ellipsis,
-        //      because some of these labels are clipped by overflow:hidden
-        //      with no ellipsis at all.
+        // THIRD round (Rohan v5). v3 and v4 both failed in the live browser,
+        // so this pass no longer trusts a single mechanism or a layout probe:
+        //  (1) JS-side truncation — if the console shortens the STRING before
+        //      rendering, the DOM itself holds "Community & mes…" and no CSS
+        //      fix can recover it. Those truncated forms are replaced with
+        //      the full label outright (only when the cut is followed by an
+        //      ellipsis, so a genuine label that merely starts the same way is
+        //      never corrupted).
+        //  (2) CSS ellipsis — EVERY ancestor of a matched label, up to 8 hops,
+        //      is unclipped UNCONDITIONALLY (wrap + overflow visible + clip +
+        //      line-clamp off). Dropping the "is it clipped?" probe removes
+        //      the failure mode where layout was measured before the labels
+        //      were laid out (scrollWidth still equal to clientWidth), which
+        //      is why v4's gated detection silently did nothing.
+        //  (3) Re-run coverage — the observer re-runs this on every mutation,
+        //      and it is also re-run on SPA navigation (popstate/hashchange)
+        //      and on load, so labels that render after the first pass are
+        //      still caught.
+        var repairs = [
+          ["Community & mes", "Community & messaging"],
+          ["Voice Transcrip", "Voice Transcription"],
+          ["Pending Approva", "Pending Approvals"],
+          ["Command Injecti", "Command Injection"],
+          ["Privilege Escal", "Privilege Escalation"],
+        ];
         var labels = [
           "Community & messaging", "Voice Transcription", "Pending Approvals",
           "Connect AgentX", "Connect QwenPaw", "Command Injection",
@@ -2702,70 +2718,99 @@ function computerPanelScript(rebrandEnabled) {
               node.nodeValue = t.replace(/Bot Prefix:Not set/g, "Bot Prefix: Not set");
               t = node.nodeValue;
             }
+            // (1) Restore full labels from their truncated forms.
+            for (var r = 0; r < repairs.length; r++) {
+              var cut = repairs[r][0], full = repairs[r][1];
+              if (t.indexOf(cut) !== -1 && t.indexOf(full) === -1) {
+                var fixed = t.split(cut + "\u2026").join(full).split(cut + "...").join(full);
+                if (fixed !== t) { node.nodeValue = fixed; t = fixed; }
+              }
+            }
             for (var i = 0; i < labels.length; i++) {
               if (t.indexOf(labels[i]) !== -1 && node.parentElement) { hits.push(node.parentElement); break; }
             }
           }
+          // (2) Unconditional unclip of the label and its ancestors.
           for (var k = 0; k < hits.length; k++) {
-            // The label element and its truncating ancestors may all clip.
             var cur = hits[k], hops = 0;
-            while (cur && cur !== document.body && hops < 6) {
-              var clipped = false;
-              try {
-                var cs = window.getComputedStyle(cur);
-                if (cs.textOverflow === "ellipsis") clipped = true;
-                else if ((cs.overflowX === "hidden" || cs.overflow === "hidden") && cur.scrollWidth > cur.clientWidth + 1) clipped = true;
-              } catch (e3) {}
-              if (clipped) {
-                cur.classList.add("agentx-unclip");
-                cur.style.setProperty("white-space", "normal", "important");
-                cur.style.setProperty("overflow", "visible", "important");
-                cur.style.setProperty("text-overflow", "clip", "important");
-              }
+            while (cur && cur !== document.body && hops < 8) {
+              cur.classList.add("agentx-unclip");
+              cur.style.setProperty("white-space", "normal", "important");
+              cur.style.setProperty("overflow", "visible", "important");
+              cur.style.setProperty("overflow-x", "visible", "important");
+              cur.style.setProperty("text-overflow", "clip", "important");
+              cur.style.setProperty("-webkit-line-clamp", "none", "important");
               cur = cur.parentElement; hops++;
             }
           }
         } catch (e) { /* never break the console */ }
       } },
       { id: "system-preview", run: function () {
-        // FIX (beauty v4): the Settings > Appearance "System" theme preview
-        // card rendered a jagged diagonal light/black split with the accent
-        // bar cut off at the diagonal — a gradient (or clip) on the preview
-        // card. The Light and Dark cards are clean rectangles, so make System
-        // one too: replace whatever paints the diagonal with a clean
-        // two-tone split (left light, right dark) and clip it square. Found
-        // from the exact "System" label, walking up to a small gradient
-        // card, so no other gradient on the page is touched.
+        // Rohan v5: the "System" theme preview STILL shows a jagged diagonal
+        // light/dark boundary slicing the text lines and the orange bar. v4
+        // only inspected the card's own background-image and missed it, so
+        // this pass neutralises EVERY painter inside the card — gradients,
+        // clip-paths and inline svg — then paints the card with the same
+        // clean vertical two-tone split the Light/Dark cards read as.
         try {
           if (!document.createTreeWalker || !document.body) return;
           var names = ["System", "System theme", "Use system theme"];
           var walker2 = document.createTreeWalker(document.body, 4, null, false);
-          var cards = [];
+          var labels2 = [];
           var node2;
           while ((node2 = walker2.nextNode())) {
             var tv = (node2.nodeValue || "").trim();
             for (var i2 = 0; i2 < names.length; i2++) {
-              if (tv === names[i2] && node2.parentElement) { cards.push(node2.parentElement); break; }
+              if (tv === names[i2] && node2.parentElement) { labels2.push(node2.parentElement); break; }
             }
           }
-          for (var k2 = 0; k2 < cards.length; k2++) {
-            var card = cards[k2], hops2 = 0;
+          for (var k2 = 0; k2 < labels2.length; k2++) {
+            // The card is the label's card-sized ancestor (the clickable
+            // theme option), not the label itself.
+            var card = labels2[k2], hops2 = 0;
             while (card && card !== document.body && hops2 < 6) {
-              var bg = "";
-              try { bg = window.getComputedStyle(card).backgroundImage; } catch (e4) {}
-              if (bg && bg.indexOf("gradient") !== -1) {
-                var r2 = card.getBoundingClientRect();
-                // Only a preview-card-sized box, so a page hero gradient is
-                // never mistaken for the theme preview.
-                if (r2.width > 40 && r2.width < 500 && r2.height > 24 && r2.height < 200) {
-                  card.style.setProperty("background-image", "none", "important");
-                  card.style.setProperty("background", "linear-gradient(90deg,#f5f5f4 0 50%,#1f1f1f 50% 100%)", "important");
-                  card.style.setProperty("clip-path", "none", "important");
-                  card.style.setProperty("overflow", "hidden", "important");
-                }
-                break;
-              }
+              if (card.getBoundingClientRect().width > 120) break;
               card = card.parentElement; hops2++;
+            }
+            if (!card || card === document.body) continue;
+            var scope = [card].concat([].slice.call(card.querySelectorAll("*")));
+            for (var q = 0; q < scope.length; q++) {
+              var el = scope[q], bg = "", clip = "";
+              try { bg = window.getComputedStyle(el).backgroundImage; } catch (e2) {}
+              try { clip = window.getComputedStyle(el).clipPath; } catch (e3) {}
+              if (bg && bg.indexOf("gradient") !== -1) el.style.setProperty("background-image", "none", "important");
+              if (clip && clip !== "none") el.style.setProperty("clip-path", "none", "important");
+              var svgs = el.tagName === "svg" ? [el] : (el.querySelectorAll ? el.querySelectorAll("svg") : []);
+              for (var s = 0; s < svgs.length; s++) svgs[s].style.setProperty("display", "none", "important");
+            }
+            // Clean vertical two-tone split (left light, right dark).
+            card.style.setProperty("background-image", "linear-gradient(90deg,#f5f5f4 0 50%,#1f1f1f 50% 100%)", "important");
+            card.style.setProperty("background-color", "transparent", "important");
+            card.style.setProperty("clip-path", "none", "important");
+            card.style.setProperty("overflow", "hidden", "important");
+          }
+        } catch (e) { /* never break the console */ }
+      } },
+      { id: "hide-per-row-more", run: function () {
+        // Rohan v5: every conversation row in the sidebar carries its own
+        // hover-revealed "More actions" button (14 of them at 1919px). That
+        // is per-row clutter, and the machine actions live in the account
+        // popup now, so these are hidden outright. v4 deleted the old
+        // hidePerRowMoreButtons() helper along with the sidebar pill, which
+        // also removed the only thing hiding these — this rule restores that
+        // hiding as a proper rule. Matched by accessible name inside the
+        // sidebar, so no other control is touched.
+        try {
+          var side = findSidebarEl();
+          if (!side) return;
+          var btns = side.querySelectorAll("button");
+          for (var i = 0; i < btns.length; i++) {
+            var b = btns[i];
+            var name = "";
+            try { name = ((b.getAttribute("aria-label") || "") + " " + (b.textContent || "")).trim(); } catch (e) {}
+            if (/more actions/i.test(name)) {
+              b.style.setProperty("display", "none", "important");
+              b.setAttribute("data-agentx-hidden-more", "1");
             }
           }
         } catch (e) { /* never break the console */ }
@@ -3233,6 +3278,7 @@ function computerPanelScript(rebrandEnabled) {
           agentxRunRuleNow("composer-row");
           agentxRunRuleNow("label-truncation");
           agentxRunRuleNow("system-preview");
+          agentxRunRuleNow("hide-per-row-more");
           agentxRunRules();
         } finally {
           // Clear the flag on the next task, not immediately: MutationObserver
