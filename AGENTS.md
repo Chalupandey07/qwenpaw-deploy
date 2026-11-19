@@ -41,6 +41,13 @@ The two known failure modes this rule exists to stop:
   found in the bundle's strings for another screen — verify against the
   live DOM. A display name may render truncated — rename the truncated
   form too, never only the full phrase. (2026-11-19, docs/LESSONS.md.)
+- Before assuming a live UI element belongs to the upstream app, grep the
+  deployed bundles for its distinguishing string; if the string exists
+  nowhere in the app, the element is ours. (2026-11-19, docs/LESSONS.md.)
+- An injected element that can be created under different anchors needs a
+  document-wide guard, never an anchor-scoped one — the anchor can resolve
+  to a different container on different passes. (2026-11-19,
+  docs/LESSONS.md.)
 
 **When you learn something new:** add the one-line rule here and the full
 symptom → cause → fix story to `docs/LESSONS.md` (append-only, timestamped,
