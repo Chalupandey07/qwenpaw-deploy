@@ -226,13 +226,13 @@ console.log("static: the kill switch exists at both layers");
 console.log("static: the rule table is data-driven and guarded");
 {
   const ruleIds = [...rebrandSrc.matchAll(/\{ id: "([^"]+)", run: function/g)].map((m) => m[1]);
-  check("the rule table exists with 46 rules",
-    ruleIds.length === 46, `got ${ruleIds.length}: ${ruleIds.join(", ")}`);
+  check("the rule table exists with 48 rules",
+    ruleIds.length === 48, `got ${ruleIds.length}: ${ruleIds.join(", ")}`);
   check("the expected rules are all present",
     ["rename-title", "rename-attrs", "rename-text", "fix-grammar", "sidebar-ellipsis",
      "chat-input-fixes", "thinking-selector", "hide-native-thinking", "queue-takeover",
-     "settings-white-area", "page-bottom-padding", "sidebar-actions",
-     "composer-row", "label-truncation",
+     "settings-white-area", "page-bottom-padding", "account-row", "account-menu",
+     "composer-row", "label-truncation", "system-preview",
      "rename-logo", "hide-menu", "hide-about", "hide-language", "hide-desktop-prompt",
      "hide-codex-qoder", "hide-voice", "hide-import-text", "hide-china", "block-links",
      "footer-rebrand", "block-links-v2", "hide-powered-by", "hide-feedback",
@@ -465,8 +465,8 @@ console.log("static: the proxy wires the shim, the title, and the headers");
     "MutationObserver delivers callbacks as a microtask after the pass returns, so clearing the flag synchronously would let the queued microtask re-enter anyway");
   check("the DOM-writing rules the observer re-runs are the documented set",
     ["fix-grammar", "sidebar-ellipsis", "chat-input-fixes", "thinking-selector",
-     "queue-takeover", "settings-white-area", "page-bottom-padding", "sidebar-actions",
-     "composer-row", "label-truncation"]
+     "queue-takeover", "settings-white-area", "page-bottom-padding", "account-row",
+     "account-menu", "system-preview", "composer-row", "label-truncation"]
       .every((id) => worker.includes('agentxRunRuleNow("' + id + '")')),
     "most of these write textContent/nodeValue/appendChild/style unconditionally; that is the mechanism the guard above protects");
   check("CSP-Report-Only blocks third-party images (alicdn)",
