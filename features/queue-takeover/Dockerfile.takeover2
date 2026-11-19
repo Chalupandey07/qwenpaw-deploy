@@ -1,0 +1,53 @@
+# Derived QwenPaw image with the multi-tab takeover fix, round 2 (Step 10).
+#
+# Base is the LIVE image qwenpaw-agentx:2.3.0-takeover1 (upstream +
+# gatefix4 + bloat-winwin + cost-ledger + Telegram + approval-TTL +
+# the takeover1 bundle patch). The only change here is the CACHE BUST:
+# takeover1 patched the content-hashed bundles IN PLACE without changing
+# their filenames, while Pages serves /assets/* as immutable for a year,
+# so a tab that had loaded the console before kept running the OLD bundle
+# (no release-ownership branch, no controller registry) and the takeover
+# button posted a message the stale bundle ignored (live failure
+# 2026-11-19 ~08:55 IST: button rendered 3x, owner never released).
+#
+# The fix, two URL changes (features/queue-takeover/rename-chunks-tk2.py,
+# exact string surgery, fail-closed on anchor counts):
+#   1. index.html entry script gains ?v=takeover2, so the browser fetches
+#      a fresh shared chunk (index-DZrIuh3B.js). The shared chunk itself
+#      is NOT renamed: 287 asset files reference it, and every other chunk
+#      is byte-identical, so serving them from cache is harmless.
+#   2. The chat chunk is RENAMED index-opcB8AGu.js -> index-opcB8AGu-tk2.js
+#      (only 2 files reference it, 3 occurrences), and its static import
+#      of the shared chunk gains the same ?v=takeover2, so the Chat page
+#      and the entry share one fresh store instance instead of two.
+#
+# The Pages queue-takeover rule is fixed in the same round
+# (pages/public/_worker.js): document-wide guard (exactly one button,
+# moved not recreated), banner-root placement, white-space:nowrap.
+#
+# Tag: qwenpaw-agentx:2.3.0-takeover2.
+FROM qwenpaw-agentx:2.3.0-takeover1
+
+COPY rename-chunks-tk2.py /tmp/rename-chunks-tk2.py
+
+# Apply the cache bust in BOTH places the code lives. The package is
+# installed in site-packages (that is what Python imports at runtime);
+# /app/src is the source tree the install was built from. Then
+# syntax-check the touched bundles so a broken edit can never ship.
+# The build FAILS here if any anchor does not occur exactly once in
+# either copy, or the old chat-chunk name survives anywhere. The script
+# is NOT run twice on one copy (it fails closed on already-renamed input).
+RUN python3 /tmp/rename-chunks-tk2.py \
+        /app/src/qwenpaw/console \
+    && python3 /tmp/rename-chunks-tk2.py \
+        /app/venv/lib/python3.11/site-packages/qwenpaw/console \
+    && rm /tmp/rename-chunks-tk2.py \
+    && node --check /app/src/qwenpaw/console/assets/index-DZrIuh3B.js \
+    && node --check /app/src/qwenpaw/console/assets/index-opcB8AGu-tk2.js \
+    && node --check /app/src/qwenpaw/console/assets/TerminalView-Ik57q2nE.js \
+    && node --check /app/venv/lib/python3.11/site-packages/qwenpaw/console/assets/index-DZrIuh3B.js \
+    && node --check /app/venv/lib/python3.11/site-packages/qwenpaw/console/assets/index-opcB8AGu-tk2.js \
+    && node --check /app/venv/lib/python3.11/site-packages/qwenpaw/console/assets/TerminalView-Ik57q2nE.js \
+    && grep -q 'index-DZrIuh3B.js?v=takeover2' /app/src/qwenpaw/console/index.html \
+    && grep -q 'index-DZrIuh3B.js?v=takeover2' /app/venv/lib/python3.11/site-packages/qwenpaw/console/index.html \
+    && ! grep -r 'index-opcB8AGu\.js' /app/src/qwenpaw/console/assets/*.js /app/venv/lib/python3.11/site-packages/qwenpaw/console/assets/*.js
