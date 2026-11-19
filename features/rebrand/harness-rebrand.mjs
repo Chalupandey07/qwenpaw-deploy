@@ -29,11 +29,12 @@
  *     - the window.open patch swallows exactly the two upstream hosts;
  *     - the kill switch exists (worker env AGENTX_REBRAND=0 and
  *       ?rebrand=0 at runtime);
- *     - the rule table exists (41 rules: the original 13 plus the
+ *     - the rule table exists (42 rules: the original 13 plus the
  *       later fix-grammar / sidebar-ellipsis / chat-input-fixes /
  *       thinking-selector / page-bottom-padding / pill-positions rules
- *       plus the 22 Part 3 rules) and each rule runs in its own
- *       try/catch with a console.debug naming the rule;
+ *       plus the 22 Part 3 rules plus hide-native-thinking) and each
+ *       rule runs in its own try/catch with a console.debug naming
+ *       the rule;
  *     - the CSP-Report-Only + Referrer-Policy headers are set on the
  *       console HTML response, and the <title> is rewritten;
  *     - the shim is injected before the panel script, and the observer
@@ -213,11 +214,11 @@ console.log("static: the kill switch exists at both layers");
 console.log("static: the rule table is data-driven and guarded");
 {
   const ruleIds = [...rebrandSrc.matchAll(/\{ id: "([^"]+)", run: function/g)].map((m) => m[1]);
-  check("the rule table exists with 41 rules",
-    ruleIds.length === 41, `got ${ruleIds.length}: ${ruleIds.join(", ")}`);
+  check("the rule table exists with 42 rules",
+    ruleIds.length === 42, `got ${ruleIds.length}: ${ruleIds.join(", ")}`);
   check("the expected rules are all present",
     ["rename-title", "rename-attrs", "rename-text", "fix-grammar", "sidebar-ellipsis",
-     "chat-input-fixes", "thinking-selector", "page-bottom-padding", "pill-positions",
+     "chat-input-fixes", "thinking-selector", "hide-native-thinking", "page-bottom-padding", "pill-positions",
      "rename-logo", "hide-menu", "hide-about", "hide-language", "hide-desktop-prompt",
      "hide-codex-qoder", "hide-voice", "hide-import-text", "hide-china", "block-links",
      "footer-rebrand", "block-links-v2", "hide-powered-by", "hide-feedback",
@@ -226,6 +227,11 @@ console.log("static: the rule table is data-driven and guarded");
      "title-observer", "head-rebrand", "export-rebrand", "hide-run-in", "auth-rebrand",
      "error-rebrand", "hide-onboarding", "hide-update-banner", "hide-shortcuts-dialog"].every((id) => ruleIds.includes(id)),
     `got ${ruleIds.join(", ")}`);
+  // Logo-flash guard (2026-11-19 QA round 20): the header logo img
+  // painted before the rebrand observer renamed it. The injection hides
+  // QwenPaw-alt imgs until rename-logo processes them.
+  check("a QwenPaw-alt logo img is hidden until the rebrand processes it (no logo flash)",
+    /img\[alt\*="QwenPaw"\]:not\(\[data-agentx-logo\]\)\{visibility:hidden/.test(worker));
   check("each rule runs in its own try/catch",
     /try \{ AGENTX_RULES\[i\]\.run\(\); \} catch/.test(rebrandSrc),
     "one rule throwing must not take down the whole pass");
@@ -672,6 +678,12 @@ if (!rebrandSrc) {
     "an icon-only 'Documentation' Settings-menu button is hidden as a whole button",
     "a 'Settings' menu item is NOT hidden",
     "a visible 'QwenPaw' text node is renamed to AgentX",
+    "a QwenPaw warning sharing a plain container with a load-bearing sibling is renamed (Community page)",
+    "the 'Connect QwenPaw…' button in that container is renamed too",
+    "a load-bearing code snippet in the same container is left alone",
+    "'AgentScope Platform' is renamed to 'AgentX Platform'",
+    "the console's own 'Thinking intensity' control is hidden when our selector exists",
+    "our injected thinking selector is NOT hidden by the hide-native rule",
     "a load-bearing instruction is left alone (truthful, not renamed)",
     "an aria-label with QwenPaw is renamed",
     "a DashScope provider card (real DOM) is hidden as a whole card",
@@ -848,9 +860,26 @@ if (!rebrandSrc) {
   const asyncList = makeEl("div", { class: CLS.list }, []);
   const upstreamLink = makeEl("a", { href: "https://qwenpaw.agentscope.io/docs/intro?lang=en" }, [makeText("View guide")]);
   const normalLink = makeEl("a", { href: "/status" }, [makeText("Status")]);
+  // Community-style case (2026-11-19 QA round 20): a QwenPaw warning
+  // sharing a plain container with a load-bearing sibling — the old
+  // parent check skipped the whole container. The code snippet inside
+  // the same container stays load-bearing and is left alone.
+  const communityWarn = makeText("Remote connection requires HTTPS and an authenticated QwenPaw owner session.");
+  const communityCode = makeEl("code", {}, [makeText("Set QWENPAW_AUTH_ENABLED=true")]);
+  const communityBtn = makeEl("button", {}, [makeText("Connect QwenPaw…")]);
+  const communitySection = makeEl("div", { class: "community-section" }, [communityWarn, communityCode, communityBtn]);
+  // "AgentScope Platform" is the upstream provider card name on the
+  // Models page — a display name, never load-bearing.
+  const agentScopeDiv = makeEl("div", { class: "provider-name" }, [makeText("AgentScope Platform")]);
+  // Thinking controls (2026-11-19 QA round 20): the console's own
+  // "Thinking intensity" button and our injected per-chat selector.
+  // The native one must be hidden; ours must survive.
+  const nativeThinkingBtn = makeEl("button", { "aria-label": "Thinking intensity" }, [makeText("Thinking intensity")]);
+  const injectedThinkingSel = makeEl("select", { "data-agentx-thinking": "1", title: "Thinking level for this chat — Default follows the model, Off disables thinking" }, []);
   const root = makeEl("div", { id: "root" }, [
     menu, header, settingsMenu, aboutLi, brandDiv, greeting, loadBearing, ariaBtn,
     providerList, channelGrid, asyncList, upstreamLink, normalLink,
+    communitySection, agentScopeDiv, nativeThinkingBtn, injectedThinkingSel,
   ]);
   const doc = makeDocument(root);
   const opened = [];
@@ -892,6 +921,22 @@ if (!rebrandSrc) {
   check("a visible 'QwenPaw' text node is renamed to AgentX",
     greeting.textContent === "Hello! I'm AgentX. How can I help you?",
     `got ${greeting.textContent}`);
+  check("a QwenPaw warning sharing a plain container with a load-bearing sibling is renamed (Community page)",
+    communitySection.textContent.indexOf("authenticated AgentX owner session") !== -1,
+    `got ${communitySection.textContent}`);
+  check("the 'Connect QwenPaw…' button in that container is renamed too",
+    communityBtn.textContent === "Connect AgentX…",
+    `got ${communityBtn.textContent}`);
+  check("a load-bearing code snippet in the same container is left alone",
+    communityCode.textContent === "Set QWENPAW_AUTH_ENABLED=true",
+    `got ${communityCode.textContent}`);
+  check("'AgentScope Platform' is renamed to 'AgentX Platform'",
+    agentScopeDiv.textContent === "AgentX Platform",
+    `got ${agentScopeDiv.textContent}`);
+  check("the console's own 'Thinking intensity' control is hidden when our selector exists",
+    nativeThinkingBtn.style.display === "none", `display=${nativeThinkingBtn.style.display}`);
+  check("our injected thinking selector is NOT hidden by the hide-native rule",
+    injectedThinkingSel.style.display !== "none", `display=${injectedThinkingSel.style.display}`);
   check("a load-bearing instruction is left alone (truthful, not renamed)",
     loadBearing.textContent === "Set QWENPAW_AUTH_ENABLED=true to use the QwenPaw terminal.",
     `got ${loadBearing.textContent}`);
