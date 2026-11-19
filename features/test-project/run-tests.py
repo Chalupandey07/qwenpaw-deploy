@@ -1733,7 +1733,7 @@ def t113():
 
 
 def t114():
-    """AgentX rebrand (DOM injection, 174 checks).
+    """AgentX rebrand (DOM injection, 181 checks).
 
     Machine-free harness (features/rebrand/harness-rebrand.mjs) for the
     AgentX rebrand (features/rebrand/README.md). Static checks on the real
@@ -1742,7 +1742,7 @@ def t114():
     the window.open patch swallows exactly the two upstream hosts
     (qwenpaw.agentscope.io, github.com/agentscope-ai/QwenPaw); the kill
     switch exists at both layers (worker env AGENTX_REBRAND=0 and
-    ?rebrand=0 at runtime); the rule table has 41 rules and each runs in
+    ?rebrand=0 at runtime); the rule table has 42 rules and each runs in
     its own try/catch with a console.debug naming the rule; the menu/China
     rules hide by accessible name (aria-label/title/alt) and climb to the
     whole button/card container; the China climb is structural and never
@@ -1810,7 +1810,7 @@ def t114():
     (a real browser on the deployed console) is verified by Muse after
     deploy.
     """
-    return _harness("features/rebrand/harness-rebrand.mjs", 174)
+    return _harness("features/rebrand/harness-rebrand.mjs", 181)
 
 
 def t115():
@@ -2700,7 +2700,7 @@ def t141():
 
 
 def t142():
-    """Per-chat thinking selector: Default/Off/Low/Medium/High/XHigh (23).
+    """Per-chat thinking selector: Default/Off/Low/Medium/High/XHigh (29).
 
     Node harness (features/thinking-selector/test_thinking_selector.mjs)
     for the "thinking-selector" rule in pages/public/_worker.js. The
@@ -2731,7 +2731,7 @@ def t142():
     Pages deploy — blocked by the 2026-11-18 Workers 1027 outage until
     the 00:00 UTC reset.
     """
-    return _harness("features/thinking-selector/test_thinking_selector.mjs", 23)
+    return _harness("features/thinking-selector/test_thinking_selector.mjs", 29)
 
 
 def t143():
@@ -3286,7 +3286,7 @@ TESTS = [
     ("T111", "reset broker: allowlist guard + category table (selftest)", "reset", "protocol", t111),
     ("T112", "screen retry on failure (B-47): failed branch retries through bounded single-flight scheduleReconnect (harness)", "computer", "protocol", t112),
     ("T113", "routines daily-summary slot always probes (B-47 follow-up): slot bypasses the 15-min skip, wake-ticks still skip (harness)", "routines", "protocol", t113),
-    ("T114", "AgentX rebrand (DOM injection): shim stubs PyPI + swallows upstream opens, 13-rule observer renames/hides by accessible name, About delegated to /status, logo replaced, title watcher, /status note AgentX (harness)", "rebrand", "protocol", t114),
+    ("T114", "AgentX rebrand (DOM injection): shim stubs PyPI + swallows upstream opens, 42-rule observer renames/hides by accessible name, About delegated to /status, logo replaced, title watcher, /status note AgentX (harness)", "rebrand", "protocol", t114),
     ("T115", "loop-gate fix: tool-call budget counts once per turn (reply-scoped recompute, no double-count, no stale-iteration skip) and applies by default (harness)", "loop-gate", "protocol", t115),
     ("T116", "tinyfish: Settings env key (os.environ, python3, no vault), request-building, fallback when no key, feature flags, error mapping (selftest) + Settings Search section: PATCH /api/envs, mount, self-mount, _worker.js wiring (UI harness)", "tinyfish", "protocol", t116),
     ("T117", "memory facts: compact fact store + session handoff — extraction candidates, FTS5 retrieval ranked + token-budgeted, handoff written by session A read by session B, add-only dedup, supersede without deletion, secret rejection, universal search (selftest)", "memory", "protocol", t117),
@@ -3314,7 +3314,7 @@ TESTS = [
     ("T139", "real sandbox profile: separate container, workspace-only mount, isolated bridge, read-only rootfs, user 10001, caps dropped ALL, no docker.sock; vault mints short-lived scoped tokens (90s default / 300s max); egress via the T123 allowlist only; dispatcher routes generated-code jobs to sandbox, refuses the rest (selftest)", "sandbox", "protocol", t139),
     ("T140", "per-task cap survives the per-turn agent rebuild (gatefix5): the runtime builds a fresh agent per turn, so the task budget must persist through the state_dict round-trip (task_budget_state_dict / load_task_budget_state_dict, wired into ReactAgent.state_dict / load_state_dict); turn 2 gets 20 more to 40 and finalises, turns 3 and 4 execute 0; snapshot round-trip + loader fails open on bad data (harness, section P of test_task_cap.py)", "loop-gate", "protocol", t140),
     ("T141", "realistic resume messages resume the current task (gatefix6): _is_continuation matches a continuation phrase at the START of the message at a word boundary, not just an exact match -- 'hello, are you working?' and 'Yes, continue from 21' resume the echo task (20 shell, then 20 more to 40 and finalise, then 0); 'yesterday' / 'history' / 'surely' / 'thanksgiving' are NOT continuations; a genuinely new instruction after finalisation still mints a fresh task (harness, section Q of test_task_cap.py)", "loop-gate", "protocol", t141),
-    ("T142", "per-chat thinking selector (Default/Off/Low/Medium/High/XHigh): the rule surfaces the backend's GET/PUT /api/chats/{id}/thinking as a selector in the chat composer toolbar itself, in the Smart Mode row next to Smart Mode (user screenshot 2026-11-19), appended into that row (React-safe), Bearer from localStorage, model_key on PUT, pending level applied once a new chat gets an id, 422 revert + re-sync, out-of-set levels shown truthfully (harness)", "thinking", "protocol", t142),
+    ("T142", "per-chat thinking selector (Default/Off/Low/Medium/High/XHigh): the rule surfaces the backend's GET/PUT /api/chats/{id}/thinking as a selector in the chat composer toolbar itself, in the Smart Mode row next to Smart Mode (user screenshot 2026-11-19), appended into that row (React-safe), Bearer from localStorage, model_key on PUT, pending level applied once a new chat gets an id, 422 revert + re-sync with the server's reason shown next to the selector, lock-hint title when the model takes no thinking level, out-of-set levels shown truthfully (harness)", "thinking", "protocol", t142),
     ("T143", "smart sleep/wake: keep-alive ON/OFF toggle (POST /keepalive, Bearer <redacted>, D1 keepalive:enabled, tick early-return fail-closed, /status + /sleepwake/state keepAlive fields) + max-run guard (sleep at 7h uptime even when busy, WAKE/rest still win) + Hallmark waking/cooldown/status pages (no polling, scaleX bars, keep-alive switch, /status sleepwake.nextRoutineAt) (harness)", "sleepwake", "protocol", t143),
 ]
 
