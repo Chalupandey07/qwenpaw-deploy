@@ -446,9 +446,22 @@ decision (it lives in the upstream bundle).
   hard-coded colour), walks up ancestors when the shell itself is
   transparent, no-ops off /settings and before the nav mounts, and
   removes the fill on leaving Settings. Rule table 43 → 44;
-  T114 186 → 195 checks, T144 is the 9-check subset. Live browser
-  verification (light + dark, top scroll and max scroll) is pending
-  with Muse after the Pages deploy.
+  T114 186 → 195 checks, T144 is the 9-check subset. Round 2
+  (~08:4x IST): the paint source is the console's --app-bg theme
+  variable (#f9f8f4 light / #141414 dark, class fallback), never the
+  shell's background, with !important, and the stretch runs up the
+  ancestor chain; T114 195 → 198, T144 9 → 12. Round 3 (~09:0x
+  IST): round 2 changed nothing live — the shell (.page-content) is
+  transparent inside a WHITE full-height
+  .index-module__mainContentLayout wrapper (background:
+  var(--app-surface)) that covers the html/body paint, so the rule
+  now paints the shell AND every ancestor with the theme paint, and
+  writes a TEMPORARY visible diagnostic line (AX-DIAG,
+  elementFromPoint strip probes) readable as page text for the
+  browser check; T114 198 → 205, T144 12 → 19. Live browser
+  verification (light + dark, top scroll and max scroll, plus
+  reading the diagnostic line) is pending with Muse after the Pages
+  deploy.
 
 ## Live verification (deployed 83c3003; this commit NOT yet deployed)
 
