@@ -1,12 +1,6 @@
 # Real sandbox profile for generated code (gap #6, T139)
 
-**Status: code complete, machine-free test T139 50/50, NOT verified
-live.** The profile, the token API, the proxy, and the dispatcher
-are built and tested here. NOTHING is deployed, no container has
-ever run, and no job has ever been routed to a sandbox. Until the
-deploy steps in §5 land and a live container run proves the
-isolation, generated code still runs in the main container exactly
-as before. This README says that instead of implying otherwise.
+**Status: LIVE except the browser check (machine-free test T139 51/51).** The profile, the token API, the proxy, and the dispatcher are built, tested, deployed, and live-proven 2026-11-19 (see §5): the image is built, a container has run with it, and a real runner job ran end-to-end in the sandbox. What remains is the browser check.
 
 ## Why this exists
 
@@ -114,7 +108,7 @@ features/sandbox/
   dispatch.py            job-runner dispatch: sandbox / refuse / (one legacy main)
   egress_proxy.py        the egress proxy: allowlist gate for the sandbox bridge
   proxy-allowlist.txt    GENERATED snapshot of the T123 allowlist (do not edit by hand)
-  test_sandbox.py        machine-free test T139 (50 checks, fail-first)
+  test_sandbox.py        machine-free test T139 (51 checks, fail-first)
   profile/Dockerfile     the sandbox image (python:3.12-slim, uid 10001, no tools)
   profile/docker-compose.sandbox.yml   sandbox + proxy on the isolated bridge
   README.md              this file
@@ -294,32 +288,35 @@ Deployed 2026-11-19 (T139 deploy pass). The deploy order was:
    job → 200 refused with the reason surfaced, a sandbox-branch job
    → 200 refused at the missing-script check with
    `route.target == "sandbox"`, no token → 401.
-8. Live proof (done as far as possible WITHOUT the sandbox image):
+8. Live proof (COMPLETED 2026-11-19 ~06:00 IST, post-reset verify):
    gateway-unreachable probe ✓ (step 3), proxy allow/deny from
    inside a bridge container ✓ (step 5), workspace write-back ✓
    (a throwaway container writes `probe.txt` into the job workspace
    and it lands on the host — as root; as uid 10001 it FAILS on a
-   root-owned job dir, see REMAINING). Still to run, with the real
-   image: a container on the bridge tries to
-   `cat /app/working.secret/auth.json` (must fail: no such mount),
-   and a real runner job end-to-end (token mint → container run →
-   file written into `/workspace` → token dir removed). Record the
-   run; until then this feature is code + partial live proof, not
-   full protection.
+   root-owned job dir, see REMAINING). With the real image: a
+   container on the bridge tries to
+   `cat /app/working.secret/auth.json` (must fail: no such mount —
+   proven: no `/app` at all, no qwenpaw mounts, uid 10001), and a
+   real runner job end-to-end (token mint → container run → file
+   written into `/workspace` → token dir removed) — proven:
+   `t139-live-e2e` → status ok, exit 0, `probe.txt` landed on the
+   host, gateway unreachable from inside the job. The first e2e
+   attempt failed live (exit 125, `invalid tmpfs option "16m"` —
+   bare tmpfs size; fixed to `size=` + validator rule + test A15).
 
 ## 6. The test (T139)
 
 ```bash
-python3 features/sandbox/test_sandbox.py            # 50 checks
-python3 features/sandbox/test_sandbox.py --impl none  # fail-first: 7 passed, 43 failed
+python3 features/sandbox/test_sandbox.py            # 51 checks
+python3 features/sandbox/test_sandbox.py --impl none  # fail-first: 7 passed, 44 failed
 ```
 
 Fail-first: `--impl none` runs the same assertions against the
 pre-sandbox behaviour (main-container mounts, host network,
 unsigned never-expiring tokens, allow-everything proxy,
-route-everything-to-main) and fails 43/50. With the real code it
-passes 50/50. The test covers: (a) profile mounts/network/limits/
-lifetime/env/token-file + the validator naming each hole in a
+route-everything-to-main) and fails 44/51. With the real code it
+passes 51/51. The test covers: (a) profile mounts/network/limits/
+lifetime/env/token-file + tmpfs options valid docker options (size=, never a bare size — A15, added after the live exit-125) + the validator naming each hole in a
 hand-built leaky profile + rendering refusing it; (b) the proxy
 allowlist equalling T123 exactly + deny/allow over real HTTP on
 localhost (deny paths only — no upstream fetch); (c) token
@@ -342,15 +339,17 @@ DONE in this pass (code + machine-free test, committed):
 * Dispatcher routing generated-code jobs to the sandbox and
   refusing everything that cannot run there (never falling back).
 * Dockerfile + compose file for the sandbox + proxy.
-* T139, 50/50, fail-first proven (7 passed / 43 failed on the stub).
+* T139, 51/51, fail-first proven (7 passed / 44 failed on the stub).
 
 DONE on the machine 2026-11-19 (T139 deploy pass, live evidence in
 §5; commits in the deploy-pass push):
 
 * Broker `POST /sandbox/inject` deployed + restarted: refusals
   live (401/400/405), valid-token verification + single-use
-  consumption live (502 upstream, replay 401). The value-in-env +
-  scrub half awaits the Cloudflare 1027 reset (05:30 IST).
+  consumption live (502 upstream, replay 401). Value-in-env + scrub
+  proven live 2026-11-19 ~06:00 IST (post-reset verify): child env
+  has the item var, no broker token / sandbox key in env, `printenv`
+  → `[redacted]`, replay → 401.
 * Bridge `qwenpaw-sandbox-net` (172.19.0.0/16) + BOTH gateway rules
   (DOCKER-USER + INPUT) live; gateway unreachable from the bridge,
   main container unaffected; re-apply script on the machine.
@@ -362,23 +361,23 @@ DONE on the machine 2026-11-19 (T139 deploy pass, live evidence in
   allow/deny as designed.
 * Workspace write-back live: a container writes into the job
   workspace and it lands on the host.
+* Sandbox image `qwenpaw-sandbox:2.3.0` BUILT 2026-11-19 ~05:50 IST
+  (digest sha256:e64c643b71c6f422d928958000390df6c47b1787b28e11f45c3617d44540d287;
+  no gatefix5 image existed to delete — the 5-image cap was already at
+  5 with deploy1/approvalttl1/gatefix6/upstream/sandbox, and the
+  rebuild replaced the tag in place, no dangling image left).
+  Gateway unreachable from the image (python socket TimeoutError on
+  both broker ports), no auth.json / no qwenpaw mounts, uid 10001.
+  End-to-end runner job `t139-live-e2e` → status ok, exit 0,
+  `probe.txt` landed on the host, gateway unreachable from inside
+  the job. First e2e attempt failed live (exit 125, `invalid tmpfs
+  option "16m"` — bare tmpfs size; fixed to `size=` + validator rule
+  + test A15, see docs/LESSONS.md).
 
 REMAINING (not done, not faked):
 
-* **The sandbox image itself** (`qwenpaw-sandbox:2.3.0`) — NOT
-  built. 5-image cap, a T132 build is in flight; the parent builds
-  it (`docker build -t qwenpaw-sandbox:2.3.0 -f
-  features/sandbox/profile/Dockerfile features/sandbox/profile/`
-  from `/data/home/qwenpaw/sandbox/profile/`, delete an old image
-  first, pin the digest). Until then no real sandbox container has
-  run: the `auth.json` no-mount probe and the end-to-end runner job
-  (token mint → container run → file in `/workspace` → token dir
-  removed) remain.
-* **Broker inject value-in-env + scrub live proof** — blocked by
-  the Cloudflare 1027 outage until 05:30 IST 2026-11-19. Re-run
-  `python3 /data/home/qwenpaw/vault/t139-proof-inject.py` after the
-  reset (expects: child env names include the item var, no broker
-  token / sandbox key in env, `printenv` → `[redacted]`).
+* **Browser check** — the sandbox has not been exercised from the
+  console UI.
 * **Direct internet egress from the bridge is OPEN (measured).**
   The proxy is the intended route, not the only route. Follow-up
   (needs parent approval, NOT applied): pin the proxy to a fixed IP
