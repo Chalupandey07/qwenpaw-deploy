@@ -1,6 +1,6 @@
 services:
   qwenpaw:
-    image: qwenpaw-agentx:2.3.0-takeover2
+    image: qwenpaw-agentx:2.3.0-takeover1
     init: true
     container_name: qwenpaw
     restart: always
