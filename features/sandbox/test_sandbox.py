@@ -19,7 +19,9 @@ Checks:
       socket route, no docker.sock); isolated bridge network (not
       host); read-only rootfs, non-root user, caps dropped, no
       privileged; resource caps (1g / 1 CPU / 128 pids); lifetime cap
-      (<= 300 s); no credential in env; token on the tmpfs file.
+      (<= 300 s); no credential in env; token on the tmpfs file; tmpfs
+      options are valid docker options (a size is "size=64m", never a
+      bare "64m" — a bare size makes the daemon refuse the container).
   (b) allowlist: proxy-allowlist.txt IS the T123 allowlist (exact
       equality, no new list); proxy denies non-allowlisted, China,
       and private-IP hosts and allows allowlisted ones, over real HTTP.
@@ -328,6 +330,26 @@ def run_checks(impl) -> None:
         svc_ok, svc = False, {"error": str(exc)}
     check("A14 compose service keeps the token tmpfs, the one volume, the bridge",
           svc_ok, f"{svc!r}")
+
+    # A15: tmpfs options must be valid docker --tmpfs options. The live
+    # end-to-end runner job 2026-11-19 failed with exit 125
+    # (`invalid tmpfs option "16m"`) because build_profile wrote a bare
+    # size; docker wants "size=16m". The rendered argv must carry a
+    # size= on every tmpfs mount, and a hand-built profile with a bare
+    # size must fail validation (fail-first: the stub renders no
+    # --tmpfs at all and validates nothing).
+    _argv_tmpfs = [argv[i + 1] for i, a in enumerate(argv)
+                   if a == "--tmpfs" and i + 1 < len(argv)]
+    _bad_tmpfs = impl.build_profile(JOB)
+    _bad_tmpfs["tmpfs"] = {"/run": "16m,noexec,nosuid,nodev"}
+    _bad_tmpfs_v = impl.validate_profile(_bad_tmpfs)
+    check("A15 tmpfs options are valid docker options (size=, never a bare size)",
+          len(_argv_tmpfs) == 3
+          and all("size=" in t for t in _argv_tmpfs)
+          and any("size=16m" in t for t in _argv_tmpfs)
+          and any("size=64m" in t for t in _argv_tmpfs)
+          and any("tmpfs" in v and "16m" in v for v in _bad_tmpfs_v),
+          f"argv_tmpfs={_argv_tmpfs!r} bad={_bad_tmpfs_v!r}")
 
     # -- (b) allowlist + proxy -------------------------------------------
     if hasattr(impl, "egress_guard"):
