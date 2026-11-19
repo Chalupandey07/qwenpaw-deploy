@@ -1877,8 +1877,18 @@ function computerPanelScript(rebrandEnabled) {
           // thinking-selector rule — no separate rule. Text-node values
           // only; the select we create below is our own element.
           try { agentxRenameTextIn(toolbar); } catch (e) {}
+          // Global guard (2026-11-19 DOM-inspection round): the anchor
+          // can resolve to a DIFFERENT container on different passes —
+          // the chat-input grandparent before Smart Mode mounts, the
+          // Smart Mode row after. A toolbar-scoped guard let the rule
+          // create a SECOND select in the other container: the "native"
+          // duplicate below the toolbar WAS ours (the strings "Thinking
+          // level for this chat" exist nowhere in the console bundles).
+          // One select per document, ever: if one exists, move it (ours
+          // only) into the Smart Mode row when that row is found; never
+          // create another.
           var sel = null;
-          try { sel = toolbar.querySelector ? toolbar.querySelector("[data-agentx-thinking]") : null; } catch (e) {}
+          try { sel = document.querySelector ? document.querySelector("[data-agentx-thinking]") : null; } catch (e) {}
           var created = false;
           if (!sel) {
             var label = document.createElement("span");
@@ -1902,6 +1912,19 @@ function computerPanelScript(rebrandEnabled) {
             toolbar.appendChild(label);
             toolbar.appendChild(sel);
             created = true;
+          } else if (toolbar) {
+            // The select already exists somewhere else (created under a
+            // fallback anchor before Smart Mode mounted): move OUR label
+            // + select into the Smart Mode row. Moving our own elements
+            // only — React's nodes are never touched.
+            try {
+              if (sel.parentElement !== toolbar) {
+                var _lab = null;
+                try { _lab = document.querySelector ? document.querySelector("[data-agentx-thinking-label]") : null; } catch (e) {}
+                if (_lab && _lab.parentElement !== toolbar) toolbar.appendChild(_lab);
+                toolbar.appendChild(sel);
+              }
+            } catch (e) {}
           }
           var chatId = agentxThinkingChatId();
           if (chatId && st.chatId === chatId && st.level) agentxThinkingShow(st.level);
@@ -1940,6 +1963,143 @@ function computerPanelScript(rebrandEnabled) {
               el.style.display = "none";
               if (el.setAttribute) el.setAttribute("data-agentx-hidden", "1");
             } catch (e) {}
+          }
+        } catch (e) {}
+      } },
+      { id: "queue-takeover", run: function () {
+        // Multi-tab takeover (2026-11-19 Step 10): the console's
+        // single-sender ownership lock (Web Lock qwenpaw:queue-owner)
+        // leaves a non-owner tab queuing forever, and its
+        // "Interrupt & send" button is a dead no-op there. The bundle
+        // patch (features/queue-takeover) makes the owner tab abort its
+        // ownership AbortController on a "release-ownership"
+        // BroadcastChannel message. This rule adds the affordance: a
+        // "Take over sending" button on the queue-only banner, and hides
+        // the dead "Interrupt & send" button while the banner is up.
+        // React-safe: the button is OUR element, appended to the banner;
+        // React may drop it on a re-render, so the rule re-creates it on
+        // every run (same pattern as the thinking selector). Until the
+        // patched image is deployed the button posts a message the old
+        // bundle ignores — the rule is harmless there.
+        try {
+          var path = "";
+          try { path = window.location ? window.location.pathname || "" : ""; } catch (e) {}
+          var chatId = "";
+          try { chatId = agentxThinkingChatId ? agentxThinkingChatId() : ""; } catch (e) {}
+          if (path.indexOf("/chat") !== 0) return;
+          var banner = null;
+          try {
+            if (document.querySelectorAll) {
+              var divs = document.querySelectorAll("div");
+              var best = null, bestLen = 0;
+              for (var i = 0; i < divs.length; i++) {
+                var t = "";
+                try { t = divs[i].textContent || ""; } catch (e) {}
+                if (t.indexOf("This tab queues only") !== -1 && (best === null || t.length < bestLen)) { best = divs[i]; bestLen = t.length; }
+              }
+              banner = best;
+            }
+          } catch (e) {}
+          // Hide the dead "Interrupt & send" while the banner is up;
+          // restore it when this tab becomes the owner (banner gone).
+          try {
+            if (document.querySelectorAll) {
+              var btns = document.querySelectorAll("button");
+              for (var j = 0; j < btns.length; j++) {
+                var b = btns[j];
+                try {
+                  if (b.getAttribute && b.getAttribute("data-agentx-takeover")) continue;
+                  if ((b.textContent || "").indexOf("Interrupt") === -1) continue;
+                  if (banner) {
+                    if (!b.getAttribute || b.getAttribute("data-agentx-interrupt-hidden") !== "1") {
+                      if (b.setAttribute) b.setAttribute("data-agentx-interrupt-hidden", "1");
+                      b.style.display = "none";
+                    }
+                  } else if (b.getAttribute && b.getAttribute("data-agentx-interrupt-hidden") === "1") {
+                    if (b.setAttribute) b.setAttribute("data-agentx-interrupt-hidden", "0");
+                    b.style.display = "";
+                  }
+                } catch (e) {}
+              }
+            }
+          } catch (e) {}
+          if (!banner) return;
+          try {
+            if (banner.querySelector && banner.querySelector("[data-agentx-takeover]")) return;
+          } catch (e) {}
+          var btn = document.createElement("button");
+          btn.setAttribute("data-agentx-takeover", "1");
+          btn.textContent = "Take over sending";
+          btn.style.cssText = "font-size:12px;color:#e8eaf0;background:#171a21;border:1px solid #343945;border-radius:8px;padding:4px 10px;margin-left:8px;flex:none;cursor:pointer;";
+          btn.addEventListener("click", function () {
+            try {
+              if (typeof BroadcastChannel === "undefined") return;
+              var ch = new BroadcastChannel("qwenpaw:queue");
+              ch.postMessage({ type: "release-ownership", sessionId: chatId });
+              btn.disabled = true;
+              btn.textContent = "Takeover requested…";
+            } catch (e) {}
+          });
+          banner.appendChild(btn);
+        } catch (e) {}
+      } },
+      { id: "settings-white-area", run: function () {
+        // Settings pages (2026-11-19, browser-verified): the outer
+        // settings <main> shell is only ~819px tall in a 998px viewport
+        // — the cream ends and the white body shows below (a 179px
+        // strip). Content is NOT cut off (it scrolls inside; Save is
+        // the last element); the direct origin has no white area.
+        // Fix: stretch the shell to the viewport and paint <html> +
+        // <body> the shell's own background colour, so no white shows
+        // below at any scroll position. The shell is the <main> that
+        // contains nav[aria-label="Settings"] (the nested General
+        // <main> sits inside it — a bare querySelector("main") is the
+        // same element today, but the nav anchor is exact). The colour
+        // is the shell's OWN computed background, so the fill matches
+        // the active theme (cream in light mode, the dark surface in
+        // dark mode) without hard-coding a colour; when the shell
+        // itself is transparent the first opaque ancestor background
+        // is used. The paint is cleared when leaving /settings
+        // (tracked by the marker, so we never touch a colour we did
+        // not set). Runs on every observer pass (after React renders);
+        // before the nav mounts it no-ops and the next pass retries.
+        try {
+          var path = "";
+          try { path = window.location ? window.location.pathname || "" : ""; } catch (e) {}
+          var body = document.body || null;
+          var root = null;
+          try { root = document.documentElement || null; } catch (e) {}
+          if (path.indexOf("/settings") !== 0) {
+            if (body && body.getAttribute && body.getAttribute("data-agentx-settings-bg") === "1") {
+              if (body.setAttribute) body.setAttribute("data-agentx-settings-bg", "0");
+              if (body.style) body.style.backgroundColor = "";
+              if (root && root.style) root.style.backgroundColor = "";
+            }
+            return;
+          }
+          var nav = null;
+          try { nav = document.querySelector ? document.querySelector('nav[aria-label="Settings"]') : null; } catch (e) {}
+          if (!nav) return;
+          var shell = null;
+          try { shell = nav.closest ? nav.closest("main") : null; } catch (e) {}
+          if (!shell) return;
+          if (shell.style) {
+            shell.style.minHeight = "100vh";
+            shell.style.minHeight = "100dvh";
+            shell.style.boxSizing = "border-box";
+          }
+          var fill = "";
+          try { if (window.getComputedStyle) fill = window.getComputedStyle(shell).backgroundColor || ""; } catch (e) {}
+          var anc = null;
+          try { anc = shell.parentElement || null; } catch (e) {}
+          while ((!fill || fill === "rgba(0, 0, 0, 0)" || fill === "transparent") && anc) {
+            try { if (window.getComputedStyle) fill = window.getComputedStyle(anc).backgroundColor || ""; } catch (e) {}
+            try { anc = anc.parentElement || null; } catch (e) {}
+          }
+          if (fill && fill !== "rgba(0, 0, 0, 0)" && fill !== "transparent" && body && body.style) {
+            body.style.backgroundColor = fill;
+            if (root && root.style) root.style.backgroundColor = fill;
+            if (body.setAttribute) body.setAttribute("data-agentx-settings-bg", "1");
           }
         } catch (e) {}
       } },
@@ -2449,6 +2609,8 @@ function computerPanelScript(rebrandEnabled) {
         agentxRunRuleNow("sidebar-ellipsis");
         agentxRunRuleNow("chat-input-fixes");
         agentxRunRuleNow("thinking-selector");
+        agentxRunRuleNow("queue-takeover");
+        agentxRunRuleNow("settings-white-area");
         agentxRunRuleNow("page-bottom-padding");
         agentxRunRuleNow("pill-positions");
         agentxRunRules();
