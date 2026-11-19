@@ -1,10 +1,11 @@
 # Smart sleep/wake, part 1: keep-alive ON/OFF toggle + max-run guard (2026-11-19)
 
 Two additions to the intelligent sleep/wake system in `worker/src/index.js`
-(see `features/sleepwake/README.md` for the base design). Both are code +
-machine-free harness only — NOT verified live (deploy + browser blocked by
-the Cloudflare 1027 Workers outage and the machine cooldown until 05:30 IST
-2026-11-19).
+(see `features/sleepwake/README.md` for the base design). The §3
+recovery fix was DEPLOYED LIVE 2026-11-19 ~13:20 IST (flip verified:
+07:55 tick sleeping→running, reason `reporter_up`); that deploy
+exposed the §4 stale-baseline defect, whose fix (§4) is code-complete
+and NOT yet deployed — see §4 for the deploy condition.
 
 ## 1. Keep-alive ON/OFF toggle
 
@@ -126,13 +127,17 @@ if (uptimeMin >= 420 && machineUp === true && sleepState === "running" && restAc
   machine that hits 8h takes a forced ~2h cooldown; a 7h sleep does
   not. Recent visits and recent agent activity deliberately do NOT block
   the guard.
-- **Uptime source:** the EXISTING `uptimeMin` — reporter `uptimeSec`
-  when fresh, else the stored `lastUpAt` lower bound, else 0. No new
-  uptime source was invented. Unknown uptime yields `uptimeMin` 0,
-  which fails the 420 threshold, so the fail-closed property holds
-  automatically. Reporter staleness does not block the guard: both
-  uptime sources are lower bounds, so a 420-min reading is real either
-  way.
+- **Uptime source (updated 2026-11-19 — see §4):** the EXISTING
+  `uptimeMin` — reporter `uptimeSec` when fresh, else the D1
+  `sleepwake:run-start` baseline, else 0 (unknown). The stored
+  `lastUpAt` is NO LONGER an uptime source: it is the last up-transition
+  / last meaningful status change, write-on-change froze it for 17h
+  through a cooldown, and it can predate the current run entirely — so
+  it is not even a lower bound across run boundaries. Unknown uptime
+  yields `uptimeMin` 0, which fails the 420 threshold, so the
+  fail-closed property holds automatically. Reporter staleness does not
+  block the guard: the baseline is a real run-start observation, so a
+  420-min reading is real either way.
 - **Precedence:** WAKE still wins — a routine due within the lookahead
   returns from the earlier branch first (wake if down, hold if up), so
   the guard can never sleep past a routine. Manual rest still wins
@@ -152,7 +157,7 @@ lookahead (5 min lead + wake buffer) is the margin that makes the
 - `worker/src/index.js` — `readKeepAliveEnabled` + `readKeepAlivePublic`,
   tick gate, `POST /keepalive`, `/status` + `/sleepwake/state` fields,
   `SW_MAX_RUN_MIN = 420` guard in `decideSleepWake`.
-- `features/smart-sleep/harness-smart-sleep.mjs` — 105 checks, node stdlib
+- `features/smart-sleep/harness-smart-sleep.mjs` — 131 checks, node stdlib
   only, real Worker module + mock D1 + mock fetch that counts every call.
   Fail-first run against the pre-change module: 23 passed, 45 failed
   (toggle endpoint 404, guard absent, gate absent). Post-change: 68/68.
@@ -193,19 +198,21 @@ uptime is >= 420 min. The 5-min bar is deliberately tighter than the
 evidence alone, without a probe. A stale or missing report never flips
 (fail closed).
 
-### Uptime in the state — and the live reporter's null
+### Uptime in the state — and the live reporter's null (updated 2026-11-19, §4)
 The state records the uptime the tick computed, as `uptimeSec`, so the
 flip is auditable and `GET /sleepwake/state` exposes it (null when no
 recovery has happened). The tick's uptime is the reporter's `uptimeSec`
-when the report carries a finite one, else the stored `lastUpAt` lower
-bound. **The live reporter posts `uptimeSec: null` always**
-(`features/sleepwake/reporter.py`: it cannot know run start — the
-container predates the wake, `/proc/uptime` is machine boot, not run
-start), so in production the recorded uptime comes from `lastUpAt`.
-The recovery deliberately does NOT require a finite reporter
-`uptimeSec`: requiring it would make the fix dead code in production.
-The guard reads the tick's `uptimeMin`, not the state, so it fires
-correctly either way.
+when the report carries a finite one, else the D1 `sleepwake:run-start`
+baseline — **never the stored `lastUpAt`** (see §4: it froze for 17h
+and made the guard fire on a 10-minute-old run). **The live reporter
+posts `uptimeSec: null` always** (`features/sleepwake/reporter.py`: it
+cannot know run start — the container predates the wake, `/proc/uptime`
+is machine boot, not run start), so in production the recorded uptime
+comes from the baseline, which the flip resets to `now` when the
+reporter carries no finite uptimeSec. The recovery deliberately does
+NOT require a finite reporter `uptimeSec`: requiring it would make the
+fix dead code in production. The guard reads the tick's `uptimeMin`,
+not the state, so it fires correctly either way.
 
 ### DEPLOY CONDITION — read this before deploying
 **Do NOT deploy this while a run is already past 7h uptime.** The
@@ -230,7 +237,7 @@ stuck state is ever observed again after this fix is live.
 
 ### Tests
 ```bash
-node features/smart-sleep/harness-smart-sleep.mjs   # 105/105
+node features/smart-sleep/harness-smart-sleep.mjs   # 131/131
 ```
 New section "stuck-state recovery — reporter_up" (33 checks): fresh
 reporter flips sleeping→running with reason `reporter_up` and the
@@ -240,24 +247,153 @@ flip (zero fetches); 7h uptime + fresh reporter fires the guard in the
 same tick (one Pages sleep, zero console probes, final reason
 `max_run_guard`); a stale report claiming 7h does not fire the guard;
 419 min flips but does not fire; the live reporter shape (uptimeSec
-null) flips with the lastUpAt lower bound; finite reporter uptimeSec
-wins over lastUpAt; an already-running state is never overwritten and
-the tick writes nothing to D1 meta; `GET /sleepwake/state` exposes the
+null) flips with the run-start baseline reset to now and the state
+carrying ~0 (see §4 — the pre-§4 text here used to say "the lastUpAt
+lower bound", which was the bug); finite reporter uptimeSec wins over
+the baseline; an already-running state is never overwritten and the
+tick writes nothing to D1 meta; `GET /sleepwake/state` exposes the
 recorded uptimeSec. Fail-first: 89/105 against the pre-recovery Worker
 (16 fail — exactly the recovery checks; the 17 negative controls pass
 on both, by design), 105/105 after.
 
+## 4. Stale-baseline incident (2026-11-19) — the guard fired on a 10-minute-old run
+
+### The incident
+The §3 recovery fix was deployed live 2026-11-19 ~13:20 IST (Worker
+deployment `183544040b6e4c25aa147045f41bd0f7`, cron */5 intact). The
+machine had come back from its max-run cooldown at 13:15:03 IST
+(direct origin first 200 ~13:20 IST / 07:50Z; true run start
+~07:45–07:50Z). The 07:55 tick flipped the state sleeping→running
+(reason `reporter_up`, uptimeSec 62729 recorded) and `/status`
+showed keepAlive `on`. Then the guard fired at the 07:55, 08:00 and
+08:05 ticks (`lastSleepAt` 07:55:58Z → 08:00:59Z → 08:05:59Z, reason
+`sleep_failed:pages_sleep_failed` each time) on a run that was
+~10–25 min old. The machine survived ONLY because every suspend
+attempt failed — if one had succeeded, the machine would have been
+suspended ~20 min into a fresh run; if they kept failing, the 7h
+guard was toothless and the run would hit the 8h wall ~21:15 IST
+with a forced ~2h cooldown.
+
+### Root cause (verified in code + live state)
+The guard's uptime came from the stored `lastUpAt` — the last
+up-transition / last meaningful status change, kept in the D1 status
+row. `saveStatus` is write-on-change and `lastUpAt` is deliberately
+excluded from the meaningful-change list, so it froze at
+2026-11-18T14:30:29Z while the stuck `"sleeping"` state suppressed
+all probes and status writes through the cooldown. The 07:55
+`reporter_up` flip recorded that frozen value (62729s = 17.4h) into
+the sleep state, and every tick since recomputed uptime from the same
+frozen `lastUpAt`. A second layer: even the probe's up-save after a
+failed sleep did not refresh `lastUpAt`, because the write-on-change
+check dropped it (nothing else meaningful changed). `lastUpAt` is not
+a lower bound on the current run's uptime across run boundaries — it
+can predate the current run entirely.
+
+### Why the sleep kept failing (diagnosed, not fixed here)
+`Pages POST /api/machine/sleep` returns 503 `instabox_machine_unset`:
+`INSTABOX_MACHINE_ID` is ABSENT from the production `env_vars` of
+BOTH Pages projects (qwenpawx and qwenpaw-frontend — verified via the
+Cloudflare API 2026-11-19 ~13:45 IST). `sleepMachine` in
+`pages/public/machine-control.js` checks it after auth and returns
+503 before ever calling InstaBox. Ruled out: 503 SLEEP_TOKEN unset
+(the Worker secrets list shows SLEEP_TOKEN present, and a
+wrong-token probe of both Pages returned 401 `unauthorized`, proving
+the secret is set); 401 token mismatch is unlikely (one provisioning
+run set the same generated value on the Worker and both Pages, no
+rotation recorded); 502 InstaBox refusing the PATCH suspend cannot be
+the current failure (the code returns 503 first) but could become the
+failure after the var is set. Worker console logs were unavailable
+(Observability keys endpoint 404, `logpush: false`, no tail
+consumers, wrangler not installed). **Fix, for the parent to do:**
+set plain-text var `INSTABOX_MACHINE_ID` =
+`m_agq5wqqo2fvypym7rjlpvngc2m` (already in `worker/wrangler.toml`,
+not a secret) on both Pages projects' production env. The same
+missing var also breaks the Rest button (`restMachine` has the
+identical check). After it is set, the next guard tick will either
+succeed (token matched) or fail 401 (token mismatch) — the first real
+7h guard sleep is the live proof.
+
+### The fix (in `worker/src/index.js`)
+A D1 run-start baseline, `sleepwake:run-start` (epoch ms), set ONCE
+per run at the observed down→up transition, never refreshed while up,
+never derived from `lastUpAt`:
+- Helpers after `readLastVisit`: `readRunStart(db)`,
+  `writeRunStart(db, ms)`, `baselineFromReport(report, now)`
+  (reporter's finite uptimeSec → `now - uptimeSec*1000`, exact; else
+  `now`), `computeUptimeSec(report, reporterStale, runStart, now)` —
+  ONE precedence shared by tick and endpoint: reporter uptimeSec
+  (fresh) > run-start baseline > unknown (null). The `lastUpAt`
+  fallback was deliberately DROPPED: unknown → 0 in the tick, which
+  fails the 420 threshold — fail closed, as the guard's own comment
+  requires.
+- **R1 (flip):** in the `reporter_up` recovery, reset the baseline
+  FIRST (from the report), then compute the uptime, then record the
+  flip's `uptimeSec` from the corrected value (~0 when the reporter
+  posts null).
+- **R2 (reconcile):** if no baseline exists and the reporter is fresh
+  within the same 5-min recovery bar, initialize the baseline from the
+  report. This corrects the ALREADY-RUNNING live state on the first
+  tick after deploy — a fix that only resets on a future flip would
+  never fire, because the state is already `"running"`.
+- **R4 (probe transition):** after a probe returns `up` (wake branch
+  + final probe), if the pre-probe cached status was not `up` or no
+  baseline exists, set baseline = `Date.now()`. Steady state
+  (recorded up + baseline present) writes nothing.
+- `GET /sleepwake/state`: `uptimeSec` is now the LIVE-computed value
+  (same precedence as the tick), not the last flip's recorded value;
+  new field `runStartAt` (ISO or null). The flip's recorded value
+  stays in the state row for audit.
+
+### Tests
+```bash
+node features/smart-sleep/harness-smart-sleep.mjs   # 131/131
+node features/sleepwake/harness-sleepwake.mjs       # 53/53
+```
+New section "run-start baseline — stale-baseline incident
+(2026-11-19)" (21 checks, T143 105 → 131): L1 the live case
+(already-running + stale lastUpAt 17h + fresh reporter null-uptime +
+no baseline → ZERO Pages sleeps, baseline ≈ now, 1 probe, state
+running); L2 a genuinely 7h-old run still fires (425-min baseline,
+lastUpAt fresh 60 min — pre-fix would NOT fire — → one Pages sleep,
+zero probes, reason `max_run_guard`); L3 419-min baseline → hold;
+L4 stale reporter claiming 420 min is ignored (baseline 60 min →
+hold, baseline unchanged); L5 probe transition sets the baseline;
+L6 steady state never refreshes the baseline; L7/L8 the endpoint
+after the live-case tick (runStartAt ≈ now, uptimeSec < 300) and with
+nothing known (uptimeSec null, runStartAt null). The H/J/K checks
+were rewritten to the new behaviour (flip records ~0, baseline init
+is 1 meta write, endpoint exposes the live value + `runStartAt`).
+Fail-first: 111/131 against the pre-fix Worker (20 fail — exactly
+the behaviour-changing checks; the 3 T108-style regression controls
++ the 2 vacuous baseline-presence checks pass on both, by design),
+131/131 after. T108 gained the same live case (50 → 53, fail-first
+50/53).
+
+### DEPLOY CONDITION — unchanged
+Deploy ONLY in a fresh run with uptime well under 7h, then verify
+live: `GET /sleepwake/state` shows `runStartAt` ≈ the true run
+start, `uptimeSec` in minutes and growing, mode `running`, and
+`lastSleepAt` stops advancing (no new `sleep_failed` entries) across
+at least 2 ticks (~10 min). If the guard still fires after the fix,
+report the state body plainly — do not redeploy repeatedly.
+
 ## Tests
 ```bash
-node features/smart-sleep/harness-smart-sleep.mjs   # 68/68
-node features/sleepwake/harness-sleepwake.mjs       # 47/47 (regression)
+node features/smart-sleep/harness-smart-sleep.mjs   # 131/131
+node features/sleepwake/harness-sleepwake.mjs       # 53/53 (regression)
 node --input-type=module -e "import('./worker/src/index.js')"  # import smoke test
 ```
 
 ## NOT verified live (do not claim done until seen)
-- Deploy of the new Worker code (blocked: Cloudflare 1027 quota until
-  05:30 IST 2026-11-19; machine suspended until ~03:04 IST).
+- Deploy of the §4 run-start baseline Worker code (deploy ONLY in a
+  fresh run with uptime well under 7h; then watch 2 ticks: `runStartAt`
+  ≈ the true run start, `uptimeSec` in minutes and growing, no new
+  `lastSleepAt` / `sleep_failed` entries).
+- The §3 recovery fix WAS deployed live 2026-11-19 ~13:20 IST (flip
+  verified at the 07:55 tick; see §4 for the defect it exposed).
 - A real `POST /keepalive` flip against the live Worker + a tick that
   skips, and a flip back that resumes.
-- A real max-run-guard sleep at ~7h uptime (needs a busy 7h run).
+- A real max-run-guard sleep at ~7h uptime (needs a busy 7h run) — and
+  the first real sleep is also the proof that the Pages sleep works
+  once `INSTABOX_MACHINE_ID` is set (see §4).
 - `GET /status` / `/sleepwake/state` showing `keepAlive` in a browser.
