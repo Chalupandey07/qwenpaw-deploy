@@ -28,6 +28,11 @@ The two known failure modes this rule exists to stop:
 - A browser round lost three tests to a spent Cloudflare KV write quota that
   no protocol test could see. **Check the quota before spending a session.**
   (2026-11-15/17, docs/LESSONS.md.)
+- A rendered `docker run --tmpfs` with a bare size (`16m` instead of
+  `size=16m`) passed 50/50 machine-free and failed live with exit 125.
+  **Validate rendered commands against the tool's real option grammar, and
+  run the rendering live the first time it executes.** (2026-11-19,
+  docs/LESSONS.md.)
 
 **When you learn something new:** add the one-line rule here and the full
 symptom → cause → fix story to `docs/LESSONS.md` (append-only, timestamped,
