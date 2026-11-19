@@ -142,11 +142,25 @@ is back.
 ## Run
 
 ```bash
-python3 test_judge.py              # must PASS (57 checks)
+python3 test_judge.py              # must PASS (68 checks)
 python3 test_judge.py --old-grader # must FAIL (old grader wrong on >= 2)
 python3 judge.py --audit-cases cases.json   # flags all 5 legacy cases
 python3 judge.py --calibrate       # set summary, live NOT VERIFIED
 ```
+
+## Calibration agreement (the cal-12 rule)
+
+Live re-run 5 (2026-11-19) finished in ~4 min at 11/12: cal-01..cal-11
+all agree; cal-12 (empty-reply-fail, reply empty by construction)
+counted DISAGREE only because the rule required qualified=True, though
+its pass=False matches the human fail. `_calibration_agrees` (judge.py)
+counts a case when the human verdict is fail AND the judge returns
+pass=False with error_kind "empty_reply" — fail-closed is the correct
+verdict there, so counting it recognises correct behaviour, not a
+weakening. An empty reply on a pass-case, and every other unqualified
+verdict, still count as disagreement. `test_judge.py --live` grades
+with the same function (section I, 11 checks, fail-first 59/68
+pre-fix). Re-run 6 with this rule must report 12/12 TRUSTED.
 
 ## Design review
 
