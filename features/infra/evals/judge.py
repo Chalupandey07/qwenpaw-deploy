@@ -102,9 +102,26 @@ JUDGE_MODEL = "deepseek-v4.1-flash-free (console active model, verified 2026-11-
 DEFAULT_BASE = "https://qwenpawx.pages.dev"
 POLL_INTERVAL = 5
 MAX_POLLS = 180  # 180 * 5s = 15 min per judge call, same as run-evals.py.
-# Was 72 (6 min): live calibration run 1 (2026-11-19) timed out 9/12
-# cases at 360s because a live agent turn takes ~6 min — the reply
-# lands right as the poll gives up. 15 min is ~2.5x headroom.
+# The 15-min window is only a safety net. It was NOT the fix for live
+# calibration run 1 (2026-11-19, 9/12 poll timeouts at 360s): the
+# timeouts were misdiagnosed as "turns take ~6 min" and the window was
+# raised 72 -> 180, but run 4 (2026-11-19 ~08:38 IST) timed out 11/12
+# at 900s even though the grading turns had completed in seconds —
+# the poll waited for a status the endpoint never returns (see
+# TERMINAL_TASK_STATUSES). Keep 180 as the cap; the fix is the status
+# set, not the window.
+# Terminal statuses for GET /api/console/chat/task/{task_id}.
+# Verified 2026-11-19 from the installed console source
+# (app/routers/console.py: get_console_chat_task returns bg.status,
+# and _BackgroundTask.status is only ever "running" while in flight
+# and "finished" on every completion path — success, failure, cancel,
+# and fork-finalize failure all set "finished") and by a live probe
+# (task-320a0aa106b8: running -> finished in 12.4s). The old set
+# (done/completed/success/...) never matched "finished", so _poll
+# looped the full window on every case. The other strings are kept
+# only for forward-compat with a future endpoint change.
+TERMINAL_TASK_STATUSES = ("finished", "done", "completed", "success",
+                          "failed", "error", "timeout", "cancelled")
 MAX_JUDGE_CALLS = 50  # per-transport cap: judging doubles call volume
 MAX_REPLY_CHARS = 12000  # longer replies are truncated, flagged, graded
 
@@ -298,9 +315,81 @@ def _request(method, url, token=None, payload=None, timeout=30):
         raise err
 
 
+def _message_text(item):
+    """Join the text parts of one output message item.
+
+    Content is a list of {"type": "text", "text": "..."} parts (or a
+    plain string on older shapes). Returns None when there is no text.
+    """
+    content = item.get("content") if isinstance(item, dict) else None
+    if isinstance(content, str):
+        return content if content.strip() else None
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+            elif isinstance(part, str):
+                parts.append(part)
+        text = "".join(parts)
+        return text if text.strip() else None
+    return None
+
+
+def _extract_task_result_text(body):
+    """Extract the final assistant message from a console chat-task body.
+
+    Live shape (verified 2026-11-19, task-320a0aa106b8):
+        {"status": "finished",
+         "result": {"status": "completed",
+                    "output": [{"type": "reasoning", ...},
+                               {"type": "message", "role": "assistant",
+                                "content": [{"type": "text",
+                                             "text": "<final reply>"}]}]}}
+    The reply is the LAST item with type "message". Items with type
+    "reasoning" are the model's deliberation and must NEVER be returned
+    as the reply. Returns None when the body has no output list, or
+    when the output list holds no final message (a failed/cancelled
+    task produces no reply — that is "no reply text", not prose).
+    """
+    result = body.get("result") if isinstance(body, dict) else None
+    output = result.get("output") if isinstance(result, dict) else None
+    if not isinstance(output, list):
+        return None
+    for item in reversed(output):
+        if isinstance(item, dict) and item.get("type") == "message":
+            text = _message_text(item)
+            if text:
+                return text
+    # No typed final message: fall back to the last item that carries
+    # text at all (untyped/older shapes) — but never a reasoning item.
+    for item in reversed(output):
+        if isinstance(item, dict) and item.get("type") != "reasoning":
+            text = _message_text(item)
+            if text:
+                return text
+    return None
+
+
 def _extract_text(body):
-    """Best-effort reply extraction, same key walk as run-evals.py."""
+    """Best-effort reply extraction, same key walk as run-evals.py.
+
+    A console chat-task body is handled by its own shape FIRST
+    (_extract_task_result_text): the reply is the last "message" item
+    of result.output. The old generic walk returned the FIRST text it
+    found, which in this shape is the "reasoning" item — the model's
+    deliberation, not its reply — so the judge would have graded
+    deliberation instead of the verdict (and found no <verdict>
+    block). When the body IS task-shaped (result.output is a list)
+    the task extractor is authoritative: a None from it means the
+    task produced no reply, and the generic walk must not fall
+    through to the reasoning trace.
+    """
     if isinstance(body, dict):
+        result = body.get("result")
+        if isinstance(result, dict) and isinstance(
+                result.get("output"), list):
+            return _extract_task_result_text(body)
         for key in ("result", "response", "output", "text", "content",
                     "message", "reply"):
             v = body.get(key)
@@ -415,8 +504,7 @@ class ConsoleJudgeTransport:
                     continue
                 raise
             state = str(body.get("status", "")).lower()
-            if state in ("done", "completed", "success", "failed", "error",
-                         "timeout", "cancelled"):
+            if state in TERMINAL_TASK_STATUSES:
                 return body
             time.sleep(POLL_INTERVAL)
         raise JudgeError("judge poll timed out after "
