@@ -1,0 +1,50 @@
+# Derived QwenPaw image with the multi-tab takeover fix (Step 10).
+#
+# Base is the LIVE image qwenpaw-agentx:2.3.0-approvalttl1 (upstream +
+# gatefix4 + bloat-winwin + cost-ledger + Telegram + approval-TTL), so
+# all of those layers survive. The only change is the queue-takeover
+# delta: a non-owner tab can now take over sending from the owner tab.
+#
+# The problem (investigated 2026-11-19, live bundle verified): the
+# console's single-sender ownership lock (Web Lock
+# qwenpaw:queue-owner:{chatUUID}) lets a non-owner tab queue forever
+# with no takeover affordance, and its "Interrupt & send" button is a
+# dead no-op there (it returns early when the tab is not the owner).
+#
+# The fix, two parts:
+#   1. Bundle patch (this image): the owner tab registers its ownership
+#      AbortController in window.__agentxOwnerControllers (keyed by chat
+#      id) and aborts it on a BroadcastChannel "release-ownership"
+#      message; the requester's already-waiting holdOwnershipLock is
+#      then granted, the banner hides, and the drain loop drains the
+#      queue. Applied by apply-queue-takeover.py with exact string
+#      surgery (the bundles are minified, so unified diff cannot
+#      address a fragment mid-line); the build FAILS if any anchor does
+#      not occur exactly once in either copy.
+#   2. Pages _worker.js rule "queue-takeover": a "Take over sending"
+#      button on the queue-only banner (posts the release-ownership
+#      message) + hides the dead "Interrupt & send" while the banner
+#      is up. That rule ships via the Pages deploy, independently.
+#
+# Tag: qwenpaw-agentx:2.3.0-takeover1.
+FROM qwenpaw-agentx:2.3.0-approvalttl1
+
+COPY apply-queue-takeover.py /tmp/apply-queue-takeover.py
+
+# Apply the delta in BOTH places the code lives. The package is
+# installed in site-packages (that is what Python imports at runtime);
+# /app/src is the source tree the install was built from. Both copies
+# are byte-identical, so the same script patches both. Then syntax-check
+# the patched bundles so a broken edit can never ship. The build FAILS
+# here if any anchor does not occur exactly once in either copy.
+RUN python3 /tmp/apply-queue-takeover.py \
+        /app/src/qwenpaw/console/assets/index-DZrIuh3B.js \
+        /app/src/qwenpaw/console/assets/index-opcB8AGu.js \
+    && python3 /tmp/apply-queue-takeover.py \
+        /app/venv/lib/python3.11/site-packages/qwenpaw/console/assets/index-DZrIuh3B.js \
+        /app/venv/lib/python3.11/site-packages/qwenpaw/console/assets/index-opcB8AGu.js \
+    && rm /tmp/apply-queue-takeover.py \
+    && node --check /app/src/qwenpaw/console/assets/index-DZrIuh3B.js \
+    && node --check /app/src/qwenpaw/console/assets/index-opcB8AGu.js \
+    && node --check /app/venv/lib/python3.11/site-packages/qwenpaw/console/assets/index-DZrIuh3B.js \
+    && node --check /app/venv/lib/python3.11/site-packages/qwenpaw/console/assets/index-opcB8AGu.js
