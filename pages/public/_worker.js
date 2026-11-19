@@ -763,11 +763,26 @@ function computerPanelScript(rebrandEnabled) {
       while ((node = walker.nextNode())) {
         try {
           var t = node.nodeValue;
-          if (!t || t.indexOf("QwenPaw") === -1) continue;
+          if (!t) continue;
           var parent = node.parentNode;
           if (parent && (parent.nodeName === "SCRIPT" || parent.nodeName === "STYLE" || parent.nodeName === "TEXTAREA" || parent.nodeName === "INPUT")) continue;
+          // "AgentScope Platform" (the upstream provider card name) is a
+          // display name, never load-bearing: rename it unconditionally.
+          // (2026-11-19 QA round 20: the Models page still showed it.)
+          if (t.indexOf("AgentScope Platform") !== -1) {
+            node.nodeValue = t.split("AgentScope Platform").join("AgentX Platform");
+            t = node.nodeValue;
+            changed += 1;
+          }
+          if (t.indexOf("QwenPaw") === -1) continue;
           if (agentxIsLoadBearing(t)) continue;
-          if (parent && parent.textContent && agentxIsLoadBearing(parent.textContent)) continue;
+          // Parent check, narrowed (2026-11-19, Community page): the old
+          // check skipped a node when ANY descendant of its parent held a
+          // load-bearing string, so a whole section (the Community warning
+          // + "Connect QwenPaw…" button) survived. Only a code-like parent
+          // (CODE/PRE/KBD/SAMP) can make its subtree load-bearing; a plain
+          // div/p parent never does.
+          if (parent && (parent.nodeName === "CODE" || parent.nodeName === "PRE" || parent.nodeName === "KBD" || parent.nodeName === "SAMP") && parent.textContent && agentxIsLoadBearing(parent.textContent)) continue;
           node.nodeValue = t.split("QwenPaw").join("AgentX");
           changed += 1;
         } catch (e) {}
@@ -1276,6 +1291,35 @@ function computerPanelScript(rebrandEnabled) {
         sel.value = level;
       } catch (e) {}
     }
+    function agentxThinkingNote(text) {
+      // Show a one-line reason next to the selector (2026-11-19: a PUT
+      // 422 reverted silently — the user saw Default again with no
+      // explanation). No timer (the harness forbids timers here):
+      // the note stays until the next successful save or chat change
+      // clears it. React-safe: our own span, appended only, hidden via
+      // style (never removed).
+      try {
+        var st = agentxThinkingState;
+        var note = st.noteEl;
+        if (!note || !note.parentElement) {
+          var sel = document.querySelector ? document.querySelector("[data-agentx-thinking]") : null;
+          if (!sel || !sel.parentElement) return;
+          note = document.createElement("span");
+          note.setAttribute("data-agentx-thinking-note", "1");
+          note.style.cssText = "font-size:11px;color:#f87171;margin-left:6px;white-space:nowrap;flex:none;max-width:260px;overflow:hidden;text-overflow:ellipsis;";
+          sel.parentElement.appendChild(note);
+          st.noteEl = note;
+        }
+        note.textContent = text || "";
+        note.style.display = "";
+      } catch (e) {}
+    }
+    function agentxThinkingClearNote() {
+      try {
+        var note = agentxThinkingState.noteEl;
+        if (note) note.style.display = "none";
+      } catch (e) {}
+    }
     function agentxThinkingSync(force) {
       // Pull the server's stored level for the current chat and show it.
       // Applies a pending level (picked on a brand-new chat with no id
@@ -1286,6 +1330,10 @@ function computerPanelScript(rebrandEnabled) {
         var chatId = agentxThinkingChatId();
         var st = agentxThinkingState;
         if (!chatId) return;
+        // A note belongs to the chat it was shown on: clear it when the
+        // chat changes, but NOT on the same-chat re-sync after a 422
+        // (that would erase the explanation just shown).
+        if (st.chatId !== chatId) agentxThinkingClearNote();
         if (!force && st.chatId === chatId && st.level !== null) return;
         if (st.syncChatId === chatId) return;
         st.chatId = chatId;
@@ -1300,6 +1348,21 @@ function computerPanelScript(rebrandEnabled) {
             var lvl = (v.value && v.value.level) ? v.value.level : "inherit";
             st.level = lvl;
             agentxThinkingShow(lvl);
+            // Lock hint (2026-11-19): the GET reports the model's
+            // thinking control. kind "unknown" with no efforts means
+            // this model takes no thinking level — say so on the
+            // selector instead of letting every pick 422 silently. A
+            // capable model restores the default title.
+            try {
+              var _sel = document.querySelector ? document.querySelector("[data-agentx-thinking]") : null;
+              if (_sel) {
+                if (v.control && v.control.kind === "unknown" && (!v.control.efforts || v.control.efforts.length === 0)) {
+                  _sel.title = "Thinking depth cannot be adjusted for this model";
+                } else {
+                  _sel.title = "Thinking level for this chat — Default follows the model, Off disables thinking";
+                }
+              }
+            } catch (e) {}
             if (st.pending && st.pending !== lvl) {
               var pend = st.pending;
               st.pending = null;
@@ -1332,14 +1395,26 @@ function computerPanelScript(rebrandEnabled) {
         if (st.modelKey) url += "?model_key=" + encodeURIComponent(st.modelKey);
         fetch(url, { method: "PUT", headers: agentxThinkingHeaders(), body: JSON.stringify({ level: level }) })
           .then(function (r) {
-            if (r.status === 409 || r.status === 422) { st.level = null; st.chatId = null; agentxThinkingSync(true); return null; }
+            if (r.status === 409 || r.status === 422) {
+              // Read the server's reason and SHOW it: a silent revert
+              // (2026-11-19) left the user with Default and no
+              // explanation. st.chatId is left alone so the re-sync
+              // below does not clear the note it just showed.
+              return r.json().catch(function () { return null; }).then(function (v) {
+                var detail = (v && (v.detail || v.message)) || "Thinking setting is invalid for this model";
+                agentxThinkingNote(detail);
+                st.level = null;
+                agentxThinkingSync(true);
+                return null;
+              });
+            }
             if (!r.ok) { st.level = prev; agentxThinkingShow(prev); return null; }
             return r.json();
           })
           .then(function (v) {
             if (!v) return;
             if (v.model_key) st.modelKey = v.model_key;
-            if (v.value && v.value.level) { st.level = v.value.level; agentxThinkingShow(st.level); }
+            if (v.value && v.value.level) { st.level = v.value.level; agentxThinkingShow(st.level); agentxThinkingClearNote(); }
           })
           .catch(function () { st.level = prev; agentxThinkingShow(prev); });
       } catch (e) {}
@@ -1817,6 +1892,33 @@ function computerPanelScript(rebrandEnabled) {
           else if (chatId) agentxThinkingSync(false);
           else if (st.pending) agentxThinkingShow(st.pending);
           else if (created) agentxThinkingShow("inherit");
+        } catch (e) {}
+      } },
+      { id: "hide-native-thinking", run: function () {
+        // The console's own "Thinking intensity" control (2026-11-19 QA
+        // round 20): a second Thinking dropdown below the composer
+        // toolbar, unsynced with the per-chat selector above it. The
+        // injected selector in the Smart Mode row IS the thinking control
+        // now; hide the native one so there is exactly one. Matched by
+        // its accessible label ("Thinking intensity"); our own elements
+        // are labelled "Thinking level for this chat" and never match.
+        // Only when the injected selector exists — otherwise the user
+        // would be left with no thinking control at all.
+        try {
+          var sel = document.querySelector ? document.querySelector("[data-agentx-thinking]") : null;
+          if (!sel) return;
+          var els = document.querySelectorAll ? document.querySelectorAll("button, select, [role='button']") : [];
+          for (var i = 0; i < els.length; i++) {
+            try {
+              var el = els[i];
+              if (el.getAttribute && (el.getAttribute("data-agentx-thinking") || el.getAttribute("data-agentx-thinking-label") || el.getAttribute("data-agentx-hidden"))) continue;
+              var lab = "";
+              try { lab = (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("title") || "") + " " + (el.textContent || ""); } catch (e) {}
+              if (lab.toLowerCase().indexOf("thinking intensity") === -1) continue;
+              el.style.display = "none";
+              if (el.setAttribute) el.setAttribute("data-agentx-hidden", "1");
+            } catch (e) {}
+          }
         } catch (e) {}
       } },
       { id: "page-bottom-padding", run: function () {
@@ -2646,12 +2748,20 @@ async function proxy(request, url, env, ctx) {
         if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(recordLastVisit(env));
         const rebrandEnabled = env.AGENTX_REBRAND !== "0";
         const titled = html.replace("<title>QwenPaw Console</title>", "<title>AgentX Console</title>");
+        // Logo-flash guard (2026-11-19 QA round 20): the header logo img
+        // (alt "QwenPaw") painted before the rebrand observer renamed it.
+        // Hide QwenPaw-alt imgs until rename-logo processes them (it sets
+        // data-agentx-logo, which lifts the hide; the big logo is swapped
+        // for the AgentX text label anyway). visibility, not display: the
+        // rule's size gate needs a real displayed width. Only when the
+        // rebrand is on — with ?rebrand=0 the console shows QwenPaw.
+        const rebrandStyle = rebrandEnabled ? '<style>img[alt*="QwenPaw"]:not([data-agentx-logo]){visibility:hidden !important}</style>' : "";
         // Search settings UI (2026-11-18): the Settings "Search" section
         // (TinyFish key + feature checkboxes) loads as a module from the
         // Pages assets and self-mounts when the Settings page is present.
         // A module script is deferred, so it runs after the SPA HTML parses.
         const searchSettingsScript = '<script type="module" src="/search-settings-ui.js"></script>';
-        const injected = titled.replace("</body>", (rebrandEnabled ? headShim() : "") + computerPanelScript(rebrandEnabled) + searchSettingsScript + "</body>");
+        const injected = titled.replace("</body>", rebrandStyle + (rebrandEnabled ? headShim() : "") + computerPanelScript(rebrandEnabled) + searchSettingsScript + "</body>");
         headers.set("Cache-Control", "no-store, no-transform");
         headers.delete("ETag");
         headers.delete("Last-Modified");
