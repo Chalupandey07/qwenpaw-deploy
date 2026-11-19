@@ -30,9 +30,15 @@ What this test PROVES (machine-free):
      anti-pattern this judge replaces). The old grader is run over the
      set and MUST disagree with the humans on >= 2 examples.
   G. Poll window: MAX_POLLS * POLL_INTERVAL is 15 min in judge.py and
-     run-evals.py alike (the 6-min window timed out 9/12 live
-     calibration cases on 2026-11-19 — live agent turns take ~6 min,
-     so the replies land right as the old poll gives up).
+     run-evals.py alike. The window is a safety net only — it was NOT
+     the fix for the run-1 timeouts (the 6-min window was misdiagnosed
+     as "turns take ~6 min"; run 4 timed out 11/12 at 900s with the
+     turns already complete, because the poll waited for a status the
+     endpoint never returns — see section H).
+  H. Poll terminal status + task-shape extraction: _poll returns on
+     "finished" (the only terminal status the task endpoint returns),
+     and _extract_text takes the last "message" item of result.output,
+     never the "reasoning" trace.
 
 What this test does NOT prove (honest limit, DeepSeek design review
 2026-11-18): that the LIVE model (mosicn nex-n2.6 via the console)
@@ -537,12 +543,13 @@ def main() -> int:
           "attempting a login (a dead token is never re-logged-in)", ok6)
 
     # ================= G. Poll window =================
-    # Live calibration run 1 (2026-11-19) finished 0/12 NOT TRUSTED on
-    # transport, not on substance: cal-01..09 hit "judge poll timed out
-    # after 360s" because MAX_POLLS * POLL_INTERVAL was 6 min while a
-    # live agent turn takes ~6 min (the reply lands right as the poll
-    # gives up). The window is now 15 min, and the two pollers must
-    # agree, so a one-file change cannot silently reintroduce the gap.
+    # The 15-min window is a safety net, not the fix for the run-1
+    # timeouts: those were misdiagnosed as "turns take ~6 min", but
+    # run 4 (2026-11-19 ~08:38 IST) timed out 11/12 at 900s with the
+    # grading turns already complete in seconds — the poll waited for
+    # a status the endpoint never returns (see section H). The window
+    # stays 15 min, and the two pollers must agree, so a one-file
+    # change cannot silently reintroduce the gap.
     check("G1 the judge poll window is 15 min (MAX_POLLS * "
           "POLL_INTERVAL == 900), not the 6 min that timed out 9/12 "
           "live calibration cases",
@@ -553,6 +560,141 @@ def main() -> int:
     check("G3 run-evals.py uses the same poll tick as judge.py "
           "(POLL_INTERVAL is 5 s in both)",
           run_evals.POLL_INTERVAL == judge.POLL_INTERVAL == 5)
+
+    # ================= H. Poll terminal status + task-shape extraction ==
+    # Live calibration run 4 (2026-11-19 ~08:38 IST) finished 0/12 NOT
+    # TRUSTED on transport: 11 cases hit "judge poll timed out after
+    # 900s" even though the grading turns had completed in seconds.
+    # Root cause, proven from the console source
+    # (app/routers/console.py: get_console_chat_task returns bg.status;
+    # _BackgroundTask.status is only "running" in flight and "finished"
+    # on every completion path) and by a live probe (task-320a0aa106b8:
+    # running -> finished in 12.4s): the poll waited for
+    # done/completed/success/..., a set that never contains "finished".
+    # Second bug, proven by the same probe body: the generic extractor
+    # returned the FIRST text found, which in the task shape is the
+    # "reasoning" item — the model's deliberation, not its reply.
+    # Both are fixed: _poll returns on "finished", and _extract_text
+    # takes the last "message" item of result.output.
+    import time as _time
+    _saved_sleep = _time.sleep
+    _time.sleep = lambda s: None
+    _real_request = judge._request
+    _real_run_request = run_evals.request
+    PROBE_BODY = {
+        "status": "finished",
+        "started_at": 1795058088.535888,
+        "result": {
+            "status": "completed",
+            "session_id": "eval-judge-probe-1",
+            "id": "response_probe",
+            "output": [
+                {"id": "msg_r", "type": "reasoning", "role": "assistant",
+                 "content": [{"type": "text",
+                              "text": "Deliberation, not the reply."}],
+                 "status": "completed"},
+                {"id": "msg_m", "type": "message", "role": "assistant",
+                 "content": [{"type": "text",
+                              "text": "The probe task completed."}],
+                 "status": "completed"},
+            ],
+            "object": "response",
+        },
+    }
+    try:
+        _calls1: list = []
+
+        def _fake_finished(method, url, token=None, payload=None,
+                           timeout=30):
+            _calls1.append(url)
+            return 200, dict(PROBE_BODY)
+
+        judge._request = _fake_finished
+        _t1 = judge.ConsoleJudgeTransport(base="https://example.invalid",
+                                          token="tok-test")
+        try:
+            _body1 = _t1._poll("task-1")
+            _h1 = (_body1.get("status") == "finished"
+                   and len(_calls1) == 1)
+        except judge.JudgeError:
+            _h1 = False
+        check("H1 _poll returns on status 'finished' on the first GET "
+              "(the terminal status the endpoint actually returns)",
+              _h1)
+
+        _calls2: list = []
+        _seq2 = [{"status": "running"}, {"status": "running"},
+                 dict(PROBE_BODY)]
+
+        def _fake_seq(method, url, token=None, payload=None, timeout=30):
+            _calls2.append(url)
+            return 200, _seq2[min(len(_calls2) - 1, len(_seq2) - 1)]
+
+        judge._request = _fake_seq
+        try:
+            _body2 = _t1._poll("task-2")
+            _h2 = (_body2.get("status") == "finished"
+                   and len(_calls2) == 3)
+        except judge.JudgeError:
+            _h2 = False
+        check("H2 _poll waits through 'running' and returns on "
+              "'finished'",
+              _h2)
+
+        _calls3: list = []
+
+        def _fake_running(method, url, token=None, payload=None,
+                          timeout=30):
+            _calls3.append(url)
+            return 200, {"status": "running"}
+
+        judge._request = _fake_running
+        try:
+            _t1._poll("task-3")
+            _h3 = False
+        except judge.JudgeError as _exc:
+            _h3 = (_exc.kind == "judge_timeout"
+                   and len(_calls3) == judge.MAX_POLLS)
+        check("H3 _poll still times out (JudgeError judge_timeout) when "
+              "the task never leaves 'running', after MAX_POLLS GETs",
+              _h3)
+
+        check("H4 _extract_text on a finished task body returns the "
+              "final message text, NOT the reasoning trace",
+              judge._extract_text(PROBE_BODY)
+              == "The probe task completed.")
+        _reason_only = {"status": "finished",
+                        "result": {"status": "completed",
+                                   "output": [PROBE_BODY["result"]
+                                              ["output"][0]]}}
+        check("H5 _extract_text on a finished body with only a reasoning "
+              "item returns None (no final message, no reply text)",
+              judge._extract_text(_reason_only) is None)
+        check("H6 TERMINAL_TASK_STATUSES contains 'finished' in judge.py "
+              "and run-evals.py agrees (the two pollers cannot drift)",
+              "finished" in getattr(judge, "TERMINAL_TASK_STATUSES", ())
+              and getattr(run_evals, "TERMINAL_TASK_STATUSES", None)
+              == getattr(judge, "TERMINAL_TASK_STATUSES", ()))
+
+        _calls7: list = []
+
+        def _fake_run(method, url, token=None, payload=None, timeout=30):
+            _calls7.append(url)
+            return 200, dict(PROBE_BODY)
+
+        run_evals.request = _fake_run
+        _body7 = run_evals.poll_task("https://example.invalid", "tok",
+                                     "task-7")
+        check("H7 run-evals.py poll_task returns on status 'finished'",
+              _body7.get("status") == "finished" and len(_calls7) == 1)
+        _text8, _raw8 = run_evals.extract_text(PROBE_BODY)
+        check("H8 run-evals.py extract_text returns the final message "
+              "text, NOT the reasoning trace",
+              _text8 == "The probe task completed.")
+    finally:
+        _time.sleep = _saved_sleep
+        judge._request = _real_request
+        run_evals.request = _real_run_request
 
     passed = sum(1 for _, ok, _ in CHECKS if ok)
     total = len(CHECKS)
