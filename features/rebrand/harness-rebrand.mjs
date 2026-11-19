@@ -236,16 +236,30 @@ console.log("static: the rule table is data-driven and guarded");
   // Settings white-area fix (2026-11-19, browser inspection): on
   // /settings the outer settings <main> renders ~819px tall in a 998px
   // viewport on Pages, so a ~179px white body strip shows below its
-  // cream background. The rule is scoped to /settings and extends the
-  // shell's own computed background (theme-aware) instead of
-  // hard-coding cream — in dark mode the fill is the dark surface.
+  // cream background. The rule is scoped to /settings and paints
+  // <html> + <body> with the console's own --app-bg theme variable
+  // (cream #f9f8f4 light, #141414 dark), never with the shell's
+  // computed background — round 1 copied the shell, and the shell is
+  // a .page-content whose background is var(--app-surface), white in
+  // light mode, so round 1 painted the body white and the strip
+  // survived (browser-verified PARTIAL 2026-11-19 ~07:5x IST: cream
+  // ends ~894, ~104px white strip left in light mode; dark filled).
+  // The stretch runs up the ancestor chain because the shell alone
+  // cannot beat the .ant-layout max-height:100vh + overflow:hidden
+  // clip in the served bundle, and a diagnostic probe records the
+  // live geometry for the parent's browser check.
   check("the settings-white-area rule is scoped to /settings pages",
     /id: "settings-white-area"[\s\S]*?indexOf\("\/settings"\) !== 0/.test(rebrandSrc),
     "a fill that ran on /chat would paint the chat background too");
-  check("the settings-white-area rule extends the shell's computed background (no hard-coded cream)",
-    /id: "settings-white-area"[\s\S]*?window\.getComputedStyle\(/.test(rebrandSrc) &&
+  check("the settings-white-area rule paints from the --app-bg theme variable, never from the shell's background",
+    /id: "settings-white-area"[\s\S]*?getPropertyValue\(["']--app-bg["']\)/.test(rebrandSrc) &&
+    /id: "settings-white-area"[\s\S]*?setProperty\(["']background-color["']/.test(rebrandSrc) &&
+    /id: "settings-white-area"[\s\S]*?setProperty\(["']min-height["']/.test(rebrandSrc) &&
+    /id: "settings-white-area"[\s\S]*?data-agentx-settings-stretch/.test(rebrandSrc) &&
+    /id: "settings-white-area"[\s\S]*?__agentxSettingsDiag/.test(rebrandSrc) &&
+    !/id: "settings-white-area"[\s\S]{0,4000}body\.style\.backgroundColor = fill/.test(rebrandSrc) &&
     !rebrandSrc.includes("#f9f7f2"),
-    "hard-coding cream would paint a cream strip in dark mode");
+    "round 1 copied the shell's white .page-content background onto the body; round 2 reads the theme variable instead");
   // Logo-flash guard (2026-11-19 QA round 20): the header logo img
   // painted before the rebrand observer renamed it. The injection hides
   // QwenPaw-alt imgs until rename-logo processes them.
@@ -415,11 +429,36 @@ function makeEl(tag, attrs, children) {
     children: [],
     childNodes: [],
     parentNode: null,
-    style: {},
+    // Style object with the CSSOM property API (2026-11-19, round 2 of
+    // the settings-white-area fix): the rule paints with
+    // setProperty(..., "important") and removes with removeProperty,
+    // so the mock needs both plus getPropertyValue. setProperty also
+    // mirrors the camelCase alias (min-height -> minHeight) so the
+    // existing plain-property assertions keep reading the same value;
+    // removeProperty deletes the alias again.
+    style: {
+      setProperty(prop, value) {
+        this._props = this._props || {};
+        this._props[prop] = String(value);
+        const camel = prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        this[camel] = value;
+      },
+      getPropertyValue(prop) {
+        return (this._props && this._props[prop]) || "";
+      },
+      removeProperty(prop) {
+        const old = (this._props && this._props[prop]) || "";
+        if (this._props) delete this._props[prop];
+        const camel = prop.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        delete this[camel];
+        return old;
+      },
+    },
     _attrs: { ...(attrs || {}) },
     _listeners: {},
     getAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null; },
     setAttribute(name, value) { this._attrs[name] = String(value); },
+    removeAttribute(name) { delete this._attrs[name]; },
     addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); },
     dispatch(type, ev) { for (const fn of this._listeners[type] || []) fn(ev); },
     appendChild(child) {
@@ -474,6 +513,14 @@ function makeEl(tag, attrs, children) {
     el.childNodes.push(child);
     if (child.nodeType === 1) el.children.push(child);
   }
+  // classList.contains (2026-11-19, round 2 of the settings-white-area
+  // fix): the rule detects dark mode from the "dark-mode" class on
+  // <html> (the console's own mechanism: `html.dark-mode` in the
+  // bundle). Only contains is modelled — the tests set the class with
+  // setAttribute, as a real page would through the app.
+  el.classList = {
+    contains(cls) { return (el.getAttribute("class") || "").split(/\s+/).includes(cls); },
+  };
   return el;
 }
 // Simplified selector matching for exactly the forms the rebrand rules
@@ -1140,6 +1187,13 @@ if (!rebrandSrc) {
   const runRuleNowSrc = extractFunction(worker, "agentxRunRuleNow");
   function runOneRule(rootEl, ruleId, opts = {}) {
     const doc = makeDocument(rootEl, opts.head || []);
+    // Theme inputs for the settings-white-area rule (2026-11-19,
+    // round 2): the rule reads the console's own --app-bg variable
+    // from <html> (light #f9f8f4, dark #141414) and detects dark mode
+    // from the "dark-mode" class on <html>. A test sets them with
+    // opts.cssVars / opts.htmlClass before the rule runs.
+    if (opts.cssVars) doc.documentElement._cssVars = opts.cssVars;
+    if (opts.htmlClass) doc.documentElement.setAttribute("class", opts.htmlClass);
     const opened = [];
     const localStore = {};
     const sandbox = {
@@ -1154,7 +1208,13 @@ if (!rebrandSrc) {
         // for an element with no background of its own). The rule reads
         // window.getComputedStyle, the same call the pill-positions
         // rule already uses for the panel's computed display.
-        getComputedStyle: (el) => ({ backgroundColor: (el && el._computedBg) || "rgba(0, 0, 0, 0)" }),
+        // getPropertyValue (2026-11-19, round 2): the rule reads the
+        // console's --app-bg theme variable from <html>; a mock
+        // element carries its variables in `_cssVars` (unset = "").
+        getComputedStyle: (el) => ({
+          backgroundColor: (el && el._computedBg) || "rgba(0, 0, 0, 0)",
+          getPropertyValue: (name) => (el && el._cssVars && el._cssVars[name]) || "",
+        }),
         localStorage: {
           getItem: (k) => (k in localStore ? localStore[k] : null),
           setItem: (k, v) => { localStore[k] = String(v); },
@@ -1534,50 +1594,87 @@ if (!rebrandSrc) {
       toast.textContent === "AgentX error occurred", `got ${toast.textContent}`);
   }
 
-  { // settings-white-area (2026-11-19: Settings white-area fix — the
-    // outer settings <main> renders ~819px tall in a 998px viewport
-    // on Pages, so a ~179px white body strip shows below its cream
-    // background at every scroll position; the direct origin has no
-    // strip. Light mode first: the shell's computed background is the
-    // cream, so html + body are painted cream and the shell is
-    // stretched to the viewport height.
+  { // settings-white-area round 2 (2026-11-19: round 1 browser-
+    // verified PARTIAL — cream ends ~894, ~104px white strip left
+    // in light mode. Diagnosis from the served bundle: the shell is
+    // a .page-content whose background is var(--app-surface), white
+    // in light mode, so round 1 copied white onto <html>/<body> and
+    // the strip survived; and the shell alone cannot beat the
+    // .ant-layout max-height:100vh + overflow:hidden clip. Round 2
+    // paints from the console's --app-bg theme variable and stretches
+    // the shell + its ancestors. Light mode first, with the shell
+    // WHITE (the round-1 bug scenario): the paint must be the theme
+    // cream #f9f8f4 from the variable, never the shell's white.
     const shell = makeEl("main", {}, [makeEl("nav", { "aria-label": "Settings" }, [])]);
-    shell._computedBg = "rgb(249, 247, 242)";
-    const root = makeEl("div", {}, [shell]);
-    const { doc } = runOneRule(root, "settings-white-area", { pathname: "/settings/general" });
-    check("settings-white-area stretches the settings shell to the viewport height",
-      shell.style.minHeight === "100dvh" && shell.style.boxSizing === "border-box",
-      `minHeight=${shell.style.minHeight} boxSizing=${shell.style.boxSizing}`);
-    check("settings-white-area paints html + body with the shell's cream background in light mode",
-      doc.documentElement.style.backgroundColor === "rgb(249, 247, 242)" &&
-      doc.body.style.backgroundColor === "rgb(249, 247, 242)" &&
+    shell._computedBg = "rgb(255, 255, 255)";
+    const wrap = makeEl("div", { class: "ant-layout-content" }, [shell]);
+    const root = makeEl("div", {}, [wrap]);
+    const { doc, sandbox } = runOneRule(root, "settings-white-area", { pathname: "/settings/general", cssVars: { "--app-bg": "#f9f8f4" } });
+    check("settings-white-area stretches the settings shell and its ancestors to the viewport height",
+      shell.style.getPropertyValue("min-height") === "100dvh" && shell.style.boxSizing === "border-box" &&
+      shell.getAttribute("data-agentx-settings-stretch") === "1" &&
+      wrap.style.getPropertyValue("min-height") === "100dvh" &&
+      wrap.getAttribute("data-agentx-settings-stretch") === "1",
+      `shell minHeight=${shell.style.getPropertyValue("min-height")} wrap minHeight=${wrap.style.getPropertyValue("min-height")}`);
+    check("settings-white-area paints html + body cream from --app-bg in light mode even when the shell itself is white",
+      doc.documentElement.style.backgroundColor === "#f9f8f4" &&
+      doc.body.style.backgroundColor === "#f9f8f4" &&
       doc.body.getAttribute("data-agentx-settings-bg") === "1",
       `html=${doc.documentElement.style.backgroundColor} body=${doc.body.style.backgroundColor} marker=${doc.body.getAttribute("data-agentx-settings-bg")}`);
+    check("settings-white-area records the diagnostic probe for the browser check",
+      sandbox.window.__agentxSettingsDiag && sandbox.window.__agentxSettingsDiag.paint === "#f9f8f4" &&
+      sandbox.window.__agentxSettingsDiag.shellBg === "rgb(255, 255, 255)" &&
+      doc.body.getAttribute("data-agentx-settings-diag") !== null,
+      `diag=${JSON.stringify(sandbox.window.__agentxSettingsDiag)}`);
   }
 
-  { // settings-white-area in dark mode: the shell's computed
-    // background is the dark surface, so the fill must be dark —
-    // never cream.
+  { // settings-white-area in dark mode: --app-bg is #141414, so the
+    // fill must be dark — never cream, never the shell's white.
     const shell = makeEl("main", {}, [makeEl("nav", { "aria-label": "Settings" }, [])]);
-    shell._computedBg = "rgb(23, 23, 23)";
+    shell._computedBg = "rgb(255, 255, 255)";
     const root = makeEl("div", {}, [shell]);
-    const { doc } = runOneRule(root, "settings-white-area", { pathname: "/settings/general" });
+    const { doc } = runOneRule(root, "settings-white-area", { pathname: "/settings/general", cssVars: { "--app-bg": "#141414" } });
     check("settings-white-area paints the dark surface, not cream, in dark mode",
-      doc.documentElement.style.backgroundColor === "rgb(23, 23, 23)" &&
-      doc.body.style.backgroundColor === "rgb(23, 23, 23)",
+      doc.documentElement.style.backgroundColor === "#141414" &&
+      doc.body.style.backgroundColor === "#141414",
       `html=${doc.documentElement.style.backgroundColor} body=${doc.body.style.backgroundColor}`);
   }
 
-  { // settings-white-area with a transparent shell: the cream/dark
-    // surface may be painted on a wrapper, not the shell itself, so
-    // the rule walks up ancestors for the first opaque background.
+  { // settings-white-area fallback, dark: when --app-bg is missing
+    // (an older console build), the html.dark-mode class decides.
     const shell = makeEl("main", {}, [makeEl("nav", { "aria-label": "Settings" }, [])]);
     const root = makeEl("div", {}, [shell]);
-    root._computedBg = "rgb(249, 247, 242)";
+    const { doc } = runOneRule(root, "settings-white-area", { pathname: "/settings/general", htmlClass: "dark-mode" });
+    check("settings-white-area falls back to the dark surface when --app-bg is missing but html has dark-mode",
+      doc.documentElement.style.backgroundColor === "#141414" &&
+      doc.body.style.backgroundColor === "#141414",
+      `html=${doc.documentElement.style.backgroundColor} body=${doc.body.style.backgroundColor}`);
+  }
+
+  { // settings-white-area fallback, light: no variable, no
+    // dark-mode class — cream, never white.
+    const shell = makeEl("main", {}, [makeEl("nav", { "aria-label": "Settings" }, [])]);
+    shell._computedBg = "rgb(255, 255, 255)";
+    const root = makeEl("div", {}, [shell]);
     const { doc } = runOneRule(root, "settings-white-area", { pathname: "/settings/general" });
-    check("settings-white-area walks up to an ancestor background when the shell itself is transparent",
-      doc.documentElement.style.backgroundColor === "rgb(249, 247, 242)" &&
-      doc.body.style.backgroundColor === "rgb(249, 247, 242)",
+    check("settings-white-area falls back to cream when --app-bg is missing and there is no dark-mode class",
+      doc.documentElement.style.backgroundColor === "#f9f8f4" &&
+      doc.body.style.backgroundColor === "#f9f8f4",
+      `html=${doc.documentElement.style.backgroundColor} body=${doc.body.style.backgroundColor}`);
+  }
+
+  { // settings-white-area paint source: the shell is transparent and
+    // an ANCESTOR carries a different cream (#faf9f7, the sidebar
+    // surface) — round 1 would have painted that ancestor's colour.
+    // Round 2 paints the --app-bg variable (#f9f8f4), never a
+    // background copied from the shell or any ancestor.
+    const shell = makeEl("main", {}, [makeEl("nav", { "aria-label": "Settings" }, [])]);
+    const root = makeEl("div", {}, [shell]);
+    root._computedBg = "rgb(250, 249, 247)";
+    const { doc } = runOneRule(root, "settings-white-area", { pathname: "/settings/general", cssVars: { "--app-bg": "#f9f8f4" } });
+    check("settings-white-area paints from the theme variable, never from the shell or an ancestor background",
+      doc.documentElement.style.backgroundColor === "#f9f8f4" &&
+      doc.body.style.backgroundColor === "#f9f8f4",
       `html=${doc.documentElement.style.backgroundColor} body=${doc.body.style.backgroundColor}`);
   }
 
@@ -1585,15 +1682,19 @@ if (!rebrandSrc) {
     // touch /chat or any other page (the paint is inline on
     // <html>/<body> and would persist across SPA navigations).
     const shell = makeEl("main", {}, [makeEl("nav", { "aria-label": "Settings" }, [])]);
-    shell._computedBg = "rgb(249, 247, 242)";
-    const root = makeEl("div", {}, [shell]);
-    const { doc } = runOneRule(root, "settings-white-area", { pathname: "/chat/abc" });
+    shell._computedBg = "rgb(255, 255, 255)";
+    const wrap = makeEl("div", {}, [shell]);
+    const root = makeEl("div", {}, [wrap]);
+    const { doc, sandbox } = runOneRule(root, "settings-white-area", { pathname: "/chat/abc", cssVars: { "--app-bg": "#f9f8f4" } });
     check("settings-white-area does nothing off Settings pages",
-      shell.style.minHeight === undefined &&
+      shell.style.getPropertyValue("min-height") === "" &&
+      shell.getAttribute("data-agentx-settings-stretch") === null &&
       doc.documentElement.style.backgroundColor === undefined &&
       doc.body.style.backgroundColor === undefined &&
-      doc.body.getAttribute("data-agentx-settings-bg") === null,
-      `minHeight=${shell.style.minHeight} html=${doc.documentElement.style.backgroundColor} marker=${doc.body.getAttribute("data-agentx-settings-bg")}`);
+      doc.body.getAttribute("data-agentx-settings-bg") === null &&
+      doc.body.getAttribute("data-agentx-settings-diag") === null &&
+      sandbox.window.__agentxSettingsDiag === undefined,
+      `minHeight=${shell.style.getPropertyValue("min-height")} html=${doc.documentElement.style.backgroundColor} marker=${doc.body.getAttribute("data-agentx-settings-bg")}`);
   }
 
   { // settings-white-area before React renders: the settings nav is
@@ -1601,29 +1702,35 @@ if (!rebrandSrc) {
     // safely and wait for the next observer pass (never throw, never
     // paint).
     const root = makeEl("div", {}, [makeEl("main", {}, [])]);
-    const { doc } = runOneRule(root, "settings-white-area", { pathname: "/settings/general" });
+    const { doc, sandbox } = runOneRule(root, "settings-white-area", { pathname: "/settings/general", cssVars: { "--app-bg": "#f9f8f4" } });
     check("settings-white-area is a safe no-op before React renders the settings nav",
       doc.body.getAttribute("data-agentx-settings-bg") === null &&
       doc.documentElement.style.backgroundColor === undefined &&
-      doc.body.style.backgroundColor === undefined,
+      doc.body.style.backgroundColor === undefined &&
+      doc.body.getAttribute("data-agentx-settings-diag") === null &&
+      sandbox.window.__agentxSettingsDiag === undefined,
       `marker=${doc.body.getAttribute("data-agentx-settings-bg")}`);
   }
 
   { // settings-white-area cleanup: navigating away from Settings must
-    // remove the inline paint and clear the marker, or the cream
-    // would leak onto /chat (the observer keeps running across SPA
-    // navigations and <html>/<body> styles persist).
+    // remove the inline paint AND the stretch AND the probe, or the
+    // cream would leak onto /chat (the observer keeps running across
+    // SPA navigations and <html>/<body> styles persist).
     const shell = makeEl("main", {}, [makeEl("nav", { "aria-label": "Settings" }, [])]);
-    shell._computedBg = "rgb(249, 247, 242)";
-    const root = makeEl("div", {}, [shell]);
-    const { doc, sandbox } = runOneRule(root, "settings-white-area", { pathname: "/settings/general" });
+    shell._computedBg = "rgb(255, 255, 255)";
+    const wrap = makeEl("div", {}, [shell]);
+    const root = makeEl("div", {}, [wrap]);
+    const { doc, sandbox } = runOneRule(root, "settings-white-area", { pathname: "/settings/general", cssVars: { "--app-bg": "#f9f8f4" } });
     sandbox.location.pathname = "/chat/abc";
     sandbox.window.location.pathname = "/chat/abc";
     vm.runInContext('agentxRunRuleNow("settings-white-area")', sandbox);
-    check("settings-white-area removes the fill when leaving Settings",
+    check("settings-white-area removes the paint, the stretch and the probe when leaving Settings",
       doc.body.getAttribute("data-agentx-settings-bg") === "0" &&
-      doc.documentElement.style.backgroundColor === "" &&
-      doc.body.style.backgroundColor === "",
+      !doc.documentElement.style.backgroundColor &&
+      !doc.body.style.backgroundColor &&
+      doc.querySelectorAll("[data-agentx-settings-stretch]").length === 0 &&
+      doc.body.getAttribute("data-agentx-settings-diag") === null &&
+      sandbox.window.__agentxSettingsDiag === undefined,
       `marker=${doc.body.getAttribute("data-agentx-settings-bg")} html=${doc.documentElement.style.backgroundColor} body=${doc.body.style.backgroundColor}`);
   }
 }
