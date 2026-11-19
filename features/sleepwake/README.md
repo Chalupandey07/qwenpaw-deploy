@@ -73,9 +73,14 @@ HTML and API responses keep no-store.
   timer, every 2 min). Reads jobs.json (next native run), file mtimes
   (agent activity: qwenpaw.log, token_usage.json, history.db, workspaces),
   POSTs to /report. uptimeSec is null (unknown, not invented — the
-  Worker falls back to its stored lastUpAt).
+  Worker falls back to its D1 run-start baseline `sleepwake:run-start`,
+  set once per run at the observed down→up transition; the stored
+  `lastUpAt` is NOT an uptime source since 2026-11-19 §4 — it froze
+  for 17h and made the guard fire on a 10-minute-old run).
 - `features/sleepwake/qwenpaw-sleepwake-reporter.{service,timer}`.
-- `features/sleepwake/harness-sleepwake.mjs` — T108 (47 checks).
+- `features/sleepwake/harness-sleepwake.mjs` — T108 (53 checks, incl.
+  the 2026-11-19 stale-baseline live case; see
+  `features/smart-sleep/README.md` §4).
 - `features/sleepwake/reporter.py --selftest` — T109 (12 checks).
 
 ## Secrets (all generated, never in git)
