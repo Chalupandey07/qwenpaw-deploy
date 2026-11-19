@@ -1967,29 +1967,53 @@ function computerPanelScript(rebrandEnabled) {
         } catch (e) {}
       } },
       { id: "queue-takeover", run: function () {
-        // Multi-tab takeover (2026-11-19 Step 10): the console's
-        // single-sender ownership lock (Web Lock qwenpaw:queue-owner)
-        // leaves a non-owner tab queuing forever, and its
-        // "Interrupt & send" button is a dead no-op there. The bundle
+        // Multi-tab takeover (2026-11-19 Step 10, fixed 2026-11-19 takeover2):
+        // the console's single-sender ownership lock (Web Lock
+        // qwenpaw:queue-owner) leaves a non-owner tab queuing forever, and
+        // its "Interrupt & send" button is a dead no-op there. The bundle
         // patch (features/queue-takeover) makes the owner tab abort its
         // ownership AbortController on a "release-ownership"
         // BroadcastChannel message. This rule adds the affordance: a
         // "Take over sending" button on the queue-only banner, and hides
         // the dead "Interrupt & send" button while the banner is up.
-        // React-safe: the button is OUR element, appended to the banner;
-        // React may drop it on a re-render, so the rule re-creates it on
-        // every run (same pattern as the thinking selector). Until the
-        // patched image is deployed the button posts a message the old
-        // bundle ignores — the rule is harmless there.
+        //
+        // TAKEOVER1 LIVE FAILURE (browser-verified 2026-11-19 ~08:55 IST):
+        // the button rendered THREE times with independent state, and the
+        // owner never released. Two causes, both fixed here and in the
+        // takeover2 image:
+        //  (1) The old guard was anchor-scoped (banner.querySelector):
+        //  the rule runs on every MutationObserver tick, and appending the
+        //  button lengthens the winning div, so the next run picks a
+        //  different nested banner div while earlier buttons survive on
+        //  theirs. The guard is now DOCUMENT-WIDE (one button in the
+        //  whole document); an existing button is MOVED onto the current
+        //  banner instead of creating a new one, so there is exactly one
+        //  button with one shared state. A button stranded after the
+        //  banner is gone is removed.
+        //  (2) The takeover1 image patched the content-hashed bundles IN
+        //  PLACE without changing their filenames, while Pages serves
+        //  /assets/* as immutable for a year — a tab that had loaded the
+        //  console before kept running the OLD bundle, whose listener has
+        //  no release-ownership branch, so the message fell through to a
+        //  no-op. The takeover2 image gives the two patched chunks fresh
+        //  URLs (entry script ?v=takeover2, chat chunk renamed); see
+        //  features/queue-takeover/README.md.
+        // The button is placed on the BANNER ROOT (climbed from the text
+        // div while the parent holds only the banner text), with
+        // white-space:nowrap, so its label cannot truncate. If the owner
+        // still has not released after 15s (stale owner tab), the button
+        // re-enables so the user can retry instead of staring at a dead
+        // "Takeover requested…" — one-shot timer in the click handler
+        // only, never a poll.
         try {
           var path = "";
           try { path = window.location ? window.location.pathname || "" : ""; } catch (e) {}
           var chatId = "";
           try { chatId = agentxThinkingChatId ? agentxThinkingChatId() : ""; } catch (e) {}
           if (path.indexOf("/chat") !== 0) return;
-          var banner = null;
-          try {
-            if (document.querySelectorAll) {
+          function findBanner() {
+            try {
+              if (!document.querySelectorAll) return null;
               var divs = document.querySelectorAll("div");
               var best = null, bestLen = 0;
               for (var i = 0; i < divs.length; i++) {
@@ -1997,9 +2021,13 @@ function computerPanelScript(rebrandEnabled) {
                 try { t = divs[i].textContent || ""; } catch (e) {}
                 if (t.indexOf("This tab queues only") !== -1 && (best === null || t.length < bestLen)) { best = divs[i]; bestLen = t.length; }
               }
-              banner = best;
-            }
-          } catch (e) {}
+              return best;
+            } catch (e) { return null; }
+          }
+          function stripLabels(s) {
+            return (s || "").split("Take over sending").join("").split("Takeover requested…").join("");
+          }
+          var banner = findBanner();
           // Hide the dead "Interrupt & send" while the banner is up;
           // restore it when this tab becomes the owner (banner gone).
           try {
@@ -2023,14 +2051,39 @@ function computerPanelScript(rebrandEnabled) {
               }
             }
           } catch (e) {}
-          if (!banner) return;
+          // Document-wide guard: exactly one takeover button, ever.
+          var existing = null;
+          try { existing = document.querySelector ? document.querySelector("[data-agentx-takeover]") : null; } catch (e) {}
+          if (!banner) {
+            try { if (existing && existing.parentElement) existing.parentElement.removeChild(existing); } catch (e) {}
+            return;
+          }
+          // Banner root: climb from the text div while the parent holds
+          // only the banner text (plus our button's label). Stops at the
+          // first ancestor with any other text, at body, or after 4 steps.
+          var root = banner;
           try {
-            if (banner.querySelector && banner.querySelector("[data-agentx-takeover]")) return;
+            var baseText = stripLabels(banner.textContent || "");
+            if (baseText) {
+              for (var d = 0; d < 4; d++) {
+                var par = root.parentElement;
+                if (!par || par === document.body || par === document.documentElement) break;
+                var pt = "";
+                try { pt = par.textContent || ""; } catch (e) {}
+                var rest = stripLabels(pt).split(baseText).join("");
+                if (rest.trim() !== "") break;
+                root = par;
+              }
+            }
           } catch (e) {}
+          if (existing) {
+            try { if (existing.parentElement !== root) root.appendChild(existing); } catch (e) {}
+            return;
+          }
           var btn = document.createElement("button");
           btn.setAttribute("data-agentx-takeover", "1");
           btn.textContent = "Take over sending";
-          btn.style.cssText = "font-size:12px;color:#e8eaf0;background:#171a21;border:1px solid #343945;border-radius:8px;padding:4px 10px;margin-left:8px;flex:none;cursor:pointer;";
+          btn.style.cssText = "font-size:12px;color:#e8eaf0;background:#171a21;border:1px solid #343945;border-radius:8px;padding:4px 10px;margin-left:8px;flex:none;white-space:nowrap;cursor:pointer;";
           btn.addEventListener("click", function () {
             try {
               if (typeof BroadcastChannel === "undefined") return;
@@ -2038,9 +2091,17 @@ function computerPanelScript(rebrandEnabled) {
               ch.postMessage({ type: "release-ownership", sessionId: chatId });
               btn.disabled = true;
               btn.textContent = "Takeover requested…";
+              setTimeout(function () {
+                try {
+                  if (!btn.isConnected) return;
+                  if (!findBanner()) return;
+                  btn.disabled = false;
+                  btn.textContent = "Take over sending";
+                } catch (e) {}
+              }, 15000);
             } catch (e) {}
           });
-          banner.appendChild(btn);
+          root.appendChild(btn);
         } catch (e) {}
       } },
       { id: "settings-white-area", run: function () {
