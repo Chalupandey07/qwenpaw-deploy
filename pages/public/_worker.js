@@ -2073,9 +2073,16 @@ function computerPanelScript(rebrandEnabled) {
         // keep the 100dvh stretch, and write a VISIBLE diagnostic
         // line as page text (the cloud browser has no DevTools, so
         // the probe must be readable as text): the line proves the
-        // rule ran and names, via elementFromPoint, the element that
+        // rule ran and names, via strip probes, the element that
         // actually paints the strip. The line is TEMPORARY — remove
-        // it in the follow-up round once the values are read. The
+        // it in the follow-up round once the values are read.
+        //
+        // ROUND 4 (2026-11-19 ~09:0x IST): browser-verified FIXED
+        // — light mode cream fills to y=998 (0px strip) at top AND
+        // max scroll, dark mode dark-filled, and the diagnostic
+        // line was read (rule=ran, shell h=998, body/html bg
+        // rgb(249,248,244)). The diagnostic line and its probe are
+        // removed here; the paint + stretch are untouched. The
         // rule still no-ops before the nav mounts and cleans up on
         // leaving /settings.
         try {
@@ -2117,14 +2124,6 @@ function computerPanelScript(rebrandEnabled) {
                 }
               } catch (e) {}
             }
-            try {
-              var oldDiag = null;
-              if (document.getElementById) oldDiag = document.getElementById("agentxSettingsDiag");
-              if (oldDiag && oldDiag.parentNode && oldDiag.parentNode.removeChild) oldDiag.parentNode.removeChild(oldDiag);
-              else if (oldDiag && oldDiag.style) oldDiag.style.display = "none";
-            } catch (e) {}
-            try { if (body && body.removeAttribute) body.removeAttribute("data-agentx-settings-diag"); } catch (e) {}
-            try { if (window.__agentxSettingsDiag) delete window.__agentxSettingsDiag; } catch (e) {}
           }
           if (path.indexOf("/settings") !== 0) {
             agentxClearSettingsPaint();
@@ -2186,116 +2185,7 @@ function computerPanelScript(rebrandEnabled) {
             try { anc = anc.parentElement || null; } catch (e) { anc = null; }
           }
           if (body && body.setAttribute) body.setAttribute("data-agentx-settings-bg", "1");
-          try {
-            var diag = { ver: "r3", paint: paint, dark: dark, vh: 0, shellBg: "", shellH: 0, shellTop: 0, shellCls: "", shellMinH: "", ancestors: [], strip: [], bodyBg: "", htmlBg: "" };
-            try { diag.vh = window.innerHeight || 0; } catch (e) {}
-            try { if (window.getComputedStyle) diag.shellBg = window.getComputedStyle(shell).backgroundColor || ""; } catch (e) {}
-            try { diag.shellH = shell.offsetHeight || 0; } catch (e) {}
-            try { diag.shellTop = shell.offsetTop || 0; } catch (e) {}
-            try { diag.shellCls = (shell.getAttribute && shell.getAttribute("class")) || ""; } catch (e) {}
-            try { if (window.getComputedStyle) diag.shellMinH = window.getComputedStyle(shell).minHeight || ""; } catch (e) {}
-            try {
-              var a2 = shell.parentElement || null;
-              while (a2 && a2 !== body && a2 !== root) {
-                var row = { tag: "", cls: "", h: 0, top: 0, bg: "", minH: "", maxH: "", ov: "" };
-                try { row.tag = a2.tagName || ""; } catch (e) {}
-                try { row.cls = ((a2.getAttribute && a2.getAttribute("class")) || "").slice(0, 60); } catch (e) {}
-                try { row.h = a2.offsetHeight || 0; } catch (e) {}
-                try { row.top = a2.offsetTop || 0; } catch (e) {}
-                try { if (window.getComputedStyle) { var acs = window.getComputedStyle(a2); row.bg = acs.backgroundColor || ""; row.minH = acs.minHeight || ""; row.maxH = acs.maxHeight || ""; row.ov = acs.overflow || ""; } } catch (e) {}
-                diag.ancestors.push(row);
-                try { a2 = a2.parentElement || null; } catch (e) { a2 = null; }
-              }
-            } catch (e) {}
-            try {
-              if (document.elementFromPoint && diag.vh) {
-                var pts = [[100, diag.vh - 8], [600, diag.vh - 8], [1500, diag.vh - 8]];
-                for (var pi = 0; pi < pts.length; pi++) {
-                  var hit = null;
-                  try { hit = document.elementFromPoint(pts[pi][0], pts[pi][1]); } catch (e) { hit = null; }
-                  if (!hit) continue;
-                  var srow = { x: pts[pi][0], y: pts[pi][1], tag: "", cls: "", bg: "", pTag: "", pCls: "", pBg: "" };
-                  try { srow.tag = hit.tagName || ""; } catch (e) {}
-                  try { srow.cls = ((hit.getAttribute && hit.getAttribute("class")) || "").slice(0, 60); } catch (e) {}
-                  try { if (window.getComputedStyle) srow.bg = window.getComputedStyle(hit).backgroundColor || ""; } catch (e) {}
-                  try {
-                    var hp = hit.parentElement || null;
-                    if (hp) {
-                      try { srow.pTag = hp.tagName || ""; } catch (e) {}
-                      try { srow.pCls = ((hp.getAttribute && hp.getAttribute("class")) || "").slice(0, 60); } catch (e) {}
-                      try { if (window.getComputedStyle) srow.pBg = window.getComputedStyle(hp).backgroundColor || ""; } catch (e) {}
-                    }
-                  } catch (e) {}
-                  diag.strip.push(srow);
-                }
-              }
-            } catch (e) {}
-            try { if (window.getComputedStyle && body) diag.bodyBg = window.getComputedStyle(body).backgroundColor || ""; } catch (e) {}
-            try { if (window.getComputedStyle && root) diag.htmlBg = window.getComputedStyle(root).backgroundColor || ""; } catch (e) {}
-            window.__agentxSettingsDiag = diag;
-            if (body && body.setAttribute) body.setAttribute("data-agentx-settings-diag", JSON.stringify(diag));
-            // TEMPORARY visible diagnostic (round 3): the cloud
-            // browser exposes roles + text only, so the probe above
-            // cannot be read there. This line is page text the
-            // parent can read; it proves the rule ran and names the
-            // element painting the strip. Remove it in the
-            // follow-up round once the values are read. Written
-            // only when the text changed, so the observer never
-            // sees a mutation loop from this div.
-            try {
-              var dlines = [];
-              dlines.push("AX-DIAG settings-white-area ver=r3 TEMP - remove after read");
-              dlines.push("rule=ran path=" + path + " nav=1 shell=1 paint=" + paint + " dark=" + (dark ? "1" : "0") + " vh=" + diag.vh);
-              dlines.push("shell=" + (shell.tagName || "") + "." + (diag.shellCls || "").slice(0, 60) + " h=" + diag.shellH + " top=" + diag.shellTop + " minH=" + diag.shellMinH + " bg=" + diag.shellBg);
-              dlines.push("bodyBg=" + diag.bodyBg + " htmlBg=" + diag.htmlBg);
-              var stripTxt = "";
-              for (var si = 0; si < diag.strip.length; si++) {
-                var sr = diag.strip[si];
-                if (stripTxt) stripTxt += " | ";
-                stripTxt += "strip@" + sr.x + "," + sr.y + "=" + sr.tag + "." + sr.cls + " bg=" + sr.bg + " parent=" + sr.pTag + "." + sr.pCls + " bg=" + sr.pBg;
-              }
-              dlines.push(stripTxt || "strip=(no probe)");
-              var ancTxt = "";
-              for (var ai = 0; ai < diag.ancestors.length; ai++) {
-                var ar = diag.ancestors[ai];
-                if (ancTxt) ancTxt += " | ";
-                ancTxt += ar.tag + "." + ar.cls + " h=" + ar.h + " bg=" + ar.bg + " minH=" + ar.minH + " maxH=" + ar.maxH + " ov=" + ar.ov;
-              }
-              dlines.push("anc=" + (ancTxt || "(none)"));
-              // No backslash escapes anywhere in this section, not
-              // even in comments: it lives inside a template literal,
-              // so a newline escape would arrive in the injected
-              // script as a real newline inside the string and break
-              // parsing (check-rebrand-syntax).
-              var dtext = dlines.join(String.fromCharCode(10));
-              var ddiv = null;
-              try { if (document.getElementById) ddiv = document.getElementById("agentxSettingsDiag"); } catch (e) {}
-              if (!ddiv) {
-                try { if (document.createElement) ddiv = document.createElement("div"); } catch (e) {}
-                if (ddiv) {
-                  try { if (ddiv.setAttribute) ddiv.setAttribute("id", "agentxSettingsDiag"); } catch (e) {}
-                  try {
-                    ddiv.style.position = "fixed";
-                    ddiv.style.top = "0";
-                    ddiv.style.left = "0";
-                    ddiv.style.zIndex = "2147483647";
-                    ddiv.style.fontSize = "10px";
-                    ddiv.style.lineHeight = "1.4";
-                    ddiv.style.fontFamily = "monospace";
-                    ddiv.style.color = "#ffffff";
-                    ddiv.style.backgroundColor = "rgba(20, 20, 20, 0.88)";
-                    ddiv.style.padding = "3px 6px";
-                    ddiv.style.maxWidth = "96vw";
-                    ddiv.style.whiteSpace = "pre-wrap";
-                    ddiv.style.wordBreak = "break-all";
-                    ddiv.style.pointerEvents = "none";
-                  } catch (e) {}
-                  try { if (body && body.appendChild) body.appendChild(ddiv); } catch (e) {}
-                }
-              }
-              if (ddiv && ddiv.textContent !== dtext) ddiv.textContent = dtext;
-            } catch (e) {}
-          } catch (e) {}
+
         } catch (e) {}
       } },
       { id: "page-bottom-padding", run: function () {
