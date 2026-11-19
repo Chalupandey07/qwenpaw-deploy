@@ -421,6 +421,35 @@ application-name meta; if no inline name exists, the manifest part is
 a no-op. Renaming the external manifest file itself is a separate
 decision (it lives in the upstream bundle).
 
+## Later rule additions (after Part 3 — rule table 41 → 44)
+
+- **hide-native-thinking** (2026-11-19, QA round 20): hides the
+  console's own "Thinking intensity" control when the injected
+  thinking selector exists. Rule table 41 → 42.
+- **queue-takeover** (2026-11-19, post-reset-verify cron Step 10):
+  adds a "Take over sending" button on the queue-only banner in a
+  non-owner tab and hides the dead "Interrupt & send" button there;
+  the button posts `release-ownership` on the `qwenpaw:queue`
+  BroadcastChannel, which the patched console bundle
+  (`features/queue-takeover`) answers by aborting the owner tab's
+  ownership AbortController. Rule table 42 → 43. Its own tests live
+  under `features/queue-takeover`; only its presence is asserted in
+  the T114 harness.
+- **settings-white-area** (2026-11-19 ~08:1x IST): the outer settings
+  `<main>` renders ~819px tall in a 998px viewport on Pages, so a
+  ~179px white body strip shows below its cream (browser-verified on
+  qwenpawx.pages.dev/settings/general at 1919x998; the direct origin
+  has no strip). The rule stretches the nav-anchored shell
+  (`nav[aria-label="Settings"]` → closest `main`) to 100dvh and
+  paints `<html>` + `<body>` with the shell's own computed background
+  (cream in light mode, the dark surface in dark mode — never a
+  hard-coded colour), walks up ancestors when the shell itself is
+  transparent, no-ops off /settings and before the nav mounts, and
+  removes the fill on leaving Settings. Rule table 43 → 44;
+  T114 186 → 195 checks, T144 is the 9-check subset. Live browser
+  verification (light + dark, top scroll and max scroll) is pending
+  with Muse after the Pages deploy.
+
 ## Live verification (deployed 83c3003; this commit NOT yet deployed)
 
 - **Deployed: v1 + fix rounds 1–2 (commit 83c3003, both Pages).**
