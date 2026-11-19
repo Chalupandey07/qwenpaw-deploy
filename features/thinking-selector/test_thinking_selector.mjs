@@ -34,6 +34,10 @@
  *       change; a GET whose control reports kind unknown with no efforts
  *       marks the selector title as locked, and a capable model restores
  *       the default title;
+ *     - the anchor can resolve to a different container on different
+ *       passes (fallback first, Smart Mode row after it mounts): the
+ *       rule creates ONE select and MOVES it into the Smart Mode row,
+ *       never a second one (the 2026-11-19 duplicate-selector bug);
  *     - a server level outside the offered set (max) gains an option
  *       and is shown, never misrepresented as Default;
  *     - a GET 401 (no token) is a safe no-op; off chat pages the rule
@@ -122,6 +126,8 @@ check("a PUT 422 shows the server's reason next to the selector (no silent rever
   && helpersSrc.includes("v.detail"));
 check("a GET whose control reports an unsupported model marks the selector title as locked",
   helpersSrc.includes('control.kind === "unknown"') && helpersSrc.includes("Thinking depth cannot be adjusted for this model"));
+check("one select per document: the rule guards on a document-wide query, not the toolbar",
+  ruleSrc !== null && ruleSrc.includes('document.querySelector("[data-agentx-thinking]")'));
 check("no polling in the thinking code (no setInterval/setTimeout)",
   !helpersSrc.includes("setInterval") && !helpersSrc.includes("setTimeout")
   && !(ruleSrc || "").includes("setInterval") && !(ruleSrc || "").includes("setTimeout"));
@@ -157,6 +163,14 @@ function makeEl(tag) {
     setAttribute(k, v) { this.attributes[k] = String(v); },
     getAttribute(k) { return this.attributes[k] ?? null; },
     appendChild(child) {
+      // Real DOM move semantics: appending a node that already has a
+      // parent removes it from the old parent first. The rule moves OUR
+      // select/label between containers, so the mock must too, or a
+      // moved node counts twice.
+      if (child.parentElement && child.parentElement !== this) {
+        const idx = child.parentElement.children.indexOf(child);
+        if (idx !== -1) child.parentElement.children.splice(idx, 1);
+      }
       child.parentElement = this;
       this.children.push(child);
       if (this.tagName === "SELECT" && child.tagName === "OPTION") this.options.push(child);
@@ -197,7 +211,7 @@ const flush = async () => {
 // the "Context usage" button lives in a SEPARATE container above it.
 // The rule must put the selector in the Smart Mode row, not the
 // Context container.
-function makeWorld({ pathname, token = "tok-123", fetchHandler }) {
+function makeWorld({ pathname, token = "tok-123", fetchHandler, withSmartMode = true, withContext = true }) {
   const storage = makeStorage(token ? { qwenpaw_auth_token: token } : {});
   const toolbarRow = makeEl("div");
   const smartBtn = makeEl("button");
@@ -218,18 +232,36 @@ function makeWorld({ pathname, token = "tok-123", fetchHandler }) {
   ctxBtn.setAttribute("aria-label", "Context usage 0%");
   ctxBtn.textContent = "Context usage 0%";
   ctxContainer.appendChild(ctxBtn);
+  const inputWrap = makeEl("div");
+  const fallbackContainer = makeEl("div");
   const chatInput = makeEl("textarea");
   chatInput.setAttribute("placeholder", "Ask anything, @ to mention");
+  inputWrap.appendChild(chatInput);
+  fallbackContainer.appendChild(inputWrap);
+  // Live button list: mountSmartMode() adds the Smart Mode button when
+  // the toolbar mounts, as the real page does.
+  const buttons = [];
+  if (withContext) buttons.push(ctxBtn);
+  buttons.push(modelBtn, agentBtn);
+  if (withSmartMode) buttons.push(smartBtn);
+  buttons.push(sendBtn);
+  const mountSmartMode = () => { if (!buttons.includes(smartBtn)) buttons.push(smartBtn); };
+  const findAttr = (attr) => {
+    for (const c of [toolbarRow, ctxContainer, fallbackContainer]) {
+      const hit = c.children.find((el) => el.attributes[attr]);
+      if (hit) return hit;
+    }
+    return null;
+  };
   const doc = {
     querySelectorAll(sel) {
-      if (sel === "button") return [ctxBtn, modelBtn, agentBtn, smartBtn, sendBtn];
+      if (sel === "button") return buttons;
       if (sel === "[placeholder]") return [chatInput];
       return [];
     },
     querySelector(sel) {
-      if (sel === "[data-agentx-thinking]") {
-        return toolbarRow.querySelector(sel) ?? ctxContainer.querySelector(sel);
-      }
+      if (sel === "[data-agentx-thinking]") return findAttr("data-agentx-thinking");
+      if (sel === "[data-agentx-thinking-label]") return findAttr("data-agentx-thinking-label");
       return null;
     },
     createElement: (tag) => makeEl(tag),
@@ -244,8 +276,10 @@ function makeWorld({ pathname, token = "tok-123", fetchHandler }) {
     const r = vm.runInContext("__thinkingRule;", sandbox);
     if (r && typeof r.run === "function") vm.runInContext("__thinkingRule.run();", sandbox);
   };
-  const select = () => toolbarRow.querySelector("[data-agentx-thinking]") ?? ctxContainer.querySelector("[data-agentx-thinking]");
-  return { storage, toolbar: toolbarRow, toolbarRow, ctxContainer, smartBtn, ctxBtn, fetchMock, run, select, windowMock };
+  const select = () => findAttr("data-agentx-thinking");
+  const countSelects = () => [toolbarRow, ctxContainer, fallbackContainer]
+    .reduce((n, c) => n + c.children.filter((el) => el.attributes["data-agentx-thinking"]).length, 0);
+  return { storage, toolbar: toolbarRow, toolbarRow, ctxContainer, fallbackContainer, smartBtn, ctxBtn, fetchMock, run, select, countSelects, mountSmartMode, windowMock };
 }
 
 // ---------- dynamic checks ----------
@@ -274,6 +308,35 @@ function makeWorld({ pathname, token = "tok-123", fetchHandler }) {
     && world.fetchMock.calls[0].url === "/api/chats/abc-123/thinking"
     && world.fetchMock.calls[0].headers.Authorization === "Bearer tok-123"
     && sel !== null && sel.value === "high");
+}
+{
+  // Duplicate-selector regression (2026-11-19 DOM-inspection round):
+  // the anchor resolves to a DIFFERENT container on different passes —
+  // the chat-input grandparent before Smart Mode mounts, the Smart Mode
+  // row after. The rule must create ONE select (under the fallback
+  // anchor), then MOVE it into the Smart Mode row when that mounts —
+  // never a second select. (The "native" duplicate below the toolbar
+  // was ours: "Thinking level for this chat" exists nowhere in the
+  // console bundles.)
+  const world = makeWorld({
+    pathname: "/chat/abc-123",
+    withSmartMode: false,
+    withContext: false,
+    fetchHandler: async () => okJson(200, { value: { level: "inherit" }, model_key: "mosicn:nex-n2.6", control: { kind: "unknown", efforts: [] } }),
+  });
+  world.run();
+  await flush();
+  const sel = world.select();
+  check("before Smart Mode mounts, the rule creates one select under the fallback anchor",
+    sel !== null && world.countSelects() === 1 && sel.parentElement === world.fallbackContainer,
+    `count=${world.countSelects()}`);
+  world.mountSmartMode();
+  world.run();
+  await flush();
+  const sel2 = world.select();
+  check("when Smart Mode mounts, the SAME select moves into the Smart Mode row (still exactly one)",
+    sel2 !== null && sel2 === sel && world.countSelects() === 1 && sel2.parentElement === world.toolbarRow,
+    `count=${world.countSelects()}`);
 }
 {
   // Changing the select PUTs {level} with Bearer + model_key.
