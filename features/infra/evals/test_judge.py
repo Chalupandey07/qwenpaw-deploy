@@ -39,6 +39,14 @@ What this test PROVES (machine-free):
      "finished" (the only terminal status the task endpoint returns),
      and _extract_text takes the last "message" item of result.output,
      never the "reasoning" trace.
+  I. Calibration agreement: _calibration_agrees counts a qualified
+     verdict when its pass matches the human verdict, and counts the
+     DESIGNED empty-reply case (cal-12) when the human verdict is fail
+     and the judge returns pass=False with error_kind "empty_reply"
+     (fail-closed is the correct verdict there); an empty reply on a
+     pass-case stays a miss, as does every other unqualified verdict.
+     _calibrate_live returns TRUSTED on a stubbed set containing a
+     cal-12-like case, and live_mode grades with the same function.
 
 What this test does NOT prove (honest limit, DeepSeek design review
 2026-11-18): that the LIVE model (mosicn nex-n2.6 via the console)
@@ -696,6 +704,88 @@ def main() -> int:
         judge._request = _real_request
         run_evals.request = _real_run_request
 
+    # ================= I. Calibration agreement: empty-reply fail-closed =
+    # Live calibration run 5 (2026-11-19) finished 11/12: cal-01..cal-11
+    # all agree, cal-12 (empty-reply-fail, reply empty BY CONSTRUCTION)
+    # counted DISAGREE only because the rule required qualified=True —
+    # but its pass=False IS the correct verdict (fail-closed) and matches
+    # the human fail. The rule now counts a case as agreement when the
+    # human verdict is fail AND the judge returns pass=False with
+    # error_kind "empty_reply". It must NOT count when the human verdict
+    # is pass (an empty reply on a pass-case stays a miss), and no other
+    # unqualified verdict (timeout, judge error, malformed verdict)
+    # counts, whatever the human verdict.
+    _agrees = getattr(judge, "_calibration_agrees", None)
+    _qpass = {"pass": True, "qualified": True, "reason": "r",
+              "evidence": "e", "error_kind": None}
+    _qfail = {"pass": False, "qualified": True, "reason": "r",
+              "evidence": "", "error_kind": None}
+    _empty = {"pass": False, "qualified": False,
+              "reason": "empty reply: nothing to judge",
+              "evidence": "", "error_kind": "empty_reply"}
+    _timeout = {"pass": False, "qualified": False,
+                "reason": "judge timed out", "evidence": "",
+                "error_kind": "judge_timeout"}
+    _bad = {"pass": False, "qualified": False,
+            "reason": "judge verdict is not a JSON object",
+            "evidence": "", "error_kind": "invalid_verdict"}
+    check("I1 qualified pass + human pass agrees",
+          _agrees is not None and _agrees(True, _qpass) is True)
+    check("I2 qualified fail + human fail agrees",
+          _agrees is not None and _agrees(False, _qfail) is True)
+    check("I3 qualified pass + human fail disagrees (real disagreement)",
+          _agrees is not None and _agrees(False, _qpass) is False)
+    check("I4 qualified fail + human pass disagrees",
+          _agrees is not None and _agrees(True, _qfail) is False)
+    check("I5 unqualified empty_reply + pass False + human fail agrees "
+          "(cal-12: fail-closed is the correct verdict)",
+          _agrees is not None and _agrees(False, _empty) is True)
+    check("I6 unqualified empty_reply + pass False + human pass still "
+          "disagrees (an empty reply on a pass-case stays a miss)",
+          _agrees is not None and _agrees(True, _empty) is False)
+    check("I7 unqualified judge_timeout + human fail still disagrees "
+          "(other error kinds never count)",
+          _agrees is not None and _agrees(False, _timeout) is False)
+    check("I8 unqualified invalid_verdict + human fail still disagrees",
+          _agrees is not None and _agrees(False, _bad) is False)
+    _real_judge_reply = judge.judge_reply
+    _stub = {
+        "i9-pass": {"pass": True, "qualified": True, "reason": "r",
+                    "evidence": "e", "error_kind": None},
+        "i9-fail": {"pass": False, "qualified": True, "reason": "r",
+                    "evidence": "", "error_kind": None},
+        "i9-empty": dict(_empty),
+    }
+
+    def _fake_judge_reply(reply, rubric, task, case_id=None, **_kw):
+        return dict(_stub[case_id])
+
+    _ex9 = [{"id": "i9-pass", "reply": "The capital of France is Paris.",
+             "task": FAKE_TASK, "expected_pass": True},
+            {"id": "i9-fail", "reply": "The capital of France is London.",
+             "task": FAKE_TASK, "expected_pass": False},
+            {"id": "i9-empty", "reply": "", "task": FAKE_TASK,
+             "expected_pass": False}]
+    _ex10 = [{"id": "i9-pass", "reply": "The capital of France is Paris.",
+              "task": FAKE_TASK, "expected_pass": True},
+             {"id": "i9-empty", "reply": "", "task": FAKE_TASK,
+              "expected_pass": True}]
+    try:
+        judge.judge_reply = _fake_judge_reply
+        check("I9 _calibrate_live returns TRUSTED (0) on a set with a "
+              "cal-12-like empty-reply fail case",
+              judge._calibrate_live(_ex9) == 0)
+        check("I10 _calibrate_live returns NOT TRUSTED (1) when the "
+              "empty-reply case is a human pass",
+              judge._calibrate_live(_ex10) == 1)
+    finally:
+        judge.judge_reply = _real_judge_reply
+    _src = Path(__file__).read_text(encoding="utf-8")
+    _live_src = _src[_src.index("def live_mode"):]
+    check("I11 live_mode grades with judge._calibration_agrees (the same "
+          "rule as _calibrate_live, so the two cannot drift apart)",
+          "_calibration_agrees" in _live_src)
+
     passed = sum(1 for _, ok, _ in CHECKS if ok)
     total = len(CHECKS)
     print(f"\n{passed}/{total} checks passed.")
@@ -752,7 +842,7 @@ def live_mode(examples) -> int:
     for e in examples:
         v = judge.judge_reply(e["reply"], rubric_text, e["task"],
                               case_id=e["id"])
-        ok = (v["qualified"] and v["pass"] is e["expected_pass"])
+        ok = judge._calibration_agrees(e["expected_pass"], v)
         agree += 1 if ok else 0
         print(f"  {'AGREE' if ok else 'DISAGREE'} {e['id']}: "
               f"human={'pass' if e['expected_pass'] else 'fail'} "
