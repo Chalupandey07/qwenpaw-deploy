@@ -502,3 +502,17 @@ every sleep/wake design needs a max-run guard with a buffer before
 the platform's hard wall. And: a page field is only real if the
 endpoint that serves the page provides it — a harness that checks the
 page reads a field must also check the endpoint returns it.
+
+---
+
+## 2026-11-19 — Sandbox end-to-end job failed exit 125: `invalid tmpfs option "16m"` — a bare size is not a docker tmpfs option
+
+**Symptom:** the first end-to-end sandbox runner job (T139 live proof, post-reset) failed in 51 ms with exit 125: `docker: Error response from daemon: invalid tmpfs option "16m"`. The container never started; no probe ran.
+
+**Root cause:** `features/sandbox/sandbox.py` `build_profile` wrote the tmpfs sizes as bare values (`"16m,noexec,nosuid,nodev"`). Docker's `--tmpfs` grammar wants `size=16m`; a bare size token is invalid and the daemon refuses the whole `docker run`. The machine-free test (T139, 50/50) could not see it: it asserted the profile dict, never the rendered argv against a real daemon — and the compose renderer next to it already used the correct `size=` form for the token tmpfs, so the wrong form looked consistent.
+
+**Fix:** tmpfs values are now `"rw,noexec,nosuid,nodev,size=64m"` (and `size=16m` for `/run`); `validate_profile` rejects any tmpfs option token that is not a valid docker tmpfs option, so a hand-built profile with a bare size can never render; test A15 asserts the rendered argv carries `size=` on all three tmpfs mounts and that a bare-size profile fails validation.
+
+**Verification:** 2026-11-19 ~05:55 IST — T139 51/51 (fail-first 7 passed / 44 failed); runner selftest 218/218; live end-to-end job `t139-live-e2e` → status ok, exit 0, `probe.txt` landed on the host, gateway unreachable from inside the job.
+
+**Rule (AGENTS.md §1):** a machine-free test cannot see a daemon rejection — validate rendered commands against the tool's real option grammar, and run the rendering live the first time it executes.
