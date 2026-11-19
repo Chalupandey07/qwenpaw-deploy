@@ -94,10 +94,16 @@
  *       rename-attrs covers alt + data-tooltip (img alt stays for the
  *       logo rule); rename-logo covers title/aria-label imgs.
  *       settings-white-area (2026-11-19) stretches the settings
- *       shell to the viewport and paints html + body with the shell's
- *       own computed background (cream in light mode, the dark surface
- *       in dark mode), does nothing off /settings or before the nav
- *       renders, and removes the fill on leaving Settings.
+ *       shell to the viewport and paints the shell and every
+ *       ancestor with the console's --app-bg theme variable (cream
+ *       #f9f8f4 in light mode, #141414 in dark mode), never the
+ *       shell's own background (the shell is transparent inside a
+ *       WHITE full-height mainContentLayout wrapper that covers the
+ *       html/body paint), and writes a TEMPORARY visible diagnostic
+ *       line (AX-DIAG, elementFromPoint strip probes) readable as
+ *       page text; does nothing off /settings or before the nav
+ *       renders, and removes the fill + diagnostic line on leaving
+ *       Settings.
  *
  * The live half (a real browser on the deployed console: title is
  * "AgentX Console", no update badge, no upstream menu items, no upstream
@@ -260,6 +266,22 @@ console.log("static: the rule table is data-driven and guarded");
     !/id: "settings-white-area"[\s\S]{0,4000}body\.style\.backgroundColor = fill/.test(rebrandSrc) &&
     !rebrandSrc.includes("#f9f7f2"),
     "round 1 copied the shell's white .page-content background onto the body; round 2 reads the theme variable instead");
+  // Round 3 (2026-11-19 ~08:4x IST): round 2 changed nothing live
+  // even though its code shipped — the paint on <html>/<body> is
+  // invisible because the white .index-module__mainContentLayout
+  // wrapper between them and the shell covers the body paint. The
+  // rule must paint the shell AND every ancestor, and write a
+  // visible diagnostic line (the cloud browser has no DevTools, so
+  // the probe must be readable as page text) with elementFromPoint
+  // strip probes naming the element that actually paints the strip.
+  check("the settings-white-area rule paints the shell and its ancestors, not only html and body",
+    /id: "settings-white-area"[\s\S]*?agentxSetBg\(shell\)/.test(rebrandSrc) &&
+    /id: "settings-white-area"[\s\S]*?agentxSetBg\(anc\)/.test(rebrandSrc),
+    "the white mainContentLayout wrapper covers the body paint; only painting the shell + ancestors reaches the strip");
+  check("the settings-white-area rule writes a visible diagnostic line with elementFromPoint strip probes",
+    /id: "settings-white-area"[\s\S]*?agentxSettingsDiag/.test(rebrandSrc) &&
+    /id: "settings-white-area"[\s\S]*?elementFromPoint/.test(rebrandSrc),
+    "the probe must be readable as page text — the cloud browser exposes roles and text only, no JS globals");
   // Logo-flash guard (2026-11-19 QA round 20): the header logo img
   // painted before the rebrand observer renamed it. The injection hides
   // QwenPaw-alt imgs until rename-logo processes them.
@@ -467,6 +489,15 @@ function makeEl(tag, attrs, children) {
       if (child.nodeType === 1) this.children.push(child);
       return child;
     },
+    removeChild(child) {
+      const idx = this.childNodes.indexOf(child);
+      if (idx === -1) throw new Error("NotFoundError: removeChild of a non-child");
+      child.parentNode = null;
+      this.childNodes.splice(idx, 1);
+      const ci = this.children.indexOf(child);
+      if (ci !== -1) this.children.splice(ci, 1);
+      return child;
+    },
     replaceChild(newChild, oldChild) {
       const idx = this.childNodes.indexOf(oldChild);
       if (idx === -1) throw new Error("NotFoundError: replaceChild of a non-child");
@@ -500,6 +531,21 @@ function makeEl(tag, attrs, children) {
   });
   Object.defineProperty(el, "parentElement", {
     get() { return this.parentNode && this.parentNode.nodeType === 1 ? this.parentNode : null; },
+    configurable: true,
+  });
+  // Layout geometry (2026-11-19, round 3 of the settings-white-area
+  // fix): the rule reads shell.offsetHeight / offsetTop for the
+  // diagnostic probe, and the realistic test sets them to the live
+  // measurements (shell 894px in a 998px viewport). A mock element
+  // carries them in _offsetHeight / _offsetTop (unset = 0).
+  Object.defineProperty(el, "offsetHeight", {
+    get() { return el._offsetHeight || 0; },
+    set(v) { el._offsetHeight = v; },
+    configurable: true,
+  });
+  Object.defineProperty(el, "offsetTop", {
+    get() { return el._offsetTop || 0; },
+    set(v) { el._offsetTop = v; },
     configurable: true,
   });
   // select.options: the OPTION element children (a real HTMLCollection is
@@ -603,12 +649,23 @@ function makeDocument(rootEl, headChildren) {
       return all.length ? all[0] : null;
     },
     querySelectorAll(selector) {
-      // Head elements (meta/link/title) live outside the body root, so
-      // search both trees — the head-rebrand rule queries them.
-      return [...collectAll(rootEl, []), ...collectAll(headEl, [])].filter((el) => matchesSelector(el, selector));
+      // A real document.querySelectorAll searches the whole document
+      // including <html> itself, so search from the html element (it
+      // contains head + body); the settings-white-area cleanup sweep
+      // must find <html>'s own paint marker.
+      return collectAll(htmlEl, []).filter((el) => matchesSelector(el, selector));
     },
     getElementById(id) {
       return this.querySelectorAll("*").find((el) => el.getAttribute("id") === id) || null;
+    },
+    // elementFromPoint (2026-11-19, round 3 of the
+    // settings-white-area fix): the rule probes which element paints
+    // the strip below the shell. The mock has no layout engine, so a
+    // test installs the answer with opts.elementFromPoint; unset =
+    // null, as if the point hit nothing.
+    elementFromPoint(x, y) {
+      if (typeof this._elementFromPointFn === "function") return this._elementFromPointFn(x, y);
+      return null;
     },
     createElement(tag) { return makeEl(tag, {}, []); },
     createTreeWalker(root, whatToShow) {
@@ -1194,6 +1251,11 @@ if (!rebrandSrc) {
     // opts.cssVars / opts.htmlClass before the rule runs.
     if (opts.cssVars) doc.documentElement._cssVars = opts.cssVars;
     if (opts.htmlClass) doc.documentElement.setAttribute("class", opts.htmlClass);
+    // Viewport + strip probe (2026-11-19, round 3): the rule reads
+    // window.innerHeight for the probe and document.elementFromPoint
+    // for the strip element. A test sets them with opts.innerHeight /
+    // opts.elementFromPoint; unset = 0 / null (no probe).
+    if (opts.elementFromPoint) doc._elementFromPointFn = opts.elementFromPoint;
     const opened = [];
     const localStore = {};
     const sandbox = {
@@ -1202,6 +1264,7 @@ if (!rebrandSrc) {
       window: {
         open: (url) => { opened.push(url); return { closed: false }; },
         location: { pathname: opts.pathname || "", search: opts.search || "" },
+        innerHeight: (opts.innerHeight !== undefined ? opts.innerHeight : 0),
         // getComputedStyle (2026-11-19, settings-fill): the mock has no
         // CSS engine, so a mock element carries its computed background
         // in `_computedBg` (unset = transparent, as in a real browser
@@ -1732,6 +1795,122 @@ if (!rebrandSrc) {
       doc.body.getAttribute("data-agentx-settings-diag") === null &&
       sandbox.window.__agentxSettingsDiag === undefined,
       `marker=${doc.body.getAttribute("data-agentx-settings-bg")} html=${doc.documentElement.style.backgroundColor} body=${doc.body.style.backgroundColor}`);
+  }
+
+  // Realistic settings DOM (2026-11-19, round 3): the live layout
+  // from the served bundle (index-tgCT4NPx.css) — a transparent
+  // .page-content shell inside a WHITE full-height
+  // .index-module__mainContentLayout wrapper (background:
+  // var(--app-surface)), inside cream .ant-layout-content /
+  // .ant-layout. The round-2 mock had no covering wrapper, so the
+  // rule passed while live it painted a body nobody could see.
+  function makeSettingsDom() {
+    const shell = makeEl("main", { class: "page-content" }, [makeEl("nav", { "aria-label": "Settings" }, [])]);
+    shell._computedBg = "rgba(0, 0, 0, 0)";
+    shell.offsetHeight = 894;
+    shell.offsetTop = 104;
+    const pageContainer = makeEl("div", { class: "page-container" }, [shell]);
+    pageContainer._computedBg = "rgba(0, 0, 0, 0)";
+    const mainLayout = makeEl("div", { class: "index-module__mainContentLayout__5qYwp" }, [pageContainer]);
+    mainLayout._computedBg = "rgb(255, 255, 255)";
+    mainLayout.offsetHeight = 998;
+    const antContent = makeEl("div", { class: "ant-layout-content" }, [mainLayout]);
+    antContent._computedBg = "rgb(249, 248, 244)";
+    const antLayout = makeEl("div", { class: "ant-layout" }, [antContent]);
+    antLayout._computedBg = "rgb(249, 248, 244)";
+    return { shell, pageContainer, mainLayout, antContent, antLayout };
+  }
+
+  { // settings-white-area round 3 (2026-11-19: round 2 browser-
+    // verified ZERO change — the strip stayed ~104px in light mode
+    // even though curl showed the new code in the served HTML.
+    // Diagnosis from the SERVED console bundle: the shell is
+    // transparent inside a WHITE full-height mainContentLayout
+    // wrapper that covers the <html>/<body> paint. Round 3 paints
+    // the shell AND every ancestor with the theme paint.
+    const { shell, pageContainer, mainLayout, antContent, antLayout } = makeSettingsDom();
+    const { doc, sandbox } = runOneRule(antLayout, "settings-white-area", {
+      pathname: "/settings/general",
+      cssVars: { "--app-bg": "#f9f8f4" },
+      innerHeight: 998,
+      elementFromPoint: (x, y) => (y >= 894 ? mainLayout : shell),
+    });
+    check("settings-white-area paints the shell and the white wrapper ancestor cream in light mode on the realistic DOM",
+      shell.style.backgroundColor === "#f9f8f4" &&
+      mainLayout.style.backgroundColor === "#f9f8f4" &&
+      pageContainer.style.backgroundColor === "#f9f8f4" &&
+      antContent.style.backgroundColor === "#f9f8f4" &&
+      antLayout.style.backgroundColor === "#f9f8f4" &&
+      doc.body.style.backgroundColor === "#f9f8f4" &&
+      doc.documentElement.style.backgroundColor === "#f9f8f4" &&
+      shell.getAttribute("data-agentx-settings-bg") === "1" &&
+      mainLayout.getAttribute("data-agentx-settings-bg") === "1",
+      `shell=${shell.style.backgroundColor} wrapper=${mainLayout.style.backgroundColor} html=${doc.documentElement.style.backgroundColor}`);
+    const diagDiv = doc.getElementById("agentxSettingsDiag");
+    check("settings-white-area writes a visible diagnostic line naming the white strip element",
+      diagDiv !== null &&
+      diagDiv.textContent.indexOf("AX-DIAG") !== -1 &&
+      diagDiv.textContent.indexOf("ver=r3") !== -1 &&
+      diagDiv.textContent.indexOf("paint=#f9f8f4") !== -1 &&
+      diagDiv.textContent.indexOf("strip@600,990=DIV.index-module__mainContentLayout__5qYwp") !== -1 &&
+      diagDiv.textContent.indexOf("rgb(255, 255, 255)") !== -1,
+      `diag=${diagDiv ? diagDiv.textContent.slice(0, 220) : "MISSING"}`);
+    vm.runInContext('agentxRunRuleNow("settings-white-area")', sandbox);
+    check("settings-white-area does not duplicate the diagnostic line on re-runs",
+      doc.querySelectorAll("*").filter((e) => e.getAttribute("id") === "agentxSettingsDiag").length === 1,
+      `count=${doc.querySelectorAll("*").filter((e) => e.getAttribute("id") === "agentxSettingsDiag").length}`);
+  }
+
+  { // settings-white-area round 3 in dark mode: the wrapper is the
+    // dark surface #1f1f1f there and --app-bg is #141414 — the shell
+    // and the wrapper must both be painted dark, never cream, and
+    // the diagnostic line must say dark.
+    const { shell, mainLayout, antLayout } = makeSettingsDom();
+    mainLayout._computedBg = "rgb(31, 31, 31)";
+    const { doc } = runOneRule(antLayout, "settings-white-area", {
+      pathname: "/settings/general",
+      cssVars: { "--app-bg": "#141414" },
+      htmlClass: "dark-mode",
+      innerHeight: 998,
+      elementFromPoint: (x, y) => (y >= 894 ? mainLayout : shell),
+    });
+    const diagDiv = doc.getElementById("agentxSettingsDiag");
+    check("settings-white-area paints the shell and the white wrapper ancestor dark in dark mode on the realistic DOM",
+      shell.style.backgroundColor === "#141414" &&
+      mainLayout.style.backgroundColor === "#141414" &&
+      doc.body.style.backgroundColor === "#141414" &&
+      doc.documentElement.style.backgroundColor === "#141414" &&
+      diagDiv !== null &&
+      diagDiv.textContent.indexOf("dark=1") !== -1 &&
+      diagDiv.textContent.indexOf("paint=#141414") !== -1,
+      `shell=${shell.style.backgroundColor} wrapper=${mainLayout.style.backgroundColor} diag=${diagDiv ? diagDiv.textContent.slice(0, 120) : "MISSING"}`);
+  }
+
+  { // settings-white-area round 3 cleanup: leaving Settings must
+    // also remove the paint from the shell and the wrapper ancestor
+    // and remove the diagnostic line, or the cream would leak onto
+    // /chat (the wrapper is shared app chrome).
+    const { shell, mainLayout, antLayout } = makeSettingsDom();
+    const { doc, sandbox } = runOneRule(antLayout, "settings-white-area", {
+      pathname: "/settings/general",
+      cssVars: { "--app-bg": "#f9f8f4" },
+      innerHeight: 998,
+      elementFromPoint: (x, y) => (y >= 894 ? mainLayout : shell),
+    });
+    const paintedBefore = shell.style.backgroundColor === "#f9f8f4" &&
+      mainLayout.style.backgroundColor === "#f9f8f4" &&
+      doc.getElementById("agentxSettingsDiag") !== null;
+    sandbox.location.pathname = "/chat/abc";
+    sandbox.window.location.pathname = "/chat/abc";
+    vm.runInContext('agentxRunRuleNow("settings-white-area")', sandbox);
+    check("settings-white-area removes the ancestor paint and the diagnostic line when leaving Settings",
+      paintedBefore &&
+      !shell.style.backgroundColor &&
+      !mainLayout.style.backgroundColor &&
+      doc.querySelectorAll('[data-agentx-settings-bg="1"]').length === 0 &&
+      doc.getElementById("agentxSettingsDiag") === null &&
+      sandbox.window.__agentxSettingsDiag === undefined,
+      `paintedBefore=${paintedBefore} shell=${shell.style.backgroundColor} wrapper=${mainLayout.style.backgroundColor} painted=${doc.querySelectorAll('[data-agentx-settings-bg="1"]').length}`);
   }
 }
 
