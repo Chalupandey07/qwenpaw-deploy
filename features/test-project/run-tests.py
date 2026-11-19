@@ -2924,10 +2924,10 @@ def t144():
 
 
 def t145():
-    """Multi-tab takeover (Step 10, 2026-11-19): the non-owner tab can take over sending (26 checks).
+    """Multi-tab takeover (Step 10, 2026-11-19): the non-owner tab can take over sending (60 checks).
 
     Node harness (features/queue-takeover/test_queue_takeover.mjs) in
-    three parts. (a) The bundle patch (features/queue-takeover/
+    four parts. (a) The bundle patch (features/queue-takeover/
     apply-queue-takeover.py) is run FOR REAL against the verbatim live
     excerpts captured from the machine (image
     qwenpaw-agentx:2.3.0-approvalttl1, both asset copies byte-identical):
@@ -2939,22 +2939,38 @@ def t145():
     (fail-closed, no double-patch). (b) Static checks on the
     "queue-takeover" rule in pages/public/_worker.js: it posts
     {type:"release-ownership", sessionId} on BroadcastChannel
-    ("qwenpaw:queue"), creates one "Take over sending" button on the
-    queue-only banner, hides the dead "Interrupt & send" while the
-    banner is up, never removes React nodes or polls. (c) Dynamic, with
-    a DOM mock + BroadcastChannel mock: one button on the banner, no
-    duplicate on re-run, click posts release-ownership with the chat id
-    from the URL and disables itself, Interrupt hidden while the banner
-    is up and restored when it goes, nothing off-chat. Fail-first
-    proven: the apply-script checks fail against a stub patch with the
-    wrong anchors, and the banner-restore check fails against a mock
-    whose div list is static (a removed banner keeps being found).
+    ("qwenpaw:queue"), creates exactly one "Take over sending" button
+    (document-wide guard, moved onto the current banner instead of
+    recreated, placed on the banner root with white-space:nowrap,
+    stranded button removed when the banner is gone, one-shot 15s
+    retry re-enable in the click handler, no setInterval), hides the
+    dead "Interrupt & send" while the banner is up, never removes React
+    nodes. (c) Dynamic, with a DOM mock (live textContent, isConnected,
+    fake setTimeout) + BroadcastChannel mock: one button on the banner
+    root, no duplicate on re-run, click posts release-ownership with
+    the chat id from the URL and disables itself, re-enables after 15s
+    if still queued, Interrupt hidden while the banner is up and
+    restored when it goes, nothing off-chat; the takeover1 live failure
+    is replayed (React re-renders replace the text div on every run —
+    still exactly one button, the same node, on the banner root) and a
+    stranded button on an ancestor is removed when the banner is gone.
+    (d) The cache bust (features/queue-takeover/rename-chunks-tk2.py)
+    is run FOR REAL on fixture console dirs: the entry script gains
+    ?v=takeover2, the chat chunk is renamed, its references updated,
+    the old name occurs zero times, all three touched files parse, a
+    second run FAILS. Fail-first proven: the apply-script checks fail
+    against a stub patch with the wrong anchors, and the banner-restore
+    check fails against a mock whose div list is static (a removed
+    banner keeps being found). Takeover2 fail-first proven: 42/60
+    against the takeover1 rule (18 failed — the 8 new static checks
+    and all 10 new dynamic checks, including the mock replaying the
+    live 3x triplication on the second run).
     The live half (two tabs on the same chat, send from the non-owner
     tab, confirm takeover works and the queue drains) runs in a real
     browser after the container redeploy — NOT here, and NOT while the
     T136 judge is running (a restart drops its in-flight turns).
     """
-    return _harness("features/queue-takeover/test_queue_takeover.mjs", 26)
+    return _harness("features/queue-takeover/test_queue_takeover.mjs", 60)
 
 
 
@@ -3491,7 +3507,7 @@ TESTS = [
     ("T142", "per-chat thinking selector (Default/Off/Low/Medium/High/XHigh): the rule surfaces the backend's GET/PUT /api/chats/{id}/thinking as a selector in the chat composer toolbar itself, in the Smart Mode row next to Smart Mode (user screenshot 2026-11-19), appended into that row (React-safe), Bearer from localStorage, model_key on PUT, pending level applied once a new chat gets an id, 422 revert + re-sync with the server's reason shown next to the selector, lock-hint title when the model takes no thinking level, out-of-set levels shown truthfully, one select per document (moves into the Smart Mode row when it mounts, never a second) (harness)", "thinking", "protocol", t142),
     ("T143", "smart sleep/wake: keep-alive ON/OFF toggle (POST /keepalive, Bearer <redacted>, D1 keepalive:enabled, tick early-return fail-closed, /status + /sleepwake/state keepAlive fields) + max-run guard (sleep at 7h uptime even when busy, WAKE/rest still win) + Hallmark waking/cooldown/status pages (no polling, scaleX bars, keep-alive switch, /status sleepwake.nextRoutineAt) (harness)", "sleepwake", "protocol", t143),
     ("T144", "settings white-area fix round 4 (AX-DIAG removed): settings-white-area rule only — nav-anchored shell + ancestors stretched to 100dvh (!important) and painted with the --app-bg theme variable (#f9f8f4 light / #141414 dark, class fallback), never from the shell's background (the shell is transparent inside a WHITE full-height .index-module__mainContentLayout wrapper that covers the html/body paint), no diagnostic line (AX-DIAG removed in round 4 after the round-3 values were read live), no-op off /settings and before nav mounts, cleanup removes ancestor paint on leaving Settings (harness subset, 19 checks)", "rebrand", "protocol", t144),
-    ("T145", "multi-tab takeover (Step 10): the bundle patch registers the owner AbortController and aborts it on BroadcastChannel release-ownership; the Pages queue-takeover rule adds a Take over sending button on the queue-only banner and hides the dead Interrupt & send while the banner is up (harness, 26 checks)", "queue", "protocol", t145),
+    ("T145", "multi-tab takeover (Step 10): the bundle patch registers the owner AbortController and aborts it on BroadcastChannel release-ownership; the Pages queue-takeover rule adds exactly one Take over sending button on the queue-only banner (document-wide guard, moved not recreated, banner-root placement, 15s retry re-enable) and hides the dead Interrupt & send while the banner is up; the takeover2 cache bust renames the chat chunk and versions the entry script (harness, 60 checks)", "queue", "protocol", t145),
 ]
 
 SKIP_NOTE = {
