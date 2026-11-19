@@ -232,6 +232,16 @@ console.log("static: the rule table is data-driven and guarded");
   // QwenPaw-alt imgs until rename-logo processes them.
   check("a QwenPaw-alt logo img is hidden until the rebrand processes it (no logo flash)",
     /img\[alt\*="QwenPaw"\]:not\(\[data-agentx-logo\]\)\{visibility:hidden/.test(worker));
+  // Hide-native v2 (2026-11-19 DOM inspection): the native composer
+  // control is labelled "Thinking level for this chat", identical to
+  // ours — the rule must match that label (not just "Thinking
+  // intensity") and tell the two apart by data-agentx-thinking only.
+  check("the hide-native rule matches the native control's real label ('Thinking level for this chat')",
+    /hide-native-thinking[\s\S]*?thinking level for this chat/.test(rebrandSrc));
+  // Truncated rename (2026-11-19 DOM inspection): the Models card
+  // renders "AgentScope Plat…" in the DOM, never the full phrase.
+  check("the rename handles the truncated 'AgentScope Plat…' card name",
+    rebrandSrc.includes("AgentScope Plat…"));
   check("each rule runs in its own try/catch",
     /try \{ AGENTX_RULES\[i\]\.run\(\); \} catch/.test(rebrandSrc),
     "one rule throwing must not take down the whole pass");
@@ -683,6 +693,9 @@ if (!rebrandSrc) {
     "a load-bearing code snippet in the same container is left alone",
     "'AgentScope Platform' is renamed to 'AgentX Platform'",
     "the console's own 'Thinking intensity' control is hidden when our selector exists",
+    "the console's native thinking SELECT (same label as ours) is hidden when our selector exists",
+    "a truncated 'AgentScope Plat…' name is renamed to 'AgentX Plat…'",
+    "a bare 'AgentScope' name is renamed to 'AgentX'",
     "our injected thinking selector is NOT hidden by the hide-native rule",
     "a load-bearing instruction is left alone (truthful, not renamed)",
     "an aria-label with QwenPaw is renamed",
@@ -871,15 +884,25 @@ if (!rebrandSrc) {
   // "AgentScope Platform" is the upstream provider card name on the
   // Models page — a display name, never load-bearing.
   const agentScopeDiv = makeEl("div", { class: "provider-name" }, [makeText("AgentScope Platform")]);
+  // Truncated / bare AgentScope names (2026-11-19 DOM inspection): the
+  // Models card renders "AgentScope Plat…" in the DOM, never the full
+  // phrase — the full-phrase rename alone never matches it.
+  const agentScopeTruncDiv = makeEl("div", { class: "provider-name" }, [makeText("AgentScope Plat…")]);
+  const agentScopeBareDiv = makeEl("div", { class: "provider-name" }, [makeText("AgentScope")]);
   // Thinking controls (2026-11-19 QA round 20): the console's own
   // "Thinking intensity" button and our injected per-chat selector.
   // The native one must be hidden; ours must survive.
   const nativeThinkingBtn = makeEl("button", { "aria-label": "Thinking intensity" }, [makeText("Thinking intensity")]);
-  const injectedThinkingSel = makeEl("select", { "data-agentx-thinking": "1", title: "Thinking level for this chat — Default follows the model, Off disables thinking" }, []);
+  // Native composer control (2026-11-19 DOM inspection): a <select>
+  // labelled EXACTLY like ours ("Thinking level for this chat", same
+  // default title) — only data-agentx-thinking tells them apart.
+  const nativeThinkingSel = makeEl("select", { "aria-label": "Thinking level for this chat", title: "Thinking level for this chat — Default follows the model, Off disables thinking" }, []);
+  const injectedThinkingSel = makeEl("select", { "data-agentx-thinking": "1", "aria-label": "Thinking level for this chat", title: "Thinking level for this chat — Default follows the model, Off disables thinking" }, []);
   const root = makeEl("div", { id: "root" }, [
     menu, header, settingsMenu, aboutLi, brandDiv, greeting, loadBearing, ariaBtn,
     providerList, channelGrid, asyncList, upstreamLink, normalLink,
-    communitySection, agentScopeDiv, nativeThinkingBtn, injectedThinkingSel,
+    communitySection, agentScopeDiv, agentScopeTruncDiv, agentScopeBareDiv,
+    nativeThinkingBtn, nativeThinkingSel, injectedThinkingSel,
   ]);
   const doc = makeDocument(root);
   const opened = [];
@@ -933,8 +956,16 @@ if (!rebrandSrc) {
   check("'AgentScope Platform' is renamed to 'AgentX Platform'",
     agentScopeDiv.textContent === "AgentX Platform",
     `got ${agentScopeDiv.textContent}`);
+  check("a truncated 'AgentScope Plat…' name is renamed to 'AgentX Plat…'",
+    agentScopeTruncDiv.textContent === "AgentX Plat…",
+    `got ${agentScopeTruncDiv.textContent}`);
+  check("a bare 'AgentScope' name is renamed to 'AgentX'",
+    agentScopeBareDiv.textContent === "AgentX",
+    `got ${agentScopeBareDiv.textContent}`);
   check("the console's own 'Thinking intensity' control is hidden when our selector exists",
     nativeThinkingBtn.style.display === "none", `display=${nativeThinkingBtn.style.display}`);
+  check("the console's native thinking SELECT (same label as ours) is hidden when our selector exists",
+    nativeThinkingSel.style.display === "none", `display=${nativeThinkingSel.style.display}`);
   check("our injected thinking selector is NOT hidden by the hide-native rule",
     injectedThinkingSel.style.display !== "none", `display=${injectedThinkingSel.style.display}`);
   check("a load-bearing instruction is left alone (truthful, not renamed)",
