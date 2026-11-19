@@ -99,11 +99,12 @@
  *       #f9f8f4 in light mode, #141414 in dark mode), never the
  *       shell's own background (the shell is transparent inside a
  *       WHITE full-height mainContentLayout wrapper that covers the
- *       html/body paint), and writes a TEMPORARY visible diagnostic
- *       line (AX-DIAG, elementFromPoint strip probes) readable as
- *       page text; does nothing off /settings or before the nav
- *       renders, and removes the fill + diagnostic line on leaving
- *       Settings.
+ *       html/body paint); round 3 added a TEMPORARY visible
+ *       diagnostic line (AX-DIAG, elementFromPoint strip probes)
+ *       readable as page text, which round 4 removed after the
+ *       values were read live (rule=ran, shell h=998, 0px strip);
+ *       does nothing off /settings or before the nav renders, and
+ *       removes the fill on leaving Settings.
  *
  * The live half (a real browser on the deployed console: title is
  * "AgentX Console", no update badge, no upstream menu items, no upstream
@@ -252,8 +253,11 @@ console.log("static: the rule table is data-driven and guarded");
   // ends ~894, ~104px white strip left in light mode; dark filled).
   // The stretch runs up the ancestor chain because the shell alone
   // cannot beat the .ant-layout max-height:100vh + overflow:hidden
-  // clip in the served bundle, and a diagnostic probe records the
-  // live geometry for the parent's browser check.
+  // clip in the served bundle. Round 3 added a TEMPORARY visible
+  // diagnostic line (AX-DIAG) so the parent could read the live
+  // geometry in the cloud browser; round 4 removed it after the
+  // values were read (rule=ran, shell h=998, 0px strip), so the
+  // rule must contain no diagnostic text, div, probe, or state.
   check("the settings-white-area rule is scoped to /settings pages",
     /id: "settings-white-area"[\s\S]*?indexOf\("\/settings"\) !== 0/.test(rebrandSrc),
     "a fill that ran on /chat would paint the chat background too");
@@ -262,7 +266,6 @@ console.log("static: the rule table is data-driven and guarded");
     /id: "settings-white-area"[\s\S]*?setProperty\(["']background-color["']/.test(rebrandSrc) &&
     /id: "settings-white-area"[\s\S]*?setProperty\(["']min-height["']/.test(rebrandSrc) &&
     /id: "settings-white-area"[\s\S]*?data-agentx-settings-stretch/.test(rebrandSrc) &&
-    /id: "settings-white-area"[\s\S]*?__agentxSettingsDiag/.test(rebrandSrc) &&
     !/id: "settings-white-area"[\s\S]{0,4000}body\.style\.backgroundColor = fill/.test(rebrandSrc) &&
     !rebrandSrc.includes("#f9f7f2"),
     "round 1 copied the shell's white .page-content background onto the body; round 2 reads the theme variable instead");
@@ -270,18 +273,29 @@ console.log("static: the rule table is data-driven and guarded");
   // even though its code shipped — the paint on <html>/<body> is
   // invisible because the white .index-module__mainContentLayout
   // wrapper between them and the shell covers the body paint. The
-  // rule must paint the shell AND every ancestor, and write a
-  // visible diagnostic line (the cloud browser has no DevTools, so
-  // the probe must be readable as page text) with elementFromPoint
-  // strip probes naming the element that actually paints the strip.
+  // rule must paint the shell AND every ancestor.
   check("the settings-white-area rule paints the shell and its ancestors, not only html and body",
     /id: "settings-white-area"[\s\S]*?agentxSetBg\(shell\)/.test(rebrandSrc) &&
     /id: "settings-white-area"[\s\S]*?agentxSetBg\(anc\)/.test(rebrandSrc),
     "the white mainContentLayout wrapper covers the body paint; only painting the shell + ancestors reaches the strip");
-  check("the settings-white-area rule writes a visible diagnostic line with elementFromPoint strip probes",
-    /id: "settings-white-area"[\s\S]*?agentxSettingsDiag/.test(rebrandSrc) &&
-    /id: "settings-white-area"[\s\S]*?elementFromPoint/.test(rebrandSrc),
-    "the probe must be readable as page text — the cloud browser exposes roles and text only, no JS globals");
+  // Round 4 (2026-11-19 ~09:0x IST): the round-3 browser check
+  // read the diagnostic line (rule=ran, shell h=998, body/html bg
+  // rgb(249,248,244)) and confirmed the fix — light mode cream to
+  // y=998, 0px strip, top and max scroll; dark filled. The
+  // diagnostic line and its probe are removed here; the rule must
+  // contain no AX-DIAG text, no diag div, no elementFromPoint
+  // probe, and no window/body diagnostic state.
+  const settingsRuleSrc = rebrandSrc.slice(
+    rebrandSrc.indexOf('id: "settings-white-area"'),
+    rebrandSrc.indexOf('id: "page-bottom-padding"'));
+  check("the settings-white-area rule writes no diagnostic line (AX-DIAG removed in round 4 after the values were read)",
+    settingsRuleSrc.length > 0 &&
+    !settingsRuleSrc.includes("AX-DIAG") &&
+    !settingsRuleSrc.includes("agentxSettingsDiag") &&
+    !settingsRuleSrc.includes("__agentxSettingsDiag") &&
+    !settingsRuleSrc.includes("elementFromPoint") &&
+    !settingsRuleSrc.includes("data-agentx-settings-diag"),
+    "the temporary diagnostic was read live (rule=ran, shell h=998) and must not ship; it covers the header row while scrolling");
   // Logo-flash guard (2026-11-19 QA round 20): the header logo img
   // painted before the rebrand observer renamed it. The injection hides
   // QwenPaw-alt imgs until rename-logo processes them.
@@ -1684,10 +1698,10 @@ if (!rebrandSrc) {
       doc.body.style.backgroundColor === "#f9f8f4" &&
       doc.body.getAttribute("data-agentx-settings-bg") === "1",
       `html=${doc.documentElement.style.backgroundColor} body=${doc.body.style.backgroundColor} marker=${doc.body.getAttribute("data-agentx-settings-bg")}`);
-    check("settings-white-area records the diagnostic probe for the browser check",
-      sandbox.window.__agentxSettingsDiag && sandbox.window.__agentxSettingsDiag.paint === "#f9f8f4" &&
-      sandbox.window.__agentxSettingsDiag.shellBg === "rgb(255, 255, 255)" &&
-      doc.body.getAttribute("data-agentx-settings-diag") !== null,
+    check("settings-white-area records no diagnostic probe (AX-DIAG removed in round 4)",
+      sandbox.window.__agentxSettingsDiag === undefined &&
+      doc.body.getAttribute("data-agentx-settings-diag") === null &&
+      doc.getElementById("agentxSettingsDiag") === null,
       `diag=${JSON.stringify(sandbox.window.__agentxSettingsDiag)}`);
   }
 
@@ -1787,7 +1801,7 @@ if (!rebrandSrc) {
     sandbox.location.pathname = "/chat/abc";
     sandbox.window.location.pathname = "/chat/abc";
     vm.runInContext('agentxRunRuleNow("settings-white-area")', sandbox);
-    check("settings-white-area removes the paint, the stretch and the probe when leaving Settings",
+    check("settings-white-area removes the paint and the stretch when leaving Settings",
       doc.body.getAttribute("data-agentx-settings-bg") === "0" &&
       !doc.documentElement.style.backgroundColor &&
       !doc.body.style.backgroundColor &&
@@ -1832,8 +1846,6 @@ if (!rebrandSrc) {
     const { doc, sandbox } = runOneRule(antLayout, "settings-white-area", {
       pathname: "/settings/general",
       cssVars: { "--app-bg": "#f9f8f4" },
-      innerHeight: 998,
-      elementFromPoint: (x, y) => (y >= 894 ? mainLayout : shell),
     });
     check("settings-white-area paints the shell and the white wrapper ancestor cream in light mode on the realistic DOM",
       shell.style.backgroundColor === "#f9f8f4" &&
@@ -1846,64 +1858,54 @@ if (!rebrandSrc) {
       shell.getAttribute("data-agentx-settings-bg") === "1" &&
       mainLayout.getAttribute("data-agentx-settings-bg") === "1",
       `shell=${shell.style.backgroundColor} wrapper=${mainLayout.style.backgroundColor} html=${doc.documentElement.style.backgroundColor}`);
-    const diagDiv = doc.getElementById("agentxSettingsDiag");
-    check("settings-white-area writes a visible diagnostic line naming the white strip element",
-      diagDiv !== null &&
-      diagDiv.textContent.indexOf("AX-DIAG") !== -1 &&
-      diagDiv.textContent.indexOf("ver=r3") !== -1 &&
-      diagDiv.textContent.indexOf("paint=#f9f8f4") !== -1 &&
-      diagDiv.textContent.indexOf("strip@600,990=DIV.index-module__mainContentLayout__5qYwp") !== -1 &&
-      diagDiv.textContent.indexOf("rgb(255, 255, 255)") !== -1,
-      `diag=${diagDiv ? diagDiv.textContent.slice(0, 220) : "MISSING"}`);
+    check("settings-white-area writes no diagnostic line on the realistic DOM",
+      doc.getElementById("agentxSettingsDiag") === null &&
+      doc.querySelectorAll("*").every((e) => (e.textContent || "").indexOf("AX-DIAG") === -1),
+      `diag div present=${doc.getElementById("agentxSettingsDiag") !== null}`);
     vm.runInContext('agentxRunRuleNow("settings-white-area")', sandbox);
-    check("settings-white-area does not duplicate the diagnostic line on re-runs",
-      doc.querySelectorAll("*").filter((e) => e.getAttribute("id") === "agentxSettingsDiag").length === 1,
-      `count=${doc.querySelectorAll("*").filter((e) => e.getAttribute("id") === "agentxSettingsDiag").length}`);
+    check("settings-white-area stays diagnostic-free and keeps the paint on re-runs",
+      shell.style.backgroundColor === "#f9f8f4" &&
+      mainLayout.style.backgroundColor === "#f9f8f4" &&
+      doc.getElementById("agentxSettingsDiag") === null &&
+      doc.querySelectorAll("*").filter((e) => e.getAttribute("id") === "agentxSettingsDiag").length === 0,
+      `shell=${shell.style.backgroundColor} diag count=${doc.querySelectorAll("*").filter((e) => e.getAttribute("id") === "agentxSettingsDiag").length}`);
   }
 
   { // settings-white-area round 3 in dark mode: the wrapper is the
     // dark surface #1f1f1f there and --app-bg is #141414 — the shell
     // and the wrapper must both be painted dark, never cream, and
-    // the diagnostic line must say dark.
+    // no diagnostic line may appear (round 4 removed it).
     const { shell, mainLayout, antLayout } = makeSettingsDom();
     mainLayout._computedBg = "rgb(31, 31, 31)";
     const { doc } = runOneRule(antLayout, "settings-white-area", {
       pathname: "/settings/general",
       cssVars: { "--app-bg": "#141414" },
       htmlClass: "dark-mode",
-      innerHeight: 998,
-      elementFromPoint: (x, y) => (y >= 894 ? mainLayout : shell),
     });
-    const diagDiv = doc.getElementById("agentxSettingsDiag");
     check("settings-white-area paints the shell and the white wrapper ancestor dark in dark mode on the realistic DOM",
       shell.style.backgroundColor === "#141414" &&
       mainLayout.style.backgroundColor === "#141414" &&
       doc.body.style.backgroundColor === "#141414" &&
       doc.documentElement.style.backgroundColor === "#141414" &&
-      diagDiv !== null &&
-      diagDiv.textContent.indexOf("dark=1") !== -1 &&
-      diagDiv.textContent.indexOf("paint=#141414") !== -1,
-      `shell=${shell.style.backgroundColor} wrapper=${mainLayout.style.backgroundColor} diag=${diagDiv ? diagDiv.textContent.slice(0, 120) : "MISSING"}`);
+      doc.getElementById("agentxSettingsDiag") === null,
+      `shell=${shell.style.backgroundColor} wrapper=${mainLayout.style.backgroundColor} diag present=${doc.getElementById("agentxSettingsDiag") !== null}`);
   }
 
   { // settings-white-area round 3 cleanup: leaving Settings must
     // also remove the paint from the shell and the wrapper ancestor
-    // and remove the diagnostic line, or the cream would leak onto
-    // /chat (the wrapper is shared app chrome).
+    // and leave no diagnostic line behind, or the cream would leak
+    // onto /chat (the wrapper is shared app chrome).
     const { shell, mainLayout, antLayout } = makeSettingsDom();
     const { doc, sandbox } = runOneRule(antLayout, "settings-white-area", {
       pathname: "/settings/general",
       cssVars: { "--app-bg": "#f9f8f4" },
-      innerHeight: 998,
-      elementFromPoint: (x, y) => (y >= 894 ? mainLayout : shell),
     });
     const paintedBefore = shell.style.backgroundColor === "#f9f8f4" &&
-      mainLayout.style.backgroundColor === "#f9f8f4" &&
-      doc.getElementById("agentxSettingsDiag") !== null;
+      mainLayout.style.backgroundColor === "#f9f8f4";
     sandbox.location.pathname = "/chat/abc";
     sandbox.window.location.pathname = "/chat/abc";
     vm.runInContext('agentxRunRuleNow("settings-white-area")', sandbox);
-    check("settings-white-area removes the ancestor paint and the diagnostic line when leaving Settings",
+    check("settings-white-area removes the ancestor paint when leaving Settings",
       paintedBefore &&
       !shell.style.backgroundColor &&
       !mainLayout.style.backgroundColor &&
