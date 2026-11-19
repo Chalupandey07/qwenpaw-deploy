@@ -362,6 +362,7 @@ const SW_AGENT_IDLE_MS = 10 * SW_MIN;       // no agent activity for 10 min
 const SW_MIN_UPTIME_MS = 15 * SW_MIN;       // machine must have been up 15 min
 const SW_MIN_AWAKE_AFTER_WAKE_MS = 20 * SW_MIN; // deadband > lookahead: kills sleep-wake-sleep flap
 const SW_REPORTER_STALE_MS = 10 * SW_MIN;   // reporter older than this -> unknown
+const SW_REPORTER_RECOVERY_MS = 5 * SW_MIN; // stuck-state recovery: a report this fresh proves the machine is up (the reporter posts every 2 min); deliberately tighter than the 10-min staleness threshold because the flip is taken on reporter evidence alone, without a probe
 const SW_LAST_VISIT_WRITE_MS = 5 * SW_MIN;  // Pages throttles last-visit writes to this
 const SW_MAX_RUN_MIN = 420;                 // max-run guard: sleep at 7h uptime, 1h before InstaBox's ~8h max run forces a ~2h cooldown
 
@@ -703,7 +704,7 @@ async function keepAliveTick(env, source) {
 
   // Read all decision inputs BEFORE probing (the probe itself wakes the machine).
   const rest = await manualRestInEffect(env);
-  const state = await readSleepState(db);
+  let state = await readSleepState(db);
   const report = await readReport(db);
   const lastVisit = await readLastVisit(db);
   const nextRoutine = await computeNextRoutine(db, report, now);
@@ -715,6 +716,34 @@ async function keepAliveTick(env, source) {
   let uptimeMin = 0;
   if (report && !reporterStale && Number.isFinite(report.uptimeSec)) uptimeMin = report.uptimeSec / 60;
   else if (cached?.lastUpAt) uptimeMin = Math.max(0, (now - Date.parse(cached.lastUpAt)) / 60000);
+
+  // STUCK-STATE RECOVERY (2026-11-19): the state can strand on
+  // "sleeping" while the machine is up — the tick early-returns without
+  // probing whenever the state is "sleeping", and the only flip back to
+  // "running" on a live probe sits below that return, unreachable while
+  // sleeping. The machine can be woken outside this Worker's wake path
+  // (the routines Worker, a manual wake), so the Worker never records
+  // the wake; the only exit was a routine coming due. The machine-side
+  // reporter posts every 2 min from the machine itself, so a FRESH
+  // report is proof the machine is up — no probe is needed to establish
+  // that. If the state says "sleeping" but the reporter reported within
+  // the last 5 min, flip the state to "running" (reason "reporter_up")
+  // BEFORE the decision, so the max-run guard can fire in this same
+  // tick. The state records the uptime the tick computed (reporter
+  // uptimeSec when the report carries one — the live reporter posts
+  // null, it cannot know run start — else the stored lastUpAt lower
+  // bound), so the flip is auditable and /sleepwake/state shows the
+  // uptime the guard used. A stale or missing report never flips (fail
+  // closed). DEPLOY NOTE: do NOT deploy this while a run is already
+  // past 7h uptime — the guard fires on the next tick and sleeps the
+  // machine immediately. Deploy only in a fresh run (uptime well under
+  // 7h); see features/smart-sleep/README.md.
+  if (state.mode === "sleeping" && report && Number.isFinite(report.reportedAt) && (now - report.reportedAt <= SW_REPORTER_RECOVERY_MS)) {
+    const uptimeSec = Math.round(uptimeMin * 60);
+    await writeSleepState(db, { mode: "running", reason: "reporter_up", uptimeSec });
+    state = { ...state, mode: "running", reason: "reporter_up", uptimeSec, since: now };
+    console.log(`[keepalive:${source}] recovered stuck sleeping state via fresh reporter (uptimeMin=${uptimeMin})`);
+  }
 
   const decision = decideSleepWake({
     nextRoutineAt: nextRoutine.at,
@@ -1256,6 +1285,7 @@ export default {
         reason: state.reason || null,
         lastWakeAt: state.lastWakeAt || null,
         lastSleepAt: state.lastSleepAt || null,
+        uptimeSec: state.uptimeSec ?? null, // uptime (s) the last reporter_up recovery recorded, else null
         keepAlive: (await readKeepAlivePublic(db)).keepAlive,
         nextRoutineAt: nextRoutine.at,
         nextRoutineSource: nextRoutine.source,
