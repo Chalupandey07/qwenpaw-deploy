@@ -357,6 +357,29 @@ console.log("cron tick — sleep, wake, hold (the decision before the probe)");
     check("stale reporter -> no suspend", callsD.filter((c) => c.url.includes("/api/machine/sleep")).length === 0);
     check("stale reporter -> probe (stay awake)", callsD.filter((c) => c.url.includes("8088-test.instabox.tech")).length >= 1);
   } finally { globalThis.fetch = realFetch; }
+
+  // STALE-BASELINE LIVE CASE (2026-11-19): already "running" with a
+  // lastUpAt 17h stale, a FRESH reporter posting uptimeSec null, and no
+  // run-start baseline. Pre-fix the guard fired on 1020 min and the
+  // tick suspended a 10-minute-old run every 5 min; post-fix the tick
+  // reconciles the baseline to now, the guard sees ~0, and the machine
+  // stays up.
+  const d1e = new MockD1();
+  const callsE = [];
+  globalThis.fetch = makeFetch(callsE);
+  try {
+    d1e.status.set("qwenpaw:status", JSON.stringify({ status: "up", httpStatus: 200, lastUpAt: new Date(RT - 17 * 60 * MIN).toISOString() }));
+    d1e.meta.set("sleepwake:report", JSON.stringify({ nextNativeRun: null, agentActive: false, agentLastActiveAt: RT - 20 * MIN, uptimeSec: null, reportedAt: RT - 60_000 }));
+    d1e.meta.set("sleepwake:state", JSON.stringify({ mode: "running", since: RT - 60 * MIN, lastWakeAt: RT - 60 * MIN }));
+    d1e.meta.set("sleepwake:last-visit", String(RT - 5 * MIN));
+    const envE = makeEnv(d1e, callsE);
+    const beforeE = Date.now();
+    await tick(envE);
+    check("live already-running + stale lastUpAt 17h + fresh reporter -> no suspend (guard sees ~0)", callsE.filter((c) => c.url.includes("/api/machine/sleep")).length === 0, `sleep=${callsE.filter((c) => c.url.includes("/api/machine/sleep")).length}`);
+    const baselineE = Number(d1e.meta.get("sleepwake:run-start"));
+    check("live already-running + stale lastUpAt 17h -> run-start baseline set to ~now", Number.isFinite(baselineE) && Math.abs(baselineE - beforeE) < 60_000, `baseline=${baselineE}`);
+    check("live already-running + stale lastUpAt 17h -> probe (stay awake)", callsE.filter((c) => c.url.includes("8088-test.instabox.tech")).length >= 1);
+  } finally { globalThis.fetch = realFetch; }
 }
 
 console.log(`\nsleepwake harness: ${passed} passed, ${failed.length} failed`);
