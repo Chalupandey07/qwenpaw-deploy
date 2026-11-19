@@ -10,6 +10,17 @@
 // from Rakazo's design rather than patched further; see features/computer/.
 // What remains is exactly the console proxy plus the wake/cooldown handling,
 // and that is the entire responsibility of this file.
+// oxlint-disable prefer-template, no-nested-ternary
+// The waking/cooldown pages below build their HTML with string
+// concatenation ON PURPOSE — wakingPage() documents the constraint as
+// "string concatenation only, no backticks, no interpolation, no external
+// assets" (Smart Sleep/Wake card rebuild, 2026-11-19). prefer-template
+// would push every one of those toward template literals, directly
+// contradicting that decision, so it is suppressed file-wide here rather
+// than rewriting a dozen deliberate concatenations. The one nested
+// ternary is in the cookie-header normalisation, kept for the same
+// reason: it is a flat, readable guard, not a style problem worth a
+// helper.
 import { handleComputer } from "./computer/router.js";
 import { handleVault } from "./vault/router.js";
 import { handleReset } from "./reset/router.js";
@@ -20,8 +31,12 @@ import {
 
 const ORIGIN = "https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech";
 const WAKE_WAIT_MS = 45_000;
-const KEEPALIVE_URL = "https://qwenpaw-keepalive.qwenpaw-rohan.workers.dev";
-const MACHINE_ID = "m_" + new URL(ORIGIN).hostname.split(".")[0].split("-").slice(1).join("-");
+// KEEPALIVE_URL and MACHINE_ID were declared here and never referenced: the
+// rebrand's Vault/Rest/Computer pills reach the keep-alive Worker through
+// paths built in the injected client script, not from this module. Removed
+// rather than underscore-prefixed — an unused constant that looks like a
+// wiring point is worse than no constant, because the next reader assumes
+// the proxy calls the keep-alive Worker somewhere it does not.
 
 // AgentX rebrand (2026-11-18, features/rebrand/README.md). The product is
 // AgentX now; the upstream console still calls itself QwenPaw, so the
@@ -196,56 +211,104 @@ function computerPanelScript(rebrandEnabled) {
   var AGENTX_UPSTREAM_GITHUB = ${JSON.stringify(UPSTREAM_GITHUB_URL)};
   try {
     if (!document.getElementById("root")) return;
-    if (document.getElementById("qwenpawMoreBtn")) return;
-    // ---- Overflow menu (three dots) ----
-    // 2026-11-20 (user): the three floating pills (Computer / Rest
-    // machine / Vault) crowded the composer's Send button and broke the
-    // chat area's symmetry. They are now a single compact ⋮ button at
-    // the bottom-right; clicking it opens a small menu with the same
-    // three actions. The rows keep the ids qwenpawComputerBtn /
-    // qwenpawRestBtn / qwenpawVaultBtn so the handlers below (panel
-    // toggle, rest flow, vault open) and paintRest() keep working
-    // unchanged — only their container changed, from fixed pills to
-    // menu rows.
-    var moreBtn = document.createElement("button");
-    moreBtn.id = "qwenpawMoreBtn";
-    moreBtn.type = "button";
-    moreBtn.textContent = "⋮";
-    moreBtn.title = "Computer, rest, and vault";
-    moreBtn.setAttribute("aria-label", "More actions");
-    moreBtn.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483647;width:40px;height:40px;box-sizing:border-box;text-align:center;padding:0;border-radius:50%;border:1px solid #343945;background:#171a21;color:#e8eaf0;font:600 20px/1 system-ui,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);";
-    var moreMenu = document.createElement("div");
-    moreMenu.id = "qwenpawMoreMenu";
-    moreMenu.style.cssText = "position:fixed;right:16px;bottom:64px;z-index:2147483647;width:180px;box-sizing:border-box;background:#171a21;border:1px solid #343945;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.5);padding:6px;display:none;flex-direction:column;gap:2px;";
-    function moreMenuRow(id, label, title) {
-      var r = document.createElement("button");
-      r.id = id; r.type = "button"; r.textContent = label; r.title = title;
-      r.style.cssText = "display:block;width:100%;text-align:left;background:none;border:none;color:#e8eaf0;font:600 13px system-ui,sans-serif;padding:10px 12px;border-radius:8px;cursor:pointer;";
-      r.addEventListener("mouseenter", function () { r.style.background = "#232833"; });
-      r.addEventListener("mouseleave", function () { r.style.background = "none"; });
-      moreMenu.appendChild(r);
-      return r;
+    if (document.getElementById("qwenpawComputerBtn")) return;
+    // ---- AgentX design tokens + ONE injected stylesheet ----
+    // Every element this script adds (sidebar actions menu, account-row
+    // rescue, toasts, panel chrome) reads the same --ax-* tokens, so
+    // spacing, radius, colour and focus rings stay consistent instead of
+    // drifting per element. Prefixed --ax-* so it cannot collide with the
+    // console's own custom properties. Injected once, idempotent.
+    var BEAUTY_CSS =
+      "/* Hallmark · v2.0.0 · theme: AgentX console (custom) · genre modern-minimal · shape: design tokens + sidebar actions menu */" +
+      ":root{--ax-bg:#0f1115;--ax-surface:#171a21;--ax-surface-2:#1f2430;--ax-line:#262a33;--ax-line-2:#343945;--ax-ink:#e8eaf0;--ax-muted:#c8d1dc;--ax-faint:#9aa4b2;--ax-accent:#86efac;--ax-danger:#ffb4b4;--ax-radius:12px;--ax-radius-sm:8px;--ax-gap:8px;--ax-font:system-ui,-apple-system,'Segoe UI',sans-serif;scrollbar-color:#3a4150 transparent;}" +
+      "html{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;}" +
+      "button,input,select,textarea{font-family:var(--ax-font);}" +
+      ":focus-visible{outline:2px solid var(--ax-accent);outline-offset:2px;}" +
+      "::selection{background:var(--ax-accent);color:var(--ax-bg);}" +
+      "@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important;}}" +
+      "#agentxSidebarActions{flex:none;margin:8px 10px;padding:4px;border:1px solid var(--ax-line);border-radius:var(--ax-radius);background:var(--ax-surface);}" +
+      "#agentxSidebarActions .agentx-actions-head{display:flex;align-items:center;gap:var(--ax-gap);width:100%;box-sizing:border-box;padding:7px 8px;border:0;border-radius:var(--ax-radius-sm);background:transparent;color:var(--ax-faint);font:600 12px/1 var(--ax-font);cursor:pointer;text-align:left;}" +
+      "#agentxSidebarActions .agentx-actions-head:hover{background:var(--ax-surface-2);color:var(--ax-ink);}" +
+      "#agentxSidebarActions .agentx-head-icon{flex:none;display:inline-flex;width:16px;height:16px;}" +
+      "#agentxSidebarActions .agentx-caret{flex:none;display:inline-flex;width:14px;height:14px;margin-left:auto;transition:transform .15s ease;}" +
+      "#agentxSidebarActions[data-open='1'] .agentx-caret{transform:rotate(180deg);}" +
+      "#agentxSidebarActions .agentx-actions-menu{display:none;margin:2px 0 0;padding:0;list-style:none;}" +
+      "#agentxSidebarActions[data-open='1'] .agentx-actions-menu{display:block;}" +
+      "#agentxSidebarActions .agentx-action{display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;min-height:34px;padding:7px 9px;margin:2px 0;border:0;border-radius:var(--ax-radius-sm);background:transparent;color:var(--ax-ink);font:500 13px/1.2 var(--ax-font);cursor:pointer;text-align:left;}" +
+      "#agentxSidebarActions .agentx-action:hover{background:var(--ax-surface-2);}" +
+      "#agentxSidebarActions .agentx-action[disabled]{background:var(--ax-bg);color:var(--ax-faint);cursor:default;}" +
+      "#agentxSidebarActions .agentx-action[disabled]:hover{background:var(--ax-bg);color:var(--ax-faint);}" +
+      "#agentxSidebarActions .agentx-action[data-active='1']{background:var(--ax-surface-2);color:var(--ax-accent);}" +
+      "#agentxSidebarActions .agentx-action-icon{flex:none;display:inline-flex;width:17px;height:17px;color:var(--ax-faint);}" +
+      "#agentxSidebarActions .agentx-action:hover .agentx-action-icon,#agentxSidebarActions .agentx-action[data-active='1'] .agentx-action-icon{color:var(--ax-accent);}" +
+      "#agentxSidebarActions .agentx-action-icon svg,#agentxSidebarActions .agentx-head-icon svg,#agentxSidebarActions .agentx-caret svg{width:100%;height:100%;display:block;}" +
+      "#agentxSidebarActions .agentx-action-label{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}" +
+      "button[class*='identity']{display:flex;align-items:center;flex-wrap:nowrap;gap:10px;width:100%;box-sizing:border-box;overflow:visible;flex:none;}" +
+      "button[class*='identity'] span[class*='identityText']{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;overflow:hidden;text-align:left;}" +
+      "button[class*='identity'] span[class*='identityText'] > strong{font-size:13px;line-height:1.25;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}" +
+      "button[class*='identity'] span[class*='identityText'] > small{font-size:11px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.72;}";
+    var ICON_COMPUTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="13" rx="2"></rect><path d="M8.5 20.5h7M12 17v3.5"></path></svg>';
+    var ICON_REST = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 13.2A8.5 8.5 0 1 1 10.8 3.5a6.8 6.8 0 0 0 9.7 9.7z"></path></svg>';
+    var ICON_VAULT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="11" width="17" height="10" rx="2"></rect><path d="M7.5 11V7.5a4.5 4.5 0 0 1 9 0V11"></path></svg>';
+    var ICON_DOTS = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5.5" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="12" cy="18.5" r="1.5"></circle></svg>';
+    var ICON_CARET = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 9.5l5.5 5.5 5.5-5.5"></path></svg>';
+    function injectBeautyStyle() {
+      if (document.getElementById("agentxBeautyStyle")) return;
+      var s = document.createElement("style");
+      s.id = "agentxBeautyStyle";
+      s.textContent = BEAUTY_CSS;
+      (document.head || document.documentElement).appendChild(s);
     }
-    function closeMoreMenu() { try { moreMenu.style.display = "none"; } catch (e) {} }
-    // Computer row — toggles the desktop panel (wired below via setOpen).
-    var btn = moreMenuRow("qwenpawComputerBtn", "Computer", "AgentX's computer — watch and drive the live desktop");
-    // Rest row — the rest flow (confirm + POST) is wired below. The label
-    // reflects state: "Rest machine" when up, "Resting" (disabled) when
-    // already rested. A click never happens by accident: it asks once.
-    var restBtn = moreMenuRow("qwenpawRestBtn", "Rest machine", "Send the machine to rest when you are done — opening the site wakes it again");
-    // Vault row — opens the vault page in a new tab (wired below).
-    var vaultBtn = moreMenuRow("qwenpawVaultBtn", "Vault", "API-key vault — keys the agent can use but never see");
-    moreBtn.addEventListener("click", function (e) {
-      try { if (e && e.stopPropagation) e.stopPropagation(); } catch (e2) {}
-      try { moreMenu.style.display = (moreMenu.style.display === "flex") ? "none" : "flex"; } catch (e3) {}
-    });
-    document.addEventListener("click", function (e) {
-      try {
-        if (moreMenu.style.display !== "flex") return;
-        if (moreMenu.contains(e.target) || moreBtn.contains(e.target)) return;
-        closeMoreMenu();
-      } catch (e2) {}
-    });
+    // One row shape for every action: icon + label, one height, one gap.
+    function actionButton(id, icon, label, title) {
+      var b = document.createElement("button");
+      b.id = id;
+      b.type = "button";
+      b.className = "agentx-action";
+      b.title = title;
+      b.setAttribute("data-agentx-action", "1");
+      b.innerHTML = '<span class="agentx-action-icon">' + icon + '</span><span class="agentx-action-label">' + label + '</span>';
+      return b;
+    }
+    function setActionLabel(b, text) {
+      var l = b.querySelector ? b.querySelector(".agentx-action-label") : null;
+      if (l) l.textContent = text; else b.textContent = text;
+    }
+    injectBeautyStyle();
+
+    // ---- The three machine actions, now in the LEFT SIDEBAR ----
+    // 2026-11-20: these were three floating pills pinned to the
+    // bottom-right of the chat area. User feedback: easy to miss there,
+    // and they read as clutter sitting on top of the composer. They are
+    // now three rows of ONE "More actions" menu in the left sidebar, next
+    // to the console's own navigation links — visible by default, nothing
+    // hidden behind a hunt. The elements, titles, handlers and the resting
+    // state below are unchanged; only where they mount and how they are
+    // styled changed. addSidebarActions() mounts them once the sidebar
+    // exists, and the observer re-mounts them if React re-renders them away.
+    var btn = actionButton("qwenpawComputerBtn", ICON_COMPUTER, "Computer",
+      "AgentX's computer — watch and drive the live desktop");
+
+    // ---- Rest row ----
+    // Deliberately a first-class row in the same menu, NOT buried deeper:
+    // the whole point is that the user can rest the machine in one click
+    // when they are done. It is only meaningful while the machine is
+    // running, so the label reflects state: "Rest machine" when up,
+    // "Resting" (disabled) when already rested. A click never happens by
+    // accident: it asks once, then posts with the console's own bearer
+    // token. If that token is missing the Worker refuses, and the row says
+    // so rather than pretending.
+    var restBtn = actionButton("qwenpawRestBtn", ICON_REST, "Rest machine",
+      "Send the machine to rest when you are done — opening the site wakes it again");
+
+    // ---- Vault row ----
+    // The vault (an API-key store the agent can use but never see) lives at
+    // /vault, but nothing in the console linked to it — the user could not
+    // find it. A visible row in the same menu opens the vault page in a new
+    // tab. No token needed here: /vault mints its own session from the
+    // console's sign-in, like /computer does.
+    var vaultBtn = actionButton("qwenpawVaultBtn", ICON_VAULT, "Vault",
+      "API-key vault — keys the agent can use but never see");
 
     var panel = document.createElement("div");
     panel.id = "qwenpawComputerPanel";
@@ -267,16 +330,16 @@ function computerPanelScript(rebrandEnabled) {
     // screen session nobody asked for, and every one of those is a request.
     panel.appendChild(bar);
     panel.appendChild(frame);
+    // Only the panel is appended here. The three action rows are mounted
+    // into the LEFT SIDEBAR by addSidebarActions() once the sidebar exists —
+    // they are no longer fixed pills at the bottom-right of the chat.
     document.body.appendChild(panel);
-    document.body.appendChild(moreBtn);
-    document.body.appendChild(moreMenu);
     vaultBtn.addEventListener("click", function () {
-      // The Vault menu row opens the full Vault page (where the
+      // The floating Vault pill opens the full Vault page (where the
       // user sees and manages existing keys), not the in-chat add-key
       // dialog — QA round 3: the pill opening only an empty "Add a
       // key" form read as the wrong destination. The add-key dialog
       // stays reachable from the Vault menu item and from /vault.
-      closeMoreMenu();
       window.open("/vault", "_blank", "noopener");
     });
 
@@ -546,10 +609,11 @@ function computerPanelScript(rebrandEnabled) {
 
     var resting = false;
     function paintRest() {
-      restBtn.textContent = resting ? "Resting" : "Rest machine";
+      setActionLabel(restBtn, resting ? "Resting" : "Rest machine");
+      // Disabled state is carried by the [disabled] attribute + the CSS
+      // three-channel rule (fill, ink, cursor) — never opacity alone.
       restBtn.disabled = resting;
-      restBtn.style.opacity = resting ? "0.6" : "1";
-      restBtn.style.cursor = resting ? "default" : "pointer";
+      if (resting) restBtn.setAttribute("data-resting", "1"); else restBtn.removeAttribute("data-resting");
     }
     function toastRest(text, bad) {
       var t = document.createElement("div");
@@ -564,8 +628,7 @@ function computerPanelScript(rebrandEnabled) {
     restBtn.addEventListener("click", async function () {
       if (resting) return;
       if (!window.confirm("Send the machine to rest? Open the site again to wake it.")) return;
-      closeMoreMenu();
-      restBtn.textContent = "Resting…";
+      setActionLabel(restBtn, "Resting…");
       restBtn.disabled = true;
       try {
         var tok = consoleToken();
@@ -610,21 +673,225 @@ function computerPanelScript(rebrandEnabled) {
     function setOpen(v) {
       open = !!v;
       panel.style.display = open ? "flex" : "none";
-      // When the 316 px panel is open it covers the right edge, and the
-      // ⋮ button (max z-index) would sit on top of it. Shift the ⋮
-      // button + menu left of the panel while it is open, back to the
-      // edge when it closes. The menu is closed on toggle so it never
-      // floats over the panel's own content.
-      var right = open ? "332px" : "16px";
-      moreBtn.style.right = right;
-      moreMenu.style.right = right;
-      closeMoreMenu();
+      // The three action rows now live in the LEFT SIDEBAR, so there are no
+      // fixed pills to shift out of the panel's way — the old 200/248/296
+      // bottom lift existed only to keep the pills off the composer. The
+      // panel opens over the right edge; the sidebar is untouched.
       if (open && !frame.getAttribute("src")) frame.setAttribute("src", "/computer?embed=1");
       try { sessionStorage.setItem("qwenpawComputerOpen", open ? "1" : "0"); } catch (e) {}
+      paintComputerRow();
     }
     btn.addEventListener("click", function () { setOpen(!open); });
     document.getElementById("qwenpawComputerClose").addEventListener("click", function () { setOpen(false); });
     setOpen(open);
+
+    // ---- Sidebar mounting + account-row rescue ----
+    // Both are idempotent and re-run from the observer, because React
+    // re-renders can drop injected nodes at any time.
+
+    // The sidebar is the NAV/ASIDE column (~280px wide). Prefer the semantic
+    // tag with a width gate; fall back to the element holding the
+    // conversation-history heading (the same walk the sidebar-ellipsis rule
+    // uses).
+    function findSidebarEl() {
+      try {
+        var cands = document.querySelectorAll("nav, aside");
+        for (var i = 0; i < cands.length; i++) {
+          var r = cands[i].getBoundingClientRect();
+          if (r.width > 150 && r.width < 420 && r.height > 300) return cands[i];
+        }
+      } catch (e) {}
+      try {
+        var all = document.querySelectorAll("*");
+        for (var j = 0; j < all.length; j++) {
+          if ((all[j].textContent || "").indexOf("Conversation History") !== -1) {
+            var n = all[j];
+            for (var d = 0; d < 6 && n; d++) {
+              var tag = (n.tagName || "").toUpperCase();
+              if (tag === "NAV" || tag === "ASIDE" || tag === "SECTION") return n;
+              n = n.parentElement;
+            }
+            return all[j].parentElement;
+          }
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    function paintComputerRow() {
+      try {
+        if (open) btn.setAttribute("data-active", "1"); else btn.removeAttribute("data-active");
+      } catch (e) {}
+    }
+
+    // Build (or refresh) the "More actions" menu inside the left sidebar.
+    // Default OPEN: the three actions must never be hidden behind a hunt.
+    function addSidebarActions() {
+      try {
+        var side = findSidebarEl();
+        if (!side) return;
+        var box = document.getElementById("agentxSidebarActions");
+        if (box && !side.contains(box)) { try { box.remove(); } catch (e) {} box = null; }
+        if (!box) {
+          box = document.createElement("div");
+          box.id = "agentxSidebarActions";
+          box.setAttribute("data-open", "1");
+          var head = document.createElement("button");
+          head.type = "button";
+          head.className = "agentx-actions-head";
+          head.setAttribute("aria-expanded", "true");
+          head.title = "Machine actions — Computer, Rest, Vault";
+          head.innerHTML = '<span class="agentx-head-icon">' + ICON_DOTS + '</span>' +
+            '<span class="agentx-action-label">More actions</span>' +
+            '<span class="agentx-caret">' + ICON_CARET + '</span>';
+          head.addEventListener("click", function () {
+            var isOpen = box.getAttribute("data-open") === "1";
+            box.setAttribute("data-open", isOpen ? "0" : "1");
+            head.setAttribute("aria-expanded", isOpen ? "false" : "true");
+          });
+          var menu = document.createElement("div");
+          menu.className = "agentx-actions-menu";
+          menu.appendChild(btn);
+          menu.appendChild(restBtn);
+          menu.appendChild(vaultBtn);
+          box.appendChild(head);
+          box.appendChild(menu);
+          // Place it in the sidebar's own action area: directly above the
+          // conversation-history section, i.e. just under the nav links.
+          var placed = false;
+          try {
+            var kids = side.children;
+            for (var i = 0; i < kids.length; i++) {
+              if ((kids[i].textContent || "").indexOf("Conversation History") !== -1) {
+                side.insertBefore(box, kids[i]);
+                placed = true;
+                break;
+              }
+            }
+          } catch (e) {}
+          if (!placed) side.insertBefore(box, side.firstChild);
+        }
+        // A re-render may have detached the rows; re-append them.
+        var menu2 = box.querySelector(".agentx-actions-menu");
+        if (menu2) {
+          if (btn.parentNode !== menu2) menu2.appendChild(btn);
+          if (restBtn.parentNode !== menu2) menu2.appendChild(restBtn);
+          if (vaultBtn.parentNode !== menu2) menu2.appendChild(vaultBtn);
+        }
+        paintComputerRow();
+      } catch (e) { /* never break the console */ }
+    }
+
+    // The sidebar footer is a <button> holding the avatar, the "satwik"
+    // name, the "Console account" subtitle and a settings icon. When the
+    // sidebar runs out of vertical room the text block renders BELOW the
+    // viewport (the avatar is visible, the name is not), and because the
+    // footer is pinned, scrolling never reveals it. Fix: make the sidebar a
+    // flex column that reserves room for the footer, and make the row a
+    // compact single line that cannot overflow or clip.
+    function fixAccountRow() {
+      try {
+        var smalls = document.getElementsByTagName("small");
+        var row = null;
+        for (var i = 0; i < smalls.length; i++) {
+          var t = (smalls[i].textContent || "").trim();
+          if (t === "Console account" || t === "Local workspace" || t === "QwenPaw Hub") {
+            var b = smalls[i].closest ? smalls[i].closest("button") : null;
+            if (b && b.querySelector("img")) { row = b; break; }
+          }
+        }
+        if (!row) return;
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.flexWrap = "nowrap";
+        row.style.gap = "10px";
+        row.style.width = "100%";
+        row.style.boxSizing = "border-box";
+        row.style.overflow = "visible";
+        row.style.flex = "none";
+        row.style.minHeight = "0";
+        var spans = row.querySelectorAll("span");
+        for (var s = 0; s < spans.length; s++) {
+          var sp = spans[s];
+          if (sp.querySelector && sp.querySelector("img")) {
+            sp.style.flex = "0 0 auto";
+            sp.style.width = "32px";
+            sp.style.height = "32px";
+            sp.style.borderRadius = "50%";
+            sp.style.overflow = "hidden";
+            sp.style.display = "block";
+            var img = sp.querySelector("img");
+            img.style.width = "100%";
+            img.style.height = "100%";
+            img.style.objectFit = "cover";
+            img.style.display = "block";
+          } else if (sp.querySelector && sp.querySelector("small")) {
+            sp.style.flex = "1 1 auto";
+            sp.style.minWidth = "0";
+            sp.style.display = "flex";
+            sp.style.flexDirection = "column";
+            sp.style.gap = "1px";
+            sp.style.overflow = "hidden";
+            sp.style.textAlign = "left";
+          }
+        }
+        var strongs = row.querySelectorAll("strong");
+        for (var g = 0; g < strongs.length; g++) {
+          strongs[g].style.whiteSpace = "nowrap";
+          strongs[g].style.overflow = "hidden";
+          strongs[g].style.textOverflow = "ellipsis";
+          strongs[g].style.fontSize = "13px";
+          strongs[g].style.lineHeight = "1.25";
+          strongs[g].style.fontWeight = "600";
+        }
+        var smalls2 = row.querySelectorAll("small");
+        for (var m = 0; m < smalls2.length; m++) {
+          smalls2[m].style.whiteSpace = "nowrap";
+          smalls2[m].style.overflow = "hidden";
+          smalls2[m].style.textOverflow = "ellipsis";
+          smalls2[m].style.fontSize = "11px";
+          smalls2[m].style.lineHeight = "1.3";
+        }
+        var svg = row.querySelector("svg");
+        if (svg) svg.style.flex = "0 0 auto";
+        // Reserve room: the sidebar becomes a flex column, the row's own
+        // wrapper never shrinks or clips, and any scroll container above it
+        // takes the remaining space so the footer stays inside the viewport.
+        var side2 = findSidebarEl();
+        var node = row.parentElement;
+        var depth = 0;
+        while (node && depth < 10) {
+          if (node === row.parentElement) {
+            node.style.flex = "none";
+            node.style.overflow = "visible";
+            node.style.minHeight = "0";
+          } else {
+            var oy = "";
+            try { oy = window.getComputedStyle(node).overflowY; } catch (e) {}
+            if (oy === "auto" || oy === "scroll") {
+              node.style.flex = "1 1 auto";
+              node.style.minHeight = "0";
+              node.style.overflowY = "auto";
+            }
+          }
+          if (node === side2) {
+            node.style.display = "flex";
+            node.style.flexDirection = "column";
+            node.style.minHeight = "0";
+            break;
+          }
+          node = node.parentElement;
+          depth++;
+        }
+      } catch (e) { /* never break the console */ }
+    }
+    addSidebarActions();
+    fixAccountRow();
+    // The sidebar may mount after this script runs (React renders async).
+    // The observer covers most of it; these two catch the no-further-
+    // mutation case and a late account-row mount.
+    window.addEventListener("load", function () { addSidebarActions(); fixAccountRow(); });
+    setTimeout(function () { addSidebarActions(); fixAccountRow(); }, 800);
 
     // ---- Vault item in the account menu ----
     // The account dropdown (Avatar manager, Appearance, Message display,
@@ -749,6 +1016,12 @@ function computerPanelScript(rebrandEnabled) {
     var agentxLinkBlockerInstalled = false;
     var agentxLastRun = 0;
     var agentxTrailingTimer = null;
+    // True while the body MutationObserver is running a rule pass (A9).
+    // The rules write to the DOM, and the observer watches characterData
+    // across document.body's subtree, so without this flag each pass
+    // re-triggers itself. Declared here (var, same scope as the otheragentx
+    // state) so the observer closure and the timer both see one binding.
+    var agentxInObserverPass = false;
     function agentxRebrandOff() {
       if (!AGENTX_REBRAND_ENABLED) return true;
       try { return new URLSearchParams(location.search).get("rebrand") === "0"; } catch (e) { return false; }
@@ -1938,80 +2211,6 @@ function computerPanelScript(rebrandEnabled) {
           else if (created) agentxThinkingShow("inherit");
         } catch (e) {}
       } },
-      { id: "composer-symmetry", run: function () {
-        // 2026-11-20 (user): the composer toolbar had no symmetry — the
-        // model/agent dropdown, Smart Mode, Thinking select, context
-        // ring, mic, attach and Send were spread over two uneven rows
-        // with different heights and gaps. Make the toolbar ONE clean
-        // flex row: every control vertically centered, an even 8px gap,
-        // a consistent 32px control height, and the input's own row
-        // untouched. Only layout styles are set (never text or structure),
-        // so React reconciliation is unaffected. The Thinking select keeps
-        // its place next to Smart Mode (user anchor) but is sized to match
-        // the other controls instead of dominating the row.
-        try {
-          if (window.location && window.location.pathname && window.location.pathname.indexOf("/chat") !== 0) return;
-          var toolbar = null;
-          try {
-            var btns = document.querySelectorAll("button");
-            for (var i = 0; i < btns.length; i++) {
-              try {
-                var b = btns[i];
-                var lab = "";
-                try { lab = (b.getAttribute("aria-label") || "") + " " + (b.getAttribute("title") || "") + " " + (b.textContent || ""); } catch (e) {}
-                if (lab.indexOf("Smart Mode") !== -1) { toolbar = b.parentElement; break; }
-              } catch (e) {}
-            }
-            if (!toolbar) {
-              for (var ci = 0; ci < btns.length; ci++) {
-                try {
-                  var cb = btns[ci];
-                  var clab = "";
-                  try { clab = (cb.getAttribute("aria-label") || "") + " " + (cb.getAttribute("title") || "") + " " + (cb.textContent || ""); } catch (e) {}
-                  if (clab.indexOf("Context usage") !== -1) { toolbar = cb.parentElement; break; }
-                } catch (e) {}
-              }
-            }
-          } catch (e) {}
-          if (!toolbar) return;
-          try {
-            toolbar.style.display = "flex";
-            toolbar.style.alignItems = "center";
-            toolbar.style.gap = "8px";
-            toolbar.style.flexWrap = "nowrap";
-            toolbar.style.padding = "6px 8px";
-          } catch (e) {}
-          // Every direct control: same height, vertically centered, never
-          // shrinking the Send button out of the row.
-          try {
-            var kids = toolbar.children;
-            for (var k = 0; k < kids.length; k++) {
-              try {
-                var ch = kids[k];
-                ch.style.flex = "0 0 auto";
-                ch.style.alignSelf = "center";
-                ch.style.margin = "0";
-                if (ch.tagName === "SELECT" || ch.tagName === "BUTTON") {
-                  ch.style.height = "32px";
-                  ch.style.minHeight = "32px";
-                }
-              } catch (e2) {}
-            }
-          } catch (e) {}
-          // Thinking select: compact so it matches the other controls.
-          try {
-            var sel = document.querySelector ? document.querySelector("[data-agentx-thinking]") : null;
-            if (sel) {
-              sel.style.height = "32px";
-              sel.style.minHeight = "32px";
-              sel.style.padding = "4px 6px";
-              sel.style.fontSize = "12px";
-            }
-            var tlab = document.querySelector ? document.querySelector("[data-agentx-thinking-label]") : null;
-            if (tlab) { tlab.style.fontSize = "12px"; tlab.style.marginLeft = "4px"; }
-          } catch (e) {}
-        } catch (e) {}
-      } },
       { id: "hide-native-thinking", run: function () {
         // The console's own thinking control (2026-11-19 QA round 20 +
         // DOM inspection 2026-11-19 ~07:0x IST): a second Thinking
@@ -2329,62 +2528,107 @@ function computerPanelScript(rebrandEnabled) {
         } catch (e) {}
       } },
       { id: "page-bottom-padding", run: function () {
-        // The three floating pills (Vault / Rest machine / Computer) are
-        // fixed at the bottom-right and overlay whatever content sits
-        // there — on the Models page they cover a provider card's
-        // "Configure ›" link (QA round 7: only "Conf" visible on the
-        // MiniMax card). Give <main> bottom padding so the last row of
-        // content can always be scrolled fully above the pills. The
-        // pills span bottom 16–152px, so 170px clears them.
+        // The three machine actions used to be floating pills pinned to the
+        // bottom-right, so <main> needed 170px of bottom padding for the
+        // last row of content to clear them (QA round 7: only "Conf" was
+        // visible on a provider card). They now live in the left sidebar,
+        // so the big dead strip is gone — a modest pad keeps the last row
+        // off the very edge (whitespace, not clearance).
         try {
           var main = document.querySelector ? document.querySelector("main") : null;
           if (main && !main.getAttribute("data-agentx-bottom-pad")) {
             main.setAttribute("data-agentx-bottom-pad", "1");
-            main.style.paddingBottom = "170px";
+            main.style.paddingBottom = "32px";
             main.style.boxSizing = "border-box";
           }
         } catch (e) {}
       } },
-      { id: "pill-positions", run: function () {
-        // Re-apply the ⋮ button + menu positions on every mutation.
-        // setOpen() sets them once when the Computer panel opens/closes,
-        // but a re-render can reset the inline styles while the panel
-        // stays open — then the button sits on top of the panel. This
-        // rule re-asserts the open/closed positions every time.
-        // (2026-11-20: the three floating pills became a single ⋮ menu;
-        // this rule now positions that one button + its menu.)
+      { id: "sidebar-actions", run: function () {
+        // Keep the sidebar actions menu and the account row correct on
+        // every mutation. React re-renders can drop injected nodes or
+        // re-stack the sidebar footer; both fixes are idempotent, so
+        // re-running them here is what makes them stick (the same reason
+        // the old pill-positions rule re-asserted the pill offsets).
+        // Replaces pill-positions (2026-11-20): the actions are sidebar
+        // rows now, so there are no floating pills to re-position.
+        try { addSidebarActions(); } catch (e) {}
+        try { fixAccountRow(); } catch (e) {}
+      } },
+      { id: "composer-symmetry", run: function () {
+        // 2026-11-20 (user): the composer toolbar had no symmetry — the
+        // model/agent dropdown, Smart Mode, Thinking select, context
+        // ring, mic, attach and Send were spread over two uneven rows
+        // with different heights and gaps. Make the toolbar ONE clean
+        // flex row: every control vertically centered, an even 8px gap,
+        // a consistent 32px control height, and the input's own row
+        // untouched. Only layout styles are set (never text or structure),
+        // so React reconciliation is unaffected. The Thinking select keeps
+        // its place next to Smart Mode (user anchor) but is sized to match
+        // the other controls instead of dominating the row.
+        // Kept in the 2026-11-20 beauty-pass merge: Pi's sidebar-actions
+        // supersedes the three-dots menu, but the composer row still needs
+        // this rule — Pi's diff did not carry it.
         try {
-          var panel = document.getElementById("qwenpawComputerPanel");
-          var mBtn = document.getElementById("qwenpawMoreBtn");
-          var mMenu = document.getElementById("qwenpawMoreMenu");
-          if (!panel || !mBtn || !mMenu) return;
-          // The panel can be opened by the console's own UI (not only
-          // by the ⋮ button's setOpen), which may show it via a CSS
-          // class rather than an inline display style — so
-          // panel.style.display is "" even while it is visible. Use
-          // the COMPUTED display, which reflects the real state either
-          // way. (2026-11-18 QA round 9: pills sat on Send because the
-          // rule read the inline style and thought the panel was closed.)
-          var disp = "";
-          try { disp = window.getComputedStyle ? window.getComputedStyle(panel).display : ""; } catch (e) {}
-          var isOpen = disp !== "none" && disp !== "";
-          var right = isOpen ? "332px" : "16px";
-          mBtn.style.right = right;
-          mMenu.style.right = right;
-          // Hide the ⋮ button + menu on Settings pages (2026-11-18 QA
-          // round 15): they are fixed-position and persist across
-          // pages, where they cover real Settings controls. The menu is
-          // a /chat convenience; on Settings it only gets in the way.
-          var onSettings = false;
-          try { onSettings = (window.location && window.location.pathname ? window.location.pathname : "").indexOf("/settings") !== -1; } catch (e) {}
-          if (onSettings) {
-            mBtn.style.display = "none";
-            mMenu.style.display = "none";
-            return;
-          }
-          mBtn.style.display = "";
-          mBtn.style.bottom = "16px";
-          mMenu.style.bottom = "64px";
+          if (window.location && window.location.pathname && window.location.pathname.indexOf("/chat") !== 0) return;
+          var toolbar = null;
+          try {
+            var btns = document.querySelectorAll("button");
+            for (var i = 0; i < btns.length; i++) {
+              try {
+                var b = btns[i];
+                var lab = "";
+                try { lab = (b.getAttribute("aria-label") || "") + " " + (b.getAttribute("title") || "") + " " + (b.textContent || ""); } catch (e) {}
+                if (lab.indexOf("Smart Mode") !== -1) { toolbar = b.parentElement; break; }
+              } catch (e) {}
+            }
+            if (!toolbar) {
+              for (var ci = 0; ci < btns.length; ci++) {
+                try {
+                  var cb = btns[ci];
+                  var clab = "";
+                  try { clab = (cb.getAttribute("aria-label") || "") + " " + (cb.getAttribute("title") || "") + " " + (cb.textContent || ""); } catch (e) {}
+                  if (clab.indexOf("Context usage") !== -1) { toolbar = cb.parentElement; break; }
+                } catch (e) {}
+              }
+            }
+          } catch (e) {}
+          if (!toolbar) return;
+          try {
+            toolbar.style.display = "flex";
+            toolbar.style.alignItems = "center";
+            toolbar.style.gap = "8px";
+            toolbar.style.flexWrap = "nowrap";
+            toolbar.style.padding = "6px 8px";
+          } catch (e) {}
+          // Every direct control: same height, vertically centered, never
+          // shrinking the Send button out of the row.
+          try {
+            var kids = toolbar.children;
+            for (var k = 0; k < kids.length; k++) {
+              try {
+                var ch = kids[k];
+                ch.style.flex = "0 0 auto";
+                ch.style.alignSelf = "center";
+                ch.style.margin = "0";
+                if (ch.tagName === "SELECT" || ch.tagName === "BUTTON") {
+                  ch.style.height = "32px";
+                  ch.style.minHeight = "32px";
+                }
+              } catch (e2) {}
+            }
+          } catch (e) {}
+          // Thinking select: compact so it matches the other controls.
+          try {
+            var sel = document.querySelector ? document.querySelector("[data-agentx-thinking]") : null;
+            if (sel) {
+              sel.style.height = "32px";
+              sel.style.minHeight = "32px";
+              sel.style.padding = "4px 6px";
+              sel.style.fontSize = "12px";
+            }
+            var tlab = document.querySelector ? document.querySelector("[data-agentx-thinking-label]") : null;
+            if (tlab) { tlab.style.fontSize = "12px"; tlab.style.marginLeft = "4px"; }
+          } catch (e) {}
         } catch (e) {}
       } },
       { id: "rename-logo", run: function () {
@@ -2581,82 +2825,6 @@ function computerPanelScript(rebrandEnabled) {
         // avatar are never touched (no "QwenPaw" text node is ever the
         // username, and images are not text nodes).
         agentxRenameScoped("QwenPaw", function (el) { return agentxScopeMarker(el, ["account", "profile", "user-card"]); });
-      } },
-      { id: "account-card-layout", run: function () {
-        // 2026-11-20 (user): the sidebar's bottom account row was
-        // congested — the username + "Console account" truncated to
-        // "satwikConsole ..." and the settings/sliders button was
-        // cramped against it with no gap. Give the row a clean flex
-        // layout: avatar fixed, text block truncates cleanly with
-        // ellipsis on ONE line each, and the settings button a fixed
-        // 32px square with a real gap. Text nodes are never renamed
-        // here; only layout styles are set, so React reconciliation
-        // is unaffected.
-        try {
-          if (!document.querySelectorAll) return;
-          var els = document.querySelectorAll("*");
-          var sub = null;
-          for (var i = 0; i < els.length; i++) {
-            try {
-              var t = els[i].textContent || "";
-              if (t === "Console account") { sub = els[i]; break; }
-            } catch (e) {}
-          }
-          if (!sub) return;
-          // Climb to the row: the nearest ancestor that also holds an
-          // avatar image and a button (the settings/sliders control).
-          var row = sub;
-          for (var d = 0; d < 6 && row; d++) {
-            try {
-              var hasImg = row.querySelector ? row.querySelector("img") : null;
-              var hasBtn = row.querySelector ? row.querySelector("button") : null;
-              if (hasImg && hasBtn) break;
-            } catch (e) {}
-            row = row.parentElement;
-          }
-          if (!row) return;
-          try {
-            row.style.display = "flex";
-            row.style.alignItems = "center";
-            row.style.gap = "10px";
-            row.style.padding = "10px 12px";
-            row.style.minWidth = "0";
-          } catch (e) {}
-          // Text block: the element holding the name + subtitle. Let it
-          // shrink (min-width 0) and truncate each line cleanly.
-          try {
-            var txt = sub.parentElement;
-            if (txt) {
-              txt.style.minWidth = "0";
-              txt.style.flex = "1 1 auto";
-              txt.style.overflow = "hidden";
-              var kids = txt.querySelectorAll ? txt.querySelectorAll("*") : [];
-              for (var k = 0; k < kids.length; k++) {
-                try {
-                  kids[k].style.overflow = "hidden";
-                  kids[k].style.textOverflow = "ellipsis";
-                  kids[k].style.whiteSpace = "nowrap";
-                  kids[k].style.maxWidth = "100%";
-                } catch (e2) {}
-              }
-            }
-          } catch (e) {}
-          // Settings button: fixed square, never shrinks, real margin.
-          try {
-            var btns = row.querySelectorAll ? row.querySelectorAll("button") : [];
-            for (var b = 0; b < btns.length; b++) {
-              try {
-                btns[b].style.flex = "0 0 auto";
-                btns[b].style.width = "32px";
-                btns[b].style.height = "32px";
-                btns[b].style.display = "flex";
-                btns[b].style.alignItems = "center";
-                btns[b].style.justifyContent = "center";
-                btns[b].style.marginLeft = "auto";
-              } catch (e2) {}
-            }
-          } catch (e) {}
-        } catch (e) {}
       } },
       { id: "workspace-switcher", run: function () {
         // Part 3 (2026-11-19): rename QwenPaw in the workspace switcher
@@ -2897,18 +3065,40 @@ function computerPanelScript(rebrandEnabled) {
     }
     try {
       var vaultMenuObserver = new MutationObserver(function () {
-        addVaultMenuItem();
-        agentxRunRuleNow("fix-grammar");
-        agentxRunRuleNow("sidebar-ellipsis");
-        agentxRunRuleNow("chat-input-fixes");
-        agentxRunRuleNow("thinking-selector");
-        agentxRunRuleNow("composer-symmetry");
-        agentxRunRuleNow("account-card-layout");
-        agentxRunRuleNow("queue-takeover");
-        agentxRunRuleNow("settings-white-area");
-        agentxRunRuleNow("page-bottom-padding");
-        agentxRunRuleNow("pill-positions");
-        agentxRunRules();
+        // RE-ENTRANCY GUARD (A9, 2026-11-19). Seven of the eight rules
+        // below write to the DOM unconditionally (nodeValue / textContent /
+        // appendChild), and this observer watches characterData across
+        // document.body's whole subtree — so each rule's own write is a
+        // mutation that fires this callback again. Without this flag the
+        // callback re-enters itself and the page spends its main thread
+        // re-running 44 rules over 42 querySelectorAll sites forever, which
+        // is what a constrained renderer sees as
+        // renderer_probe_timeout / browser_error.
+        //
+        // The flag makes each callback a single pass: writes made DURING
+        // the pass do not queue another endless run. Mutations React makes
+        // afterwards still arrive normally, so the fixes still re-apply.
+        if (agentxInObserverPass) return;
+        agentxInObserverPass = true;
+        try {
+          addVaultMenuItem();
+          agentxRunRuleNow("fix-grammar");
+          agentxRunRuleNow("sidebar-ellipsis");
+          agentxRunRuleNow("chat-input-fixes");
+          agentxRunRuleNow("thinking-selector");
+          agentxRunRuleNow("queue-takeover");
+          agentxRunRuleNow("settings-white-area");
+          agentxRunRuleNow("page-bottom-padding");
+          agentxRunRuleNow("sidebar-actions");
+          agentxRunRuleNow("composer-symmetry");
+          agentxRunRules();
+        } finally {
+          // Clear the flag on the next task, not immediately: MutationObserver
+          // callbacks for writes made in this pass are delivered as a
+          // microtask AFTER this function returns, and clearing synchronously
+          // would let that queued microtask re-enter anyway.
+          setTimeout(function () { agentxInObserverPass = false; }, 0);
+        }
       });
       // characterData: React updates a text node in place (nodeValue)
       // when it re-renders — e.g. the Models page resetting "1 provider
@@ -3108,8 +3298,8 @@ async function proxy(request, url, env, ctx) {
   const pagesOrigin = url.origin;
   const isSafeMethod = request.method === "GET" || request.method === "HEAD";
 
-  const buildRequest = () => {
-    const req = new Request(originUrl, request);
+  const buildRequest = (targetUrl) => {
+    const req = new Request(targetUrl || originUrl, request);
     req.headers.delete("host");
     req.headers.delete("cf-connecting-ip");
     req.headers.delete("cf-ipcountry");
@@ -3128,12 +3318,50 @@ async function proxy(request, url, env, ctx) {
   let res;
   try {
     res = await fetch(buildRequest());
-  } catch (err) {
+  } catch {
     // Deliberately generic: fetch error text can contain the origin URL
-    // or stack fragments — never reflect it to the visitor.
+    // or stack fragments — never reflect it to the visitor. Optional catch
+    // binding (the error is unused on purpose, not by oversight).
     return new Response("AgentX origin unreachable. Try again in a moment.", {
       status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
     });
+  }
+
+  // Renamed-chunk fallback (P0 /chat render error, 2026-11-20).
+  // The takeover2 cache-bust renamed one content-hashed console chunk
+  // (index-opcB8AGu.js -> index-opcB8AGu-tk2.js) and rewrote the entry
+  // chunk's dynamic import to the new name. The entry chunk is served
+  // under the versioned URL and edge-cached, so a browser keeps asking
+  // for the RENAMED chunk even after the machine's console has reverted
+  // to a build that only has the ORIGINAL filename (container recreate,
+  // console re-sync, snapshot restore all do this). The renamed chunk
+  // then 404s at the origin, the /chat lazy import rejects, and React
+  // renders the "Something went wrong" error boundary — exactly the
+  // reported P0 (shell + sidebar fine, main chat panel fails after
+  // "Loading...").
+  //
+  // Fix: on a 404 for a hashed asset whose name carries the takeover
+  // version marker (-tk<N>), retry once against the original filename,
+  // which the origin still has. Self-healing in both directions: when the
+  // origin is re-patched the first fetch returns 200 and this never runs;
+  // while it is not, the console still loads instead of erroring. Scoped
+  // to a 404 on a -tk<N> hashed asset so it can never mask a genuine
+  // missing-route 404 or an API error.
+  let assetFallback = false;
+  if (res.status === 404 && isSafeMethod) {
+    const renamed = /^\/assets\/([A-Za-z0-9._-]+?)-tk[0-9]+\.(js|css|woff2?|png|svg|jpe?g|webp|ico|map)$/i.exec(fwdUrl.pathname);
+    if (renamed) {
+      const fallbackPath = "/assets/" + renamed[1] + "." + renamed[2] + fwdUrl.search;
+      try {
+        const alt = await fetch(buildRequest(ORIGIN + fallbackPath));
+        if (alt.status === 200) {
+          res = alt;
+          assetFallback = true;
+        } else if (alt && alt.body) {
+          try { await alt.body.cancel(); } catch { /* already consumed */ }
+        }
+      } catch { /* origin unreachable for the fallback too — keep the 404 */ }
+    }
   }
 
   // 503 = InstaBox is waking the machine. Wait, then retry once (safe methods
@@ -3226,7 +3454,17 @@ async function proxy(request, url, env, ctx) {
         // A console page load is a visit (sleep/wake signal). Fire-and-forget.
         if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(recordLastVisit(env));
         const rebrandEnabled = env.AGENTX_REBRAND !== "0";
-        const titled = html.replace("<title>QwenPaw Console</title>", "<title>AgentX Console</title>");
+        // B2 / /chat unification (2026-11-19): the console's own index.html
+        // may already carry the baked rebrand (features/rebrand/bake_rebrand.py
+        // injects the same block at image-build time). When it does, the
+        // ORIGIN serves the AgentX look itself, and injecting here again
+        // would apply every rule twice — double observers, double Vault/
+        // Rest/Computer pills, double grammar fixes. So the injection is
+        // skipped and the origin HTML is passed through as-is. The header
+        // work below (no-store, CSP-Report-Only, Referrer-Policy) and the
+        // visit record still apply either way.
+        const alreadyBaked = html.includes("agentx-rebrand-baked");
+        const titled = alreadyBaked ? html : html.replace("<title>QwenPaw Console</title>", "<title>AgentX Console</title>");
         // Logo-flash guard (2026-11-19 QA round 20): the header logo img
         // (alt "QwenPaw") painted before the rebrand observer renamed it.
         // Hide QwenPaw-alt imgs until rename-logo processes them (it sets
@@ -3234,13 +3472,20 @@ async function proxy(request, url, env, ctx) {
         // for the AgentX text label anyway). visibility, not display: the
         // rule's size gate needs a real displayed width. Only when the
         // rebrand is on — with ?rebrand=0 the console shows QwenPaw.
-        const rebrandStyle = rebrandEnabled ? '<style>img[alt*="QwenPaw"]:not([data-agentx-logo]){visibility:hidden !important}</style>' : "";
+        const rebrandStyle = (rebrandEnabled && !alreadyBaked) ? '<style>img[alt*="QwenPaw"]:not([data-agentx-logo]){visibility:hidden !important}</style>' : "";
         // Search settings UI (2026-11-18): the Settings "Search" section
         // (TinyFish key + feature checkboxes) loads as a module from the
         // Pages assets and self-mounts when the Settings page is present.
         // A module script is deferred, so it runs after the SPA HTML parses.
-        const searchSettingsScript = '<script type="module" src="/search-settings-ui.js"></script>';
-        const injected = titled.replace("</body>", rebrandStyle + (rebrandEnabled ? headShim() : "") + computerPanelScript(rebrandEnabled) + searchSettingsScript + "</body>");
+        const searchSettingsScript = alreadyBaked ? "" : '<script type="module" src="/search-settings-ui.js"></script>';
+        // The shim term is hoisted so the injection stays a flat statement:
+        // nesting it inside the alreadyBaked ternary would read as a nested
+        // ternary and hide which branch actually runs.
+        const shimTag = rebrandEnabled ? headShim() : "";
+        let injected = titled;
+        if (!alreadyBaked) {
+          injected = titled.replace("</body>", rebrandStyle + shimTag + computerPanelScript(rebrandEnabled) + searchSettingsScript + "</body>");
+        }
         headers.set("Cache-Control", "no-store, no-transform");
         headers.delete("ETag");
         headers.delete("Last-Modified");
@@ -3279,7 +3524,10 @@ async function proxy(request, url, env, ctx) {
   // keep no-store. The hash test is deliberately strict: a bare
   // /assets/foo.js (no hash) stays no-store.
   if (/^\/assets\/[^/]*-[A-Za-z0-9_-]{6,}\.[A-Za-z0-9]+$/.test(url.pathname)) {
-    headers.set("Cache-Control", "public, max-age=31536000, immutable");
+    // A fallback-served asset is the origin's content for a DIFFERENT
+    // filename, so it must not be pinned for a year — a re-patched origin
+    // could never win. Revalidate quickly instead.
+    headers.set("Cache-Control", assetFallback ? "public, max-age=60" : "public, max-age=31536000, immutable");
     headers.delete("ETag");
     headers.delete("Last-Modified");
   }
