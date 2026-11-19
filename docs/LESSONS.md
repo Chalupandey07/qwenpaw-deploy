@@ -530,3 +530,17 @@ page reads a field must also check the endpoint returns it.
 **Verification:** 2026-11-19 ~06:4x IST — T142 29/29 (fail-first 27/29 on the pre-feature file), T114 181/181 (fail-first by construction for the 8 new checks; no whole-harness count — the only baseline, git HEAD, predates the thinking-selector and the harness crashes in its per-rule runner on that file). NOT verified live: Pages redeploy + browser re-check of all four fixes (note text, single dropdown, Community + AgentScope renames, no flash) — pending. The banner gap (~8px) is still unverified: the blue banner never appeared in the session.
 
 **Rule (AGENTS.md §1):** a control that silently reverts looks broken — show the server's reason next to it. And: a load-bearing guard scoped to a whole ancestor hides legitimate renames — scope it to code-like parents only.
+
+---
+
+## 2026-11-19 — QA round 20, DOM-inspection round: the hide rule matched the wrong screen's label, and the rename matched a phrase the DOM never contains
+
+**Symptom:** after the first QA-round-20 fix round deployed, the browser re-check (2026-11-19 ~06:55 IST) still showed TWO Thinking dropdowns and the Models card still "AgentScope Plat…", while the 422 note, the logo flash fix and the Community rename all passed.
+
+**Root cause:** (1) The hide-native-thinking rule matched the label "Thinking intensity", taken from the console bundle's i18n strings — but that label belongs to a different screen's control. The composer's native control is a plain `<select>` whose accessible name is "Thinking level for this chat" — IDENTICAL to the injected selector's name, same options, same default title. The rule could never match it. The two controls are indistinguishable by tag, name, options, value or parent; the only discriminator is the `data-agentx-thinking` attribute our select carries (set before append) — and the title after sync (ours becomes the lock hint on a locked model). (2) The Models provider card renders the display name TRUNCATED in the DOM ("AgentScope Plat…") — the card's accessible name is "AgentScope Plat… Configure" and a page search for "AgentScope Platform" finds nothing, so the full-phrase rename could never match. The name comes from the backend API; the truncation happens in the card render.
+
+**Fix:** (1) the hide rule now matches "thinking level for this chat" as well as "thinking intensity", and relies on the data-agentx-thinking exclusion (not the label) to protect our select. (2) The rename now handles the truncated form "AgentScope Plat…" → "AgentX Plat…" plus a bare "AgentScope" token → "AgentX" (any truncation length), alongside the full phrase.
+
+**Verification:** 2026-11-19 ~07:1x IST — T114 186/186 (fail-first: exactly the 5 new checks fail against the pre-fix file, 181 passed / 5 failed). NOT verified live: Pages redeploy + browser re-check of the two fixes — pending.
+
+**Rule (AGENTS.md §1):** a hide/match rule must use the control's real live label, not a label found in the bundle's strings for another screen — verify against the live DOM. And: a display name may render truncated — rename the truncated form too, never only the full phrase.
