@@ -1574,7 +1574,7 @@ def t107():
 
 
 def t108():
-    """Intelligent sleep/wake: decide before probing; sleep only when idle (50 checks).
+    """Intelligent sleep/wake: decide before probing; sleep only when idle (53 checks).
 
     The keep-alive cron used to probe the public console URL every 5 min,
     which WAKES a paused machine — so the machine never idle-paused, ran
@@ -1616,7 +1616,7 @@ def t108():
     before the 07:00 daily summary; wake-on-visit shows progress) is
     verified by Muse at deploy time — see features/sleepwake/README.md.
     """
-    return _harness("features/sleepwake/harness-sleepwake.mjs", 50)
+    return _harness("features/sleepwake/harness-sleepwake.mjs", 53)
 
 
 def t109():
@@ -2813,10 +2813,10 @@ def t142():
 
 
 def t143():
-    """Smart sleep/wake: keep-alive toggle + max-run guard + Hallmark pages (105 + 105 checks).
+    """Smart sleep/wake: keep-alive toggle + max-run guard + Hallmark pages (131 + 105 checks).
 
     Two node harnesses under features/smart-sleep/ (README there):
-    harness-smart-sleep.mjs (105) runs the real keep-alive Worker module
+    harness-smart-sleep.mjs (131) runs the real keep-alive Worker module
     with a mock D1 + a mock fetch that counts every call. Toggle: OFF ->
     the cron tick returns skip with ZERO fetches and ZERO D1 mutations;
     ON -> the decision is identical to today (golden compare vs
@@ -2872,7 +2872,7 @@ def t143():
     is verified by Muse after the Pages/Workers deploy — blocked by the
     2026-11-18 Workers 1027 outage until the 00:00 UTC reset.
     """
-    a = _harness("features/smart-sleep/harness-smart-sleep.mjs", 105)
+    a = _harness("features/smart-sleep/harness-smart-sleep.mjs", 131)
     b = _harness("features/smart-sleep/harness-smart-sleep-pages.mjs", 105)
     ok = a[0] == "PASS" and b[0] == "PASS"
     return ("PASS" if ok else "FAIL", a[1] + " | " + b[1])
