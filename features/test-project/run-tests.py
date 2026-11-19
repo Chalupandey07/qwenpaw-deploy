@@ -1837,7 +1837,14 @@ def t114():
     light/dark paint, the diag line, its no-duplicate re-run, and
     the ancestor-paint cleanup; T114 198 → 205, T144 12 → 19):
     fail-first 198/205 against the round-2 rule, 205/205 after the
-    rewrite). The rule
+    rewrite). Round 4 (2026-11-19 ~09:0x IST): the round-3 browser
+    check read the diagnostic line (rule=ran, shell h=998, body/html
+    bg rgb(249,248,244)) and confirmed the fix — light mode cream to
+    y=998, 0px strip, top and max scroll; dark filled. The AX-DIAG
+    line and its probe are removed here; the paint + stretch are
+    untouched (T114 205, T144 19 — the 7 diag checks become
+    no-diagnostic checks; fail-first 198/205 against the round-3
+    rule, 205/205 after the removal). The rule
     table grew 42 -> 44 with queue-takeover (multi-tab takeover
     affordance, post-reset cron Step 10; its own tests live under
     features/queue-takeover, only its presence is asserted here). The
@@ -2895,9 +2902,17 @@ def t144():
     checks failed — the ancestor paint, the diag line, its
     no-duplicate re-run, the dark realistic paint, the
     ancestor-paint cleanup, and the 2 static checks), 205/205 after
-    the rewrite. The live half (a real browser on the deployed
-    console, light + dark, top scroll and max scroll, plus reading
-    the visible diagnostic line) is verified by Muse after deploy.
+    the rewrite. Round 4 (2026-11-19 ~09:0x IST): the live check
+    read the line (rule=ran, shell h=998, body/html bg
+    rgb(249,248,244)) and confirmed the fix — 0px strip in light
+    mode at top and max scroll, dark filled. The AX-DIAG line and
+    its probe are removed here; the paint + stretch are untouched.
+    The 7 diag checks become no-diagnostic checks (same 19-check
+    subset: T144 19/19); fail-first 198/205 against the round-3
+    rule, 205/205 after the removal. The live half (a real browser
+    on the deployed console, light + dark, top scroll and max
+    scroll, confirming the line is gone AND the cream still fills)
+    is verified by Muse after deploy.
     """
     rc, out, err = run_local(["node", str(REPO / "features/rebrand/harness-rebrand.mjs")], timeout=180)
     lines = [l for l in out.splitlines() if "settings-white-area" in l]
@@ -3475,7 +3490,7 @@ TESTS = [
     ("T141", "realistic resume messages resume the current task (gatefix6): _is_continuation matches a continuation phrase at the START of the message at a word boundary, not just an exact match -- 'hello, are you working?' and 'Yes, continue from 21' resume the echo task (20 shell, then 20 more to 40 and finalise, then 0); 'yesterday' / 'history' / 'surely' / 'thanksgiving' are NOT continuations; a genuinely new instruction after finalisation still mints a fresh task (harness, section Q of test_task_cap.py)", "loop-gate", "protocol", t141),
     ("T142", "per-chat thinking selector (Default/Off/Low/Medium/High/XHigh): the rule surfaces the backend's GET/PUT /api/chats/{id}/thinking as a selector in the chat composer toolbar itself, in the Smart Mode row next to Smart Mode (user screenshot 2026-11-19), appended into that row (React-safe), Bearer from localStorage, model_key on PUT, pending level applied once a new chat gets an id, 422 revert + re-sync with the server's reason shown next to the selector, lock-hint title when the model takes no thinking level, out-of-set levels shown truthfully, one select per document (moves into the Smart Mode row when it mounts, never a second) (harness)", "thinking", "protocol", t142),
     ("T143", "smart sleep/wake: keep-alive ON/OFF toggle (POST /keepalive, Bearer <redacted>, D1 keepalive:enabled, tick early-return fail-closed, /status + /sleepwake/state keepAlive fields) + max-run guard (sleep at 7h uptime even when busy, WAKE/rest still win) + Hallmark waking/cooldown/status pages (no polling, scaleX bars, keep-alive switch, /status sleepwake.nextRoutineAt) (harness)", "sleepwake", "protocol", t143),
-    ("T144", "settings white-area fix round 3: settings-white-area rule only — nav-anchored shell + ancestors stretched to 100dvh (!important) and painted with the --app-bg theme variable (#f9f8f4 light / #141414 dark, class fallback), never from the shell's background (the shell is transparent inside a WHITE full-height .index-module__mainContentLayout wrapper that covers the html/body paint), TEMPORARY visible diagnostic line (AX-DIAG, elementFromPoint strip probes) readable as page text, no-op off /settings and before nav mounts, cleanup removes ancestor paint + diagnostic line on leaving Settings (harness subset, 19 checks)", "rebrand", "protocol", t144),
+    ("T144", "settings white-area fix round 4 (AX-DIAG removed): settings-white-area rule only — nav-anchored shell + ancestors stretched to 100dvh (!important) and painted with the --app-bg theme variable (#f9f8f4 light / #141414 dark, class fallback), never from the shell's background (the shell is transparent inside a WHITE full-height .index-module__mainContentLayout wrapper that covers the html/body paint), no diagnostic line (AX-DIAG removed in round 4 after the round-3 values were read live), no-op off /settings and before nav mounts, cleanup removes ancestor paint on leaving Settings (harness subset, 19 checks)", "rebrand", "protocol", t144),
     ("T145", "multi-tab takeover (Step 10): the bundle patch registers the owner AbortController and aborts it on BroadcastChannel release-ownership; the Pages queue-takeover rule adds a Take over sending button on the queue-only banner and hides the dead Interrupt & send while the banner is up (harness, 26 checks)", "queue", "protocol", t145),
 ]
 
