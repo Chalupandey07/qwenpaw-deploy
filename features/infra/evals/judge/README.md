@@ -117,17 +117,32 @@ is NOT VERIFIED yet.** Run 1 (2026-11-19 ~04:08 IST) finished 0/12 NOT
 TRUSTED — on transport, not substance: cal-01..09 hit the 6-min poll
 timeout (MAX_POLLS 72 x 5s; live agent turns take ~6 min), cal-10/11
 hit a token 401 (the 1h token expired mid-run; a supplied token cannot
-re-login by design), cal-12 had an empty reply. The fix is a 15-min poll
-window (MAX_POLLS 72 to 180 in judge.py and run-evals.py, checks G1-G3
-in test_judge.py); run 2 launched with the longer window and a 2h token
-and needs 12/12. Do not claim live agreement from the machine-free
+re-login by design), cal-12 had an empty reply. The 15-min poll window
+(MAX_POLLS 72 to 180, checks G1-G3) was a misdiagnosis, not the fix:
+run 4 (2026-11-19 ~08:38 IST) finished 0/12 NOT TRUSTED with 11 cases
+hitting "judge poll timed out after 900s" even though the grading
+turns had completed in seconds — history.db proves the judge's grades
+agreed with the humans 11/11 (cal-12 has no data). Root cause, proven
+from the console source (app/routers/console.py: get_console_chat_task
+returns bg.status; _BackgroundTask.status is only "running" in flight
+and "finished" on every completion path) and by a live probe
+(task-320a0aa106b8: running -> finished in 12.4s): the poll waited for
+done/completed/success/..., a set that never contains "finished".
+Second bug from the same probe body: the generic extractor returned
+the FIRST text found — the "reasoning" item, the model's deliberation,
+not its reply. Fix (checks H1-H8): _poll returns on "finished"
+(TERMINAL_TASK_STATUSES, kept in sync between judge.py and
+run-evals.py) and _extract_text takes the last "message" item of
+result.output, never reasoning. The re-run (run 5) is the live proof —
+it must finish in minutes, not hours, and report the true agreement
+count. Do not claim live agreement from the machine-free
 test. The parent / coordinator runs the live calibration once the machine
 is back.
 
 ## Run
 
 ```bash
-python3 test_judge.py              # must PASS (49 checks)
+python3 test_judge.py              # must PASS (57 checks)
 python3 test_judge.py --old-grader # must FAIL (old grader wrong on >= 2)
 python3 judge.py --audit-cases cases.json   # flags all 5 legacy cases
 python3 judge.py --calibrate       # set summary, live NOT VERIFIED
@@ -149,7 +164,10 @@ in the reason; the parser does not enforce it semantically).
 
 ## Deliberately left alone
 
-- `run-evals.py` and `cases.json` are untouched: the runner still
+- `run-evals.py` and `cases.json` are untouched except for the shared
+  poll/extraction fix (2026-11-19): `poll_task` and `extract_text`
+  now use the same TERMINAL_TASK_STATUSES ("finished") and the same
+  last-"message"-item extraction as judge.py — the runner still
   grades by substring (its flaw is documented, and `audit_cases`
   flags it). Migrating the 5 T61 cases to judge grading is a
   follow-up for the coordinator, not this build — the cases need
