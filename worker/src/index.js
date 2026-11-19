@@ -491,9 +491,11 @@ function decideSleepWake(inp, now = Date.now()) {
   // on visit. WAKE still wins (the branch above already returned) and a
   // manual rest still wins. Recent visit / agent activity deliberately
   // do NOT block this — that is the point. Reporter staleness does not
-  // block it either: uptimeMin is a lower bound in both cases (reporter
-  // uptimeSec when fresh, else the stored lastUpAt), and unknown uptime
-  // is 0, which fails the 420 threshold (fail closed).
+  // block it either: uptimeMin comes from the reporter (fresh) or the
+  // run-start baseline, and unknown uptime is 0, which fails the 420
+  // threshold (fail closed). The baseline is set at the down→up
+  // transition and never refreshed while up, so a 420-min reading is a
+  // reading about the CURRENT run.
   if (uptimeMin >= SW_MAX_RUN_MIN && machineUp === true && sleepState === "running" && restActive === false) {
     return { action: "sleep", reason: "max_run_guard" };
   }
@@ -597,6 +599,55 @@ async function readLastVisit(db) {
   const raw = await swMetaGet(db, "sleepwake:last-visit");
   const n = raw === null ? null : Number(raw);
   return Number.isFinite(n) ? n : null;
+}
+
+// --- run-start baseline (2026-11-19, stale-baseline incident) ----------
+// D1 meta key `sleepwake:run-start`: epoch ms the CURRENT run started.
+// Set ONCE per run, at the observed down→up transition (the reporter_up
+// flip, the baseline reconcile, or a probe that finds the machine up
+// after it was recorded down). It is NEVER refreshed while the machine
+// stays up, and it is NEVER derived from KV lastUpAt.
+//
+// Why not lastUpAt: lastUpAt is the last up-TRANSITION (or last
+// meaningful status change — saveStatus is write-on-change, so a steady
+// "up" day writes once). It goes stale whenever the machine stays up
+// with no meaningful change, and — worse — it can PREDATE the current
+// run: live 2026-11-19 it was frozen at 2026-11-18T14:30:29Z while the
+// true run started ~07:45Z that day, so the guard fired every 5-min
+// tick on 17.4h of a 10-minute-old run. lastUpAt is therefore NOT a
+// lower bound on the current run's uptime across run boundaries, and
+// the uptime computation must not fall back to it. When the baseline
+// is absent and the reporter carries no uptime, uptime is UNKNOWN
+// (null -> 0 in the tick), which fails the 420 threshold — fail closed,
+// as the guard's own comment requires. The baseline is (re)created on
+// the first tick with a fresh reporter (or a probe-confirmed up), so
+// the unknown window is at most a few ticks.
+async function readRunStart(db) {
+  const raw = await swMetaGet(db, "sleepwake:run-start");
+  const n = raw === null ? null : Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+async function writeRunStart(db, ms) {
+  return swMetaPut(db, "sleepwake:run-start", String(ms));
+}
+// The baseline implied by a fresh report: the reporter's own uptimeSec
+// when it carries one (exact — the reporter measured it), else now.
+// "Now" understates uptime by at most the reporter interval, because
+// the report proves the machine was up at reportedAt and the run
+// started at or before this tick.
+function baselineFromReport(report, now) {
+  if (report && Number.isFinite(report.uptimeSec)) return now - Math.max(0, report.uptimeSec) * 1000;
+  return now;
+}
+// Uptime in seconds, or null when unknown. ONE precedence, shared by
+// the tick and GET /sleepwake/state so the endpoint always shows the
+// uptime the guard would use right now: reporter uptimeSec (fresh) >
+// D1 run-start baseline > unknown. There is deliberately NO lastUpAt
+// fallback (see readRunStart above).
+function computeUptimeSec(report, reporterStale, runStart, now) {
+  if (report && !reporterStale && Number.isFinite(report.uptimeSec)) return Math.max(0, report.uptimeSec);
+  if (runStart) return Math.max(0, Math.round((now - runStart) / 1000));
+  return null;
 }
 
 // Next routine = earliest of (a) D1 routine definitions with a parseable
@@ -711,37 +762,65 @@ async function keepAliveTick(env, source) {
   const cached = await loadStatus(env);
   const machineUp = cached?.status === "up";
   const reporterStale = !report || !Number.isFinite(report.reportedAt) || (now - report.reportedAt > SW_REPORTER_STALE_MS);
-  // Uptime: reporter (fresh) is authoritative; otherwise the last up-transition
-  // is a lower bound. Neither -> 0, which fails the uptime guard (hold).
-  let uptimeMin = 0;
-  if (report && !reporterStale && Number.isFinite(report.uptimeSec)) uptimeMin = report.uptimeSec / 60;
-  else if (cached?.lastUpAt) uptimeMin = Math.max(0, (now - Date.parse(cached.lastUpAt)) / 60000);
-
-  // STUCK-STATE RECOVERY (2026-11-19): the state can strand on
-  // "sleeping" while the machine is up — the tick early-returns without
-  // probing whenever the state is "sleeping", and the only flip back to
-  // "running" on a live probe sits below that return, unreachable while
-  // sleeping. The machine can be woken outside this Worker's wake path
-  // (the routines Worker, a manual wake), so the Worker never records
-  // the wake; the only exit was a routine coming due. The machine-side
-  // reporter posts every 2 min from the machine itself, so a FRESH
-  // report is proof the machine is up — no probe is needed to establish
-  // that. If the state says "sleeping" but the reporter reported within
-  // the last 5 min, flip the state to "running" (reason "reporter_up")
-  // BEFORE the decision, so the max-run guard can fire in this same
-  // tick. The state records the uptime the tick computed (reporter
-  // uptimeSec when the report carries one — the live reporter posts
-  // null, it cannot know run start — else the stored lastUpAt lower
-  // bound), so the flip is auditable and /sleepwake/state shows the
-  // uptime the guard used. A stale or missing report never flips (fail
-  // closed). DEPLOY NOTE: do NOT deploy this while a run is already
-  // past 7h uptime — the guard fires on the next tick and sleeps the
-  // machine immediately. Deploy only in a fresh run (uptime well under
-  // 7h); see features/smart-sleep/README.md.
-  if (state.mode === "sleeping" && report && Number.isFinite(report.reportedAt) && (now - report.reportedAt <= SW_REPORTER_RECOVERY_MS)) {
-    const uptimeSec = Math.round(uptimeMin * 60);
-    await writeSleepState(db, { mode: "running", reason: "reporter_up", uptimeSec });
-    state = { ...state, mode: "running", reason: "reporter_up", uptimeSec, since: now };
+  // Run-start baseline (2026-11-19 stale-baseline incident): the
+  // guard's uptime must come from the CURRENT run. KV lastUpAt is the
+  // last up-transition / last meaningful status change and freezes
+  // under write-on-change, so it can predate the run by hours (live:
+  // frozen 2026-11-18T14:30:29Z, true run ~07:45Z 2026-11-19 — the
+  // guard fired every tick on 17.4h). The baseline is set once per run
+  // at the observed down→up transition and never refreshed while up.
+  let runStart = await readRunStart(db);
+  const reporterFreshForRecovery = report && Number.isFinite(report.reportedAt) && (now - report.reportedAt <= SW_REPORTER_RECOVERY_MS);
+  let recovered = false;
+  if (state.mode === "sleeping" && reporterFreshForRecovery) {
+    // STUCK-STATE RECOVERY (2026-11-19): the state can strand on
+    // "sleeping" while the machine is up — the tick early-returns without
+    // probing whenever the state is "sleeping", and the only flip back to
+    // "running" on a live probe sits below that return, unreachable while
+    // sleeping. The machine can be woken outside this Worker's wake path
+    // (the routines Worker, a manual wake), so the Worker never records
+    // the wake; the only exit was a routine coming due. The machine-side
+    // reporter posts every 2 min from the machine itself, so a FRESH
+    // report is proof the machine is up — no probe is needed to establish
+    // that. If the state says "sleeping" but the reporter reported within
+    // the last 5 min, flip the state to "running" (reason "reporter_up")
+    // BEFORE the decision, so the max-run guard can fire in this same
+    // tick. Reset the baseline FIRST: the machine just came back, so
+    // any stored baseline predates the down period; the flip's recorded
+    // uptimeSec is computed from the reset baseline below (the
+    // reporter's uptimeSec when it carries one, else ~0 — the live
+    // reporter posts null, it cannot know run start). A stale or
+    // missing report never flips (fail closed). DEPLOY NOTE: do NOT
+    // deploy this while a run is already past 7h uptime — the guard
+    // fires on the next tick and sleeps the machine immediately.
+    // Deploy only in a fresh run (uptime well under 7h); see
+    // features/smart-sleep/README.md.
+    runStart = baselineFromReport(report, now);
+    await writeRunStart(db, runStart);
+    recovered = true;
+  }
+  // RECONCILE (2026-11-19): the live state can ALREADY be "running"
+  // with a stale or missing baseline — the flip already happened, or
+  // the Worker was down during the transition — so a fix that only
+  // resets the baseline on a future flip would never fire. A fresh
+  // report (same 5-min bar as the flip: reporter evidence alone, no
+  // probe) with no baseline initializes it from the report. A stale
+  // report never initializes (fail closed — the machine may be down,
+  // and a baseline of "now" would understate the next run).
+  if (!runStart && reporterFreshForRecovery) {
+    runStart = baselineFromReport(report, now);
+    await writeRunStart(db, runStart);
+    console.log(`[keepalive:${source}] initialized run-start baseline from fresh reporter`);
+  }
+  // Uptime: reporter uptimeSec (fresh) > run-start baseline > unknown
+  // (0, which fails the uptime guards — fail closed). No lastUpAt
+  // fallback: it can predate the run (see above).
+  const uptimeSec = computeUptimeSec(report, reporterStale, runStart, now);
+  const uptimeMin = uptimeSec === null ? 0 : uptimeSec / 60;
+  if (recovered) {
+    const recordedSec = Math.round(uptimeMin * 60);
+    await writeSleepState(db, { mode: "running", reason: "reporter_up", uptimeSec: recordedSec });
+    state = { ...state, mode: "running", reason: "reporter_up", uptimeSec: recordedSec, since: now };
     console.log(`[keepalive:${source}] recovered stuck sleeping state via fresh reporter (uptimeMin=${uptimeMin})`);
   }
 
@@ -781,6 +860,13 @@ async function keepAliveTick(env, source) {
     const result = await probeQwenPaw(env, { allowRetry: true });
     const saved = await saveStatus(env, { ...result, source });
     console.log(`[keepalive:${source}]`, result.status, result.httpStatus, result.note || "", "(wake for routine)");
+    // Run-start baseline (2026-11-19): a probe that finds the machine
+    // up after it was recorded down is a down→up transition — this is a
+    // new run. Set the baseline once; never refresh while up.
+    if (result.status === "up" && (cached?.status !== "up" || !runStart)) {
+      runStart = Date.now();
+      await writeRunStart(db, runStart);
+    }
     if (result.status === "up") {
       await writeSleepState(db, { mode: "running", reason: "wake_ok", lastWakeAt: now });
     } else if (result.status === "offline" || result.status === "waking") {
@@ -808,6 +894,14 @@ async function keepAliveTick(env, source) {
   const result = await probeQwenPaw(env, { allowRetry: true });
   const saved = await saveStatus(env, { ...result, source });
   console.log(`[keepalive:${source}]`, result.status, result.httpStatus, result.note || "");
+  // Run-start baseline (2026-11-19): same down→up transition as the
+  // wake path — a probe that finds the machine up after it was recorded
+  // down (or with no baseline at all) starts a new run. Steady state
+  // (recorded up + baseline present) writes nothing.
+  if (result.status === "up" && (cached?.status !== "up" || !runStart)) {
+    runStart = Date.now();
+    await writeRunStart(db, runStart);
+  }
   if ((result.status === "offline" || result.status === "waking") && env.INSTABOX_API_KEY && env.INSTABOX_MACHINE_ID) {
     const rest2 = rest;
     if (rest2.resting) {
@@ -1279,13 +1373,22 @@ export default {
       const nextRoutine = await computeNextRoutine(db, report, now);
       const rest = await manualRestInEffect(env);
       const cached = await loadStatus(env);
+      // Live uptime (2026-11-19): the SAME precedence as the tick —
+      // reporter uptimeSec (fresh) > run-start baseline > unknown —
+      // so the endpoint shows the uptime the guard would use right
+      // now, not the value a past reporter_up flip recorded (that
+      // stale 62729 sat in this field for hours after the flip). The
+      // flip's recorded value is still in the state row for audit.
+      const runStart = await readRunStart(db);
+      const reporterStale = !report || !Number.isFinite(report.reportedAt) || (now - report.reportedAt > SW_REPORTER_STALE_MS);
       return json({
         mode: state.mode,
         since: state.since || null,
         reason: state.reason || null,
         lastWakeAt: state.lastWakeAt || null,
         lastSleepAt: state.lastSleepAt || null,
-        uptimeSec: state.uptimeSec ?? null, // uptime (s) the last reporter_up recovery recorded, else null
+        uptimeSec: computeUptimeSec(report, reporterStale, runStart, now),
+        runStartAt: runStart ? new Date(runStart).toISOString() : null, // run-start baseline (null until the first fresh-reporter / probe-confirmed tick)
         keepAlive: (await readKeepAlivePublic(db)).keepAlive,
         nextRoutineAt: nextRoutine.at,
         nextRoutineSource: nextRoutine.source,
