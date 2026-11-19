@@ -48,6 +48,10 @@ The two known failure modes this rule exists to stop:
   document-wide guard, never an anchor-scoped one — the anchor can resolve
   to a different container on different passes. (2026-11-19,
   docs/LESSONS.md.)
+- Never patch a content-hashed asset in place when it is served immutable
+  — the browser keeps the old bytes under the same name; change the URL
+  (rename the file or add a version query) or the fix never reaches the
+  tab. (2026-11-19, docs/LESSONS.md.)
 
 **When you learn something new:** add the one-line rule here and the full
 symptom → cause → fix story to `docs/LESSONS.md` (append-only, timestamped,
