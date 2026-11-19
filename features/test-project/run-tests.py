@@ -1574,7 +1574,7 @@ def t107():
 
 
 def t108():
-    """Intelligent sleep/wake: decide before probing; sleep only when idle (47 checks).
+    """Intelligent sleep/wake: decide before probing; sleep only when idle (50 checks).
 
     The keep-alive cron used to probe the public console URL every 5 min,
     which WAKES a paused machine — so the machine never idle-paused, ran
@@ -1602,13 +1602,21 @@ def t108():
       (e) the cron tick: idle -> calls Pages /api/machine/sleep exactly
           once and does NOT probe the console, sleep state 'sleeping';
           routine due -> probes (wake) and does NOT suspend, state
-          'running'; sleeping + nothing due -> no probe, no suspend; stale
-          reporter -> no suspend, probe (stay awake).
+          'running'; sleeping + nothing due (STALE reporter — a truly
+          sleeping machine's reporter is asleep too) -> no probe, no
+          suspend; sleeping + FRESH reporter (the stuck state) ->
+          reporter_up recovery flips the state to running and probes,
+          no suspend; stale reporter -> no suspend, probe (stay awake).
+    The 2026-11-19 reporter_up change: the "sleeping + nothing due"
+    case used to carry a 1-min-old report and still expect no probe —
+    that expectation encoded the stuck-state bug (a fresh report +
+    "sleeping" is contradictory), so the case now uses a 30-min-old
+    report and the fresh-reporter variant is asserted separately.
     The live half (idle -> the machine actually suspends; wake 5 min
     before the 07:00 daily summary; wake-on-visit shows progress) is
     verified by Muse at deploy time — see features/sleepwake/README.md.
     """
-    return _harness("features/sleepwake/harness-sleepwake.mjs", 47)
+    return _harness("features/sleepwake/harness-sleepwake.mjs", 50)
 
 
 def t109():
@@ -2805,10 +2813,10 @@ def t142():
 
 
 def t143():
-    """Smart sleep/wake: keep-alive toggle + max-run guard + Hallmark pages (72 + 105 checks).
+    """Smart sleep/wake: keep-alive toggle + max-run guard + Hallmark pages (105 + 105 checks).
 
     Two node harnesses under features/smart-sleep/ (README there):
-    harness-smart-sleep.mjs (72) runs the real keep-alive Worker module
+    harness-smart-sleep.mjs (105) runs the real keep-alive Worker module
     with a mock D1 + a mock fetch that counts every call. Toggle: OFF ->
     the cron tick returns skip with ZERO fetches and ZERO D1 mutations;
     ON -> the decision is identical to today (golden compare vs
@@ -2823,11 +2831,27 @@ def t143():
     reason max_run_guard (via the pure function and via the tick: one
     Pages sleep call, no console probe); 419 min -> hold; 420 min + a
     routine due in 5 min -> hold (WAKE wins); unknown uptime -> hold;
-    toggle OFF + 420 min -> skip. GET /status and /sleepwake/state expose
+    toggle OFF + 420 min -> skip. Stuck-state recovery (reporter_up):
+    a state stranded on "sleeping" while the machine is up flips to
+    "running" (reason reporter_up, state carries the computed uptimeSec)
+    when the reporter reported within the last 5 min — no probe needed,
+    and the guard can then fire in the same tick (420 min + recent
+    activity -> Pages sleep once, zero console probes); a 6-min-old or
+    11-min-old report, or no report at all, never flips (zero fetches);
+    a stale report claiming 420 min does not fire the guard; 419 min
+    flips but does not fire the guard; the live reporter shape
+    (uptimeSec null) still flips, with the state carrying the lastUpAt
+    lower bound; a finite reporter uptimeSec wins over lastUpAt; an
+    already-running state is never overwritten and the tick writes
+    nothing to D1 meta; GET /sleepwake/state exposes the recorded
+    uptimeSec (null when no recovery has happened). GET /status and /sleepwake/state expose
     keepAlive ("on"/"off"/"unknown") + keepAliveUpdatedAt, and /status
     exposes sleepwake.nextRoutineAt (finite ms epoch when a routine
     exists, null otherwise; omitted with no D1). Fail-first proven:
-    against the pre-change Worker the harness fails 48/72 (24 pass).
+    against the pre-change Worker the harness fails 48/72 (24 pass);
+    the reporter_up recovery section fails 16/105 against the
+    pre-recovery Worker (89 pass — the 17 negative controls pass on
+    both, by design).
     harness-smart-sleep-pages.mjs (105) extracts and runs the real
     wakingPage/cooldownPage from pages/public/_worker.js in a VM and
     reads pages/public/status-page.html: no backtick / no ${} in any of
@@ -2848,7 +2872,7 @@ def t143():
     is verified by Muse after the Pages/Workers deploy — blocked by the
     2026-11-18 Workers 1027 outage until the 00:00 UTC reset.
     """
-    a = _harness("features/smart-sleep/harness-smart-sleep.mjs", 72)
+    a = _harness("features/smart-sleep/harness-smart-sleep.mjs", 105)
     b = _harness("features/smart-sleep/harness-smart-sleep-pages.mjs", 105)
     ok = a[0] == "PASS" and b[0] == "PASS"
     return ("PASS" if ok else "FAIL", a[1] + " | " + b[1])
