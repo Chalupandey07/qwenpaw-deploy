@@ -1733,7 +1733,7 @@ def t113():
 
 
 def t114():
-    """AgentX rebrand (DOM injection, 186 checks).
+    """AgentX rebrand (DOM injection, 195 checks).
 
     Machine-free harness (features/rebrand/harness-rebrand.mjs) for the
     AgentX rebrand (features/rebrand/README.md). Static checks on the real
@@ -1742,7 +1742,7 @@ def t114():
     the window.open patch swallows exactly the two upstream hosts
     (qwenpaw.agentscope.io, github.com/agentscope-ai/QwenPaw); the kill
     switch exists at both layers (worker env AGENTX_REBRAND=0 and
-    ?rebrand=0 at runtime); the rule table has 42 rules and each runs in
+    ?rebrand=0 at runtime); the rule table has 44 rules and each runs in
     its own try/catch with a console.debug naming the rule; the menu/China
     rules hide by accessible name (aria-label/title/alt) and climb to the
     whole button/card container; the China climb is structural and never
@@ -1806,11 +1806,23 @@ def t114():
     thinking-text into thinking-selector, toast-text into rename-text,
     rename-attrs broadened to alt + data-tooltip, rename-logo broadened
     to title/aria-label elements), the extended harness fails 54/174
-    against the pre-change code and passes 174/174 after. The live half
-    (a real browser on the deployed console) is verified by Muse after
-    deploy.
+    against the pre-Part-3 code and passes 174/174 after. The
+    settings-white-area rule (2026-11-19: the outer settings <main>
+    renders ~819px tall in a 998px viewport on Pages, so a ~179px white
+    body strip shows below its cream; the rule stretches the
+    nav-anchored shell to 100dvh and paints <html> + <body> with the
+    shell's own computed background — cream in light mode, the dark
+    surface in dark mode — with an ancestor walk for a transparent
+    shell, a safe no-op off /settings and before the nav mounts, and
+    cleanup on leaving Settings; 9 new checks: fail-first 189/195
+    against the first-draft rule, 195/195 after the upgrade). The rule
+    table grew 42 -> 44 with queue-takeover (multi-tab takeover
+    affordance, post-reset cron Step 10; its own tests live under
+    features/queue-takeover, only its presence is asserted here). The
+    live half (a real browser on the deployed console) is verified by
+    Muse after deploy.
     """
-    return _harness("features/rebrand/harness-rebrand.mjs", 186)
+    return _harness("features/rebrand/harness-rebrand.mjs", 195)
 
 
 def t115():
@@ -2784,6 +2796,36 @@ def t143():
     return ("PASS" if ok else "FAIL", a[1] + " | " + b[1])
 
 
+def t144():
+    """Settings white-area fix: the settings-white-area rule only (9 checks).
+
+    Subset of the T114 rebrand harness (features/rebrand/
+    harness-rebrand.mjs): re-runs it and requires exactly the 9 lines
+    naming the settings-white-area rule to be "ok". The rule (2026-11-19,
+    browser-verified on qwenpawx.pages.dev/settings/general at 1919x998):
+    the outer settings <main> renders ~819px tall in a 998px viewport,
+    so a ~179px white body strip shows below its cream at every scroll
+    position; the direct origin has no strip. The rule stretches the
+    nav-anchored shell to 100dvh and paints <html> + <body> with the
+    shell's own computed background (cream in light mode, the dark
+    surface in dark mode), walks up ancestors when the shell itself is
+    transparent, no-ops off /settings and before the nav mounts, and
+    removes the fill on leaving Settings. Fail-first proven: 189/195
+    against the first-draft rule (6 dynamic checks failed — 100vh not
+    100dvh, body-only paint, no ancestor walk, painted before the nav
+    mounted), 195/195 after the upgrade. The live half (a real browser
+    on the deployed console, light + dark, top scroll and max scroll)
+    is verified by Muse after deploy.
+    """
+    rc, out, err = run_local(["node", str(REPO / "features/rebrand/harness-rebrand.mjs")], timeout=180)
+    lines = [l for l in out.splitlines() if "settings-white-area" in l]
+    ok = [l for l in lines if l.strip().startswith("ok")]
+    good = rc == 0 and len(lines) == 9 and len(ok) == 9
+    return ("PASS" if good else "FAIL",
+            f"settings-white-area subset: {len(ok)}/9 ok "
+            f"(tally={one_line(out.strip().splitlines()[-1] if out.strip() else err, 80)})")
+
+
 def t104():
     """The rail must stay reachable after the screen connects (25 checks).
 
@@ -3286,7 +3328,7 @@ TESTS = [
     ("T111", "reset broker: allowlist guard + category table (selftest)", "reset", "protocol", t111),
     ("T112", "screen retry on failure (B-47): failed branch retries through bounded single-flight scheduleReconnect (harness)", "computer", "protocol", t112),
     ("T113", "routines daily-summary slot always probes (B-47 follow-up): slot bypasses the 15-min skip, wake-ticks still skip (harness)", "routines", "protocol", t113),
-    ("T114", "AgentX rebrand (DOM injection): shim stubs PyPI + swallows upstream opens, 42-rule observer renames/hides by accessible name, About delegated to /status, logo replaced, title watcher, /status note AgentX (harness)", "rebrand", "protocol", t114),
+    ("T114", "AgentX rebrand (DOM injection): shim stubs PyPI + swallows upstream opens, 44-rule observer renames/hides by accessible name, About delegated to /status, logo replaced, title watcher, /status note AgentX (harness)", "rebrand", "protocol", t114),
     ("T115", "loop-gate fix: tool-call budget counts once per turn (reply-scoped recompute, no double-count, no stale-iteration skip) and applies by default (harness)", "loop-gate", "protocol", t115),
     ("T116", "tinyfish: Settings env key (os.environ, python3, no vault), request-building, fallback when no key, feature flags, error mapping (selftest) + Settings Search section: PATCH /api/envs, mount, self-mount, _worker.js wiring (UI harness)", "tinyfish", "protocol", t116),
     ("T117", "memory facts: compact fact store + session handoff — extraction candidates, FTS5 retrieval ranked + token-budgeted, handoff written by session A read by session B, add-only dedup, supersede without deletion, secret rejection, universal search (selftest)", "memory", "protocol", t117),
@@ -3316,6 +3358,7 @@ TESTS = [
     ("T141", "realistic resume messages resume the current task (gatefix6): _is_continuation matches a continuation phrase at the START of the message at a word boundary, not just an exact match -- 'hello, are you working?' and 'Yes, continue from 21' resume the echo task (20 shell, then 20 more to 40 and finalise, then 0); 'yesterday' / 'history' / 'surely' / 'thanksgiving' are NOT continuations; a genuinely new instruction after finalisation still mints a fresh task (harness, section Q of test_task_cap.py)", "loop-gate", "protocol", t141),
     ("T142", "per-chat thinking selector (Default/Off/Low/Medium/High/XHigh): the rule surfaces the backend's GET/PUT /api/chats/{id}/thinking as a selector in the chat composer toolbar itself, in the Smart Mode row next to Smart Mode (user screenshot 2026-11-19), appended into that row (React-safe), Bearer from localStorage, model_key on PUT, pending level applied once a new chat gets an id, 422 revert + re-sync with the server's reason shown next to the selector, lock-hint title when the model takes no thinking level, out-of-set levels shown truthfully, one select per document (moves into the Smart Mode row when it mounts, never a second) (harness)", "thinking", "protocol", t142),
     ("T143", "smart sleep/wake: keep-alive ON/OFF toggle (POST /keepalive, Bearer <redacted>, D1 keepalive:enabled, tick early-return fail-closed, /status + /sleepwake/state keepAlive fields) + max-run guard (sleep at 7h uptime even when busy, WAKE/rest still win) + Hallmark waking/cooldown/status pages (no polling, scaleX bars, keep-alive switch, /status sleepwake.nextRoutineAt) (harness)", "sleepwake", "protocol", t143),
+    ("T144", "settings white-area fix: settings-white-area rule only — nav-anchored shell stretched to 100dvh, html + body painted with the shell's own computed background (cream light / dark surface dark), ancestor walk for transparent shell, no-op off /settings and before nav mounts, cleanup on leaving Settings (harness subset, 9 checks)", "rebrand", "protocol", t144),
 ]
 
 SKIP_NOTE = {
