@@ -302,18 +302,45 @@ console.log("cron tick — sleep, wake, hold (the decision before the probe)");
   } finally { globalThis.fetch = realFetch; }
 
   // HOLD WHILE ASLEEP: machine sleeping, no routine due, no visit -> stay
-  // quiet (no probe, no suspend).
+  // quiet (no probe, no suspend). The report here is STALE (30 min):
+  // a truly sleeping machine's reporter is asleep too, so its report
+  // cannot be fresh. A FRESH report + "sleeping" state is the stuck
+  // state (2026-11-19), which the reporter_up recovery now flips —
+  // see the companion block below. Before the recovery this case used
+  // a 1-min-old report and still expected no probe; that expectation
+  // encoded the stuck-state bug, so it was wrong and is fixed here.
   const d1c = new MockD1();
   const callsC = [];
   globalThis.fetch = makeFetch(callsC);
   try {
-    d1c.meta.set("sleepwake:report", JSON.stringify({ nextNativeRun: null, agentActive: false, agentLastActiveAt: RT - 20 * MIN, uptimeSec: 3600, reportedAt: RT - 60_000 }));
+    d1c.meta.set("sleepwake:report", JSON.stringify({ nextNativeRun: null, agentActive: false, agentLastActiveAt: RT - 20 * MIN, uptimeSec: 3600, reportedAt: RT - 30 * MIN }));
     d1c.meta.set("sleepwake:state", JSON.stringify({ mode: "sleeping", since: RT - 30 * MIN, lastWakeAt: RT - 60 * MIN }));
     d1c.status.set("qwenpaw:status", JSON.stringify({ status: "sleeping", httpStatus: 0, lastUpAt: new Date(RT - 60 * MIN).toISOString() }));
     const envC = makeEnv(d1c, callsC);
     await tick(envC);
     check("sleeping + nothing due -> no probe", callsC.filter((c) => c.url.includes("8088-test.instabox.tech")).length === 0, `calls=${callsC.length}`);
     check("sleeping + nothing due -> no suspend", callsC.filter((c) => c.url.includes("/api/machine/sleep")).length === 0);
+  } finally { globalThis.fetch = realFetch; }
+
+  // STUCK-STATE RECOVERY (2026-11-19): state "sleeping" but the
+  // reporter reported 1 min ago — the machine is up, the state is
+  // stranded. The tick flips it to "running" (reporter_up) and probes
+  // (normal running-state path); it does NOT suspend (recent visit
+  // blocks idle sleep and uptime is 60 min, far below the guard).
+  const d1c2 = new MockD1();
+  const callsC2 = [];
+  globalThis.fetch = makeFetch(callsC2);
+  try {
+    d1c2.meta.set("sleepwake:report", JSON.stringify({ nextNativeRun: null, agentActive: false, agentLastActiveAt: RT - 20 * MIN, uptimeSec: 3600, reportedAt: RT - 60_000 }));
+    d1c2.meta.set("sleepwake:state", JSON.stringify({ mode: "sleeping", since: RT - 30 * MIN, reason: "probe_cooldown", lastWakeAt: RT - 60 * MIN }));
+    d1c2.status.set("qwenpaw:status", JSON.stringify({ status: "sleeping", httpStatus: 0, lastUpAt: new Date(RT - 60 * MIN).toISOString() }));
+    d1c2.meta.set("sleepwake:last-visit", String(RT - 5 * MIN));
+    const envC2 = makeEnv(d1c2, callsC2);
+    await tick(envC2);
+    const stateC2 = JSON.parse(d1c2.meta.get("sleepwake:state") || "{}");
+    check("sleeping + fresh reporter (stuck) -> probe (recovery, not a wake)", callsC2.filter((c) => c.url.includes("8088-test.instabox.tech")).length >= 1, `calls=${callsC2.length}`);
+    check("sleeping + fresh reporter (stuck) -> no suspend", callsC2.filter((c) => c.url.includes("/api/machine/sleep")).length === 0);
+    check("sleeping + fresh reporter (stuck) -> state running / reporter_up", stateC2.mode === "running" && stateC2.reason === "reporter_up", `mode=${stateC2.mode} reason=${stateC2.reason}`);
   } finally { globalThis.fetch = realFetch; }
 
   // STALE REPORTER: machine up, idle, but the reporter has not reported in
