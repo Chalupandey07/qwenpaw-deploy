@@ -68,6 +68,13 @@ Fail-closed rules (the whole point of this module):
   * No temperature control exists in the chat-task envelope, so a live
     verdict is one sample, not deterministic. Re-run calibration
     whenever the rubric or the serving model changes.
+  * Calibration agreement has one designed exception, in
+    _calibration_agrees: the empty-reply case (cal-12) counts as
+    agreement when the human verdict is fail and the judge returns
+    pass=False with error_kind "empty_reply" — fail-closed is the
+    correct verdict there. It is not a weakening: an empty reply on a
+    pass-case, and every other unqualified verdict, still count as
+    disagreement.
 
 Stdlib only. English only. No China endpoints. No secrets in this file.
 """
@@ -787,13 +794,36 @@ def audit_cases(cases) -> list:
 # CLI: audit a case file, or run live calibration
 # --------------------------------------------------------------------------
 
+def _calibration_agrees(expected_pass: bool, verdict: dict) -> bool:
+    """One case's agreement decision for live calibration.
+
+    The normal rule: a qualified verdict agrees when its pass matches
+    the human verdict. The one exception is the DESIGNED empty-reply
+    case (cal-12-empty-reply-fail): its reply is empty by construction,
+    so judge_reply returns unqualified "empty reply: nothing to judge"
+    without calling the judge — but pass=False IS the correct verdict
+    for that case (fail-closed), and it matches the human fail.
+    Counting it is recognising correct behaviour, not weakening the
+    criterion: it counts ONLY when the human verdict is fail AND the
+    judge returns pass=False with error_kind "empty_reply". An empty
+    reply on a pass-case stays a miss, and every other unqualified
+    verdict (timeout, judge error, malformed verdict) stays a miss
+    whatever the human verdict.
+    """
+    if verdict.get("qualified"):
+        return verdict["pass"] is expected_pass
+    return (not expected_pass
+            and verdict.get("pass") is False
+            and verdict.get("error_kind") == "empty_reply")
+
+
 def _calibrate_live(examples):
     rubric_text, _ver, _sha = load_rubric()
     agree = 0
     for e in examples:
         v = judge_reply(e["reply"], rubric_text, e["task"],
                         case_id=e["id"])
-        ok = v["qualified"] and v["pass"] is e["expected_pass"]
+        ok = _calibration_agrees(e["expected_pass"], v)
         agree += 1 if ok else 0
         print(f"  {'AGREE' if ok else 'DISAGREE'} {e['id']}: "
               f"human={'pass' if e['expected_pass'] else 'fail'} "
