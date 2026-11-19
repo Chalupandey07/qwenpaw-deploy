@@ -32,10 +32,13 @@ button{font-family:var(--font-body);font-size:var(--text-body);cursor:pointer;}
 .btn:disabled,.switch:disabled{opacity:0.55;cursor:not-allowed;}
 .btn-primary{background:var(--color-accent);color:var(--color-accent-ink);}
 .btn-secondary{background:none;color:var(--color-ink);border:1px solid var(--color-line);}
-.actions{display:flex;flex-wrap:wrap;align-items:stretch;gap:var(--space-2);margin-top:var(--space-4);}
-/* Even button row (beauty v3): the four actions fit one row and share it
-   equally, so 'Refresh status' no longer wraps alone onto a second line. */
-.actions .btn{flex:1 1 auto;min-width:0;}
+/* Even action grid (beauty v4). v3 used flex:1 1 auto, but the four
+   buttons' natural widths still overflowed the card, so 'Refresh status'
+   wrapped ALONE onto a full-width second line (3+1). A 2x2 grid is
+   deterministic: two even rows of two, every button the same width and
+   height, no orphan — which is exactly the accepted fallback. */
+.actions{display:grid;grid-template-columns:1fr 1fr;align-items:stretch;gap:var(--space-2);margin-top:var(--space-4);}
+.actions .btn{width:100%;min-width:0;}
 .ka-row{display:flex;align-items:center;gap:var(--space-3);}
 .switch{width:56px;height:32px;padding:var(--space-1);border-radius:var(--radius-pill);background:var(--color-track);border:1px solid var(--color-line);}
 .switch[aria-checked="true"]{background:var(--color-accent);border-color:var(--color-accent);}
