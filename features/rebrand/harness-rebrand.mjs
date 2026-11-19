@@ -226,12 +226,13 @@ console.log("static: the kill switch exists at both layers");
 console.log("static: the rule table is data-driven and guarded");
 {
   const ruleIds = [...rebrandSrc.matchAll(/\{ id: "([^"]+)", run: function/g)].map((m) => m[1]);
-  check("the rule table exists with 44 rules",
-    ruleIds.length === 44, `got ${ruleIds.length}: ${ruleIds.join(", ")}`);
+  check("the rule table exists with 45 rules",
+    ruleIds.length === 45, `got ${ruleIds.length}: ${ruleIds.join(", ")}`);
   check("the expected rules are all present",
     ["rename-title", "rename-attrs", "rename-text", "fix-grammar", "sidebar-ellipsis",
      "chat-input-fixes", "thinking-selector", "hide-native-thinking", "queue-takeover",
-     "settings-white-area", "page-bottom-padding", "pill-positions",
+     "settings-white-area", "page-bottom-padding", "sidebar-actions",
+     "composer-symmetry",
      "rename-logo", "hide-menu", "hide-about", "hide-language", "hide-desktop-prompt",
      "hide-codex-qoder", "hide-voice", "hide-import-text", "hide-china", "block-links",
      "footer-rebrand", "block-links-v2", "hide-powered-by", "hide-feedback",
@@ -430,13 +431,44 @@ console.log("static: the /status note is AgentX (keep-alive + activity-feed work
 console.log("static: the proxy wires the shim, the title, and the headers");
 {
   check("the shim is injected before the panel script",
-    /\(rebrandEnabled \? headShim\(\) : ""\) \+ computerPanelScript\(rebrandEnabled\)/.test(worker));
+    /const shimTag = rebrandEnabled \? headShim\(\) : "";/.test(worker) &&
+    /shimTag \+ computerPanelScript\(rebrandEnabled\)/.test(worker),
+    "the shim output is concatenated immediately before the panel script, so the early fetch/window.open patches still run first");
+  // B2 (2026-11-19): when the console's own index.html already carries the
+  // baked rebrand, the proxy must NOT inject the block again (that would
+  // double-apply every rule). Pin the skip and the fact that the header
+  // work still happens either way.
+  check("the proxy skips re-injection when the rebrand is already baked",
+    /const alreadyBaked = html\.includes\("agentx-rebrand-baked"\);/.test(worker) &&
+    /let injected = titled;/.test(worker) &&
+    /if \(!alreadyBaked\) \{/.test(worker),
+    "without this skip, a baked origin gets every rule applied twice through Pages");
   check("the console <title> is rewritten at the proxy layer",
     /html\.replace\("<title>QwenPaw Console<\/title>", "<title>AgentX Console<\/title>"\)/.test(worker));
   check("the observer calls the rebrand pass",
     /vaultMenuObserver = new MutationObserver\(function \(\) \{/.test(worker) &&
     /agentxRunRules\(\);/.test(worker),
     "the observer is vaultMenuObserver (addVaultMenuItem + agentxRunRuleNow fast path + agentxRunRules), not the old inline form");
+  // A9 (2026-11-19): renderer_probe_timeout / browser_error on the public
+  // pages. Root cause found by reading the served HTML: the body observer
+  // watches characterData across document.body's subtree, and 7 of the 8
+  // rules it re-runs write to the DOM unconditionally, so each pass's own
+  // writes re-fired the callback. Check both halves of the guard so a later
+  // edit cannot silently drop it while keeping the observer.
+  check("the body observer cannot re-enter itself (A9 re-entrancy guard)",
+    /if \(agentxInObserverPass\) return;/.test(worker) &&
+    /agentxInObserverPass = true;/.test(worker) &&
+    /var agentxInObserverPass = false;/.test(worker),
+    "without this flag the observer's own DOM writes re-fire it forever, which reads as renderer_probe_timeout in a constrained browser");
+  check("the re-entrancy flag is cleared on a later task, not synchronously",
+    /setTimeout\(function \(\) \{ agentxInObserverPass = false; \}, 0\)/.test(worker),
+    "MutationObserver delivers callbacks as a microtask after the pass returns, so clearing the flag synchronously would let the queued microtask re-enter anyway");
+  check("the DOM-writing rules the observer re-runs are the documented set",
+    ["fix-grammar", "sidebar-ellipsis", "chat-input-fixes", "thinking-selector",
+     "queue-takeover", "settings-white-area", "page-bottom-padding", "sidebar-actions",
+     "composer-symmetry"]
+      .every((id) => worker.includes('agentxRunRuleNow("' + id + '")')),
+    "7 of these 9 write textContent/nodeValue/appendChild unconditionally; that is the mechanism the guard above protects");
   check("CSP-Report-Only blocks third-party images (alicdn)",
     /headers\.set\("Content-Security-Policy-Report-Only", "img-src 'self' data: blob:"\)/.test(worker));
   check("Referrer-Policy no-referrer is set on the console HTML",
@@ -656,7 +688,7 @@ function makeDocument(rootEl, headChildren) {
     _titleEl: titleEl,
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     dispatch(type, ev) { for (const fn of listeners[type] || []) fn(ev); },
-    dispatchEvent(ev) { return true; },
+    dispatchEvent(_ev) { return true; },
     querySelector(selector) {
       if (selector === "title") return titleEl;
       const all = this.querySelectorAll(selector);
@@ -682,7 +714,7 @@ function makeDocument(rootEl, headChildren) {
       return null;
     },
     createElement(tag) { return makeEl(tag, {}, []); },
-    createTreeWalker(root, whatToShow) {
+    createTreeWalker(root, _whatToShow) {
       const texts = [];
       (function walk(node) {
         for (const c of node.childNodes || []) {
@@ -1056,7 +1088,7 @@ if (!rebrandSrc) {
     window: { open: (url) => { opened.push(url); return { closed: false }; } },
     NodeFilter: { SHOW_TEXT: 4 },
     MutationObserver: MockMutationObserver,
-    setTimeout: (fn) => 0,
+    setTimeout: (_fn) => 0,
     clearTimeout: () => {},
     Date,
     console,
@@ -1216,7 +1248,7 @@ if (!rebrandSrc) {
     vm.runInContext("agentxTitleWatcherInstalled = false;", sandbox);
     vm.runInContext("agentxWatchTitle()", sandbox);
     titleWatcherRan = true;
-  } catch (e) { /* agentxWatchTitle not defined in the unfixed file */ }
+  } catch { /* agentxWatchTitle not defined in the unfixed file */ }
   check("a title observer is registered on the <title> element",
     titleWatcherRan && MockMutationObserver.instances.length === 1 &&
     MockMutationObserver.instances[0].target === doc._titleEl,
@@ -1283,8 +1315,8 @@ if (!rebrandSrc) {
         // CSS engine, so a mock element carries its computed background
         // in `_computedBg` (unset = transparent, as in a real browser
         // for an element with no background of its own). The rule reads
-        // window.getComputedStyle, the same call the pill-positions
-        // rule already uses for the panel's computed display.
+        // window.getComputedStyle, the same call the sidebar-actions
+        // rule already uses for the account row's overflow.
         // getPropertyValue (2026-11-19, round 2): the rule reads the
         // console's --app-bg theme variable from <html>; a mock
         // element carries its variables in `_cssVars` (unset = "").
@@ -1300,7 +1332,7 @@ if (!rebrandSrc) {
       },
       NodeFilter: { SHOW_TEXT: 4 },
       MutationObserver: MockMutationObserver,
-      setTimeout: (fn) => 0,
+      setTimeout: (_fn) => 0,
       clearTimeout: () => {},
       fetch: async () => ({ ok: false, status: 404, json: async () => null }),
       Date,
@@ -1656,7 +1688,7 @@ if (!rebrandSrc) {
     const smartBtn = makeEl("button", {}, [makeText("Smart Mode")]);
     const thinkingNote = makeEl("span", {}, [makeText("QwenPaw thinking")]);
     const toolbar = makeEl("div", { class: "composer-toolbar" }, [smartBtn, thinkingNote]);
-    const { doc } = runOneRule(makeEl("div", {}, [toolbar]), "thinking-selector", { pathname: "/chat/abc" });
+    const { doc: _doc } = runOneRule(makeEl("div", {}, [toolbar]), "thinking-selector", { pathname: "/chat/abc" });
     check("thinking-selector creates the Thinking select in the composer toolbar",
       toolbar.children.some((c) => c.getAttribute && c.getAttribute("data-agentx-thinking") === "1"),
       "no select with data-agentx-thinking found in the toolbar");
