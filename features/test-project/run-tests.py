@@ -2572,7 +2572,7 @@ def t138():
 
 
 def t139():
-    """Real sandbox profile for generated code (50).
+    """Real sandbox profile for generated code (51).
 
     Machine-free test (features/sandbox/test_sandbox.py) for the
     all-20 gap #6 — wired up 2026-11-19 (T139 deploy pass): the
@@ -2622,20 +2622,24 @@ def t139():
     escape, supply chain). Fail-first proven: --impl none (the
     pre-sandbox stub: main-container mounts, host network, unsigned
     never-expiring tokens, allow-everything proxy,
-    route-everything-to-main) -> 7 passed, 43 failed. Two real bugs
+    route-everything-to-main) -> 7 passed, 44 failed. Two real bugs
     caught by the test before shipping: the forbidden-mount check
     flagged the legitimate workspace path, and compose_service dropped
-    the token tmpfs mount. T123 still 35/35. The live half that remains
-    (the machine deploy — key provisioning, bridge + gateway rule,
-    service restarts, proxy start, live probes — then the sandbox
-    image build and the proof with the real image: gateway-unreachable
-    probe, proxy allow/deny from inside a container, workspace
-    write-back, browser check) is the deploy pass that follows the
-    code push — the image build waits on the 5-image cap (a T132 build
-    is in flight).
+    the token tmpfs mount. A third bug was caught LIVE, not by the test:
+    the profile wrote tmpfs sizes as bare values ("16m") and the daemon
+    refused the first end-to-end runner job (exit 125, `invalid tmpfs
+    option "16m"`); the fix (size= form + a validator rule + test A15)
+    is why the count is 51, not 50. T123 still 35/35. The live half is
+    done 2026-11-19 (post-reset verify): image qwenpaw-sandbox:2.3.0
+    built (digest sha256:e64c643b…), gateway unreachable from the bridge
+    (both broker ports TimeoutError), no auth.json / no qwenpaw mounts,
+    uid 10001, runner routing proof (refuse + sandbox-branch + 401),
+    and the end-to-end runner job `t139-live-e2e` → status ok, exit 0,
+    `probe.txt` landed on the host; broker inject value-in-env + scrub
+    proven the same morning. What remains is the browser check.
     """
     return _py_script_harness(
-        ["features/sandbox/test_sandbox.py"], 50)
+        ["features/sandbox/test_sandbox.py"], 51)
 
 
 def t140():
