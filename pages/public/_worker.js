@@ -768,9 +768,25 @@ function computerPanelScript(rebrandEnabled) {
           if (parent && (parent.nodeName === "SCRIPT" || parent.nodeName === "STYLE" || parent.nodeName === "TEXTAREA" || parent.nodeName === "INPUT")) continue;
           // "AgentScope Platform" (the upstream provider card name) is a
           // display name, never load-bearing: rename it unconditionally.
-          // (2026-11-19 QA round 20: the Models page still showed it.)
+          // The Models card renders the name TRUNCATED in the DOM
+          // ("AgentScope Plat…") — the text node never contains the full
+          // phrase — so also rename the truncated form and a bare
+          // "AgentScope" token (any truncation length). (2026-11-19 QA
+          // round 20 + DOM inspection 2026-11-19 ~07:0x IST: the card's
+          // accessible name is "AgentScope Plat… Configure" and no
+          // "AgentScope Platform" text exists on the page.)
           if (t.indexOf("AgentScope Platform") !== -1) {
             node.nodeValue = t.split("AgentScope Platform").join("AgentX Platform");
+            t = node.nodeValue;
+            changed += 1;
+          }
+          if (t.indexOf("AgentScope Plat…") !== -1) {
+            node.nodeValue = t.split("AgentScope Plat…").join("AgentX Plat…");
+            t = node.nodeValue;
+            changed += 1;
+          }
+          if (t.indexOf("AgentScope") !== -1) {
+            node.nodeValue = t.split("AgentScope").join("AgentX");
             t = node.nodeValue;
             changed += 1;
           }
@@ -1895,15 +1911,20 @@ function computerPanelScript(rebrandEnabled) {
         } catch (e) {}
       } },
       { id: "hide-native-thinking", run: function () {
-        // The console's own "Thinking intensity" control (2026-11-19 QA
-        // round 20): a second Thinking dropdown below the composer
-        // toolbar, unsynced with the per-chat selector above it. The
-        // injected selector in the Smart Mode row IS the thinking control
-        // now; hide the native one so there is exactly one. Matched by
-        // its accessible label ("Thinking intensity"); our own elements
-        // are labelled "Thinking level for this chat" and never match.
-        // Only when the injected selector exists — otherwise the user
-        // would be left with no thinking control at all.
+        // The console's own thinking control (2026-11-19 QA round 20 +
+        // DOM inspection 2026-11-19 ~07:0x IST): a second Thinking
+        // dropdown below the composer toolbar, unsynced with the per-chat
+        // selector above it. The injected selector in the Smart Mode row
+        // IS the thinking control now; hide the native one so there is
+        // exactly one. The native composer control is labelled
+        // "Thinking level for this chat" — IDENTICAL to ours, with the
+        // same default title — so the label can never distinguish them:
+        // the ONLY discriminator is the data-agentx-thinking attribute,
+        // which our select carries from creation (set before append) and
+        // the native one never does. ("Thinking intensity" is a different
+        // screen's label; it is kept as a match too.) Only when the
+        // injected selector exists — otherwise the user would be left
+        // with no thinking control at all.
         try {
           var sel = document.querySelector ? document.querySelector("[data-agentx-thinking]") : null;
           if (!sel) return;
@@ -1914,7 +1935,8 @@ function computerPanelScript(rebrandEnabled) {
               if (el.getAttribute && (el.getAttribute("data-agentx-thinking") || el.getAttribute("data-agentx-thinking-label") || el.getAttribute("data-agentx-hidden"))) continue;
               var lab = "";
               try { lab = (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("title") || "") + " " + (el.textContent || ""); } catch (e) {}
-              if (lab.toLowerCase().indexOf("thinking intensity") === -1) continue;
+              var low = lab.toLowerCase();
+              if (low.indexOf("thinking intensity") === -1 && low.indexOf("thinking level for this chat") === -1) continue;
               el.style.display = "none";
               if (el.setAttribute) el.setAttribute("data-agentx-hidden", "1");
             } catch (e) {}
