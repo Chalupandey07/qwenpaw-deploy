@@ -458,10 +458,14 @@ decision (it lives in the upstream bundle).
   now paints the shell AND every ancestor with the theme paint, and
   writes a TEMPORARY visible diagnostic line (AX-DIAG,
   elementFromPoint strip probes) readable as page text for the
-  browser check; T114 198 → 205, T144 12 → 19. Live browser
-  verification (light + dark, top scroll and max scroll, plus
-  reading the diagnostic line) is pending with Muse after the Pages
-  deploy.
+  browser check; T114 198 → 205, T144 12 → 19. Round 4 (~09:0x
+  IST): the live check read the line (rule=ran, shell h=998,
+  body/html bg rgb(249,248,244)) and confirmed the fix — light
+  cream to y=998, 0px strip; the AX-DIAG line and its probe are
+  removed here, paint + stretch untouched; T114 205, T144 19.
+  Live browser re-verification (line gone AND cream still fills,
+  light + dark, top scroll and max scroll) is pending with Muse
+  after the Pages deploy.
 
 ## Live verification (deployed 83c3003; this commit NOT yet deployed)
 
