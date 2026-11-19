@@ -52,6 +52,12 @@ The two known failure modes this rule exists to stop:
   — the browser keeps the old bytes under the same name; change the URL
   (rename the file or add a version query) or the fix never reaches the
   tab. (2026-11-19, docs/LESSONS.md.)
+- A timestamp that is only written on change is a stale clock, not an
+  uptime source — guard uptime needs its own run-start observation, set
+  at the down→up transition and never refreshed while up; and a fix that
+  only fires on a future state transition is dead code when the live
+  state is already past it — reconcile the current state on the next
+  tick. (2026-11-19, docs/LESSONS.md.)
 
 **When you learn something new:** add the one-line rule here and the full
 symptom → cause → fix story to `docs/LESSONS.md` (append-only, timestamped,
