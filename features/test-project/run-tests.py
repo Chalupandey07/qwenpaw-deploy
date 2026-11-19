@@ -1733,7 +1733,7 @@ def t113():
 
 
 def t114():
-    """AgentX rebrand (DOM injection, 181 checks).
+    """AgentX rebrand (DOM injection, 186 checks).
 
     Machine-free harness (features/rebrand/harness-rebrand.mjs) for the
     AgentX rebrand (features/rebrand/README.md). Static checks on the real
@@ -1810,7 +1810,7 @@ def t114():
     (a real browser on the deployed console) is verified by Muse after
     deploy.
     """
-    return _harness("features/rebrand/harness-rebrand.mjs", 181)
+    return _harness("features/rebrand/harness-rebrand.mjs", 186)
 
 
 def t115():
