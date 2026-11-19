@@ -37,6 +37,10 @@ The two known failure modes this rule exists to stop:
   next to it. A load-bearing guard scoped to a whole ancestor hides
   legitimate renames — scope it to code-like parents only. (2026-11-19,
   docs/LESSONS.md.)
+- A hide/match rule must use the control's real live label, not a label
+  found in the bundle's strings for another screen — verify against the
+  live DOM. A display name may render truncated — rename the truncated
+  form too, never only the full phrase. (2026-11-19, docs/LESSONS.md.)
 
 **When you learn something new:** add the one-line rule here and the full
 symptom → cause → fix story to `docs/LESSONS.md` (append-only, timestamped,
