@@ -227,10 +227,16 @@ def build_profile(job: dict) -> dict:
         "env": {},  # empty by design: no credential ever rides in env
         "extra_hosts": [],  # empty by design: no route to the gateway
         "read_only_rootfs": True,
+        # tmpfs options are rendered verbatim into `docker run --tmpfs`
+        # (and compose `tmpfs:`), so they must be valid docker tmpfs
+        # options: a size is "size=64m", never a bare "64m" — the daemon
+        # refuses the whole container (exit 125, `invalid tmpfs option
+        # "16m"`) on a bare size. Caught live 2026-11-19 by the first
+        # end-to-end runner job.
         "tmpfs": {
-            "/tmp": "64m,noexec,nosuid,nodev",
-            "/run": "16m,noexec,nosuid,nodev",
-            "/dev/shm": "64m,noexec,nosuid,nodev",
+            "/tmp": "rw,noexec,nosuid,nodev,size=64m",
+            "/run": "rw,noexec,nosuid,nodev,size=16m",
+            "/dev/shm": "rw,noexec,nosuid,nodev,size=64m",
         },
         "cap_drop": ["ALL"],
         "cap_add": [],
@@ -334,6 +340,22 @@ def validate_profile(profile: dict, workspace_root: str = WORKSPACE_ROOT,
             violations.append(f"mount source: docker.sock forbidden: {src!r}")
         if str(m.get("target") or "") in ("/app/working.secret", "/app/working"):
             violations.append(f"mount target: host working tree forbidden: {m.get('target')!r}")
+
+    # tmpfs: every option must be a valid docker --tmpfs option. A bare
+    # size ("16m") is not one — docker wants "size=16m" — and the daemon
+    # refuses the container (exit 125). The validator is the backstop so
+    # a hand-built profile with a bare size can never be rendered.
+    _TMPFS_FLAGS = {"rw", "ro", "noexec", "nosuid", "nodev",
+                    "tmpcopyup", "notmpcopyup"}
+    for _path, _opts in sorted((profile.get("tmpfs") or {}).items()):
+        for _tok in str(_opts).split(","):
+            _tok = _tok.strip()
+            if _tok in _TMPFS_FLAGS or _tok.startswith(("size=", "mode=", "mpol=")):
+                continue
+            violations.append(
+                f"tmpfs {_path}: invalid docker tmpfs option {_tok!r} "
+                f"(a bare size must be size=<n>, e.g. size=16m)"
+            )
 
     # Privilege: nothing that escapes the container.
     if profile.get("privileged"):
