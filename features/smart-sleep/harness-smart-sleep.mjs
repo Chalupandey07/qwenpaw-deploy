@@ -618,15 +618,25 @@ console.log("stuck-state recovery — reporter_up (2026-11-19)");
   }
   // H. The LIVE reporter shape: it posts uptimeSec null (it cannot know
   // run start) — the recovery must still flip on reporter freshness
-  // alone, and the state carries the lastUpAt lower bound instead.
+  // alone. 2026-11-19 STALE-BASELINE FIX: the flip used to record the
+  // stored lastUpAt lower bound as the uptime (3600 here) — but lastUpAt
+  // can predate the run by hours (live: frozen 2026-11-18T14:30:29Z,
+  // true run ~07:45Z next day), so the guard fired every tick on 17.4h.
+  // The flip now RESETS the run-start baseline first and records the
+  // uptime from it (~0: the machine just came back), and the baseline
+  // is what the guard reads afterwards.
   {
     const d1 = new MockD1();
     stuckSetup(d1, { reportAgeMin: 1, report: { uptimeSec: null }, lastVisitAt: Date.now() - 5 * MIN });
+    const before = Date.now();
     const { calls } = await runTick(makeEnv(d1));
     const s = readState(d1);
     check("stuck + fresh reporter with uptimeSec null (live reporter shape) -> state running", s.mode === "running", `mode=${s.mode}`);
     check("stuck + fresh reporter with uptimeSec null -> reason reporter_up", s.reason === "reporter_up", `reason=${s.reason}`);
-    check("stuck + fresh reporter with uptimeSec null -> state uptimeSec 3600 from lastUpAt fallback", s.uptimeSec === 3600, `uptimeSec=${s.uptimeSec}`);
+    check("stuck + fresh reporter with uptimeSec null -> state uptimeSec ~0 (baseline just reset, NOT the stale lastUpAt 3600)", s.uptimeSec !== null && s.uptimeSec < 60, `uptimeSec=${s.uptimeSec}`);
+    const runStart = Number(d1.meta.get("sleepwake:run-start"));
+    check("stuck + fresh reporter with uptimeSec null -> run-start baseline set to ~now", Number.isFinite(runStart) && Math.abs(runStart - before) < 60_000, `runStart=${runStart}`);
+    check("stuck + fresh reporter with uptimeSec null -> ZERO Pages sleep calls (guard sees ~0, not 3600)", calls.filter((c) => c.url.includes("/api/machine/sleep")).length === 0);
     void calls;
   }
   // I. A finite reporter uptimeSec wins over lastUpAt.
@@ -638,33 +648,181 @@ console.log("stuck-state recovery — reporter_up (2026-11-19)");
     check("stuck + fresh reporter uptimeSec 5400, lastUpAt 60 min -> state running", s.mode === "running", `mode=${s.mode}`);
     check("stuck + fresh reporter uptimeSec 5400 -> state uptimeSec 5400 (reporter wins over lastUpAt)", s.uptimeSec === 5400, `uptimeSec=${s.uptimeSec}`);
   }
-  // J. Already running + fresh reporter: no recovery write at all.
+  // J. Already running + fresh reporter: no recovery write to the
+  // STATE at all — but 2026-11-19 STALE-BASELINE FIX: the tick now
+  // initializes the run-start baseline when it is missing (exactly ONE
+  // D1 meta write), from the reporter's uptimeSec when present. The
+  // state itself is never overwritten and the baseline is set once,
+  // never refreshed while up.
   {
     const d1 = new MockD1();
     stuckSetup(d1, { reportAgeMin: 1, state: { mode: "running", reason: "probe_up" }, lastVisitAt: Date.now() - 5 * MIN });
     const before = d1.metaWrites;
+    const beforeMs = Date.now();
     await runTick(makeEnv(d1));
     const s = readState(d1);
     check("already running + fresh reporter -> reason stays probe_up (no recovery overwrite)", s.reason === "probe_up", `reason=${s.reason}`);
     check("already running + fresh reporter -> state has no uptimeSec (recovery did not touch it)", !("uptimeSec" in s), `uptimeSec=${s.uptimeSec}`);
-    check("already running + fresh reporter -> ZERO D1 meta writes during the tick", d1.metaWrites === before, `writes=${d1.metaWrites - before}`);
+    check("already running + fresh reporter -> exactly 1 D1 meta write (run-start baseline init)", d1.metaWrites === before + 1, `writes=${d1.metaWrites - before}`);
+    const runStart = Number(d1.meta.get("sleepwake:run-start"));
+    check("already running + fresh reporter -> baseline = now - reporter uptimeSec 3600 (exact, not now)", Number.isFinite(runStart) && Math.abs(runStart - (beforeMs - 3600 * 1000)) < 60_000, `runStart=${runStart}`);
   }
-  // K. GET /sleepwake/state exposes the recorded uptime.
+  // K. GET /sleepwake/state exposes the LIVE uptime (2026-11-19
+  // stale-baseline fix: the field is the uptime the guard would use
+  // right now — reporter uptimeSec (fresh) > run-start baseline >
+  // unknown — not the value a past reporter_up flip recorded, which
+  // sat stale at 62729 for hours after the flip).
   {
     const d1 = new MockD1();
     stuckSetup(d1, { reportAgeMin: 1, lastVisitAt: Date.now() - 5 * MIN });
+    const beforeMs = Date.now();
     await runTick(makeEnv(d1));
     const r = await worker.fetch(req("/sleepwake/state"), makeEnv(d1));
     const j = await r.json();
-    check("GET /sleepwake/state after recovery -> uptimeSec 3600", j.uptimeSec === 3600, `uptimeSec=${j.uptimeSec}`);
+    check("GET /sleepwake/state after recovery -> uptimeSec 3600 (live reporter value)", j.uptimeSec === 3600, `uptimeSec=${j.uptimeSec}`);
     check("GET /sleepwake/state after recovery -> mode running + reason reporter_up", j.mode === "running" && j.reason === "reporter_up", `mode=${j.mode} reason=${j.reason}`);
+    const runStartAt = j.runStartAt ? Date.parse(j.runStartAt) : NaN;
+    check("GET /sleepwake/state after recovery -> runStartAt = now - reporter uptimeSec 3600", Number.isFinite(runStartAt) && Math.abs(runStartAt - (beforeMs - 3600 * 1000)) < 60_000, `runStartAt=${j.runStartAt}`);
   }
   {
     const d1 = new MockD1();
     idleTickSetup(d1, {});
     const r = await worker.fetch(req("/sleepwake/state"), makeEnv(d1));
     const j = await r.json();
-    check("GET /sleepwake/state with no recovery -> uptimeSec null", j.uptimeSec === null, `uptimeSec=${j.uptimeSec}`);
+    check("GET /sleepwake/state with no recovery -> uptimeSec 3600 (live reporter value, NOT null)", j.uptimeSec === 3600, `uptimeSec=${j.uptimeSec}`);
+    check("GET /sleepwake/state with no recovery -> runStartAt null (no tick has set a baseline)", j.runStartAt === null, `runStartAt=${j.runStartAt}`);
+  }
+}
+
+console.log("run-start baseline — stale-baseline incident (2026-11-19)");
+{
+  // The 2026-11-19 live defect: the guard fired every 5-min tick on a
+  // recorded uptime of 62729s (17.4h) while the true run was ~10 min
+  // old. Root cause: the guard's uptime came from KV lastUpAt — the
+  // last up-transition / last meaningful status change — which
+  // write-on-change froze at 2026-11-18T14:30:29Z through the cooldown.
+  // The fix: a D1 run-start baseline, set ONCE per run at the observed
+  // down→up transition and never refreshed while up. These checks pin
+  // that contract. Setup helper: like stuckSetup but the state starts
+  // "running" (the live case) and the baseline is settable.
+  function baselineSetup(d1, over = {}) {
+    const RT = Date.now();
+    const report = {
+      nextNativeRun: null, agentActive: false,
+      agentLastActiveAt: RT - 20 * MIN, uptimeSec: null, reportedAt: RT - 60_000,
+      ...(over.report || {}),
+    };
+    if (over.reportAgeMin !== undefined) report.reportedAt = RT - over.reportAgeMin * MIN;
+    d1.status.set("qwenpaw:status", JSON.stringify({ status: over.cachedStatus || "up", httpStatus: 200, lastUpAt: new Date(RT - (over.lastUpMin ?? 60) * MIN).toISOString(), checkedAt: new Date(RT - 5 * MIN).toISOString() }));
+    if (!over.noReport) d1.meta.set("sleepwake:report", JSON.stringify(report));
+    d1.meta.set("sleepwake:state", JSON.stringify({ mode: over.stateMode || "running", since: RT - 60 * MIN, reason: over.stateReason || "probe_up", lastWakeAt: RT - 60 * MIN, ...(over.state || {}) }));
+    if (over.runStartMinAgo !== undefined) d1.meta.set("sleepwake:run-start", String(RT - over.runStartMinAgo * MIN));
+    if (over.lastVisitAt !== undefined && over.lastVisitAt !== null) d1.meta.set("sleepwake:last-visit", String(over.lastVisitAt));
+    return RT;
+  }
+  const probeCalls = (calls) => calls.filter((c) => c.url.includes("8088-test.instabox.tech"));
+  const sleepCalls = (calls) => calls.filter((c) => c.url.includes("/api/machine/sleep"));
+  const readState = (d1) => JSON.parse(d1.meta.get("sleepwake:state") || "{}");
+  const readBaseline = (d1) => { const v = d1.meta.get("sleepwake:run-start"); return v === undefined ? null : Number(v); };
+
+  // L1. THE LIVE CASE: already running, lastUpAt 17h stale, fresh
+  // reporter with uptimeSec null, no baseline. Pre-fix the guard fired
+  // on 1020 min; post-fix the tick reconciles the baseline to now and
+  // the guard sees ~0.
+  {
+    const d1 = new MockD1();
+    baselineSetup(d1, { reportAgeMin: 1, lastUpMin: 17 * 60, lastVisitAt: Date.now() - 5 * MIN });
+    const before = Date.now();
+    const { calls } = await runTick(makeEnv(d1));
+    const s = readState(d1);
+    const b = readBaseline(d1);
+    check("LIVE already-running + stale lastUpAt 17h + fresh reporter -> ZERO Pages sleep calls (guard sees ~0, not 1020 min)", sleepCalls(calls).length === 0, `sleep=${sleepCalls(calls).length}`);
+    check("LIVE already-running + stale lastUpAt 17h -> run-start baseline set to ~now", Number.isFinite(b) && Math.abs(b - before) < 60_000, `baseline=${b}`);
+    check("LIVE already-running + stale lastUpAt 17h -> exactly 1 console probe (hold path)", probeCalls(calls).length === 1, `probes=${probeCalls(calls).length}`);
+    check("LIVE already-running + stale lastUpAt 17h -> state stays running", s.mode === "running", `mode=${s.mode}`);
+  }
+  // L2. A genuinely 7h-old run still fires the guard — via the
+  // BASELINE, not lastUpAt (lastUpAt here is a fresh 60 min, so the
+  // pre-fix code would NOT fire: this is fail-first for the baseline
+  // as the uptime source).
+  {
+    const d1 = new MockD1();
+    baselineSetup(d1, { reportAgeMin: 1, runStartMinAgo: 425, lastUpMin: 60, lastVisitAt: Date.now() - 5 * MIN, report: { agentLastActiveAt: Date.now() - 5 * MIN } });
+    const { calls } = await runTick(makeEnv(d1));
+    const s = readState(d1);
+    check("baseline 425 min + recent activity -> Pages sleep exactly once (guard fires on the baseline)", sleepCalls(calls).length === 1, `sleep=${sleepCalls(calls).length}`);
+    check("baseline 425 min -> ZERO console probes (guard needs no probe)", probeCalls(calls).length === 0, `probes=${probeCalls(calls).length}`);
+    check("baseline 425 min -> final reason max_run_guard", s.reason === "max_run_guard", `reason=${s.reason}`);
+  }
+  // L3. 419-min baseline: the guard does not fire.
+  {
+    const d1 = new MockD1();
+    baselineSetup(d1, { reportAgeMin: 1, runStartMinAgo: 419, lastUpMin: 60, lastVisitAt: Date.now() - 5 * MIN });
+    const { calls } = await runTick(makeEnv(d1));
+    const s = readState(d1);
+    check("baseline 419 min -> ZERO Pages sleep calls (419 < 420)", sleepCalls(calls).length === 0, `sleep=${sleepCalls(calls).length}`);
+    check("baseline 419 min -> state stays running", s.mode === "running", `mode=${s.mode}`);
+  }
+  // L4. A STALE reporter must not reset the baseline and must not let
+  // the guard fire on stale data: baseline 60 min old, reporter 30 min
+  // old claiming 420 min, lastUpAt 17h stale. Pre-fix the guard fired
+  // on lastUpAt (1020 min); post-fix the uptime comes from the
+  // baseline (60 min) and the stale 420 claim is ignored.
+  {
+    const d1 = new MockD1();
+    const RT = baselineSetup(d1, { reportAgeMin: 30, report: { uptimeSec: 420 * 60 }, runStartMinAgo: 60, lastUpMin: 17 * 60, lastVisitAt: Date.now() - 5 * MIN });
+    const { calls } = await runTick(makeEnv(d1));
+    const s = readState(d1);
+    const b = readBaseline(d1);
+    check("stale reporter (30 min) claiming 420 + baseline 60 min -> ZERO Pages sleep calls", sleepCalls(calls).length === 0, `sleep=${sleepCalls(calls).length}`);
+    check("stale reporter -> baseline UNCHANGED (still ~60 min old)", Number.isFinite(b) && Math.abs(b - (RT - 60 * MIN)) < 60_000, `baseline=${b}`);
+    check("stale reporter -> state stays running", s.mode === "running", `mode=${s.mode}`);
+  }
+  // L5. Probe transition: cached status "offline" + a probe that
+  // answers up, reporter stale (so no reporter reconcile), no baseline
+  // -> the probe itself is the down→up evidence and sets the baseline.
+  {
+    const d1 = new MockD1();
+    baselineSetup(d1, { reportAgeMin: 30, cachedStatus: "offline", lastVisitAt: Date.now() - 5 * MIN });
+    const before = Date.now();
+    const { calls } = await runTick(makeEnv(d1));
+    const b = readBaseline(d1);
+    check("probe finds machine up after recorded offline -> baseline set to ~now", Number.isFinite(b) && Math.abs(b - before) < 60_000, `baseline=${b}`);
+    check("probe transition -> ZERO Pages sleep calls", sleepCalls(calls).length === 0, `sleep=${sleepCalls(calls).length}`);
+    check("probe transition -> exactly 1 console probe", probeCalls(calls).length === 1, `probes=${probeCalls(calls).length}`);
+  }
+  // L6. Steady state: the baseline is set ONCE per run and never
+  // refreshed while up — a tick with a 60-min-old baseline leaves it
+  // exactly where it was.
+  {
+    const d1 = new MockD1();
+    const RT = baselineSetup(d1, { reportAgeMin: 1, runStartMinAgo: 60, lastVisitAt: Date.now() - 5 * MIN });
+    const { calls } = await runTick(makeEnv(d1));
+    const b = readBaseline(d1);
+    check("steady state -> baseline UNCHANGED (still ~60 min old, never refreshed while up)", Number.isFinite(b) && Math.abs(b - (RT - 60 * MIN)) < 60_000, `baseline=${b}`);
+    check("steady state -> ZERO Pages sleep calls", sleepCalls(calls).length === 0, `sleep=${sleepCalls(calls).length}`);
+  }
+  // L7. The endpoint after the live-case tick: runStartAt is the reset
+  // baseline and uptimeSec is minutes, not hours.
+  {
+    const d1 = new MockD1();
+    baselineSetup(d1, { reportAgeMin: 1, lastUpMin: 17 * 60, lastVisitAt: Date.now() - 5 * MIN });
+    const before = Date.now();
+    await runTick(makeEnv(d1));
+    const r = await worker.fetch(req("/sleepwake/state"), makeEnv(d1));
+    const j = await r.json();
+    const runStartAt = j.runStartAt ? Date.parse(j.runStartAt) : NaN;
+    check("endpoint after live-case tick -> runStartAt ~now", Number.isFinite(runStartAt) && Math.abs(runStartAt - before) < 60_000, `runStartAt=${j.runStartAt}`);
+    check("endpoint after live-case tick -> uptimeSec < 300 (minutes, not 62729)", j.uptimeSec !== null && j.uptimeSec < 300, `uptimeSec=${j.uptimeSec}`);
+  }
+  // L8. The endpoint with nothing known: no baseline, no report, no
+  // status -> uptimeSec null (unknown), runStartAt null.
+  {
+    const d1 = new MockD1();
+    const r = await worker.fetch(req("/sleepwake/state"), makeEnv(d1));
+    const j = await r.json();
+    check("endpoint with nothing known -> uptimeSec null (unknown, never a stale number)", j.uptimeSec === null, `uptimeSec=${j.uptimeSec}`);
+    check("endpoint with nothing known -> runStartAt null", j.runStartAt === null, `runStartAt=${j.runStartAt}`);
   }
 }
 
