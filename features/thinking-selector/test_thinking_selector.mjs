@@ -28,7 +28,12 @@
  *     - on a brand-new chat (no id) a pick is stored as pending in
  *       localStorage with no fetch, and applied by PUT once the chat
  *       gets an id;
- *     - a PUT 422 reverts the select to the previous level and re-syncs;
+ *     - a PUT 422 reverts the select to the previous level and re-syncs,
+ *       and shows the server's reason next to the selector (no silent
+ *       revert); the note clears on the next successful save or chat
+ *       change; a GET whose control reports kind unknown with no efforts
+ *       marks the selector title as locked, and a capable model restores
+ *       the default title;
  *     - a server level outside the offered set (max) gains an option
  *       and is shown, never misrepresented as Default;
  *     - a GET 401 (no token) is a safe no-op; off chat pages the rule
@@ -36,7 +41,9 @@
  *
  * Live half (NOT verified here): after a Pages deploy, a real browser
  * sets XHigh on one chat and Low on another, GET reflects each, and a
- * reply still works.
+ * reply still works. On a model whose thinking cannot be adjusted
+ * (deepseek-v4.1-flash-free) the pick 422s and the selector shows the
+ * server's reason instead of reverting silently.
  */
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
@@ -110,6 +117,11 @@ check("options are Default/Off/Low/Medium/High/XHigh",
   && ruleSrc.includes('["xhigh", "XHigh"]'));
 check("PUT sends the model_key when known (409 guard)",
   helpersSrc.includes('?model_key=" + encodeURIComponent(st.modelKey)'));
+check("a PUT 422 shows the server's reason next to the selector (no silent revert)",
+  helpersSrc.includes("agentxThinkingNote") && helpersSrc.includes("data-agentx-thinking-note")
+  && helpersSrc.includes("v.detail"));
+check("a GET whose control reports an unsupported model marks the selector title as locked",
+  helpersSrc.includes('control.kind === "unknown"') && helpersSrc.includes("Thinking depth cannot be adjusted for this model"));
 check("no polling in the thinking code (no setInterval/setTimeout)",
   !helpersSrc.includes("setInterval") && !helpersSrc.includes("setTimeout")
   && !(ruleSrc || "").includes("setInterval") && !(ruleSrc || "").includes("setTimeout"));
@@ -346,6 +358,41 @@ function makeWorld({ pathname, token = "tok-123", fetchHandler }) {
   check("a PUT 422 reverts the select to the previous level and re-syncs from the server",
     sel !== null && sel.value === "medium"
     && world.fetchMock.calls.filter((c) => (c.method || "GET") === "GET").length >= 2);
+  const note = world.toolbar.children.find((c) => c.attributes["data-agentx-thinking-note"]);
+  check("a PUT 422 shows the server's reason next to the selector (no silent revert)",
+    note !== undefined && note.textContent === "Thinking setting is invalid for this model"
+    && note.style.display !== "none");
+  // Moving to another chat clears the note (it belonged to the old chat).
+  world.windowMock.location.pathname = "/chat/other-999";
+  world.run();
+  await flush();
+  check("the 422 note clears when the chat changes",
+    note !== undefined && note.style.display === "none");
+}
+{
+  // GET reports an unsupported model (control kind unknown, no efforts):
+  // the selector title says the depth cannot be adjusted; a capable
+  // model restores the default title.
+  const world = makeWorld({
+    pathname: "/chat/abc-123",
+    fetchHandler: async () => okJson(200, { value: { level: "inherit" }, model_key: "millionseek:deepseek-v4.1-flash-free", control: { kind: "unknown", efforts: [], supports_off: false } }),
+  });
+  world.run();
+  await flush();
+  const sel = world.select();
+  check("a GET whose control reports an unsupported model marks the selector title as locked",
+    sel !== null && sel.title === "Thinking depth cannot be adjusted for this model");
+}
+{
+  const world = makeWorld({
+    pathname: "/chat/abc-123",
+    fetchHandler: async () => okJson(200, { value: { level: "inherit" }, model_key: "mosicn:nex-n2.6", control: { kind: "effort", efforts: ["low", "medium", "high"] } }),
+  });
+  world.run();
+  await flush();
+  const sel = world.select();
+  check("a GET whose control reports a capable model keeps the default selector title",
+    sel !== null && sel.title === "Thinking level for this chat — Default follows the model, Off disables thinking");
 }
 {
   // Server level outside the offered set (max): gains an option, shown truly.
