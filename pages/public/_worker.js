@@ -2049,32 +2049,72 @@ function computerPanelScript(rebrandEnabled) {
         // — the cream ends and the white body shows below (a 179px
         // strip). Content is NOT cut off (it scrolls inside; Save is
         // the last element); the direct origin has no white area.
-        // Fix: stretch the shell to the viewport and paint <html> +
-        // <body> the shell's own background colour, so no white shows
-        // below at any scroll position. The shell is the <main> that
-        // contains nav[aria-label="Settings"] (the nested General
-        // <main> sits inside it — a bare querySelector("main") is the
-        // same element today, but the nav anchor is exact). The colour
-        // is the shell's OWN computed background, so the fill matches
-        // the active theme (cream in light mode, the dark surface in
-        // dark mode) without hard-coding a colour; when the shell
-        // itself is transparent the first opaque ancestor background
-        // is used. The paint is cleared when leaving /settings
-        // (tracked by the marker, so we never touch a colour we did
-        // not set). Runs on every observer pass (after React renders);
-        // before the nav mounts it no-ops and the next pass retries.
+        //
+        // ROUND 1 (2026-11-19 ~08:1x IST) stretched the shell to
+        // 100dvh and painted <html> + <body> with the shell's own
+        // computed background. Browser-verified PARTIAL ~07:5x IST:
+        // cream ends ~894 (was 819), ~104px white strip left in
+        // light mode; dark mode filled. Diagnosis from the SERVED
+        // console bundle (index-tgCT4NPx.css, fetched from
+        // qwenpawx.pages.dev): the shell is a .page-content whose
+        // background is var(--app-surface) — #ffffff in light mode
+        // (#141414 in dark mode via the html.dark-mode override) —
+        // so round 1 copied WHITE onto the body in light mode and
+        // the strip survived; in dark mode the same copy happened
+        // to be the right colour. And the shell alone cannot beat
+        // the .ant-layout max-height:100vh + overflow:hidden clip
+        // in the same bundle, so min-height on the shell stopped
+        // at the content area's bottom edge (~894 = 998 − ~104px
+        // of header chrome).
+        //
+        // ROUND 2: paint <html> + <body> with the console's OWN
+        // theme variable --app-bg, read from <html> (:root #f9f8f4
+        // light, html.dark-mode #141414 dark) — NEVER the shell's
+        // computed background. Fall back to #f9f8f4 / #141414 by the
+        // html.dark-mode class when the variable is missing. Paint
+        // with !important so it beats the app's own html,body rule
+        // and any white round 1 left behind. Stretch the shell AND
+        // every ancestor up to <body> to 100dvh (!important) so the
+        // content area reaches the viewport bottom past the clip;
+        // the .ant-layout overflow:hidden caps everything at the
+        // viewport, so nothing can spill. Scoped to /settings by
+        // the body marker; leaving /settings removes the paint, the
+        // stretch and the probe. A diagnostic probe records the
+        // live geometry on window.__agentxSettingsDiag and on the
+        // body data-agentx-settings-diag attribute for the parent's
+        // browser check.
         try {
           var path = "";
           try { path = window.location ? window.location.pathname || "" : ""; } catch (e) {}
           var body = document.body || null;
           var root = null;
           try { root = document.documentElement || null; } catch (e) {}
-          if (path.indexOf("/settings") !== 0) {
-            if (body && body.getAttribute && body.getAttribute("data-agentx-settings-bg") === "1") {
+          function agentxClearSettingsPaint() {
+            var had = false;
+            try { had = !!(body && body.getAttribute && body.getAttribute("data-agentx-settings-bg") === "1"); } catch (e) {}
+            if (had) {
               if (body.setAttribute) body.setAttribute("data-agentx-settings-bg", "0");
-              if (body.style) body.style.backgroundColor = "";
-              if (root && root.style) root.style.backgroundColor = "";
+              if (body.style && body.style.removeProperty) body.style.removeProperty("background-color");
+              else if (body.style) body.style.backgroundColor = "";
+              if (root && root.style && root.style.removeProperty) root.style.removeProperty("background-color");
+              else if (root && root.style) root.style.backgroundColor = "";
+              try {
+                if (document.querySelectorAll) {
+                  var prev = document.querySelectorAll("[data-agentx-settings-stretch]");
+                  for (var i = 0; i < prev.length; i++) {
+                    var pel = prev[i];
+                    if (pel.style && pel.style.removeProperty) pel.style.removeProperty("min-height");
+                    else if (pel.style) pel.style.minHeight = "";
+                    if (pel.removeAttribute) pel.removeAttribute("data-agentx-settings-stretch");
+                  }
+                }
+              } catch (e) {}
             }
+            try { if (body && body.removeAttribute) body.removeAttribute("data-agentx-settings-diag"); } catch (e) {}
+            try { if (window.__agentxSettingsDiag) delete window.__agentxSettingsDiag; } catch (e) {}
+          }
+          if (path.indexOf("/settings") !== 0) {
+            agentxClearSettingsPaint();
             return;
           }
           var nav = null;
@@ -2083,24 +2123,77 @@ function computerPanelScript(rebrandEnabled) {
           var shell = null;
           try { shell = nav.closest ? nav.closest("main") : null; } catch (e) {}
           if (!shell) return;
-          if (shell.style) {
-            shell.style.minHeight = "100vh";
-            shell.style.minHeight = "100dvh";
-            shell.style.boxSizing = "border-box";
+          var dark = false;
+          try { dark = !!(root && root.classList && root.classList.contains && root.classList.contains("dark-mode")); } catch (e) {}
+          var paint = "";
+          try {
+            if (window.getComputedStyle && root) {
+              var rcs = window.getComputedStyle(root);
+              if (rcs && rcs.getPropertyValue) paint = (rcs.getPropertyValue("--app-bg") || "").trim();
+            }
+          } catch (e) {}
+          if (!paint || (paint.indexOf("#") !== 0 && paint.indexOf("rgb") !== 0)) {
+            paint = dark ? "#141414" : "#f9f8f4";
           }
-          var fill = "";
-          try { if (window.getComputedStyle) fill = window.getComputedStyle(shell).backgroundColor || ""; } catch (e) {}
+          function agentxSetBg(el) {
+            if (!el || !el.style) return;
+            try {
+              if (el.style.setProperty) el.style.setProperty("background-color", paint, "important");
+              else el.style.backgroundColor = paint;
+            } catch (e) {
+              try { el.style.backgroundColor = paint; } catch (e2) {}
+            }
+          }
+          agentxSetBg(body);
+          agentxSetBg(root);
+          if (body && body.setAttribute) body.setAttribute("data-agentx-settings-bg", "1");
+          function agentxStretch(el) {
+            if (!el || !el.style) return;
+            try {
+              if (el.style.setProperty) {
+                el.style.setProperty("min-height", "100vh", "important");
+                el.style.setProperty("min-height", "100dvh", "important");
+              } else {
+                el.style.minHeight = "100vh";
+                el.style.minHeight = "100dvh";
+              }
+            } catch (e) {
+              try { el.style.minHeight = "100dvh"; } catch (e2) {}
+            }
+            try { if (el.style) el.style.boxSizing = "border-box"; } catch (e) {}
+            try { if (el.setAttribute) el.setAttribute("data-agentx-settings-stretch", "1"); } catch (e) {}
+          }
+          agentxStretch(shell);
           var anc = null;
           try { anc = shell.parentElement || null; } catch (e) {}
-          while ((!fill || fill === "rgba(0, 0, 0, 0)" || fill === "transparent") && anc) {
-            try { if (window.getComputedStyle) fill = window.getComputedStyle(anc).backgroundColor || ""; } catch (e) {}
-            try { anc = anc.parentElement || null; } catch (e) {}
+          while (anc && anc !== body && anc !== root) {
+            agentxStretch(anc);
+            try { anc = anc.parentElement || null; } catch (e) { anc = null; }
           }
-          if (fill && fill !== "rgba(0, 0, 0, 0)" && fill !== "transparent" && body && body.style) {
-            body.style.backgroundColor = fill;
-            if (root && root.style) root.style.backgroundColor = fill;
-            if (body.setAttribute) body.setAttribute("data-agentx-settings-bg", "1");
-          }
+          try {
+            var diag = { paint: paint, dark: dark, vh: 0, shellBg: "", shellH: 0, shellMinH: "", ancestors: [], bodyBg: "", htmlBg: "" };
+            try { diag.vh = window.innerHeight || 0; } catch (e) {}
+            try { if (window.getComputedStyle) diag.shellBg = window.getComputedStyle(shell).backgroundColor || ""; } catch (e) {}
+            try { diag.shellH = shell.offsetHeight || 0; } catch (e) {}
+            try { if (window.getComputedStyle) diag.shellMinH = window.getComputedStyle(shell).minHeight || ""; } catch (e) {}
+            try {
+              var a2 = shell.parentElement || null;
+              while (a2 && a2 !== body && a2 !== root) {
+                var row = { tag: "", cls: "", h: 0, top: 0, bg: "", minH: "", maxH: "", ov: "" };
+                try { row.tag = a2.tagName || ""; } catch (e) {}
+                try { row.cls = (a2.getAttribute && a2.getAttribute("class")) || ""; } catch (e) {}
+                try { row.h = a2.offsetHeight || 0; } catch (e) {}
+                try { row.top = a2.offsetTop || 0; } catch (e) {}
+                try { if (window.getComputedStyle) { var acs = window.getComputedStyle(a2); row.bg = acs.backgroundColor || ""; row.minH = acs.minHeight || ""; row.maxH = acs.maxHeight || ""; row.ov = acs.overflow || ""; } } catch (e) {}
+                diag.ancestors.push(row);
+                try { a2 = a2.parentElement || null; } catch (e) { a2 = null; }
+              }
+            } catch (e) {}
+            try { if (window.getComputedStyle && body) diag.bodyBg = window.getComputedStyle(body).backgroundColor || ""; } catch (e) {}
+            try { if (window.getComputedStyle && root) diag.htmlBg = window.getComputedStyle(root).backgroundColor || ""; } catch (e) {}
+            window.__agentxSettingsDiag = diag;
+            if (body && body.setAttribute) body.setAttribute("data-agentx-settings-diag", JSON.stringify(diag));
+          } catch (e) {}
         } catch (e) {}
       } },
       { id: "page-bottom-padding", run: function () {
