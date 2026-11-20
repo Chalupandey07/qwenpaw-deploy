@@ -980,10 +980,11 @@ function computerPanelScript(rebrandEnabled) {
       function isDg(ch) { return ch >= "0" && ch <= "9"; }
       function ruleHit(txt) {
         if (!txt) return false;
+        var low = txt.toLowerCase();
         for (var r = 0; r < RULES.length; r++) {
-          if (txt.indexOf(RULES[r]) !== -1) return true;
-          var pre = RULES[r].slice(0, 10);
-          if (pre.length >= 6 && txt.indexOf(pre) !== -1) return true;
+          if (low.indexOf(RULES[r].toLowerCase()) !== -1) return true;
+          var pre = RULES[r].slice(0, 10).toLowerCase();
+          if (pre.length >= 6 && low.indexOf(pre) !== -1) return true;
         }
         return false;
       }
@@ -1008,7 +1009,7 @@ function computerPanelScript(rebrandEnabled) {
             var a = lbl.slice(e1 + 1, si).trim(), b = lbl.slice(si + 1, s2).trim();
             if (a && b && isDg(a.charAt(0)) && isDg(b.charAt(0))) m = [a, b];
           }
-          if (!m || !ruleHit(lbl) || lbl.indexOf("Enabled") === -1) continue;
+          if (!m || !ruleHit(lbl) || lbl.toLowerCase().indexOf("enabled") === -1) continue;
           // v27: the card IS the button (its textContent holds the whole
           // "Rule N / N Enabled" string). No ancestor climb: the climb could
           // land on a wrapper, and a badge on a wrapper paints in the wrong
@@ -1034,6 +1035,48 @@ function computerPanelScript(rebrandEnabled) {
             cimgs[q].style.setProperty("display", "inline-block", "important");
             cimgs[q].style.setProperty("opacity", "1", "important");
           }
+          // v29: REVEAL the console's own count text instead of only
+          // injecting a badge. The count ("4 / 4 Enabled") EXISTS as text
+          // inside the card (the probe finds it in textContent) but does
+          // not paint - it sits in a descendant that the console hides
+          // (sr-only / clipped / 0-size). Find the innermost descendant
+          // whose own text holds " / " and force it visible; that is the
+          // console's own rendering, in the right place, with the right
+          // text. The injected badge below stays as a fallback if no such
+          // text node exists.
+          try {
+            var countEl = null;
+            var allDesc = card.querySelectorAll ? card.querySelectorAll("*") : [];
+            for (var d = 0; d < allDesc.length; d++) {
+              var dt = allDesc[d].textContent || "";
+              if (dt.indexOf(" / ") === -1) continue;
+              // innermost: prefer the element whose DIRECT text holds it
+              var hasDirect = false;
+              var chs = allDesc[d].childNodes || [];
+              for (var cn2 = 0; cn2 < chs.length; cn2++) {
+                if (chs[cn2].nodeType === 3 && (chs[cn2].nodeValue || "").indexOf(" / ") !== -1) { hasDirect = true; break; }
+              }
+              if (hasDirect) { countEl = allDesc[d]; break; }
+              if (!countEl) countEl = allDesc[d];
+            }
+            if (countEl) {
+              countEl.style.setProperty("display", "inline-block", "important");
+              countEl.style.setProperty("visibility", "visible", "important");
+              countEl.style.setProperty("opacity", "1", "important");
+              countEl.style.setProperty("width", "auto", "important");
+              countEl.style.setProperty("height", "auto", "important");
+              countEl.style.setProperty("max-width", "none", "important");
+              countEl.style.setProperty("position", "static", "important");
+              countEl.style.setProperty("clip", "auto", "important");
+              countEl.style.setProperty("overflow", "visible", "important");
+              countEl.style.setProperty("font-size", "12px", "important");
+              countEl.style.setProperty("font-weight", "600", "important");
+              countEl.style.setProperty("color", "#1a1d21", "important");
+              countEl.style.setProperty("white-space", "nowrap", "important");
+              countEl.style.setProperty("flex-shrink", "0", "important");
+              card.style.setProperty("overflow", "visible", "important");
+            }
+          } catch (e5) {}
           // v26: the count hangs BELOW the pill as an overlaid badge. The
           // v24/v25 spans never painted because the pill is a single-line
           // flex row in a fixed-height grid track - anything inside it is
@@ -1043,7 +1086,9 @@ function computerPanelScript(rebrandEnabled) {
           // layout at all. Card is made position:relative so the badge
           // anchors to it.
           try {
-            if (card && !card.querySelector("[data-agentx-count-badge]")) {
+            // v29: only inject the badge when the reveal found NO count
+            // element to unhide (otherwise the count would show twice).
+            if (card && !countEl && !card.querySelector("[data-agentx-count-badge]")) {
               card.style.setProperty("position", "relative", "important");
               // v28: overflow:visible - the card is display:block, 32px
               // high, overflow:hidden (probe, v27). The badge hangs BELOW
@@ -4856,6 +4901,23 @@ function computerPanelScript(rebrandEnabled) {
           var be = document.querySelectorAll ? document.querySelectorAll("[data-agentx-count-badge]") : [];
           if (be.length) { var br0 = be[0].getBoundingClientRect ? be[0].getBoundingClientRect() : null; badgeEx = be.length + " firstRect=" + (br0 ? Math.round(br0.left) + "," + Math.round(br0.top) + " " + Math.round(br0.width) + "x" + Math.round(br0.height) : "?") + " text='" + (be[0].textContent || "").slice(0, 20) + "'"; }
           else badgeEx = "0";
+          // v29: is the console's own count element visible now? (the
+          // reveal target: innermost descendant whose direct text holds
+          // " / ".)
+          var countVis = "none";
+          try {
+            if (cc) {
+              var cd = cc.querySelectorAll ? cc.querySelectorAll("*") : [];
+              for (var cv = 0; cv < cd.length; cv++) {
+                var cdt = cd[cv].textContent || "";
+                if (cdt.indexOf(" / ") === -1) continue;
+                var chd = cd[cv].childNodes || [], hd = false;
+                for (var cn3 = 0; cn3 < chd.length; cn3++) { if (chd[cn3].nodeType === 3 && (chd[cn3].nodeValue || "").indexOf(" / ") !== -1) { hd = true; break; } }
+                if (hd) { var cr2 = cd[cv].getBoundingClientRect ? cd[cv].getBoundingClientRect() : null; countVis = cd[cv].tagName + "." + (cd[cv].className || "").toString().slice(0, 40) + " disp=" + cs(cd[cv], "display") + " vis=" + cs(cd[cv], "visibility") + " op=" + cs(cd[cv], "opacity") + " rect=" + (cr2 ? Math.round(cr2.width) + "x" + Math.round(cr2.height) : "?") + " text='" + (cd[cv].textContent || "").slice(0, 25) + "'"; break; }
+              }
+            }
+          } catch (e) {}
+          out.push("countVis:" + countVis);
         } catch (e) {}
         out.push("rowEl:" + rowEl);
         out.push("countCard:" + countCard);
