@@ -326,6 +326,9 @@ function computerPanelScript(rebrandEnabled) {
       // browser does not reliably support ':has()' - the v11 ':has()' rules
       // silently never matched the live DOM.
       "[data-agentx-icon-btn]{min-width:30px!important;min-height:30px!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;box-sizing:border-box!important;}" +
+      // v17: the cold-open Thinking option list stays hidden until the user
+      // engages the Thinking control.
+      "[data-agentx-thinking-closed]{display:none!important;}" +
       ".agentx-unclip{white-space:normal!important;text-overflow:clip!important;overflow-wrap:break-word!important;word-break:break-word!important;-webkit-line-clamp:none!important;}" +
       // System theme preview (v6): the slanted light/dark boundary is drawn by
       // a gradient/clip on the card or one of its (pseudo-)children. Inline
@@ -1021,9 +1024,17 @@ function computerPanelScript(rebrandEnabled) {
           // to fit its content instead of clipping the badge out of view.
           card.style.setProperty("overflow", "visible", "important");
           card.style.setProperty("min-width", "max-content", "important");
-          var last = card.lastElementChild;
-          if (last && last !== badge) card.insertBefore(badge, last);
-          else card.appendChild(badge);
+          // v17: place the badge AFTER the card as a SIBLING. The cards sit in
+          // a fixed-width strip that clips its children, so a badge inside a
+          // pill could never paint (v15's failure). A sibling chip in the
+          // strip, with the strip allowed to wrap, does paint.
+          card.style.setProperty("overflow", "visible", "important");
+          var strip = card.parentElement;
+          if (strip && strip !== document.body) {
+            strip.style.setProperty("overflow", "visible", "important");
+            strip.style.setProperty("flex-wrap", "wrap", "important");
+          }
+          if (card.parentNode) card.parentNode.insertBefore(badge, card.nextSibling);
         }
       } catch (e) { /* never break the console */ }
     }
@@ -1276,6 +1287,17 @@ function computerPanelScript(rebrandEnabled) {
         row.style.setProperty("box-sizing", "border-box", "important");
         row.style.setProperty("box-shadow", "0 4px 16px rgba(0,0,0,.18)", "important");
         row.style.setProperty("overflow", "visible", "important");
+        // v17 [7]: the floating pill overlays the list, hiding the last rows.
+        // Give the scrolling list bottom padding so its final rows can be
+        // brought clear of the pill instead of being cut off behind it.
+        var list = row.parentElement;
+        for (var lp = 0; list && list !== document.body && lp < 8; lp++) {
+          var ov = "";
+          try { ov = window.getComputedStyle(list).overflowY; } catch (e5) {}
+          if (ov === "auto" || ov === "scroll") break;
+          list = list.parentElement;
+        }
+        if (list && list !== document.body) list.style.setProperty("padding-bottom", "76px", "important");
       } catch (e) { /* never break the console */ }
     }
 
@@ -1320,9 +1342,10 @@ function computerPanelScript(rebrandEnabled) {
         for (var i = 0; i < rows.length; i++) {
           var el = rows[i];
           var t = (el.textContent || "").trim();
-          if (!t || t.length < 12) continue;
-          seen[t] = (seen[t] || 0) + 1;
-          if (seen[t] < 2) continue;
+          if (!t || t.length < 3) continue;
+          var key = t.toLowerCase().replace(/\s+/g, " ");
+          seen[key] = (seen[key] || 0) + 1;
+          if (seen[key] < 2) continue;
           var lab = el.querySelector("[data-agentx-dup]");
           if (!lab) {
             lab = document.createElement("span");
@@ -1333,7 +1356,7 @@ function computerPanelScript(rebrandEnabled) {
             lab.style.setProperty("flex", "none", "important");
             el.appendChild(lab);
           }
-          lab.textContent = "#" + seen[t];
+          lab.textContent = "#" + seen[key];
         }
       } catch (e) { /* never break the console */ }
     }
@@ -1341,14 +1364,20 @@ function computerPanelScript(rebrandEnabled) {
     // v16 [3]: the faint header glyphs read as '+' and 'x'. They are actually
     // the Terminal ('>_') and Open-workspace buttons. Darken them and make them
     // opaque so they read as real controls; their tooltips/labels are untouched.
+    // v17 [3]: the faint glyphs that read as '+' and 'x' are the Terminal
+    // ('>_') and Open-workspace buttons. The v16 aria-label match did not hit
+    // the live buttons, so match by POSITION instead: any icon button in the
+    // top-right corner of the page is made opaque, ink-coloured and
+    // thicker-stroked. Label-agnostic, so it cannot miss on a label mismatch.
     function clarifyHeaderIcons() {
       try {
-        var btns = document.querySelectorAll("button, [role='button']");
+        var btns = document.querySelectorAll("button, [role='button'], a");
+        var w = window.innerWidth || document.documentElement.clientWidth || 1920;
         for (var i = 0; i < btns.length; i++) {
-          var al = (btns[i].getAttribute("aria-label") || "").toLowerCase();
-          var tt = (btns[i].getAttribute("title") || "").toLowerCase();
-          var hay = al + " " + tt;
-          if (hay.indexOf("terminal") === -1 && hay.indexOf("workspace") === -1) continue;
+          var r = null; try { r = btns[i].getBoundingClientRect(); } catch (e1) {}
+          if (!r || r.width === 0 || r.height === 0) continue;
+          if (r.right < w - 220 || r.top > 90) continue;
+          if (!btns[i].querySelector("svg")) continue;
           btns[i].style.setProperty("opacity", "1", "important");
           btns[i].style.setProperty("color", "var(--ax-ink)", "important");
           var sv = btns[i].querySelector("svg");
@@ -1361,26 +1390,88 @@ function computerPanelScript(rebrandEnabled) {
       } catch (e) { /* never break the console */ }
     }
 
-    // v15 [1b]: on the cold load the Thinking dropdown renders OPEN inside the
-    // composer (Default/Off/Low/Medium/High/XHigh), which makes the composer
-    // box very tall. Close it by dispatching a click on its OWN trigger so the
-    // console's state updates through its normal path. Self-limited to the
-    // first ~4s after load, so a dropdown the user opens later is never
-    // touched.
-    var agentxLoadTs = 0;
-    function closeColdOpenDropdowns() {
+    // v17 [1]: the Thinking menu renders OPEN during the cold render itself (a
+    // default-state bug), so a one-shot click-to-close is simply undone by the
+    // next render - which is why v15's dispatched click never held. Instead the
+    // open option list is HIDDEN and stays hidden across re-renders (re-applied
+    // every pass) until the user actually engages the Thinking control, after
+    // which the console's own toggle behaviour is left untouched.
+    var agentxThinkingTouched = false;
+    var agentxThinkingWired = false;
+    function thinkingListbox() {
       try {
-        if (!agentxLoadTs) agentxLoadTs = Date.now();
-        if (Date.now() - agentxLoadTs > 4000) return;
-        var open = document.querySelectorAll("[aria-expanded='true']");
-        for (var i = 0; i < open.length; i++) {
-          var el = open[i];
-          var own = (el.getAttribute("aria-label") || "") + " " + (el.textContent || "");
-          var around = el.parentElement ? (el.parentElement.textContent || "") : "";
-          if (own.indexOf("XHigh") === -1 && own.indexOf("Thinking") === -1 &&
-              around.indexOf("XHigh") === -1) continue;
-          try { el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })); } catch (e1) {}
-          break;
+        if (!document.createTreeWalker) return null;
+        var w = document.createTreeWalker(document.body, 4, null, false);
+        var n, hit = null;
+        while ((n = w.nextNode())) {
+          if ((n.nodeValue || "").indexOf("XHigh") === -1) continue;
+          var el = n.parentElement;
+          for (var up = 0; el && el !== document.body && up < 6; up++) {
+            var tx = el.textContent || "";
+            if (tx.indexOf("XHigh") !== -1 && tx.indexOf("Medium") !== -1 && tx.indexOf("Off") !== -1) { hit = el; break; }
+            el = el.parentElement;
+          }
+          if (hit) break;
+        }
+        return hit;
+      } catch (e) { return null; }
+    }
+    function hideColdOpenThinking() {
+      try {
+        var lb = thinkingListbox();
+        if (!lb) return;
+        if (agentxThinkingTouched) { lb.removeAttribute("data-agentx-thinking-closed"); return; }
+        lb.setAttribute("data-agentx-thinking-closed", "1");
+        if (agentxThinkingWired) return;
+        var wrap = lb.parentElement;
+        for (var up = 0; wrap && wrap !== document.body && up < 4; up++) {
+          if (wrap.querySelector("button, [role='button'], [aria-expanded], [aria-haspopup]")) break;
+          wrap = wrap.parentElement;
+        }
+        if (!wrap || wrap === document.body) return;
+        agentxThinkingWired = true;
+        wrap.addEventListener("click", function () {
+          agentxThinkingTouched = true;
+          try { var l = thinkingListbox(); if (l) l.removeAttribute("data-agentx-thinking-closed"); } catch (e2) {}
+        }, true);
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v17 [6]: the three theme preview bars (Light/Dark/System) collapse into a
+    // single ~30px overlap with unreadable labels. Anchored on the labels
+    // themselves: their common container becomes a real stacked column with
+    // gaps, and each bar gets its own height so the label is readable.
+    function fixThemeBars() {
+      try {
+        if (!document.createTreeWalker) return;
+        var labels = [];
+        var w = document.createTreeWalker(document.body, 4, null, false);
+        var n;
+        while ((n = w.nextNode())) {
+          var t = (n.nodeValue || "").trim();
+          if (t === "Light" || t === "Dark" || t === "System") labels.push(n.parentElement);
+        }
+        if (labels.length < 2) return;
+        var anc = labels[0];
+        for (var i = 1; i < labels.length; i++) {
+          while (anc && anc !== document.body && !anc.contains(labels[i])) anc = anc.parentElement;
+          if (!anc || anc === document.body) return;
+        }
+        anc.style.setProperty("display", "flex", "important");
+        anc.style.setProperty("flex-direction", "column", "important");
+        anc.style.setProperty("gap", "12px", "important");
+        anc.style.setProperty("align-items", "stretch", "important");
+        for (var j = 0; j < labels.length; j++) {
+          var card = labels[j];
+          for (var up = 0; card && card !== anc && up < 4; up++) {
+            if (card.parentElement === anc) break;
+            card = card.parentElement;
+          }
+          if (!card || card === anc || card === document.body) continue;
+          card.style.setProperty("min-height", "44px", "important");
+          card.style.setProperty("position", "relative", "important");
+          card.style.setProperty("z-index", "1", "important");
+          card.style.setProperty("overflow", "visible", "important");
         }
       } catch (e) { /* never break the console */ }
     }
@@ -1590,7 +1681,8 @@ function computerPanelScript(rebrandEnabled) {
         pinAccountFooter(row);
         tagIconButtons();
         fixCompactMenuIcon();
-        closeColdOpenDropdowns();
+        hideColdOpenThinking();
+        fixThemeBars();
         dedupeRowTitles();
         clarifyHeaderIcons();
       } catch (e) { /* never break the console */ }
