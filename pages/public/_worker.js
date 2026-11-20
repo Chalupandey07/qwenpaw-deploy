@@ -242,7 +242,18 @@ function computerPanelScript(rebrandEnabled) {
       "[data-agentx-identity-text]{display:flex!important;flex-direction:column!important;align-items:flex-start;justify-content:center;gap:2px;overflow:visible!important;min-width:0;flex:1 1 auto;text-align:left;}" +
       "[data-agentx-identity-text] strong,[data-agentx-identity-text] small{overflow:visible!important;text-overflow:clip!important;max-width:none!important;white-space:nowrap;}" +
       "[data-agentx-composer] button,[data-agentx-composer] select{min-height:32px;height:32px;box-sizing:border-box;}" +
-      ".agentx-unclip{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;}";
+      ".agentx-unclip{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;}" +
+      // System theme preview (v6): the slanted light/dark boundary is drawn by
+      // a gradient/clip on the card or one of its (pseudo-)children. Inline
+      // styles cannot reach ::before/::after, so the card is tagged with
+      // data-agentx-system-card and the split is enforced here. Only
+      // background-IMAGES and clips are stripped — the grey preview lines and
+      // the orange bar are background-COLOURS and survive, so the bar reads as
+      // one solid orange bar across both halves instead of being bisected.
+      "[data-agentx-system-card]{background-image:none!important;clip-path:none!important;}" +
+      "[data-agentx-system-card]::before,[data-agentx-system-card]::after{background-image:none!important;clip-path:none!important;}" +
+      "[data-agentx-system-preview]{background-image:linear-gradient(90deg,#f5f5f4 0 50%,#1f1f1f 50% 100%)!important;background-color:transparent!important;clip-path:none!important;overflow:hidden!important;}" +
+      "[data-agentx-system-preview]::before,[data-agentx-system-preview]::after,[data-agentx-system-preview] *::before,[data-agentx-system-preview] *::after{background-image:none!important;clip-path:none!important;}";
     var ICON_COMPUTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="13" rx="2"></rect><path d="M8.5 20.5h7M12 17v3.5"></path></svg>';
     var ICON_REST = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 13.2A8.5 8.5 0 1 1 10.8 3.5a6.8 6.8 0 0 0 9.7 9.7z"></path></svg>';
     var ICON_VAULT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="11" width="17" height="10" rx="2"></rect><path d="M7.5 11V7.5a4.5 4.5 0 0 1 9 0V11"></path></svg>';
@@ -2580,49 +2591,98 @@ function computerPanelScript(rebrandEnabled) {
         try { addAccountMenuActions(); } catch (e) {}
       } },
       { id: "composer-row", run: function () {
-        // FULL REBUILD (Rohan v5). The console splits its composer toolbar
-        // across TWO flex containers: row 1 (mic, attach, Default) leaves the
-        // right half EMPTY, row 2 (context %, agent default, Smart Mode,
-        // Thinking, Send) is crowded and Send is pushed to the far right by
-        // margin-left:auto with a ~70px gap. Patching paddings (v3/v4) could
-        // not fix a two-container split, so this rebuilds the LAYOUT, not the
-        // styles: every row container between the controls and their lowest
-        // common ancestor is flattened with display:contents, and that
-        // ancestor becomes ONE wrapping flex row with an even 8px gap. All
-        // controls keep 32px height and compact pills; Send loses its auto
-        // margin so it attaches to the group. Nothing is removed and no node
-        // is re-parented (React is untouched) — display:contents only changes
-        // who lays the children out. flex-wrap means a viewport too narrow
-        // for one row wraps into balanced lines, never sparse + crowded.
+        // FULL REBUILD v6 — anchored on the REAL composer, not one placeholder
+        // string. The live textbox's visible hint is '↑↓ for message
+        // navigation · / for quick commands', NOT 'Ask anything', so the old
+        // placeholder anchor matched NOTHING and this rule silently returned
+        // early — which is exactly why v3/v4/v5 never merged the rows even
+        // though the code looked right. The textbox is now found by ANY of
+        // several independent signals (placeholder/aria-label/title containing
+        // 'message navigation' or 'Ask anything', the textbox sitting directly
+        // before the mic/attach controls, or the Send button's ancestor).
+        // GEOMETRY (measured): row 1 (mic, attach, Default) is LEFT-aligned;
+        // row 2 (context %, agent default, Smart Mode, Thinking, Send) is
+        // CENTRED as a group with ~200px empty on its left and Send hard
+        // against the right edge. So merging alone is not enough — the
+        // centring is reset too (justify-content:flex-start on the merged row
+        // and margin-left:0 on every control), otherwise the merged row would
+        // still centre. Rows are flattened with display:contents into their
+        // lowest common ancestor, which becomes ONE left-aligned wrapping flex
+        // row with an even 8px gap; all controls 32px, compact pills. Nothing
+        // is removed and no node is re-parented (React is untouched). The
+        // console's responsive collapse of 'Agent default'/'Smart Mode' to
+        // icons at narrow width is preserved — labels are never forced open.
         try {
-          var inputs = document.querySelectorAll ? document.querySelectorAll("[placeholder]") : [];
-          var input = null;
-          for (var i = 0; i < inputs.length; i++) {
-            var ph = "";
-            try { ph = inputs[i].getAttribute("placeholder") || ""; } catch (e) {}
-            if (ph.indexOf("Ask anything") !== -1) { input = inputs[i]; break; }
+          function cName(el) {
+            try { return ((el.textContent || "") + " " + (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("title") || "")).trim(); } catch (e) { return ""; }
           }
-          if (!input) return;
-          // The composer root: the ancestor of the text input that also holds
-          // a Send control. Bounded so a changed DOM cannot spin this long.
-          var comp = null, n = input, d = 0;
-          while (n && d < 8) {
-            if (n.querySelectorAll) {
-              var bs = n.querySelectorAll("button");
-              for (var j = 0; j < bs.length; j++) {
-                var st = "";
-                try { st = ((bs[j].textContent || "") + " " + (bs[j].getAttribute("aria-label") || "")).trim(); } catch (e) {}
-                if (/^send$/i.test(st) || (bs[j].type || "").toLowerCase() === "submit") { comp = n; break; }
+          function isSend(el) {
+            var t = ""; try { t = (el.type || "").toLowerCase(); } catch (e) {}
+            var n = cName(el);
+            return t === "submit" || /^send$/i.test(n) || /send message/i.test(n);
+          }
+          function isTextbox(el) {
+            var tag = ""; try { tag = (el.tagName || "").toUpperCase(); } catch (e) {}
+            if (tag === "TEXTAREA") return true;
+            if (tag === "INPUT") { var ty = ""; try { ty = (el.type || "").toLowerCase(); } catch (e2) {} return ty === "" || ty === "text" || ty === "search"; }
+            return false;
+          }
+          function hint(el) {
+            try { return (el.getAttribute("placeholder") || "") + " " + (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("title") || ""); } catch (e) { return ""; }
+          }
+          // Signal 1: the Send control (the most reliable composer landmark).
+          var sendBtn = null;
+          var allBtns = document.querySelectorAll ? document.querySelectorAll("button") : [];
+          for (var i = 0; i < allBtns.length; i++) { if (isSend(allBtns[i])) { sendBtn = allBtns[i]; break; } }
+          // Signal 2: the textbox, by any of its naming signals.
+          var tb = null;
+          var tbs = document.querySelectorAll ? document.querySelectorAll("textarea, input, [contenteditable='true'], [contenteditable='']") : [];
+          for (var j = 0; j < tbs.length; j++) {
+            var h = hint(tbs[j]);
+            if (/message navigation/i.test(h) || /ask anything/i.test(h)) { tb = tbs[j]; break; }
+          }
+          // Signal 3: the textbox sitting directly before the mic/attach row.
+          if (!tb && sendBtn) {
+            var up = sendBtn, dd = 0;
+            while (up && dd < 8 && !tb) {
+              var prev = up.previousElementSibling;
+              while (prev) {
+                if (isTextbox(prev) || (prev.querySelector && prev.querySelector("textarea, input[type='text']"))) { tb = isTextbox(prev) ? prev : prev.querySelector("textarea, input[type='text']"); break; }
+                prev = prev.previousElementSibling;
               }
-              if (comp) break;
+              up = up.parentElement; dd++;
             }
-            n = n.parentElement; d++;
           }
-          if (!comp) return;
+          // Composer root = the common ancestor of Send and the textbox (or an
+          // ancestor of whichever was found that also holds the other kind).
+          var comp = null;
+          if (sendBtn && tb) {
+            comp = sendBtn;
+            var dc = 0;
+            while (comp && dc < 10 && !comp.contains(tb)) { comp = comp.parentElement; dc++; }
+          } else if (sendBtn) {
+            comp = sendBtn;
+            var de = 0;
+            while (comp && de < 10) {
+              var tq = comp.querySelectorAll ? comp.querySelectorAll("textarea, input[type='text'], [contenteditable='true']") : [];
+              if (tq.length > 0) break;
+              comp = comp.parentElement; de++;
+            }
+          } else if (tb) {
+            comp = tb;
+            var df = 0;
+            while (comp && df < 10) {
+              var bq = comp.querySelectorAll ? comp.querySelectorAll("button") : [];
+              var found = false;
+              for (var q = 0; q < bq.length; q++) { if (isSend(bq[q])) { found = true; break; } }
+              if (found) break;
+              comp = comp.parentElement; df++;
+            }
+          }
+          if (!comp || comp === document.body || comp === document.documentElement) return;
           comp.setAttribute("data-agentx-composer", "1");
 
-          // Every toolbar control (the panel close button no longer exists,
-          // but keep the guard in case an old cached page still has one).
+          // Every toolbar control in the composer.
           var ctrls = [];
           var all = comp.querySelectorAll("button, select");
           for (var k = 0; k < all.length; k++) {
@@ -2640,27 +2700,37 @@ function computerPanelScript(rebrandEnabled) {
             if (!cand) return;
             lca = cand;
           }
-          // Safety: if the common ancestor also wraps the text input, do not
-          // flatten (the textarea would be dragged into the control row).
-          if (!lca || lca.contains(input)) return;
+          // Safety: if the common ancestor also wraps the textbox, do not
+          // flatten (the textbox would be dragged into the control row).
+          if (!lca || lca === document.body || (tb && lca.contains(tb))) return;
           lca.setAttribute("data-agentx-composer-toolbar", "1");
           lca.style.setProperty("display", "flex", "important");
           lca.style.setProperty("flex-wrap", "wrap", "important");
           lca.style.setProperty("gap", "8px", "important");
           lca.style.setProperty("align-items", "center", "important");
+          // GEOMETRY FIX: row 2 was CENTRED. A merged row must be LEFT-aligned
+          // or the 0% pill keeps ~200px of empty space on its left.
           lca.style.setProperty("justify-content", "flex-start", "important");
 
           // Flatten the intermediate row containers so all controls share the
-          // one flex row. display:contents keeps the nodes in place for React.
+          // one flex row, and strip any centring/auto-margin on the way up.
+          // display:contents keeps the nodes in place for React.
           for (var b = 0; b < ctrls.length; b++) {
-            var up = ctrls[b].parentElement;
-            while (up && up !== lca) {
-              if (up.tagName === "DIV") up.style.setProperty("display", "contents", "important");
-              up = up.parentElement;
+            var up2 = ctrls[b].parentElement;
+            while (up2 && up2 !== lca) {
+              var tag = ""; try { tag = (up2.tagName || "").toUpperCase(); } catch (e3) {}
+              if (tag === "DIV" || tag === "SPAN" || tag === "UL" || tag === "NAV" || tag === "SECTION") {
+                up2.style.setProperty("display", "contents", "important");
+              }
+              up2.style.setProperty("justify-content", "flex-start", "important");
+              up2.style.setProperty("margin-left", "0", "important");
+              up2.style.setProperty("margin-right", "0", "important");
+              up2 = up2.parentElement;
             }
           }
 
-          // Uniform 32px controls, compact pills, even spacing, Send attached.
+          // Uniform 32px controls, compact pills, even 8px spacing, Send
+          // attached to the group (no auto margin pushing it to the edge).
           for (var c = 0; c < ctrls.length; c++) {
             var el = ctrls[c];
             el.style.setProperty("min-height", "32px", "important");
@@ -2670,6 +2740,7 @@ function computerPanelScript(rebrandEnabled) {
             el.style.setProperty("font-size", "12px", "important");
             el.style.setProperty("flex", "0 0 auto", "important");
             el.style.setProperty("margin-left", "0", "important");
+            el.style.setProperty("margin-right", "0", "important");
           }
         } catch (e) { /* never break the console */ }
       } },
@@ -2698,6 +2769,11 @@ function computerPanelScript(rebrandEnabled) {
           ["Pending Approva", "Pending Approvals"],
           ["Command Injecti", "Command Injection"],
           ["Privilege Escal", "Privilege Escalation"],
+          // The console bundle names this rule "Sensitive File Access"
+          // (sensitive_file_access); the Detection-Rules card truncates it to
+          // "Sensitive File…" — the only title still cut in v5, because it had
+          // no repair entry (the other five were repaired or never cut).
+          ["Sensitive File", "Sensitive File Access"],
         ];
         var labels = [
           "Community & messaging", "Voice Transcription", "Pending Approvals",
@@ -2768,12 +2844,35 @@ function computerPanelScript(rebrandEnabled) {
             // The card is the label's card-sized ancestor (the clickable
             // theme option), not the label itself.
             var card = labels2[k2], hops2 = 0;
-            while (card && card !== document.body && hops2 < 6) {
-              if (card.getBoundingClientRect().width > 120) break;
+            // v6 FIX: the gate was WIDTH>120, but the label strip at the bottom
+            // of the card is already card-WIDE (~450px) though only ~35px tall,
+            // so the walk stopped at the label strip (which is already a clean
+            // vertical split) and never reached the card holding the slanted
+            // preview — that is why v5 changed nothing. Gate on HEIGHT instead:
+            // the card is ~160px tall (preview + label strip), the strip ~35px.
+            while (card && card !== document.body && hops2 < 8) {
+              var cr = card.getBoundingClientRect();
+              if (cr.height > 100 && cr.width > 120) break;
               card = card.parentElement; hops2++;
             }
             if (!card || card === document.body) continue;
-            var scope = [card].concat([].slice.call(card.querySelectorAll("*")));
+            // Tag the card so the injected CSS — which also reaches the
+            // ::before/::after painters that inline styles cannot touch — can
+            // strip every diagonal painter inside it.
+            card.setAttribute("data-agentx-system-card", "1");
+            // v6: the diagonal is drawn by the PREVIEW element (the one ABOVE
+            // the label strip), not the card and not the label strip. Find it:
+            // climb from the label to the card's direct child (the label
+            // strip), then take its previous sibling — the preview block.
+            var strip = labels2[k2];
+            while (strip && strip.parentElement !== card) strip = strip.parentElement;
+            var preview = (strip && strip.parentElement === card) ? strip.previousElementSibling : null;
+            if (!preview && card.firstElementChild && card.firstElementChild !== strip) preview = card.firstElementChild;
+            var target = preview || card;
+            target.setAttribute("data-agentx-system-preview", "1");
+            // Strip painters inside the preview's subtree (inline, for real
+            // elements; the injected CSS covers the pseudo-elements).
+            var scope = [target].concat([].slice.call(target.querySelectorAll("*")));
             for (var q = 0; q < scope.length; q++) {
               var el = scope[q], bg = "", clip = "";
               try { bg = window.getComputedStyle(el).backgroundImage; } catch (e2) {}
@@ -2783,11 +2882,13 @@ function computerPanelScript(rebrandEnabled) {
               var svgs = el.tagName === "svg" ? [el] : (el.querySelectorAll ? el.querySelectorAll("svg") : []);
               for (var s = 0; s < svgs.length; s++) svgs[s].style.setProperty("display", "none", "important");
             }
-            // Clean vertical two-tone split (left light, right dark).
-            card.style.setProperty("background-image", "linear-gradient(90deg,#f5f5f4 0 50%,#1f1f1f 50% 100%)", "important");
-            card.style.setProperty("background-color", "transparent", "important");
-            card.style.setProperty("clip-path", "none", "important");
-            card.style.setProperty("overflow", "hidden", "important");
+            // Clean vertical two-tone split (left light, right dark) painted on
+            // the preview itself, so an opaque background-colour there cannot
+            // hide the split behind it.
+            target.style.setProperty("background-image", "linear-gradient(90deg,#f5f5f4 0 50%,#1f1f1f 50% 100%)", "important");
+            target.style.setProperty("background-color", "transparent", "important");
+            target.style.setProperty("clip-path", "none", "important");
+            target.style.setProperty("overflow", "hidden", "important");
           }
         } catch (e) { /* never break the console */ }
       } },
