@@ -988,30 +988,32 @@ function computerPanelScript(rebrandEnabled) {
         return false;
       }
       try {
-        var btns = document.querySelectorAll("[aria-label]");
+        // v27: scan BUTTONS' textContent, NOT aria-labels. The probe proved
+        // NO aria-label in the document contains " / " + "Enabled"
+        // (countCard:none, v26) - the count lives in the button's own text
+        // ("Command Injection 4 / 4 Enabled"), so the aria-label scan never
+        // matched and no badge was ever created (badgeEx:0, v26).
+        var btns = document.querySelectorAll("button");
         for (var i = 0; i < btns.length; i++) {
-          var lbl = btns[i].getAttribute("aria-label") || "";
+          var lbl = btns[i].textContent || "";
           // NOTE: this script is injected inside a template literal, so regex
           // backslashes would be consumed there (\d would reach the page as
           // d). Parse the "N / N" count by hand instead of with a regex.
           var m = null, si = lbl.indexOf("/");
           if (si > 0) {
             var e1 = si - 1;
-            while (e1 >= 0 && isDg(lbl.charAt(e1))) e1--;
+            while (e1 >= 0 && (isDg(lbl.charAt(e1)) || lbl.charAt(e1) === " ")) e1--;
             var s2 = si + 1;
-            while (s2 < lbl.length && isDg(lbl.charAt(s2))) s2++;
-            var a = lbl.slice(e1 + 1, si), b = lbl.slice(si + 1, s2);
-            if (a && b) m = [a, b];
+            while (s2 < lbl.length && (isDg(lbl.charAt(s2)) || lbl.charAt(s2) === " ")) s2++;
+            var a = lbl.slice(e1 + 1, si).trim(), b = lbl.slice(si + 1, s2).trim();
+            if (a && b && isDg(a.charAt(0)) && isDg(b.charAt(0))) m = [a, b];
           }
-          if (!m || !ruleHit(lbl)) continue;
-          // The card = the smallest ancestor (or the button itself) whose text
-          // names the rule, so the badge lands inside the card, not the list.
-          var card = btns[i], probe = btns[i];
-          while (probe && probe !== document.body) {
-            if (ruleHit(probe.textContent)) { card = probe; break; }
-            probe = probe.parentElement;
-          }
-          if (!card) continue;
+          if (!m || !ruleHit(lbl) || lbl.indexOf("Enabled") === -1) continue;
+          // v27: the card IS the button (its textContent holds the whole
+          // "Rule N / N Enabled" string). No ancestor climb: the climb could
+          // land on a wrapper, and a badge on a wrapper paints in the wrong
+          // place (the v25 two-line span's likely fate).
+          var card = btns[i];
           // v11: the console renders these counts as IMAGES that load late
           // (browser check: hidden on the first Security visit, visible once
           // settled). Make those images load eagerly so the console's own
@@ -1457,56 +1459,37 @@ function computerPanelScript(rebrandEnabled) {
         var si = null;
         try { si = document.querySelector ? document.querySelector("input[placeholder*='Search conversations']") : null; } catch (e0) {}
         if (si && (si.value || "").trim() !== "") return;
-        // v24: collect the rows by their RENDERED position (left sidebar
-        // region, x<320, width<300), not via findSidebarEl(). That helper
-        // can return the wrong nav/aside (a hidden or secondary nav matches
-        // first), and then no conversation row is ever seen - the v20-v23
-        // badged=0 with 52 buttons. Position cannot lie about which buttons
-        // are the sidebar rows.
+        // v27: rows are SESSION ITEMS, not <button>s. The probe's rowEl
+        // (v26) is SPAN.sessionItem-module__nameTrack__Gxu7Z inside
+        // DIV.nameViewport inside DIV.content - the title lives in a
+        // scrolling nameTrack inside the session item. The position filter
+        // (v24/v25) only ever found the small 32x32 icon buttons + New task
+        // (sideRows 9 of ~54) because the rows themselves are not buttons.
+        // Collect the row containers by the sessionItem class (substring
+        // match on the module name - the hash suffix can change on rebuild)
+        // and read the title from the nameTrack span.
         var rows = [];
         try {
-          var allB = document.querySelectorAll ? document.querySelectorAll("button") : [];
-          for (var i = 0; i < allB.length; i++) {
-            var r = null;
-            try { r = allB[i].getBoundingClientRect(); } catch (e0c) {}
-            if (!r) continue;
-            // v25: filter by LEFT EDGE + ROW HEIGHT, not width. The v24
-            // width bounds (50-300) rejected most rows (probe: sideRows 5
-            // of 54 on /chat) - row buttons can be wider than the sidebar
-            // (padding/overflow) or narrower than assumed. The left edge
-            // (<320) is the discriminator; composer/header buttons are x>600.
-            if (r.left < 320 && r.top > 100 && r.height > 15 && r.height < 80) rows.push(allB[i]);
+          if (document.querySelectorAll) {
+            var srows = document.querySelectorAll("[class*='sessionItem-module__sidebar']");
+            for (var i = 0; i < srows.length; i++) rows.push(srows[i]);
           }
         } catch (e1) {}
         var seen = {};
         for (var i = 0; i < rows.length; i++) {
           var el = rows[i];
-          var t = (el.textContent || "").trim();
-          if (!t || t.length < 3) continue;
-          if (t.indexOf("Console account") !== -1 || t.indexOf("Local workspace") !== -1) continue;
-          if (t === "New Chat" || t === "New task") continue;
-          // v23: key on the LONGEST VISIBLE text node (the visible title).
-          // longestTextNode could be a HIDDEN tooltip/preview node (longer
-          // than the title), so two identical titles hashed differently and
-          // no duplicate was ever found (v20-v22: badged=0 with 52 buttons).
-          // Prepend to EVERY visible text node with that value, so
-          // whichever copy paints shows the badge.
-          var visNodes = [], key = "";
-          try {
-            if (document.createTreeWalker) {
-              var w5 = document.createTreeWalker(el, 4, null, false), n5;
-              while ((n5 = w5.nextNode())) {
-                var v5 = (n5.nodeValue || "").trim();
-                if (!v5 || v5.length < 3) continue;
-                var pe5 = n5.parentElement;
-                if (!pe5 || pe5.offsetParent === null) continue;
-                visNodes.push(n5);
-                if (v5.length > key.length) key = v5;
-              }
-            }
-          } catch (e5) {}
-          if (!key) continue;
-          key = key.toLowerCase();
+          // The title is the nameTrack span's text (it may hold TWO copies
+          // of the title for the marquee scroll - badge both).
+          var tracks = el.querySelectorAll ? el.querySelectorAll("[class*='sessionItem-module__nameTrack']") : [];
+          var title = "";
+          for (var tk = 0; tk < tracks.length; tk++) {
+            var tv = (tracks[tk].textContent || "").trim();
+            if (tv.length > title.length) title = tv;
+          }
+          if (!title || title.length < 3) continue;
+          if (title.indexOf("Console account") !== -1 || title.indexOf("Local workspace") !== -1) continue;
+          if (title === "New Chat" || title === "New task") continue;
+          var key = title.toLowerCase();
           seen[key] = (seen[key] || 0) + 1;
           if (seen[key] < 2) continue;
           // v19: PREPEND the ordinal. v18 appended it - but sidebar titles
@@ -1514,11 +1497,15 @@ function computerPanelScript(rebrandEnabled) {
           // clipped off-screen and never paints (the v18 failure: the badge
           // existed in the page data, nothing rendered). The start of the
           // title is always visible, so "#2 " goes there.
-          for (var tn = 0; tn < visNodes.length; tn++) {
-            var cur = visNodes[tn].nodeValue || "";
-            if (cur.trim().toLowerCase() !== key) continue;
-            if (cur.indexOf("#" + seen[key]) !== -1) continue;
-            visNodes[tn].nodeValue = "#" + seen[key] + " " + cur;
+          for (var tn = 0; tn < tracks.length; tn++) {
+            var nodes = tracks[tn].childNodes || [];
+            for (var cn = 0; cn < nodes.length; cn++) {
+              if (nodes[cn].nodeType !== 3) continue;
+              var cur = nodes[cn].nodeValue || "";
+              if (cur.trim().toLowerCase() !== key) continue;
+              if (cur.indexOf("#" + seen[key]) !== -1) continue;
+              nodes[cn].nodeValue = "#" + seen[key] + " " + cur;
+            }
           }
         }
       } catch (e) { /* never break the console */ }
@@ -1727,6 +1714,11 @@ function computerPanelScript(rebrandEnabled) {
         // part of Light and extending past System). The miniWindow previews
         // carry the theme colours themselves; the container and the buttons
         // must be transparent so the white settings card shows through.
+        // v27: ALSO the InteractiveCard surface + frame that WRAP each
+        // button. The probe caught them at rgb(0,0,0) on first paint (v26)
+        // - the console's own CSS paints the card shell black, and the
+        // button's transparency lets it show through. Transparent all the
+        // way down to the white settings card.
         var apc = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__appearanceChoices__mYTAt") : [];
         for (var ac = 0; ac < apc.length; ac++) {
           apc[ac].style.setProperty("background", "transparent", "important");
@@ -1736,6 +1728,11 @@ function computerPanelScript(rebrandEnabled) {
         for (var ab = 0; ab < apb.length; ab++) {
           apb[ab].style.setProperty("background", "transparent", "important");
           apb[ab].style.setProperty("background-color", "transparent", "important");
+        }
+        var ics = document.querySelectorAll ? document.querySelectorAll(".InteractiveCard-module__surface__cuoJ-, .InteractiveCard-module__frame__o0M0L") : [];
+        for (var ic = 0; ic < ics.length; ic++) {
+          ics[ic].style.setProperty("background", "transparent", "important");
+          ics[ic].style.setProperty("background-color", "transparent", "important");
         }
         // v21: the Theme row itself stacks (tile above label) even though
         // the bars are fixed - the row holding the appearanceChoices is a
@@ -4747,20 +4744,27 @@ function computerPanelScript(rebrandEnabled) {
         out.push("slabEl:" + slabEl);
         var sideRows = 0, firstDup = "none", sideRects = "none";
         try {
-          var ab3 = document.querySelectorAll ? document.querySelectorAll("button") : [];
+          // v27: count SESSION ITEM rows (the real rows), not buttons.
+          var sitems = document.querySelectorAll ? document.querySelectorAll("[class*='sessionItem-module__sidebar']") : [];
+          sideRows = sitems.length;
           var seenT = {};
-          var rectSamples = [];
-          for (var sr2 = 0; sr2 < ab3.length; sr2++) {
-            var rr = null;
-            try { rr = ab3[sr2].getBoundingClientRect(); } catch (e0d) {}
-            if (!rr || rr.left >= 320 || rr.top <= 100 || rr.height <= 15 || rr.height >= 80) continue;
-            sideRows++;
-            if (rectSamples.length < 3) rectSamples.push("l" + Math.round(rr.left) + " w" + Math.round(rr.width) + " t" + Math.round(rr.top) + " h" + Math.round(rr.height) + " '" + ((ab3[sr2].textContent || "").trim().slice(0, 20)) + "'");
-            var tt = (ab3[sr2].textContent || "").trim().toLowerCase();
+          for (var sr2 = 0; sr2 < sitems.length; sr2++) {
+            var tr = sitems[sr2].querySelectorAll ? sitems[sr2].querySelectorAll("[class*='sessionItem-module__nameTrack']") : [];
+            var tt = "";
+            for (var tk2 = 0; tk2 < tr.length; tk2++) { var tv2 = (tr[tk2].textContent || "").trim(); if (tv2.length > tt.length) tt = tv2; }
+            tt = tt.toLowerCase();
             if (tt && tt.length >= 3) {
               if (seenT[tt]) { if (firstDup === "none") firstDup = tt; }
               else seenT[tt] = 1;
             }
+          }
+          var ab3 = document.querySelectorAll ? document.querySelectorAll("button") : [];
+          var rectSamples = [];
+          for (var sr3 = 0; sr3 < ab3.length; sr3++) {
+            var rr = null;
+            try { rr = ab3[sr3].getBoundingClientRect(); } catch (e0d) {}
+            if (!rr || rr.left >= 320 || rr.top <= 100 || rr.height <= 15 || rr.height >= 80) continue;
+            if (rectSamples.length < 3) rectSamples.push("l" + Math.round(rr.left) + " w" + Math.round(rr.width) + " t" + Math.round(rr.top) + " h" + Math.round(rr.height) + " '" + ((ab3[sr3].textContent || "").trim().slice(0, 20)) + "'");
           }
           if (rectSamples.length) sideRects = rectSamples.join(" | ");
         } catch (e) {}
@@ -4777,12 +4781,25 @@ function computerPanelScript(rebrandEnabled) {
             var re = document.elementFromPoint(100, 450);
             if (re) { var rc = [], re2 = re, rh = 0; while (re2 && rh < 3) { rc.push(re2.tagName + "." + (re2.className || "").toString().slice(0, 60)); re2 = re2.parentElement; rh++; } rowEl = rc.join(" < "); }
             var se = document.elementFromPoint(1000, 420);
-            if (se) { var sc = [], se2 = se, sh = 0; while (se2 && sh < 4) { sc.push(se2.tagName + "." + (se2.className || "").toString().slice(0, 50) + " bg=" + cs(se2, "backgroundColor") + " img=" + cs(se2, "backgroundImage").slice(0, 40)); se2 = se2.parentElement; sh++; } slabBg = sc.join(" < "); }
+            if (se) { var sc = [], se2 = se, sh = 0; while (se2 && sh < 6) { sc.push(se2.tagName + "." + (se2.className || "").toString().slice(0, 50) + " bg=" + cs(se2, "backgroundColor") + " img=" + cs(se2, "backgroundImage").slice(0, 40)); se2 = se2.parentElement; sh++; } slabBg = sc.join(" < "); }
+            // v27: pseudo-element backgrounds on the button + surface (a
+            // ::before/::after can paint black while the element itself
+            // reads transparent).
+            try {
+              var pe1 = document.querySelector ? document.querySelector(".GeneralSettings-module__appearanceChoice__Qcw7e") : null;
+              if (pe1 && window.getComputedStyle) {
+                var b4 = window.getComputedStyle(pe1, "::before"), a4 = window.getComputedStyle(pe1, "::after");
+                slabBg += " | pseudoBtn before=" + (b4 ? b4.backgroundColor : "?") + " after=" + (a4 ? a4.backgroundColor : "?");
+              }
+            } catch (e) {}
           }
           var cc = null;
           if (document.querySelectorAll) {
-            var al = document.querySelectorAll("[aria-label]");
-            for (var ai = 0; ai < al.length; ai++) { var av = al[ai].getAttribute("aria-label") || ""; if (av.indexOf(" / ") !== -1 && av.indexOf("Enabled") !== -1) { cc = al[ai]; break; } }
+            // v27: the count is in the BUTTON's textContent, not an
+            // aria-label (countCard:none in v26 proved no aria-label holds
+            // " / " + "Enabled").
+            var al = document.querySelectorAll("button");
+            for (var ai = 0; ai < al.length; ai++) { var av = al[ai].textContent || ""; if (av.indexOf(" / ") !== -1 && av.indexOf("Enabled") !== -1) { cc = al[ai]; break; } }
           }
           if (cc) {
             var cr = cc.getBoundingClientRect ? cc.getBoundingClientRect() : null;
