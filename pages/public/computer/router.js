@@ -29,6 +29,13 @@ import {
   novncPageRequestHeaders, rewrittenNovnc, SCREEN_PROXY_TTL_MS,
 } from "./capability.js";
 import * as S from "./state.js";
+// Multi-PC registry (E1): one computer per bot, ported from Rakazo's model and
+// fitted to the single InstaBox machine via the 6080-6085 noVNC port pool.
+// Colocated here with state.js because it is Worker runtime code, like the
+// rest of the /computer modules (the bundler resolves ./ relative to this file).
+import {
+  listComputers as listPcs, getComputer as getPc,
+} from "./registry.js";
 // LEASE_CAP_GRACE_MS lives in state.js, beside the lease TTL it is derived
 // from. Importing it from capability.js was a hard module error — the Worker
 // failed to instantiate, so /computer returned nothing at all. Nothing caught
@@ -521,10 +528,18 @@ export async function handleComputer(request, env, url) {
   }
 
   // ---- state ----
-  if (path === "/computer/computers") return json({ computers: S.COMPUTERS });
+  if (path === "/computer/computers") {
+    // The registry is the dynamic half (one PC per bot); S.COMPUTERS keeps the
+    // two built-in computers answering while the registry is still empty.
+    const pcs = await listPcs(env).catch(() => []);
+    const names = pcs.map((p) => p.name);
+    return json({ computers: [...new Set([...S.COMPUTERS, ...names])], pcs });
+  }
   if (path === "/computer/state") {
     const computer = q.get("computer") || "default";
-    if (!S.COMPUTERS.includes(computer)) return json({ error: "unknown_computer" }, 400);
+    const known = S.COMPUTERS.includes(computer) ||
+      (await getPc(env, computer).catch(() => null)) !== null;
+    if (!known) return json({ error: "unknown_computer" }, 400);
     try {
       return json(await stateFor(env, computer));
     } catch (e) {
