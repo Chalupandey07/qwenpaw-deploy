@@ -4408,7 +4408,7 @@ function computerPanelScript(rebrandEnabled) {
           div.style.cssText = "position:fixed;right:0;bottom:0;z-index:99999;background:#fff;color:#000;font:11px monospace;padding:6px;max-width:700px;white-space:pre-wrap;border:2px solid red;";
           document.body.appendChild(div);
         }
-        div.textContent = out.join("\n");
+        div.textContent = out.join("\\n");
       } catch (e) {}
     }
     // v11: the rule list is extracted so the observer callback and its
