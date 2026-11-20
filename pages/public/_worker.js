@@ -2698,40 +2698,41 @@ function computerPanelScript(rebrandEnabled) {
           }
           if (!ctrls.length) return;
 
-          // Lowest common ancestor of the controls = the toolbar wrapper.
-          var lca = ctrls[0];
-          for (var a = 1; a < ctrls.length; a++) {
-            if (lca.contains(ctrls[a])) continue;
-            var cand = lca;
-            while (cand && !cand.contains(ctrls[a])) cand = cand.parentElement;
-            if (!cand) return;
-            lca = cand;
-          }
-          // Safety: if the common ancestor also wraps the textbox, do not
-          // flatten (the textbox would be dragged into the control row).
-          if (!lca || lca === document.body || (tb && lca.contains(tb))) return;
-          lca.setAttribute("data-agentx-composer-toolbar", "1");
-          lca.style.setProperty("display", "flex", "important");
-          lca.style.setProperty("flex-wrap", "wrap", "important");
-          lca.style.setProperty("gap", "8px", "important");
-          lca.style.setProperty("align-items", "center", "important");
-          // GEOMETRY FIX: row 2 was CENTRED. A merged row must be LEFT-aligned
-          // or the 0% pill keeps ~200px of empty space on its left.
-          lca.style.setProperty("justify-content", "flex-start", "important");
+          // v8 (Astryx/Modern-Web pattern): the toolbar is ONE flex container
+          // and every wrapper between it and the controls is layout-agnostic.
+          // Keyed on the COMPOSER ROOT (found from the textbox + Send, which
+          // exist from the first paint) instead of the LCA of all 8 controls —
+          // v7 waited for every control to mount before the LCA was correct,
+          // which is why the one-row layout only settled after ~60-90s. Here
+          // the merge happens as soon as the composer exists and stays stable
+          // as the remaining controls mount into the same wrappers.
+          if (!comp || comp === document.body) return;
+          comp.setAttribute("data-agentx-composer-toolbar", "1");
+          comp.style.setProperty("display", "flex", "important");
+          comp.style.setProperty("flex-wrap", "wrap", "important");
+          comp.style.setProperty("gap", "8px", "important");
+          comp.style.setProperty("align-items", "center", "important");
+          comp.style.setProperty("justify-content", "flex-start", "important");
 
-          // Flatten the intermediate row containers so all controls share the
-          // one flex row, and strip any centring/auto-margin on the way up.
-          // display:contents keeps the nodes in place for React.
+          // Flatten the ancestor chain of EVERY mounted control up to the
+          // composer root (skipping any wrapper that holds the textbox), so
+          // all controls become direct flex items of the one row. Wrappers
+          // that hold no control yet are flattened on a later pass, when their
+          // controls mount — the layout does not depend on all 8 being present.
           for (var b = 0; b < ctrls.length; b++) {
             var up2 = ctrls[b].parentElement;
-            while (up2 && up2 !== lca) {
-              var tag = ""; try { tag = (up2.tagName || "").toUpperCase(); } catch (e3) {}
-              if (tag === "DIV" || tag === "SPAN" || tag === "UL" || tag === "NAV" || tag === "SECTION") {
-                up2.style.setProperty("display", "contents", "important");
+            while (up2 && up2 !== comp) {
+              var skip = false;
+              if (tb && up2.contains(tb)) skip = true;
+              if (!skip) {
+                var tag = ""; try { tag = (up2.tagName || "").toUpperCase(); } catch (e3) {}
+                if (tag === "DIV" || tag === "SPAN" || tag === "UL" || tag === "NAV" || tag === "SECTION") {
+                  up2.style.setProperty("display", "contents", "important");
+                }
+                up2.style.setProperty("justify-content", "flex-start", "important");
+                up2.style.setProperty("margin-left", "0", "important");
+                up2.style.setProperty("margin-right", "0", "important");
               }
-              up2.style.setProperty("justify-content", "flex-start", "important");
-              up2.style.setProperty("margin-left", "0", "important");
-              up2.style.setProperty("margin-right", "0", "important");
               up2 = up2.parentElement;
             }
           }
