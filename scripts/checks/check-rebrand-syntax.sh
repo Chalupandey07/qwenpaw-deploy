@@ -14,13 +14,27 @@
 # `node --check` on each. A template-literal escape that breaks the
 # injected JS fails here, before push.
 #
+# NO-INJECTION STATE (2026-11-21): the injection was removed from
+# _worker.js — the AgentX look now ships in the console source itself and
+# the Worker only forwards. When no AGENTX_RULES template literal exists
+# there is no injected script to validate, and this check PASSES with a
+# note. If injection ever reappears, the full validation below runs
+# again — the check is fail-closed for regressions, not deleted.
+#
 # Usage: check-rebrand-syntax.sh [ROOT]
 #   ROOT defaults to the repo root (parent of scripts/). Exits 0 if every
-#   extracted inline script parses, 1 otherwise.
+#   extracted inline script parses (or no injected script exists), 1 otherwise.
 set -euo pipefail
 
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$ROOT"
+rm -f /tmp/rebrand-check-*.js /tmp/rebrand-check-err.txt
+
+# No injected rebrand script: nothing to syntax-check. PASS.
+if ! grep -q "AGENTX_RULES" pages/public/_worker.js; then
+  echo "PASS check-rebrand-syntax: no injected rebrand script in _worker.js — nothing to syntax-check"
+  exit 0
+fi
 
 # The rebrand script is the template literal assigned in _worker.js that
 # contains AGENTX_RULES. Extract it by evaluating the literal's content:
