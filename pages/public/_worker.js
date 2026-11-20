@@ -286,7 +286,15 @@ function computerPanelScript(rebrandEnabled) {
       // instead of a faint ~10px dot cluster.
       "[data-agentx-grid-icon]{width:20px!important;height:20px!important;padding:5px!important;box-sizing:content-box!important;border-radius:8px!important;background:var(--ax-surface-2)!important;border:1px solid var(--ax-line)!important;color:var(--ax-ink)!important;flex:none!important;transition:background-color .15s ease,border-color .15s ease;}" +
       "[data-agentx-grid-icon],[data-agentx-grid-icon] *{stroke:var(--ax-ink)!important;fill:var(--ax-ink)!important;}" +
-      "[data-agentx-grid-icon]:hover{background:var(--ax-line)!important;border-color:var(--ax-line-2)!important;}" +
+      // v13: a VISIBLE border, and a hover that changes the chip when the
+      // whole Settings pill is hovered (the chip is only ~30px, so hovering
+      // the pill is what a user actually does).
+      "[data-agentx-grid-icon]{border:1px solid var(--ax-line-2)!important;box-shadow:0 1px 2px rgba(0,0,0,.25)!important;}" +
+      "[data-agentx-account-row]:hover [data-agentx-grid-icon],[data-agentx-grid-icon]:hover{background:var(--ax-line)!important;border-color:var(--ax-accent)!important;}" +
+      // v15: keep the pill itself light on hover so only the chip changes -
+      // the console's own hover painted the whole (previously full-width) bar
+      // black, which read as a broken strip.
+      "[data-agentx-account-row]:hover{background:var(--ax-surface-2)!important;color:var(--ax-ink)!important;}" +
       // v13: the ':has()' composer flatten never matched the live DOM. The
       // merge is now done by DOM manipulation (mergeComposerRows) - the row
       // containers are found from the visible control labels and their
@@ -298,7 +306,7 @@ function computerPanelScript(rebrandEnabled) {
       // colour. Additive only - larger icons are untouched.
       // v13: sidebar icon glyphs are lifted via the data-agentx-icon-btn tag
       // (see above); no ':has()' selector here.
-      "[data-agentx-icon-btn] svg{min-width:16px!important;min-height:16px!important;color:var(--ax-muted)!important;}" +
+      "[data-agentx-icon-btn] svg{min-width:18px!important;min-height:18px!important;color:var(--ax-muted)!important;}" +
       // v10 looks pass - SIDEBAR. Consistent motion + a clear hover/focus
       // affordance on every interactive element in the sidebar (nav items,
       // conversation rows, identity row, grid button). PURELY VISUAL: no
@@ -317,7 +325,7 @@ function computerPanelScript(rebrandEnabled) {
       // from JS (data-agentx-icon-btn), not by ':has()', because the target
       // browser does not reliably support ':has()' - the v11 ':has()' rules
       // silently never matched the live DOM.
-      "[data-agentx-icon-btn]{min-width:30px!important;min-height:30px!important;box-sizing:border-box!important;}" +
+      "[data-agentx-icon-btn]{min-width:30px!important;min-height:30px!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;box-sizing:border-box!important;}" +
       ".agentx-unclip{white-space:normal!important;text-overflow:clip!important;overflow-wrap:break-word!important;word-break:break-word!important;-webkit-line-clamp:none!important;}" +
       // System theme preview (v6): the slanted light/dark boundary is drawn by
       // a gradient/clip on the card or one of its (pseudo-)children. Inline
@@ -952,7 +960,7 @@ function computerPanelScript(rebrandEnabled) {
         return false;
       }
       try {
-        var btns = document.querySelectorAll("button[aria-label], a[aria-label]");
+        var btns = document.querySelectorAll("[aria-label]");
         for (var i = 0; i < btns.length; i++) {
           var lbl = btns[i].getAttribute("aria-label") || "";
           // NOTE: this script is injected inside a template literal, so regex
@@ -996,6 +1004,23 @@ function computerPanelScript(rebrandEnabled) {
           var badge = document.createElement("span");
           badge.setAttribute("data-agentx-rule-count", "1");
           badge.textContent = m[1] + " / " + m[2];
+          // v13: force it to actually paint - the cards are small pills in a
+          // horizontal strip and clip their content, so the badge needs an
+          // explicit visible colour and an unclipped card.
+          badge.style.setProperty("display", "inline-block", "important");
+          badge.style.setProperty("opacity", "1", "important");
+          badge.style.setProperty("background", "#1f2937", "important");
+          badge.style.setProperty("color", "#ffffff", "important");
+          badge.style.setProperty("font-size", "11px", "important");
+          badge.style.setProperty("line-height", "1.4", "important");
+          badge.style.setProperty("padding", "1px 7px", "important");
+          badge.style.setProperty("border-radius", "999px", "important");
+          badge.style.setProperty("white-space", "nowrap", "important");
+          badge.style.setProperty("flex", "none", "important");
+          // The pills were too narrow to hold the count - let each pill grow
+          // to fit its content instead of clipping the badge out of view.
+          card.style.setProperty("overflow", "visible", "important");
+          card.style.setProperty("min-width", "max-content", "important");
           var last = card.lastElementChild;
           if (last && last !== badge) card.insertBefore(badge, last);
           else card.appendChild(badge);
@@ -1233,31 +1258,146 @@ function computerPanelScript(rebrandEnabled) {
       } catch (e) { /* never break the console */ }
     }
 
-    // v13 [2]: pin the identity pill to the viewport's bottom-left. Every
-    // structural attempt (sticky sidebar, 100vh, scrolling child) missed the
-    // real outer sidebar; a fixed pin is independent of the nesting and always
-    // visible. The pill keeps its own background so list content never shows
-    // through, and a soft shadow so it reads as a deliberate floating control.
+    // v15 [2]: SAFE pin. v14 moved the pill out of the scroll container,
+    // which re-stacked the whole app and blanked the main pane - REVERTED.
+    // Back to v13's position:fixed pin (which kept the page whole and the
+    // composer painting), but constrained to the SIDEBAR width so it is a
+    // bottom-left pill rather than a full-width bar, and the grid icon lands
+    // beside the account text instead of at the viewport's right edge. No DOM
+    // is moved and no container is resized, so the layout cannot re-stack.
     function pinAccountFooter(row) {
       try {
         row.style.setProperty("position", "fixed", "important");
         row.style.setProperty("left", "12px", "important");
         row.style.setProperty("bottom", "12px", "important");
         row.style.setProperty("z-index", "60", "important");
-        row.style.setProperty("max-width", "calc(100vw - 24px)", "important");
+        row.style.setProperty("width", "280px", "important");
+        row.style.setProperty("max-width", "280px", "important");
+        row.style.setProperty("box-sizing", "border-box", "important");
         row.style.setProperty("box-shadow", "0 4px 16px rgba(0,0,0,.18)", "important");
+        row.style.setProperty("overflow", "visible", "important");
       } catch (e) { /* never break the console */ }
     }
 
-    // v13 [9]: tag every button containing an icon so the CSS hit-target floor
-    // applies WITHOUT ':has()', which the target browser does not support.
+    // v13 [1]: the cold-load render storm undoes the DOM merge (React
+    // re-renders its two-row structure after the merge lands). Re-run the merge
+    // on a short bounded schedule for ~15s after the composer first appears, so
+    // it lands AFTER React's final cold render. Purely client-side DOM
+    // settling - a setTimeout chain, no server polling.
+    var agentxComposerRetries = 0;
+    function startComposerRetry() {
+      if (agentxComposerRetries) return;
+      agentxComposerRetries = 1;
+      var tries = 0;
+      function tick() {
+        tries++;
+        try { mergeComposerRows(); } catch (e2) {}
+        if (tries < 60) setTimeout(tick, 250);
+      }
+      setTimeout(tick, 250);
+    }
+
+    // v16 [2]: the LAYOUT pins are gated to WIDE viewports. At ~1000px the main
+    // pane must paint from the console's OWN layout; forcing 100vh / flex /
+    // overflow restructuring there risks compounding a narrow-width layout
+    // fault. This only RESTRICTS when the pins apply - wide (1920) behaviour is
+    // unchanged, and no DOM is restructured at any width.
+    function agentxWide() {
+      try {
+        var w = window.innerWidth || document.documentElement.clientWidth || 1920;
+        return w >= 1200;
+      } catch (e) { return true; }
+    }
+
+    // v16 [6]: eleven identical eval-judge rows clutter the sidebar with the
+    // same truncated prompt. Make them DISTINGUISHABLE without deleting or
+    // renaming anything: identical long titles get a small ordinal badge, so
+    // each row is readable and unique while the original title is preserved.
+    function dedupeRowTitles() {
+      try {
+        var rows = document.querySelectorAll("a[href*='/chat/'], a[href*='conversation'], [role='link']");
+        var seen = {};
+        for (var i = 0; i < rows.length; i++) {
+          var el = rows[i];
+          var t = (el.textContent || "").trim();
+          if (!t || t.length < 12) continue;
+          seen[t] = (seen[t] || 0) + 1;
+          if (seen[t] < 2) continue;
+          var lab = el.querySelector("[data-agentx-dup]");
+          if (!lab) {
+            lab = document.createElement("span");
+            lab.setAttribute("data-agentx-dup", "1");
+            lab.style.setProperty("margin-left", "6px", "important");
+            lab.style.setProperty("font-size", "10px", "important");
+            lab.style.setProperty("color", "var(--ax-muted)", "important");
+            lab.style.setProperty("flex", "none", "important");
+            el.appendChild(lab);
+          }
+          lab.textContent = "#" + seen[t];
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v16 [3]: the faint header glyphs read as '+' and 'x'. They are actually
+    // the Terminal ('>_') and Open-workspace buttons. Darken them and make them
+    // opaque so they read as real controls; their tooltips/labels are untouched.
+    function clarifyHeaderIcons() {
+      try {
+        var btns = document.querySelectorAll("button, [role='button']");
+        for (var i = 0; i < btns.length; i++) {
+          var al = (btns[i].getAttribute("aria-label") || "").toLowerCase();
+          var tt = (btns[i].getAttribute("title") || "").toLowerCase();
+          var hay = al + " " + tt;
+          if (hay.indexOf("terminal") === -1 && hay.indexOf("workspace") === -1) continue;
+          btns[i].style.setProperty("opacity", "1", "important");
+          btns[i].style.setProperty("color", "var(--ax-ink)", "important");
+          var sv = btns[i].querySelector("svg");
+          if (sv) {
+            sv.style.setProperty("color", "var(--ax-ink)", "important");
+            sv.style.setProperty("opacity", "1", "important");
+            sv.style.setProperty("stroke-width", "2", "important");
+          }
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v15 [1b]: on the cold load the Thinking dropdown renders OPEN inside the
+    // composer (Default/Off/Low/Medium/High/XHigh), which makes the composer
+    // box very tall. Close it by dispatching a click on its OWN trigger so the
+    // console's state updates through its normal path. Self-limited to the
+    // first ~4s after load, so a dropdown the user opens later is never
+    // touched.
+    var agentxLoadTs = 0;
+    function closeColdOpenDropdowns() {
+      try {
+        if (!agentxLoadTs) agentxLoadTs = Date.now();
+        if (Date.now() - agentxLoadTs > 4000) return;
+        var open = document.querySelectorAll("[aria-expanded='true']");
+        for (var i = 0; i < open.length; i++) {
+          var el = open[i];
+          var own = (el.getAttribute("aria-label") || "") + " " + (el.textContent || "");
+          var around = el.parentElement ? (el.parentElement.textContent || "") : "";
+          if (own.indexOf("XHigh") === -1 && own.indexOf("Thinking") === -1 &&
+              around.indexOf("XHigh") === -1) continue;
+          try { el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })); } catch (e1) {}
+          break;
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v15 [4]: tag PURE-ICON elements so the 30px hit-target floor reaches
+    // them. The v13 version only tagged <button>, but several icons ('?' help,
+    // trash actions) are spans/anchors. Elements that carry visible text are
+    // left alone so real text buttons are never inflated.
     function tagIconButtons() {
       try {
-        var btns = document.querySelectorAll("button");
-        for (var i = 0; i < btns.length; i++) {
-          if (btns[i].querySelector("svg") && btns[i].getAttribute("data-agentx-icon-btn") !== "1") {
-            btns[i].setAttribute("data-agentx-icon-btn", "1");
-          }
+        var els = document.querySelectorAll("button, a, span, [role='button']");
+        for (var i = 0; i < els.length; i++) {
+          var el = els[i];
+          if (el.getAttribute("data-agentx-icon-btn") === "1") continue;
+          if (!el.querySelector("svg")) continue;
+          if ((el.textContent || "").trim() !== "") continue;
+          el.setAttribute("data-agentx-icon-btn", "1");
         }
       } catch (e) { /* never break the console */ }
     }
@@ -1438,17 +1578,21 @@ function computerPanelScript(rebrandEnabled) {
         // v9: explicitly make the conversation list the scrolling child
         // (min-height:0) so the identity row stays inside the viewport, and
         // inject the visible Detection-Rules count badges.
-        fixSidebarScroll(row);
+        if (agentxWide()) fixSidebarScroll(row);
         addRuleCountBadges();
         fixSidebarGridButton(row);
-        fixTallNavs();
+        if (agentxWide()) fixTallNavs();
         fixImages();
         fixShowThinkingRow();
         fixRadioDescriptions();
         mergeComposerRows();
+        startComposerRetry();
         pinAccountFooter(row);
         tagIconButtons();
         fixCompactMenuIcon();
+        closeColdOpenDropdowns();
+        dedupeRowTitles();
+        clarifyHeaderIcons();
       } catch (e) { /* never break the console */ }
     }
     addAccountMenuActions();
