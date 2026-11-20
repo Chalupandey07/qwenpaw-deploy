@@ -175,8 +175,10 @@ console.log("decideSleepWake — pure decision, fail closed");
     decideSleepWake({ ...idle, lastVisitAt: NOW - 5 * MIN }, NOW).action === "hold");
   check("recent agent activity (5 min ago) -> hold",
     decideSleepWake({ ...idle, lastAgentActivityAt: NOW - 5 * MIN }, NOW).action === "hold");
-  check("old visit (31 min ago) + old agent (11 min ago) -> sleep",
-    decideSleepWake({ ...idle, lastVisitAt: NOW - 31 * MIN, lastAgentActivityAt: NOW - 11 * MIN }, NOW).action === "sleep");
+  check("old visit (21 min ago) + old agent (11 min ago) -> sleep",
+    decideSleepWake({ ...idle, lastVisitAt: NOW - 21 * MIN, lastAgentActivityAt: NOW - 11 * MIN }, NOW).action === "sleep");
+  check("visit 19 min ago -> hold (inside the 20-min visit idle)",
+    decideSleepWake({ ...idle, lastVisitAt: NOW - 19 * MIN, lastAgentActivityAt: NOW - 11 * MIN }, NOW).action === "hold");
   check("short uptime (10 min) -> hold",
     decideSleepWake({ ...idle, uptimeMin: 10 }, NOW).action === "hold");
   check("manual rest -> hold",
@@ -191,12 +193,16 @@ console.log("decideSleepWake — pure decision, fail closed");
     decideSleepWake({ ...idle, lastWakeAt: NOW - 5 * MIN }, NOW).action === "hold");
   check("woke 25 min ago -> sleep (deadband passed)",
     decideSleepWake({ ...idle, lastWakeAt: NOW - 25 * MIN }, NOW).action === "sleep");
-  const dueSoon = { ...idle, nextRoutineAt: NOW + 8 * MIN, machineUp: false, sleepState: "suspended" };
-  check("routine due in 8 min + machine down -> wake",
+  const dueSoon = { ...idle, nextRoutineAt: NOW + 4 * MIN, machineUp: false, sleepState: "suspended" };
+  check("routine due in 4 min + machine down -> wake",
     decideSleepWake(dueSoon, NOW).action === "wake");
-  check("routine due in 8 min + machine up -> hold (already up)",
+  check("routine due in 4 min + machine up -> hold (already up)",
     decideSleepWake({ ...dueSoon, machineUp: true, sleepState: "running" }, NOW).action === "hold");
-  check("routine due in 30 min -> sleep (outside the 10-min lookahead; it will wake in time)",
+  check("routine due in 6 min + machine down -> hold (outside the 5-min lookahead)",
+    decideSleepWake({ ...idle, nextRoutineAt: NOW + 6 * MIN, machineUp: false, sleepState: "suspended" }, NOW).action === "hold");
+  check("routine due in 6 min + machine up -> sleep (outside the 5-min lookahead; it will wake in time)",
+    decideSleepWake({ ...idle, nextRoutineAt: NOW + 6 * MIN }, NOW).action === "sleep");
+  check("routine due in 30 min -> sleep (outside the 5-min lookahead; it will wake in time)",
     decideSleepWake({ ...idle, nextRoutineAt: NOW + 30 * MIN }, NOW).action === "sleep");
   check("overdue routine (5 min ago) + machine down -> wake (never sleep past a routine)",
     decideSleepWake({ ...idle, nextRoutineAt: NOW - 5 * MIN, machineUp: false, sleepState: "suspended" }, NOW).action === "wake");
@@ -280,15 +286,15 @@ console.log("cron tick — sleep, wake, hold (the decision before the probe)");
     check("sleep state is 'sleeping' after a successful suspend", state.mode === "sleeping", `mode=${state.mode}`);
   } finally { globalThis.fetch = realFetch; }
 
-  // ROUTINE DUE: daily summary in 8 min, machine sleeping -> WAKE (probe).
+  // ROUTINE DUE: daily summary in 4 min, machine sleeping -> WAKE (probe).
   const d1b = new MockD1();
   const callsB = [];
   globalThis.fetch = makeFetch(callsB);
   try {
     d1b.routines.set("daily-summary", JSON.stringify({ id: "daily-summary", active: true, cron: "0 7 * * *", timezone: "Asia/Kolkata" }));
     // The D1 daily summary is 07:00 IST (hours away), so the native run is
-    // the one that is due (8 min from now).
-    d1b.meta.set("sleepwake:report", JSON.stringify({ nextNativeRun: RT + 8 * MIN, agentActive: false, agentLastActiveAt: RT - 20 * MIN, uptimeSec: 3600, reportedAt: RT - 60_000 }));
+    // the one that is due (4 min from now, inside the 5-min lookahead).
+    d1b.meta.set("sleepwake:report", JSON.stringify({ nextNativeRun: RT + 4 * MIN, agentActive: false, agentLastActiveAt: RT - 20 * MIN, uptimeSec: 3600, reportedAt: RT - 60_000 }));
     d1b.meta.set("sleepwake:state", JSON.stringify({ mode: "sleeping", since: RT - 30 * MIN, lastWakeAt: RT - 60 * MIN }));
     d1b.status.set("qwenpaw:status", JSON.stringify({ status: "sleeping", httpStatus: 0, lastUpAt: new Date(RT - 60 * MIN).toISOString() }));
     const envB = makeEnv(d1b, callsB);
