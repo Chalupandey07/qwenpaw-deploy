@@ -364,6 +364,23 @@ function computerPanelScript(rebrandEnabled) {
       // one solid orange bar across both halves instead of being bisected.
       "[data-agentx-system-card]{background-image:none!important;clip-path:none!important;}" +
       "[data-agentx-system-card]::before,[data-agentx-system-card]::after{background-image:none!important;clip-path:none!important;}" +
+      // v30: DETECTION RULES counts - CSS, not DOM injection. The card is a
+      // React/Framer-Motion button whose count is an ANIMATED number: React
+      // re-renders the button on every animation frame and its
+      // reconciliation REMOVES any injected child (my badge) and RESETS the
+      // button's inline style to the JSX prop ({borderRadius:18}), wiping
+      // my position:relative/overflow:visible (v26-v29: badgeEx:0, card
+      // still static/hidden at every probe). A stylesheet rule cannot be
+      // wiped by React, so force the card and its own count/meter/caption
+      // open with !important CSS. The console's own count IS a proper
+      // block (span.count, 32px) - it only needs the 32px/overflow:hidden
+      // clamp lifted.
+      ".RuleTable-module__category__e5r94{display:block!important;height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important;padding:20px!important;}" +
+      ".RuleTable-module__count__9nsCT{display:block!important;font-size:32px!important;font-weight:550!important;margin:22px 0 14px!important;visibility:visible!important;opacity:1!important;}" +
+      ".RuleTable-module__count__9nsCT small{font-size:16px!important;}" +
+      ".RuleTable-module__meter__LMSek{display:block!important;height:3px!important;overflow:hidden!important;}" +
+      ".RuleTable-module__caption__xSKG7{display:block!important;margin-top:8px!important;font-size:12px!important;visibility:visible!important;opacity:1!important;}" +
+      ".RuleTable-module__categoryTop__TGen9{display:flex!important;}" +
       "[data-agentx-system-preview]{background-image:linear-gradient(90deg,#f5f5f4 0%,#f5f5f4 50%,#111 50%,#111 100%)!important;background-color:transparent!important;clip-path:none!important;overflow:hidden!important;}" +
       "[data-agentx-system-preview]::before,[data-agentx-system-preview]::after,[data-agentx-system-preview] *::before,[data-agentx-system-preview] *::after{background-image:none!important;clip-path:none!important;}";
     var ICON_COMPUTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="13" rx="2"></rect><path d="M8.5 20.5h7M12 17v3.5"></path></svg>';
