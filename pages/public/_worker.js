@@ -1199,6 +1199,56 @@ function computerPanelScript(rebrandEnabled) {
       } catch (e) { /* never break the console */ }
     }
 
+    // v34: pin the SETTINGS sidebar. The settings aside is displaced down
+    // by a variable amount (General y~410-694 across loads, persists with
+    // ?rebrand=0) - an upstream console race not explained by the console's
+    // own CSS (its grid puts the aside at the row top). fixTallNavs'
+    // sticky top:0 cannot pull an element UP at scroll 0 (sticky only
+    // stops it scrolling past). So pin the aside with position:fixed,
+    // deriving its geometry from the CONTENT column (which is NOT
+    // displaced): the content top is the grid row top, and the sidebar
+    // column is exactly 280px wide immediately left of the content
+    // (grid-template-columns:280px 1fr, no gap). The grid column stays
+    // reserved so the content never shifts. Re-applied on every page-fix
+    // pass, so a route change re-measures. Wide viewports only (the
+    // console hides this aside below 768px; display:none still wins
+    // because the pin never sets display).
+    function fixSettingsSidebarPin() {
+      try {
+        if (!agentxWide()) return;
+        var path = "";
+        try { path = window.location ? window.location.pathname || "" : ""; } catch (e) {}
+        if (path.indexOf("/settings") !== 0) return;
+        var content = null;
+        try { content = document.querySelector ? document.querySelector("main.index-module__content__-76Dm") : null; } catch (e) {}
+        if (!content) return;
+        var cr = null;
+        try { cr = content.getBoundingClientRect(); } catch (e2) {}
+        if (!cr || !(cr.top > 0) || cr.top > 200 || !(cr.left > 280)) return;
+        var aside = null;
+        try { aside = document.querySelector ? document.querySelector("aside.index-module__sidebar__MIhyN") : null; } catch (e3) {}
+        if (!aside) {
+          try {
+            var nav = document.querySelector ? document.querySelector('nav[aria-label="Settings"]') : null;
+            if (nav && nav.closest) aside = nav.closest("aside");
+          } catch (e4) {}
+        }
+        if (!aside) return;
+        var top = Math.round(cr.top);
+        var left = Math.round(cr.left - 280);
+        aside.style.setProperty("position", "fixed", "important");
+        aside.style.setProperty("top", top + "px", "important");
+        aside.style.setProperty("left", left + "px", "important");
+        aside.style.setProperty("width", "280px", "important");
+        aside.style.setProperty("height", "calc(100vh - " + top + "px)", "important");
+        aside.style.setProperty("max-height", "none", "important");
+        aside.style.setProperty("overflow-y", "auto", "important");
+        aside.style.setProperty("overflow-x", "hidden", "important");
+        aside.style.setProperty("z-index", "5", "important");
+        aside.style.setProperty("box-sizing", "border-box", "important");
+      } catch (e) { /* never break the console */ }
+    }
+
     // v13 [5]: the 'Show thinking' row is STILL stacked (icon / heading /
     // description / toggle in one column). The earlier walk looked for a
     // [role=switch] ancestor, which does not match the live toggle. Now: find
@@ -4736,6 +4786,7 @@ function computerPanelScript(rebrandEnabled) {
       try { fixShowThinkingRow(); } catch (e) {}
       try { fixSettingIcons(); } catch (e) {}
       try { fixTallNavs(); } catch (e) {}
+      try { fixSettingsSidebarPin(); } catch (e) {}
       try { fixImages(); } catch (e) {}
       try { fixRadioDescriptions(); } catch (e) {}
     }
