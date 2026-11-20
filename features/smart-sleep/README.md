@@ -144,14 +144,18 @@ if (uptimeMin >= 420 && machineUp === true && sleepState === "running" && restAc
   (`restActive` check). The guard respects the toggle automatically:
   the tick early-returns before `decideSleepWake` when OFF.
 
-### The 10-min wake lookahead is deliberately KEPT
-Do NOT tighten it to 5 min. The cron runs every 5 min, so a 5-min
-lookahead could miss the window entirely (a routine due in 6 min at
-tick time would not be "due" until the next tick, when it is due in
-1 min — still inside 5 min, but a wake takes minutes and the margin
-evaporates; with any tick jitter the routine starts late). The 10-min
-lookahead (5 min lead + wake buffer) is the margin that makes the
-5-min cron reliable.
+### The wake lookahead is 5 min (tightened 2026-11-21, user-set)
+The 10-min lookahead was deliberately kept on 2026-11-19 (5 min lead +
+wake buffer) because the cron runs every 5 min and a 5-min lookahead
+could miss the window. The user tightened it to 5 min on 2026-11-21:
+the wake itself takes ~1-2 min (probe + retry), so the machine is
+ready ~3 min before the routine, and the routines Worker's 15-min
+backup wake covers a slow wake. A routine due in 6 min at tick time is
+caught at the next tick, when it is due in ~1 min — inside the 5-min
+window — so the 5-min cron still cannot miss it outright; the margin
+is thinner than the old 10-min one, and that is the user's call. Do
+NOT tighten it further, and do NOT loosen it back to 10 min without
+the user asking.
 
 ## Files
 - `worker/src/index.js` — `readKeepAliveEnabled` + `readKeepAlivePublic`,
