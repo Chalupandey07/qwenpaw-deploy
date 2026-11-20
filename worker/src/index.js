@@ -356,8 +356,8 @@ async function manualRestInEffect(env) {
 // tested suspend call; the keep-alive Worker does not have that key and
 // must never invent one.
 const SW_MIN = 60_000;
-const SW_WAKE_LOOKAHEAD_MS = 10 * SW_MIN;   // routine due within 10 min -> wake (5 min lead + wake buffer)
-const SW_VISIT_IDLE_MS = 30 * SW_MIN;       // no visitor for 30 min
+const SW_WAKE_LOOKAHEAD_MS = 5 * SW_MIN;    // routine due within 5 min -> wake (user-set 2026-11-21: wake takes ~1-2 min, so the machine is ready ~3 min before the routine; the routines Worker's 15-min backup wake covers slow wakes)
+const SW_VISIT_IDLE_MS = 20 * SW_MIN;       // no visitor for 20 min (user-set 2026-11-21: auto-sleep after 20 min idle)
 const SW_AGENT_IDLE_MS = 10 * SW_MIN;       // no agent activity for 10 min
 const SW_MIN_UPTIME_MS = 15 * SW_MIN;       // machine must have been up 15 min
 const SW_MIN_AWAKE_AFTER_WAKE_MS = 20 * SW_MIN; // deadband > lookahead: kills sleep-wake-sleep flap
