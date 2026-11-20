@@ -1,0 +1,61 @@
+# Derived QwenPaw console image with the AgentX rebrand BAKED IN (B2).
+#
+# Base is the LIVE image qwenpaw-agentx:2.3.0-takeover1 (upstream +
+# gatefix4 + bloat-winwin + cost-ledger + Telegram + approval-TTL).
+# (takeover2 is BROKEN — the P0 /chat render error — never use it as a base.)
+#
+# WHY: the AgentX look currently exists only at the Pages proxy layer —
+# pages/public/_worker.js injects headShim + computerPanelScript +
+# search-settings-ui.js into the served HTML. The direct origin serves the
+# raw QwenPaw console, so /chat looks different depending on whether the
+# user arrives through Pages or directly. This image bakes the SAME block
+# into the console's own index.html, so the origin serves the AgentX look
+# itself and the two paths match.
+#
+# THE BLOCK IS GENERATED, NOT HAND-WRITTEN: baked-injection.html is
+# produced by features/rebrand/generate-baked-block.mjs, which imports the
+# real headShim()/computerPanelScript() from _worker.js and emits their
+# output — so the baked block is byte-identical to what the proxy injects
+# and can never drift from the 41-rule spec. Regenerate it after any
+# rebrand change:  node features/rebrand/generate-baked-block.mjs
+#
+# The proxy (pages/public/_worker.js) detects the baked marker
+# (`agentx-rebrand-baked`) and SKIPS re-injection, so Pages does not apply
+# every rule twice on top of a baked origin. Its header work (no-store,
+# CSP-Report-Only, Referrer-Policy) still applies.
+#
+# Internal identifiers are NOT renamed: qwenpaw_* tokens, the CSS prefix,
+# the D1 columns and the agent name QwenPaw_QA_Agent_0.2 are untouched —
+# the rebrand is DOM/text injection only, exactly as at the proxy.
+#
+# Fail-closed: the build FAILS if either console copy is missing the
+# marker or the copied search-settings-ui.js.
+#
+# Tag: qwenpaw-agentx:2.3.0-bakedrebrand1.
+# v38: the baked block is the FIXED shim (composer-row gated to /chat).
+# The startup-timeout patch (30s -> 180s) is applied first so a slow
+# connection can load the bundle without the console giving up.
+FROM qwenpaw-agentx:2.3.0-takeover1
+
+# Build context is the REPO ROOT:
+#   docker build -f features/rebrand/Dockerfile .
+# The /tmp/bake tree preserves the repo layout so bake_rebrand.py's
+# HERE-relative lookup of pages/public/search-settings-ui.js resolves.
+COPY features/rebrand/baked-injection.html /tmp/bake/features/rebrand/baked-injection.html
+COPY features/rebrand/bake_rebrand.py      /tmp/bake/features/rebrand/bake_rebrand.py
+COPY features/rebrand/patch_startup_timeout.py /tmp/bake/features/rebrand/patch_startup_timeout.py
+COPY pages/public/search-settings-ui.js    /tmp/bake/pages/public/search-settings-ui.js
+
+RUN python3 /tmp/bake/features/rebrand/patch_startup_timeout.py \
+    && python3 /tmp/bake/features/rebrand/bake_rebrand.py \
+        /app/venv/lib/python3.11/site-packages \
+        /app/src \
+    && grep -q 'agentx-rebrand-baked' \
+        /app/venv/lib/python3.11/site-packages/qwenpaw/console/index.html \
+    && grep -q 'agentx-rebrand-baked' /app/src/qwenpaw/console/index.html \
+    && grep -q '180000 ms' \
+        /app/venv/lib/python3.11/site-packages/qwenpaw/console/index.html \
+    && grep -q '180000 ms' /app/src/qwenpaw/console/index.html \
+    && test -f /app/venv/lib/python3.11/site-packages/qwenpaw/console/search-settings-ui.js \
+    && test -f /app/src/qwenpaw/console/search-settings-ui.js \
+    && rm -rf /tmp/bake
