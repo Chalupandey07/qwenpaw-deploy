@@ -1199,68 +1199,54 @@ function computerPanelScript(rebrandEnabled) {
       } catch (e) { /* never break the console */ }
     }
 
-    // v34: pin the SETTINGS sidebar. The settings aside is displaced down
-    // by a variable amount (General y~410-694 across loads, persists with
-    // ?rebrand=0) - an upstream console race not explained by the console's
-    // own CSS (its grid puts the aside at the row top). fixTallNavs'
-    // sticky top:0 cannot pull an element UP at scroll 0 (sticky only
-    // stops it scrolling past). So pin the aside with position:fixed,
-    // deriving its geometry from the CONTENT column (which is NOT
-    // displaced): the content top is the grid row top, and the sidebar
-    // column is exactly 280px wide immediately left of the content
-    // (grid-template-columns:280px 1fr, no gap). The grid column stays
-    // reserved so the content never shifts. Re-applied on every page-fix
-    // pass, so a route change re-measures. Wide viewports only (the
-    // console hides this aside below 768px; display:none still wins
-    // because the pin never sets display).
-    // v35: taking the aside out of flow ALSO takes it out of the grid,
-    // and the content <main> has no explicit grid-column, so grid
-    // auto-placement moved it into column 1 - UNDER the pinned sidebar
-    // (headings clipped, Detection Rules cards shrunk to ~35px in a
-    // 280px column). So the pin must ALSO place the content explicitly
-    // in column 2 / row 1. Geometry is remembered across passes (the
-    // last sane measurement) so a scrolled arrival still pins sanely.
-    var agentxSettingsPinTop = 64, agentxSettingsPinLeft = null;
-    function fixSettingsSidebarPin() {
+    // v36: pull the SETTINGS sidebar up with a negative top margin
+    // (IN-FLOW). v34/v35 REVERTED: the position:fixed pin took the aside
+    // out of the grid, so auto-placement moved the content <main> (no
+    // explicit grid-column) into column 1 - under the sidebar, headings
+    // hidden, cards shrunk to ~35px. That was worse than the displacement
+    // it fixed. A top MARGIN keeps the aside IN FLOW (grid intact, content
+    // stays in column 2, no overlap) while shifting it up visually. The
+    // displacement varies between loads (410-694px) and is an upstream
+    // race, so the margin is a FEEDBACK LOOP, not a constant: each pass
+    // measures the aside's top against the content column's top and
+    // adjusts the margin by the error (newMargin = oldMargin - error).
+    // It converges to the aside sitting at the content top and tracks
+    // the race if the natural position moves. Only on /settings/*, wide
+    // viewports; never sets display or position.
+    function fixSettingsSidebarMargin() {
       try {
         if (!agentxWide()) return;
         var path = "";
         try { path = window.location ? window.location.pathname || "" : ""; } catch (e) {}
         if (path.indexOf("/settings") !== 0) return;
-        var content = null;
-        try { content = document.querySelector ? document.querySelector("main.index-module__content__-76Dm") : null; } catch (e) {}
-        if (!content) return;
-        var cr = null;
-        try { cr = content.getBoundingClientRect(); } catch (e2) {}
-        if (cr && cr.top > 0 && cr.top < 200) agentxSettingsPinTop = Math.round(cr.top);
-        if (cr && cr.left > 280) agentxSettingsPinLeft = Math.round(cr.left - 280);
-        if (agentxSettingsPinLeft === null) return;
         var aside = null;
-        try { aside = document.querySelector ? document.querySelector("aside.index-module__sidebar__MIhyN") : null; } catch (e3) {}
+        try { aside = document.querySelector ? document.querySelector("aside.index-module__sidebar__MIhyN") : null; } catch (e) {}
         if (!aside) {
           try {
             var nav = document.querySelector ? document.querySelector('nav[aria-label="Settings"]') : null;
             if (nav && nav.closest) aside = nav.closest("aside");
-          } catch (e4) {}
+          } catch (e2) {}
         }
         if (!aside) return;
-        var top = agentxSettingsPinTop;
-        var left = agentxSettingsPinLeft;
-        aside.style.setProperty("position", "fixed", "important");
-        aside.style.setProperty("top", top + "px", "important");
-        aside.style.setProperty("left", left + "px", "important");
-        aside.style.setProperty("width", "280px", "important");
-        aside.style.setProperty("height", "calc(100vh - " + top + "px)", "important");
-        aside.style.setProperty("max-height", "none", "important");
-        aside.style.setProperty("overflow-y", "auto", "important");
-        aside.style.setProperty("overflow-x", "hidden", "important");
-        aside.style.setProperty("z-index", "5", "important");
-        aside.style.setProperty("box-sizing", "border-box", "important");
-        // v35: keep the content in grid column 2 / row 1 now that the
-        // aside is out of flow (without this, auto-placement puts it in
-        // column 1, under the sidebar).
-        content.style.setProperty("grid-column", "2", "important");
-        content.style.setProperty("grid-row", "1", "important");
+        var content = null;
+        try { content = document.querySelector ? document.querySelector("main.index-module__content__-76Dm") : null; } catch (e3) {}
+        if (!content) return;
+        var ar = null, cr = null;
+        try { ar = aside.getBoundingClientRect(); } catch (e4) {}
+        try { cr = content.getBoundingClientRect(); } catch (e5) {}
+        if (!ar || !cr) return;
+        if (!(cr.top > 0) || cr.top > 200) return;
+        var err = ar.top - cr.top;
+        if (err > -5 && err < 5) return;
+        var cur = 0;
+        try {
+          var ms = aside.style ? aside.style.marginTop || "" : "";
+          if (ms) { var v = parseFloat(ms); if (!isNaN(v)) cur = v; }
+        } catch (e6) {}
+        var next = Math.round(cur - err);
+        if (next < -800) next = -800;
+        if (next > 50) next = 50;
+        aside.style.setProperty("margin-top", next + "px", "important");
       } catch (e) { /* never break the console */ }
     }
 
@@ -4801,7 +4787,7 @@ function computerPanelScript(rebrandEnabled) {
       try { fixShowThinkingRow(); } catch (e) {}
       try { fixSettingIcons(); } catch (e) {}
       try { fixTallNavs(); } catch (e) {}
-      try { fixSettingsSidebarPin(); } catch (e) {}
+      try { fixSettingsSidebarMargin(); } catch (e) {}
       try { fixImages(); } catch (e) {}
       try { fixRadioDescriptions(); } catch (e) {}
     }
