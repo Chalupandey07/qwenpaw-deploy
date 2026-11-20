@@ -249,6 +249,25 @@ function computerPanelScript(rebrandEnabled) {
       "[data-agentx-composer-toolbar]{display:flex!important;flex-wrap:wrap!important;gap:8px!important;align-items:center!important;justify-content:flex-start!important;}" +
       "[data-agentx-composer-toolbar] button,[data-agentx-composer-toolbar] select{min-height:32px!important;height:32px!important;padding:2px 6px!important;font-size:11px!important;min-width:0!important;white-space:nowrap!important;flex:0 0 auto!important;margin:0!important;box-sizing:border-box!important;}" +
       "[data-agentx-composer-toolbar] button svg{width:13px!important;height:13px!important;flex:none!important;}" +
+      // v9: the textbox takes its OWN full-width line and the structural row
+      // wrappers are dissolved. Both are backed from CSS here (not only
+      // inline) because React drops inline styles during the cold-load render
+      // storm — which is exactly why the one-row layout appeared on reloads
+      // but not on the first post-login load. The data attributes persist
+      // across re-renders, so the stylesheet holds the layout from the first
+      // application onwards.
+      "[data-agentx-composer-line]{flex:0 0 100%!important;max-width:100%!important;box-sizing:border-box!important;}" +
+      "[data-agentx-composer-flat]{display:contents!important;}" +
+      // v9: visible Detection-Rules count badge injected into each card — the
+      // counts exist only in the buttons' accessible names, so no CSS unhide
+      // can reveal them. Pushed to the card's right, before the chevron.
+      "[data-agentx-rule-count]{flex:none!important;margin-left:auto!important;font-size:11px!important;line-height:1.4!important;font-weight:500!important;color:var(--ax-faint)!important;white-space:nowrap!important;font-variant-numeric:tabular-nums;}" +
+      // v9: the sidebar is a flex column whose conversation list scrolls
+      // within itself, so the identity row stays pinned and visible at the
+      // bottom instead of being pushed below the viewport.
+      "[data-agentx-sidebar]{display:flex!important;flex-direction:column!important;overflow:hidden!important;min-height:0!important;}" +
+      "[data-agentx-sidebar-list]{flex:1 1 auto!important;min-height:0!important;overflow-y:auto!important;}" +
+      "[data-agentx-sidebar-foot]{flex:none!important;}" +
       ".agentx-unclip{white-space:normal!important;text-overflow:clip!important;overflow-wrap:break-word!important;word-break:break-word!important;-webkit-line-clamp:none!important;}" +
       // System theme preview (v6): the slanted light/dark boundary is drawn by
       // a gradient/clip on the card or one of its (pseudo-)children. Inline
@@ -795,6 +814,100 @@ function computerPanelScript(rebrandEnabled) {
     // footer is pinned, scrolling never reveals it. Fix: make the sidebar a
     // flex column that reserves room for the footer, and make the row a
     // compact single line that cannot overflow or clip.
+    // v9: the identity row lives at the BOTTOM of the sidebar. The
+    // conversation list above it must scroll within its own area, or its
+    // min-height:auto content height pushes the row below the viewport (live
+    // v8 check: the sidebar ended at 'Last 7 days' and the row sat below the
+    // fold). Classic flexbox fix: the sidebar becomes a flex column, the list
+    // is the scrolling child (flex:1 + min-height:0 + overflow-y:auto), and
+    // the footer stays flex:none so the row is always visible at the bottom.
+    // The earlier walk only constrained ancestors that ALREADY had
+    // overflowY:auto — the list had none, so it never shrank. Identifying the
+    // list explicitly (tallest non-footer child) is what was missing.
+    function fixSidebarScroll(row) {
+      try {
+        var side = row.parentElement, hops = 0;
+        while (side && side !== document.body && hops < 8) {
+          var rc = null; try { rc = side.getBoundingClientRect(); } catch (e1) {}
+          if (rc && rc.height > 700 && rc.width > 150 && rc.width < 460) break;
+          side = side.parentElement; hops++;
+        }
+        if (!side || side === document.body) return;
+        side.setAttribute("data-agentx-sidebar", "1");
+        var foot = row;
+        while (foot && foot.parentElement && foot.parentElement !== side) {
+          foot = foot.parentElement;
+        }
+        if (!foot || foot === side || foot.parentElement !== side) return;
+        foot.setAttribute("data-agentx-sidebar-foot", "1");
+        var kids = side.children, list = null, best = -1;
+        for (var i = 0; i < kids.length; i++) {
+          if (kids[i] === foot) continue;
+          var sh = 0; try { sh = kids[i].scrollHeight; } catch (e2) {}
+          if (sh > best) { best = sh; list = kids[i]; }
+        }
+        for (var j = 0; j < kids.length; j++) {
+          if (kids[j] === foot) continue;
+          if (kids[j] === list) kids[j].setAttribute("data-agentx-sidebar-list", "1");
+          else kids[j].style.setProperty("flex", "none", "important");
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v9: Detection-Rules counts live ONLY in the buttons' accessible names
+    // ("Command Injection 4 / 4 Enabled") — there is no visible text node, so
+    // no CSS unhide can reveal them. Inject a visible count badge into each
+    // card instead. Idempotent via the data marker.
+    function addRuleCountBadges() {
+      var RULES = ["Command Injection", "Resource Abuse", "Code Execution",
+                   "Network Abuse", "Sensitive File Access", "Privilege Escalation"];
+      function isDg(ch) { return ch >= "0" && ch <= "9"; }
+      function ruleHit(txt) {
+        if (!txt) return false;
+        for (var r = 0; r < RULES.length; r++) {
+          if (txt.indexOf(RULES[r]) !== -1) return true;
+          var pre = RULES[r].slice(0, 10);
+          if (pre.length >= 6 && txt.indexOf(pre) !== -1) return true;
+        }
+        return false;
+      }
+      try {
+        var btns = document.querySelectorAll("button[aria-label], a[aria-label]");
+        for (var i = 0; i < btns.length; i++) {
+          var lbl = btns[i].getAttribute("aria-label") || "";
+          // NOTE: this script is injected inside a template literal, so regex
+          // backslashes would be consumed there (\d would reach the page as
+          // d). Parse the "N / N" count by hand instead of with a regex.
+          var m = null, si = lbl.indexOf("/");
+          if (si > 0) {
+            var e1 = si - 1;
+            while (e1 >= 0 && isDg(lbl.charAt(e1))) e1--;
+            var s2 = si + 1;
+            while (s2 < lbl.length && isDg(lbl.charAt(s2))) s2++;
+            var a = lbl.slice(e1 + 1, si), b = lbl.slice(si + 1, s2);
+            if (a && b) m = [a, b];
+          }
+          if (!m || !ruleHit(lbl)) continue;
+          // The card = the smallest ancestor (or the button itself) whose text
+          // names the rule, so the badge lands inside the card, not the list.
+          var card = btns[i], probe = btns[i];
+          while (probe && probe !== document.body) {
+            if (ruleHit(probe.textContent)) { card = probe; break; }
+            probe = probe.parentElement;
+          }
+          if (!card) continue;
+          if (card.querySelector("[data-agentx-rule-count]") ||
+              btns[i].querySelector("[data-agentx-rule-count]")) continue;
+          var badge = document.createElement("span");
+          badge.setAttribute("data-agentx-rule-count", "1");
+          badge.textContent = m[1] + " / " + m[2];
+          var last = card.lastElementChild;
+          if (last && last !== badge) card.insertBefore(badge, last);
+          else card.appendChild(badge);
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
     function fixAccountRow() {
       try {
         var smalls = document.getElementsByTagName("small");
@@ -934,6 +1047,11 @@ function computerPanelScript(rebrandEnabled) {
           node = node.parentElement;
           depth++;
         }
+        // v9: explicitly make the conversation list the scrolling child
+        // (min-height:0) so the identity row stays inside the viewport, and
+        // inject the visible Detection-Rules count badges.
+        fixSidebarScroll(row);
+        addRuleCountBadges();
       } catch (e) { /* never break the console */ }
     }
     addAccountMenuActions();
@@ -2749,6 +2867,7 @@ function computerPanelScript(rebrandEnabled) {
               if (!skip) {
                 var tag = ""; try { tag = (up2.tagName || "").toUpperCase(); } catch (e3) {}
                 if (tag === "DIV" || tag === "SPAN" || tag === "UL" || tag === "NAV" || tag === "SECTION") {
+                  up2.setAttribute("data-agentx-composer-flat", "1");
                   up2.style.setProperty("display", "contents", "important");
                 }
                 up2.style.setProperty("justify-content", "flex-start", "important");
@@ -2768,6 +2887,7 @@ function computerPanelScript(rebrandEnabled) {
               tbLine = tbLine.parentElement;
             }
             if (tbLine && tbLine !== comp && tbLine.parentElement === comp) {
+              tbLine.setAttribute("data-agentx-composer-line", "1");
               tbLine.style.setProperty("flex", "0 0 100%", "important");
               tbLine.style.setProperty("max-width", "100%", "important");
             }
