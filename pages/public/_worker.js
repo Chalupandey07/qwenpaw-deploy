@@ -329,6 +329,28 @@ function computerPanelScript(rebrandEnabled) {
       // v17: the cold-open Thinking option list stays hidden until the user
       // engages the Thinking control.
       "[data-agentx-thinking-closed]{display:none!important;}" +
+      // v19 (reverse-engineered 2026-11-20 from the LIVE console bundles -
+      // GeneralSettings-1TjWEnww.js, index.module-CQaYZsT2.js,
+      // thinking.module-DvpiN7Dn.js - not from screenshots): the Settings
+      // rows are flex rows in the DOM already; they only LOOK stacked
+      // because the row wraps. The theme bars are a ROW of three buttons,
+      // each a COLUMN (preview on top, label below); v17/v18 set the
+      // container to a column, which stacked the bars vertically. Never
+      // restructure, never hide - stop the wrap, use the real classes.
+      ".GeneralSettings-module__settingRow__omDrI,.index-module__settingRow__tmx4d{display:flex!important;flex-wrap:nowrap!important;align-items:center!important;gap:12px!important;}" +
+      ".index-module__settingIcon__jpeXm{flex:none!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;width:36px!important;height:36px!important;color:#1a1d21!important;}" +
+      ".index-module__settingIcon__jpeXm svg{width:18px!important;height:18px!important;min-width:18px!important;min-height:18px!important;color:#1a1d21!important;opacity:1!important;}" +
+      ".index-module__settingIcon__jpeXm svg *{fill:currentColor!important;stroke:currentColor!important;}" +
+      ".index-module__settingCopy__cosTh{min-width:0!important;flex:1 1 auto!important;}" +
+      ".index-module__settingControl__BqRNs{flex:none!important;margin-left:auto!important;}" +
+      ".NotificationSettings-module__row__fViqL{display:flex!important;flex-wrap:nowrap!important;align-items:center!important;gap:12px!important;}" +
+      ".NotificationSettings-module__copy__--Hih{min-width:0!important;flex:1 1 auto!important;}" +
+      ".NotificationSettings-module__control__E3-4e{flex:none!important;margin-left:auto!important;}" +
+      ".NotificationSettings-module__icon__cgf0w{flex:none!important;}" +
+      ".GeneralSettings-module__appearanceChoices__mYTAt{display:flex!important;flex-direction:row!important;gap:12px!important;align-items:stretch!important;}" +
+      ".GeneralSettings-module__appearanceChoice__Qcw7e{display:flex!important;flex-direction:column!important;gap:8px!important;min-height:110px!important;padding:10px!important;align-items:stretch!important;}" +
+      ".GeneralSettings-module__miniWindow__n7mMQ{height:52px!important;min-height:52px!important;flex:none!important;}" +
+      ".GeneralSettings-module__modeLabel__f4mmp{display:flex!important;align-items:center!important;gap:6px!important;font-size:13px!important;line-height:18px!important;white-space:nowrap!important;color:#1a1d21!important;}" +
       // v18 [9]: the composer placeholder must stay on ONE left-aligned line,
       // including right after navigation (it wrapped to three centred lines).
       "textarea::placeholder,[contenteditable='true']::placeholder{text-align:left!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;opacity:1!important;}" +
@@ -1135,6 +1157,11 @@ function computerPanelScript(rebrandEnabled) {
           if (!row || row === document.body) continue;
           row.style.setProperty("display", "flex", "important");
           row.style.setProperty("flex-direction", "row", "important");
+          // v19: the row WRAPS (the console's own CSS leaves flex-wrap on),
+          // so the control drops below the text even in a flex row. The
+          // wrap - not the direction - is what stacked Show thinking and
+          // Desktop notifications. Never wrap; the copy shrinks instead.
+          row.style.setProperty("flex-wrap", "nowrap", "important");
           row.style.setProperty("align-items", "center", "important");
           row.style.setProperty("justify-content", "space-between", "important");
           row.style.setProperty("gap", "16px", "important");
@@ -1374,14 +1401,16 @@ function computerPanelScript(rebrandEnabled) {
           var key = t.toLowerCase();
           seen[key] = (seen[key] || 0) + 1;
           if (seen[key] < 2) continue;
-          // v18: append the ordinal to the row's OWN title text node. The
-          // title already paints, so appended text paints too - an injected
-          // span existed in the a11y tree but never rendered (v17's failure).
+          // v19: PREPEND the ordinal. v18 appended it - but sidebar titles
+          // truncate with an ellipsis, so text appended at the END is
+          // clipped off-screen and never paints (the v18 failure: the badge
+          // existed in the page data, nothing rendered). The start of the
+          // title is always visible, so "#2 " goes there.
           var dtn = longestTextNode(el);
           if (!dtn) continue;
           var dcur = dtn.nodeValue || "";
           if (dcur.indexOf("#" + seen[key]) !== -1) continue;
-          dtn.nodeValue = dcur + " #" + seen[key];
+          dtn.nodeValue = "#" + seen[key] + " " + dcur;
         }
       } catch (e) { /* never break the console */ }
     }
@@ -1393,6 +1422,11 @@ function computerPanelScript(rebrandEnabled) {
     // POSITION and by the svg itself, not by host tag or aria-label. This hits
     // them whatever element wraps the icon, and styles both the icon and its
     // host so an inherited faint colour cannot win.
+    // v19: the ROOT CAUSE of the faint icons, found by reading the bundle:
+    // v16/v18 set the icons to var(--ax-ink), which is #e8eaf0 - near-WHITE.
+    // On the console's LIGHT cream header that is invisible by construction.
+    // The icons need DARK ink (#1a1d21) on the light background, plus fill
+    // and stroke following currentColor so hardcoded light fills cannot win.
     function clarifyHeaderIcons() {
       try {
         var svgs = document.querySelectorAll("svg");
@@ -1404,65 +1438,69 @@ function computerPanelScript(rebrandEnabled) {
           var host = svgs[i].closest("button, a, [role='button']") || svgs[i].parentElement;
           if (!host) continue;
           host.style.setProperty("opacity", "1", "important");
-          host.style.setProperty("color", "var(--ax-ink)", "important");
-          svgs[i].style.setProperty("color", "var(--ax-ink)", "important");
+          host.style.setProperty("color", "#1a1d21", "important");
+          svgs[i].style.setProperty("color", "#1a1d21", "important");
           svgs[i].style.setProperty("opacity", "1", "important");
           svgs[i].style.setProperty("stroke-width", "2", "important");
+          svgs[i].style.setProperty("fill", "currentColor", "important");
+          svgs[i].style.setProperty("stroke", "currentColor", "important");
+          var parts = svgs[i].querySelectorAll ? svgs[i].querySelectorAll("*") : [];
+          for (var q = 0; q < parts.length; q++) {
+            parts[q].style.setProperty("fill", "currentColor", "important");
+            parts[q].style.setProperty("stroke", "currentColor", "important");
+          }
         }
       } catch (e) { /* never break the console */ }
     }
 
-    // v17 [1]: the Thinking menu renders OPEN during the cold render itself (a
-    // default-state bug), so a one-shot click-to-close is simply undone by the
-    // next render - which is why v15's dispatched click never held. Instead the
-    // open option list is HIDDEN and stays hidden across re-renders (re-applied
-    // every pass) until the user actually engages the Thinking control, after
-    // which the console's own toggle behaviour is left untouched.
+    // v19: the Thinking menu renders OPEN during the cold render itself (a
+    // default-state bug). v17/v18 hid it by CLIMBING from the "XHigh" text
+    // node to an ancestor - and that ancestor CONTAINS the whole composer
+    // toolbar, so v18's inline display:none hid all 8 controls on the cold
+    // load (the v18 regression: empty composer box, placeholder only).
+    // Reverse-engineered fix: hide ONLY the option-list elements by their
+    // own identity - the console's own popover/picker (real classes from
+    // thinking.module-DvpiN7Dn.js). NEVER a climbed ancestor, NEVER our
+    // own select (a native <select> renders closed by itself; hiding it
+    // would remove the Thinking control). Guard: refuse any element that
+    // contains the composer textarea or a control button.
     var agentxThinkingTouched = false;
     var agentxThinkingWired = false;
-    function thinkingListbox() {
-      try {
-        if (!document.createTreeWalker) return null;
-        var w = document.createTreeWalker(document.body, 4, null, false);
-        var n, hit = null;
-        while ((n = w.nextNode())) {
-          if ((n.nodeValue || "").indexOf("XHigh") === -1) continue;
-          var el = n.parentElement;
-          for (var up = 0; el && el !== document.body && up < 6; up++) {
-            var tx = el.textContent || "";
-            if (tx.indexOf("XHigh") !== -1 && tx.indexOf("Medium") !== -1 && tx.indexOf("Off") !== -1) { hit = el; break; }
-            el = el.parentElement;
-          }
-          if (hit) break;
-        }
-        return hit;
-      } catch (e) { return null; }
-    }
     function hideColdOpenThinking() {
       try {
-        var lb = thinkingListbox();
-        if (!lb) return;
         if (agentxThinkingTouched) {
-          lb.removeAttribute("data-agentx-thinking-closed");
-          lb.style.removeProperty("display");
+          var prev = document.querySelectorAll ? document.querySelectorAll("[data-agentx-thinking-closed]") : [];
+          for (var i = 0; i < prev.length; i++) { prev[i].removeAttribute("data-agentx-thinking-closed"); prev[i].style.removeProperty("display"); }
           return;
         }
-        lb.setAttribute("data-agentx-thinking-closed", "1");
-        // v18: belt and braces - an inline style holds even if the CSS rule is
-        // outmatched, and both are re-applied every pass so a later render
-        // cannot leave the menu open.
-        lb.style.setProperty("display", "none", "important");
-        if (agentxThinkingWired) return;
-        var wrap = lb.parentElement;
-        for (var up = 0; wrap && wrap !== document.body && up < 4; up++) {
-          if (wrap.querySelector("button, [role='button'], [aria-expanded], [aria-haspopup]")) break;
-          wrap = wrap.parentElement;
+        var targets = [];
+        var pops = document.querySelectorAll ? document.querySelectorAll(".thinking-module__popover__QESSn,.thinking-module__picker__Rhv9q") : [];
+        for (var p = 0; p < pops.length; p++) targets.push(pops[p]);
+        for (var t = 0; t < targets.length; t++) {
+          var el = targets[t];
+          if (!el) continue;
+          var bad = false;
+          try {
+            if (el.querySelector && (el.querySelector("textarea") || el.querySelector("[placeholder*='message navigation']"))) bad = true;
+            if (!bad && el.querySelector) {
+              var btns = el.querySelectorAll("button");
+              for (var b = 0; b < btns.length; b++) {
+                var bl = (btns[b].getAttribute("aria-label") || "") + " " + (btns[b].getAttribute("title") || "") + " " + (btns[b].textContent || "");
+                if (bl.indexOf("Smart Mode") !== -1 || bl.indexOf("Send message") !== -1 || bl.indexOf("Attach files") !== -1 || bl.indexOf("Context usage") !== -1) { bad = true; break; }
+              }
+            }
+          } catch (e1) {}
+          if (bad) continue;
+          el.setAttribute("data-agentx-thinking-closed", "1");
+          el.style.setProperty("display", "none", "important");
         }
-        if (!wrap || wrap === document.body) return;
+        if (agentxThinkingWired) return;
+        var trig = document.querySelector ? (document.querySelector(".thinking-module__trigger__if3ry") || document.querySelector("[data-agentx-thinking]")) : null;
+        if (!trig) return;
         agentxThinkingWired = true;
-        wrap.addEventListener("click", function () {
+        trig.addEventListener("click", function () {
           agentxThinkingTouched = true;
-          try { var l = thinkingListbox(); if (l) { l.removeAttribute("data-agentx-thinking-closed"); l.style.removeProperty("display"); } } catch (e2) {}
+          try { var pr = document.querySelectorAll("[data-agentx-thinking-closed]"); for (var q = 0; q < pr.length; q++) { pr[q].removeAttribute("data-agentx-thinking-closed"); pr[q].style.removeProperty("display"); } } catch (e2) {}
         }, true);
       } catch (e) { /* never break the console */ }
     }
@@ -1471,37 +1509,43 @@ function computerPanelScript(rebrandEnabled) {
     // single ~30px overlap with unreadable labels. Anchored on the labels
     // themselves: their common container becomes a real stacked column with
     // gaps, and each bar gets its own height so the label is readable.
+    // v19: rewritten from the real component code
+    // (GeneralSettings-1TjWEnww.js): the theme picker is a ROW of three
+    // <button class="appearanceChoice">, each a COLUMN (miniWindow preview
+    // on top, modeLabel text below). v17/v18 climbed from the label text
+    // and set the CONTAINER to a column, which stacked the three bars
+    // vertically - the exact squish the checks kept reporting. Use the
+    // real classes; no text climbing, no guessing.
     function fixThemeBars() {
       try {
-        if (!document.createTreeWalker) return;
-        var labels = [];
-        var w = document.createTreeWalker(document.body, 4, null, false);
-        var n;
-        while ((n = w.nextNode())) {
-          var t = (n.nodeValue || "").trim();
-          if (t === "Light" || t === "Dark" || t === "System") labels.push(n.parentElement);
+        var choices = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__appearanceChoices__mYTAt") : [];
+        for (var i = 0; i < choices.length; i++) {
+          var c = choices[i];
+          c.style.setProperty("display", "flex", "important");
+          c.style.setProperty("flex-direction", "row", "important");
+          c.style.setProperty("gap", "12px", "important");
+          c.style.setProperty("align-items", "stretch", "important");
         }
-        if (labels.length < 2) return;
-        var anc = labels[0];
-        for (var i = 1; i < labels.length; i++) {
-          while (anc && anc !== document.body && !anc.contains(labels[i])) anc = anc.parentElement;
-          if (!anc || anc === document.body) return;
+        var btns = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__appearanceChoice__Qcw7e") : [];
+        for (var j = 0; j < btns.length; j++) {
+          var b = btns[j];
+          b.style.setProperty("display", "flex", "important");
+          b.style.setProperty("flex-direction", "column", "important");
+          b.style.setProperty("gap", "8px", "important");
+          b.style.setProperty("min-height", "110px", "important");
         }
-        anc.style.setProperty("display", "flex", "important");
-        anc.style.setProperty("flex-direction", "column", "important");
-        anc.style.setProperty("gap", "12px", "important");
-        anc.style.setProperty("align-items", "stretch", "important");
-        for (var j = 0; j < labels.length; j++) {
-          var card = labels[j];
-          for (var up = 0; card && card !== anc && up < 4; up++) {
-            if (card.parentElement === anc) break;
-            card = card.parentElement;
-          }
-          if (!card || card === anc || card === document.body) continue;
-          card.style.setProperty("min-height", "44px", "important");
-          card.style.setProperty("position", "relative", "important");
-          card.style.setProperty("z-index", "1", "important");
-          card.style.setProperty("overflow", "visible", "important");
+        var wins = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__miniWindow__n7mMQ") : [];
+        for (var k = 0; k < wins.length; k++) {
+          wins[k].style.setProperty("height", "52px", "important");
+          wins[k].style.setProperty("min-height", "52px", "important");
+          wins[k].style.setProperty("flex", "none", "important");
+        }
+        var labs = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__modeLabel__f4mmp") : [];
+        for (var m = 0; m < labs.length; m++) {
+          labs[m].style.setProperty("display", "flex", "important");
+          labs[m].style.setProperty("align-items", "center", "important");
+          labs[m].style.setProperty("gap", "6px", "important");
+          labs[m].style.setProperty("white-space", "nowrap", "important");
         }
       } catch (e) { /* never break the console */ }
     }
