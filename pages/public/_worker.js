@@ -1213,6 +1213,14 @@ function computerPanelScript(rebrandEnabled) {
     // pass, so a route change re-measures. Wide viewports only (the
     // console hides this aside below 768px; display:none still wins
     // because the pin never sets display).
+    // v35: taking the aside out of flow ALSO takes it out of the grid,
+    // and the content <main> has no explicit grid-column, so grid
+    // auto-placement moved it into column 1 - UNDER the pinned sidebar
+    // (headings clipped, Detection Rules cards shrunk to ~35px in a
+    // 280px column). So the pin must ALSO place the content explicitly
+    // in column 2 / row 1. Geometry is remembered across passes (the
+    // last sane measurement) so a scrolled arrival still pins sanely.
+    var agentxSettingsPinTop = 64, agentxSettingsPinLeft = null;
     function fixSettingsSidebarPin() {
       try {
         if (!agentxWide()) return;
@@ -1224,7 +1232,9 @@ function computerPanelScript(rebrandEnabled) {
         if (!content) return;
         var cr = null;
         try { cr = content.getBoundingClientRect(); } catch (e2) {}
-        if (!cr || !(cr.top > 0) || cr.top > 200 || !(cr.left > 280)) return;
+        if (cr && cr.top > 0 && cr.top < 200) agentxSettingsPinTop = Math.round(cr.top);
+        if (cr && cr.left > 280) agentxSettingsPinLeft = Math.round(cr.left - 280);
+        if (agentxSettingsPinLeft === null) return;
         var aside = null;
         try { aside = document.querySelector ? document.querySelector("aside.index-module__sidebar__MIhyN") : null; } catch (e3) {}
         if (!aside) {
@@ -1234,8 +1244,8 @@ function computerPanelScript(rebrandEnabled) {
           } catch (e4) {}
         }
         if (!aside) return;
-        var top = Math.round(cr.top);
-        var left = Math.round(cr.left - 280);
+        var top = agentxSettingsPinTop;
+        var left = agentxSettingsPinLeft;
         aside.style.setProperty("position", "fixed", "important");
         aside.style.setProperty("top", top + "px", "important");
         aside.style.setProperty("left", left + "px", "important");
@@ -1246,6 +1256,11 @@ function computerPanelScript(rebrandEnabled) {
         aside.style.setProperty("overflow-x", "hidden", "important");
         aside.style.setProperty("z-index", "5", "important");
         aside.style.setProperty("box-sizing", "border-box", "important");
+        // v35: keep the content in grid column 2 / row 1 now that the
+        // aside is out of flow (without this, auto-placement puts it in
+        // column 1, under the sidebar).
+        content.style.setProperty("grid-column", "2", "important");
+        content.style.setProperty("grid-row", "1", "important");
       } catch (e) { /* never break the console */ }
     }
 
