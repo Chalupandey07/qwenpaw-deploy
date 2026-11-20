@@ -329,6 +329,9 @@ function computerPanelScript(rebrandEnabled) {
       // v17: the cold-open Thinking option list stays hidden until the user
       // engages the Thinking control.
       "[data-agentx-thinking-closed]{display:none!important;}" +
+      // v18 [9]: the composer placeholder must stay on ONE left-aligned line,
+      // including right after navigation (it wrapped to three centred lines).
+      "textarea::placeholder,[contenteditable='true']::placeholder{text-align:left!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;opacity:1!important;}" +
       ".agentx-unclip{white-space:normal!important;text-overflow:clip!important;overflow-wrap:break-word!important;word-break:break-word!important;-webkit-line-clamp:none!important;}" +
       // System theme preview (v6): the slanted light/dark boundary is drawn by
       // a gradient/clip on the card or one of its (pseudo-)children. Inline
@@ -1002,39 +1005,20 @@ function computerPanelScript(rebrandEnabled) {
           // 'skip if the card has an image' rule left the cards with nothing
           // at all when the console's own count image did not render. A plain
           // text badge is the only guarantee of first-paint visibility.
-          if (card.querySelector("[data-agentx-rule-count]") ||
-              btns[i].querySelector("[data-agentx-rule-count]")) continue;
-          var badge = document.createElement("span");
-          badge.setAttribute("data-agentx-rule-count", "1");
-          badge.textContent = m[1] + " / " + m[2];
-          // v13: force it to actually paint - the cards are small pills in a
-          // horizontal strip and clip their content, so the badge needs an
-          // explicit visible colour and an unclipped card.
-          badge.style.setProperty("display", "inline-block", "important");
-          badge.style.setProperty("opacity", "1", "important");
-          badge.style.setProperty("background", "#1f2937", "important");
-          badge.style.setProperty("color", "#ffffff", "important");
-          badge.style.setProperty("font-size", "11px", "important");
-          badge.style.setProperty("line-height", "1.4", "important");
-          badge.style.setProperty("padding", "1px 7px", "important");
-          badge.style.setProperty("border-radius", "999px", "important");
-          badge.style.setProperty("white-space", "nowrap", "important");
-          badge.style.setProperty("flex", "none", "important");
-          // The pills were too narrow to hold the count - let each pill grow
-          // to fit its content instead of clipping the badge out of view.
-          card.style.setProperty("overflow", "visible", "important");
-          card.style.setProperty("min-width", "max-content", "important");
-          // v17: place the badge AFTER the card as a SIBLING. The cards sit in
-          // a fixed-width strip that clips its children, so a badge inside a
-          // pill could never paint (v15's failure). A sibling chip in the
-          // strip, with the strip allowed to wrap, does paint.
-          card.style.setProperty("overflow", "visible", "important");
-          var strip = card.parentElement;
-          if (strip && strip !== document.body) {
-            strip.style.setProperty("overflow", "visible", "important");
-            strip.style.setProperty("flex-wrap", "wrap", "important");
+          // v18: append the count to the card's OWN rule-name text node. The
+          // rule name already paints, so text appended to it is guaranteed to
+          // paint too - injected chips never did, because the cards sit in a
+          // fixed-width clipping strip (the v15-v17 failures).
+          var ctn = longestTextNode(card);
+          if (ctn) {
+            var ccur = ctn.nodeValue || "";
+            // No regex here: this script lives in a template literal, which
+            // eats single backslashes - a \/ would close the regex and break
+            // the parse. Append-only, guarded by indexOf, stays idempotent.
+            if (ccur.indexOf(m[1] + " / " + m[2]) === -1) {
+              ctn.nodeValue = ccur + " " + m[1] + " / " + m[2];
+            }
           }
-          if (card.parentNode) card.parentNode.insertBefore(badge, card.nextSibling);
         }
       } catch (e) { /* never break the console */ }
     }
@@ -1130,6 +1114,33 @@ function computerPanelScript(rebrandEnabled) {
         anc.style.setProperty("align-items", "center", "important");
         anc.style.setProperty("justify-content", "space-between", "important");
         anc.style.setProperty("gap", "16px", "important");
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v18 [5]: settings rows must be left-text / right-control. 'Show thinking'
+    // AND 'Desktop notifications' both render their toggle BELOW the text on
+    // the LEFT. Anchored on the toggle element itself: the smallest ancestor
+    // that also holds the label text becomes a flex row with the toggle pushed
+    // to the right. Rows already laid out correctly are unaffected.
+    function fixToggleRows() {
+      try {
+        var toggles = document.querySelectorAll("[role='switch'], input[type='checkbox'], button[aria-pressed]");
+        for (var i = 0; i < toggles.length; i++) {
+          var tg = toggles[i];
+          var row = tg.parentElement;
+          for (var up = 0; row && row !== document.body && up < 6; up++) {
+            if ((row.textContent || "").trim().length > 3) break;
+            row = row.parentElement;
+          }
+          if (!row || row === document.body) continue;
+          row.style.setProperty("display", "flex", "important");
+          row.style.setProperty("flex-direction", "row", "important");
+          row.style.setProperty("align-items", "center", "important");
+          row.style.setProperty("justify-content", "space-between", "important");
+          row.style.setProperty("gap", "16px", "important");
+          tg.style.setProperty("margin-left", "auto", "important");
+          tg.style.setProperty("flex", "none", "important");
+        }
       } catch (e) { /* never break the console */ }
     }
 
@@ -1335,6 +1346,23 @@ function computerPanelScript(rebrandEnabled) {
     // same truncated prompt. Make them DISTINGUISHABLE without deleting or
     // renaming anything: identical long titles get a small ordinal badge, so
     // each row is readable and unique while the original title is preserved.
+    // v18: shared helper - the longest text node in a subtree. Appending to
+    // text that ALREADY paints is the only reliable way to make injected text
+    // visible here (injected spans render into the a11y tree but not on screen).
+    function longestTextNode(root) {
+      try {
+        if (!document.createTreeWalker) return null;
+        var best = null, bestLen = 0;
+        var w = document.createTreeWalker(root, 4, null, false);
+        var n;
+        while ((n = w.nextNode())) {
+          var v = (n.nodeValue || "").trim();
+          if (v.length > bestLen) { bestLen = v.length; best = n; }
+        }
+        return best;
+      } catch (e) { return null; }
+    }
+
     function dedupeRowTitles() {
       try {
         var rows = document.querySelectorAll("a[href*='/chat/'], a[href*='conversation'], [role='link']");
@@ -1343,20 +1371,17 @@ function computerPanelScript(rebrandEnabled) {
           var el = rows[i];
           var t = (el.textContent || "").trim();
           if (!t || t.length < 3) continue;
-          var key = t.toLowerCase().replace(/\s+/g, " ");
+          var key = t.toLowerCase();
           seen[key] = (seen[key] || 0) + 1;
           if (seen[key] < 2) continue;
-          var lab = el.querySelector("[data-agentx-dup]");
-          if (!lab) {
-            lab = document.createElement("span");
-            lab.setAttribute("data-agentx-dup", "1");
-            lab.style.setProperty("margin-left", "6px", "important");
-            lab.style.setProperty("font-size", "10px", "important");
-            lab.style.setProperty("color", "var(--ax-muted)", "important");
-            lab.style.setProperty("flex", "none", "important");
-            el.appendChild(lab);
-          }
-          lab.textContent = "#" + seen[key];
+          // v18: append the ordinal to the row's OWN title text node. The
+          // title already paints, so appended text paints too - an injected
+          // span existed in the a11y tree but never rendered (v17's failure).
+          var dtn = longestTextNode(el);
+          if (!dtn) continue;
+          var dcur = dtn.nodeValue || "";
+          if (dcur.indexOf("#" + seen[key]) !== -1) continue;
+          dtn.nodeValue = dcur + " #" + seen[key];
         }
       } catch (e) { /* never break the console */ }
     }
@@ -1364,28 +1389,25 @@ function computerPanelScript(rebrandEnabled) {
     // v16 [3]: the faint header glyphs read as '+' and 'x'. They are actually
     // the Terminal ('>_') and Open-workspace buttons. Darken them and make them
     // opaque so they read as real controls; their tooltips/labels are untouched.
-    // v17 [3]: the faint glyphs that read as '+' and 'x' are the Terminal
-    // ('>_') and Open-workspace buttons. The v16 aria-label match did not hit
-    // the live buttons, so match by POSITION instead: any icon button in the
-    // top-right corner of the page is made opaque, ink-coloured and
-    // thicker-stroked. Label-agnostic, so it cannot miss on a label mismatch.
+    // v18 [2]: match the faint top-right header glyphs by their rendered
+    // POSITION and by the svg itself, not by host tag or aria-label. This hits
+    // them whatever element wraps the icon, and styles both the icon and its
+    // host so an inherited faint colour cannot win.
     function clarifyHeaderIcons() {
       try {
-        var btns = document.querySelectorAll("button, [role='button'], a");
+        var svgs = document.querySelectorAll("svg");
         var w = window.innerWidth || document.documentElement.clientWidth || 1920;
-        for (var i = 0; i < btns.length; i++) {
-          var r = null; try { r = btns[i].getBoundingClientRect(); } catch (e1) {}
+        for (var i = 0; i < svgs.length; i++) {
+          var r = null; try { r = svgs[i].getBoundingClientRect(); } catch (e1) {}
           if (!r || r.width === 0 || r.height === 0) continue;
           if (r.right < w - 220 || r.top > 90) continue;
-          if (!btns[i].querySelector("svg")) continue;
-          btns[i].style.setProperty("opacity", "1", "important");
-          btns[i].style.setProperty("color", "var(--ax-ink)", "important");
-          var sv = btns[i].querySelector("svg");
-          if (sv) {
-            sv.style.setProperty("color", "var(--ax-ink)", "important");
-            sv.style.setProperty("opacity", "1", "important");
-            sv.style.setProperty("stroke-width", "2", "important");
-          }
+          var host = svgs[i].closest("button, a, [role='button']") || svgs[i].parentElement;
+          if (!host) continue;
+          host.style.setProperty("opacity", "1", "important");
+          host.style.setProperty("color", "var(--ax-ink)", "important");
+          svgs[i].style.setProperty("color", "var(--ax-ink)", "important");
+          svgs[i].style.setProperty("opacity", "1", "important");
+          svgs[i].style.setProperty("stroke-width", "2", "important");
         }
       } catch (e) { /* never break the console */ }
     }
@@ -1420,8 +1442,16 @@ function computerPanelScript(rebrandEnabled) {
       try {
         var lb = thinkingListbox();
         if (!lb) return;
-        if (agentxThinkingTouched) { lb.removeAttribute("data-agentx-thinking-closed"); return; }
+        if (agentxThinkingTouched) {
+          lb.removeAttribute("data-agentx-thinking-closed");
+          lb.style.removeProperty("display");
+          return;
+        }
         lb.setAttribute("data-agentx-thinking-closed", "1");
+        // v18: belt and braces - an inline style holds even if the CSS rule is
+        // outmatched, and both are re-applied every pass so a later render
+        // cannot leave the menu open.
+        lb.style.setProperty("display", "none", "important");
         if (agentxThinkingWired) return;
         var wrap = lb.parentElement;
         for (var up = 0; wrap && wrap !== document.body && up < 4; up++) {
@@ -1432,7 +1462,7 @@ function computerPanelScript(rebrandEnabled) {
         agentxThinkingWired = true;
         wrap.addEventListener("click", function () {
           agentxThinkingTouched = true;
-          try { var l = thinkingListbox(); if (l) l.removeAttribute("data-agentx-thinking-closed"); } catch (e2) {}
+          try { var l = thinkingListbox(); if (l) { l.removeAttribute("data-agentx-thinking-closed"); l.style.removeProperty("display"); } } catch (e2) {}
         }, true);
       } catch (e) { /* never break the console */ }
     }
@@ -1675,6 +1705,7 @@ function computerPanelScript(rebrandEnabled) {
         if (agentxWide()) fixTallNavs();
         fixImages();
         fixShowThinkingRow();
+        fixToggleRows();
         fixRadioDescriptions();
         mergeComposerRows();
         startComposerRetry();
