@@ -1032,19 +1032,25 @@ function computerPanelScript(rebrandEnabled) {
             cimgs[q].style.setProperty("display", "inline-block", "important");
             cimgs[q].style.setProperty("opacity", "1", "important");
           }
-          // v24: inject the count as its OWN block element below the title.
-          // The v18/v21 text-node appends did not paint reliably (the title
-          // line is width-clipped, and the console's own count image often
-          // never decodes - v23: 0 images decoded). A block span inside the
-          // card paints on its own line. Idempotent via a marker attribute;
-          // if React re-renders the card the marker goes with it and the
-          // timer re-injects.
+          // v25: the count goes on its OWN LINE under the title. The cards
+          // are single-line pills (~150px wide, title fills it) - a span
+          // appended inside is squeezed/clipped by the pill's flex row +
+          // fixed height (v24: nothing painted). So open the card up:
+          // height auto, overflow visible, wrap, and the span takes the
+          // full width as line 2. Idempotent via a marker attribute; if
+          // React re-renders the card the marker goes with it and the timer
+          // re-injects.
           try {
             if (card && !card.querySelector("[data-agentx-count-badge]")) {
+              card.style.setProperty("height", "auto", "important");
+              card.style.setProperty("min-height", "48px", "important");
+              card.style.setProperty("overflow", "visible", "important");
+              card.style.setProperty("flex-wrap", "wrap", "important");
+              card.style.setProperty("align-content", "flex-start", "important");
               var badge = document.createElement("span");
               badge.setAttribute("data-agentx-count-badge", "1");
               badge.textContent = m[1] + " / " + m[2] + " Enabled";
-              badge.style.cssText = "display:block;font-size:13px;font-weight:600;line-height:1.4;color:#1a1d21;white-space:nowrap;margin-top:4px;";
+              badge.style.cssText = "display:block;flex-basis:100%;flex-shrink:0;font-size:12px;font-weight:600;line-height:1.4;color:#1a1d21;white-space:nowrap;margin-top:2px;";
               card.appendChild(badge);
             }
           } catch (e4) {}
@@ -1468,7 +1474,12 @@ function computerPanelScript(rebrandEnabled) {
             var r = null;
             try { r = allB[i].getBoundingClientRect(); } catch (e0c) {}
             if (!r) continue;
-            if (r.left < 320 && r.width > 50 && r.width < 300 && r.top > 100) rows.push(allB[i]);
+            // v25: filter by LEFT EDGE + ROW HEIGHT, not width. The v24
+            // width bounds (50-300) rejected most rows (probe: sideRows 5
+            // of 54 on /chat) - row buttons can be wider than the sidebar
+            // (padding/overflow) or narrower than assumed. The left edge
+            // (<320) is the discriminator; composer/header buttons are x>600.
+            if (r.left < 320 && r.top > 100 && r.height > 15 && r.height < 80) rows.push(allB[i]);
           }
         } catch (e1) {}
         var seen = {};
@@ -1701,6 +1712,12 @@ function computerPanelScript(rebrandEnabled) {
           wins[k].style.setProperty("height", "52px", "important");
           wins[k].style.setProperty("min-height", "52px", "important");
           wins[k].style.setProperty("flex", "none", "important");
+          // v25: overflow:hidden - the miniWindow box IS 52px, but its
+          // children (miniSidebar/miniChat) are ~110px tall and OVERFLOW
+          // visibly, painting the Dark preview down the whole card (the
+          // v23/v24 slab; probe: miniChat is the topmost element at the
+          // slab centre, inside a rgb(37,37,37) miniWindow). Clip them.
+          wins[k].style.setProperty("overflow", "hidden", "important");
         }
         var labs = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__modeLabel__f4mmp") : [];
         for (var m = 0; m < labs.length; m++) {
@@ -4732,23 +4749,26 @@ function computerPanelScript(rebrandEnabled) {
           }
         } catch (e) {}
         out.push("slabEl:" + slabEl);
-        var sideRows = 0, firstDup = "none";
+        var sideRows = 0, firstDup = "none", sideRects = "none";
         try {
           var ab3 = document.querySelectorAll ? document.querySelectorAll("button") : [];
           var seenT = {};
+          var rectSamples = [];
           for (var sr2 = 0; sr2 < ab3.length; sr2++) {
             var rr = null;
             try { rr = ab3[sr2].getBoundingClientRect(); } catch (e0d) {}
-            if (!rr || rr.left >= 320 || rr.width <= 50 || rr.width >= 300 || rr.top <= 100) continue;
+            if (!rr || rr.left >= 320 || rr.top <= 100 || rr.height <= 15 || rr.height >= 80) continue;
             sideRows++;
+            if (rectSamples.length < 3) rectSamples.push("l" + Math.round(rr.left) + " w" + Math.round(rr.width) + " t" + Math.round(rr.top) + " h" + Math.round(rr.height) + " '" + ((ab3[sr2].textContent || "").trim().slice(0, 20)) + "'");
             var tt = (ab3[sr2].textContent || "").trim().toLowerCase();
             if (tt && tt.length >= 3) {
               if (seenT[tt]) { if (firstDup === "none") firstDup = tt; }
               else seenT[tt] = 1;
             }
           }
+          if (rectSamples.length) sideRects = rectSamples.join(" | ");
         } catch (e) {}
-        out.push("sideRows:" + sideRows + " firstDup:" + firstDup);
+        out.push("sideRows:" + sideRows + " firstDup:" + firstDup + " sideRects:" + sideRects);
         var rows = document.querySelectorAll ? document.querySelectorAll("button") : [];
         var badged = 0;
         for (var j = 0; j < rows.length; j++) { if ((rows[j].textContent || "").indexOf("#2") !== -1 || (rows[j].textContent || "").indexOf("#3") !== -1) badged++; }
