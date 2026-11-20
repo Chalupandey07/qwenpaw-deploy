@@ -261,13 +261,22 @@ function computerPanelScript(rebrandEnabled) {
       // v9: visible Detection-Rules count badge injected into each card — the
       // counts exist only in the buttons' accessible names, so no CSS unhide
       // can reveal them. Pushed to the card's right, before the chevron.
-      "[data-agentx-rule-count]{flex:none!important;margin-left:auto!important;font-size:11px!important;line-height:1.4!important;font-weight:500!important;color:var(--ax-faint)!important;white-space:nowrap!important;font-variant-numeric:tabular-nums;}" +
+      "[data-agentx-rule-count]{display:inline-flex!important;align-items:center!important;flex:none!important;margin-left:auto!important;font-size:11px!important;line-height:1.4!important;font-weight:500!important;color:var(--ax-faint)!important;white-space:nowrap!important;font-variant-numeric:tabular-nums;}" +
       // v9: the sidebar is a flex column whose conversation list scrolls
       // within itself, so the identity row stays pinned and visible at the
       // bottom instead of being pushed below the viewport.
       "[data-agentx-sidebar]{display:flex!important;flex-direction:column!important;overflow:hidden!important;min-height:0!important;}" +
       "[data-agentx-sidebar-list]{flex:1 1 auto!important;min-height:0!important;overflow-y:auto!important;}" +
       "[data-agentx-sidebar-foot]{flex:none!important;}" +
+      // v10: the small grid-icon button beside the account row rendered
+      // cramped (icon crowding its own edges) with a hit area so small it was
+      // barely clickable. Give it a real 38px square target with a centred
+      // icon, hover state and focus ring so it reads as clickable at 1920x999
+      // and at narrow widths.
+      "[data-agentx-grid-btn]{width:38px!important;height:38px!important;min-width:38px!important;min-height:38px!important;padding:0!important;margin:0!important;display:flex!important;align-items:center!important;justify-content:center!important;flex:none!important;border-radius:10px!important;cursor:pointer!important;box-sizing:border-box!important;overflow:visible!important;transition:background-color .15s ease;}" +
+      "[data-agentx-grid-btn] svg{width:18px!important;height:18px!important;flex:none!important;}" +
+      "[data-agentx-grid-btn]:hover{background:var(--ax-surface-2)!important;}" +
+      "[data-agentx-grid-btn]:focus-visible{outline:2px solid var(--ax-accent);outline-offset:2px;}" +
       ".agentx-unclip{white-space:normal!important;text-overflow:clip!important;overflow-wrap:break-word!important;word-break:break-word!important;-webkit-line-clamp:none!important;}" +
       // System theme preview (v6): the slanted light/dark boundary is drawn by
       // a gradient/clip on the card or one of its (pseudo-)children. Inline
@@ -840,6 +849,13 @@ function computerPanelScript(rebrandEnabled) {
         }
         if (!foot || foot === side || foot.parentElement !== side) return;
         foot.setAttribute("data-agentx-sidebar-foot", "1");
+        // Keep the identity row and the grid-icon button on ONE aligned line
+        // (the grid button used to sit cramped beside the row).
+        foot.style.setProperty("display", "flex", "important");
+        foot.style.setProperty("align-items", "center", "important");
+        foot.style.setProperty("gap", "10px", "important");
+        foot.style.setProperty("width", "100%", "important");
+        foot.style.setProperty("box-sizing", "border-box", "important");
         var kids = side.children, list = null, best = -1;
         for (var i = 0; i < kids.length; i++) {
           if (kids[i] === foot) continue;
@@ -904,6 +920,31 @@ function computerPanelScript(rebrandEnabled) {
           var last = card.lastElementChild;
           if (last && last !== badge) card.insertBefore(badge, last);
           else card.appendChild(badge);
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v10: the grid-icon button sits BESIDE the account row in the sidebar
+    // footer. Find it structurally (a small svg button, vertically aligned
+    // with the row) and tag it so the injected CSS can give it a real hit
+    // area. Idempotent via the data marker.
+    function fixSidebarGridButton(row) {
+      try {
+        var scopes = [];
+        if (row.parentElement) scopes.push(row.parentElement);
+        var rr = null; try { rr = row.getBoundingClientRect(); } catch (e0) {}
+        for (var s = 0; s < scopes.length; s++) {
+          var btns = scopes[s].querySelectorAll("button");
+          for (var i = 0; i < btns.length; i++) {
+            var b = btns[i];
+            if (b === row || b.getAttribute("data-agentx-grid-btn") === "1") continue;
+            if (!b.querySelector("svg")) continue;
+            var r = null; try { r = b.getBoundingClientRect(); } catch (e1) {}
+            if (!r || r.width === 0 || r.width > 90 || r.height > 90) continue;
+            // Must sit beside the account row, not higher up the sidebar.
+            if (rr && Math.abs(r.top - rr.top) > 70) continue;
+            b.setAttribute("data-agentx-grid-btn", "1");
+          }
         }
       } catch (e) { /* never break the console */ }
     }
@@ -1052,6 +1093,7 @@ function computerPanelScript(rebrandEnabled) {
         // inject the visible Detection-Rules count badges.
         fixSidebarScroll(row);
         addRuleCountBadges();
+        fixSidebarGridButton(row);
       } catch (e) { /* never break the console */ }
     }
     addAccountMenuActions();
@@ -2960,6 +3002,7 @@ function computerPanelScript(rebrandEnabled) {
           "Connect AgentX", "Connect QwenPaw", "Token Usage",
           "Agent Management", "Tool Offload", "Skill Pool", "Environments",
           "Cron Jobs", "Heartbeat", "Backups", "Debug",
+          "Configuration", "Extension", "Channels",
         ];
         try {
           if (!document.createTreeWalker) return;
