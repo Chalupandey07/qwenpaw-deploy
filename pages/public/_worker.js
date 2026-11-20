@@ -1760,56 +1760,7 @@ function computerPanelScript(rebrandEnabled) {
         fixThemeBars();
         dedupeRowTitles();
         clarifyHeaderIcons();
-        agentxProbe();
       } catch (e) { /* never break the console */ }
-    }
-    // v20 PROBE (temporary, remove before calling any round done): the v19
-    // CSS/JS fixes did not visibly change the Settings page even though the
-    // rules ARE in the served HTML - so report the LIVE DOM ground truth
-    // (does the class exist? what is its computed display?) into a visible
-    // div the browser check can read. No hiding, no moving, read-only.
-    function agentxProbe() {
-      try {
-        var out = [];
-        var q = function (s) { try { return document.querySelector(s); } catch (e) { return null; } };
-        var cs = function (el, p) { try { return el ? window.getComputedStyle(el)[p] : "n/a"; } catch (e) { return "err"; } };
-        var th = q(".GeneralSettings-module__appearanceChoices__mYTAt");
-        out.push("theme:" + (th ? ("FOUND disp=" + cs(th, "display") + " dir=" + cs(th, "flexDirection") + " wrap=" + cs(th, "flexWrap")) : "MISSING"));
-        var thb = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__appearanceChoice__Qcw7e") : [];
-        out.push("themeBtns:" + thb.length + (thb.length ? (" minH=" + cs(thb[0], "minHeight") + " disp=" + cs(thb[0], "display") + " w=" + cs(thb[0], "width")) : ""));
-        var sr = q(".GeneralSettings-module__settingRow__omDrI") || q(".index-module__settingRow__tmx4d");
-        out.push("setRow:" + (sr ? ("FOUND disp=" + cs(sr, "display") + " wrap=" + cs(sr, "flexWrap")) : "MISSING"));
-        var ic = document.querySelectorAll ? document.querySelectorAll(".index-module__settingIcon__jpeXm") : [];
-        var icSvg = 0;
-        for (var i = 0; i < ic.length; i++) { if (ic[i].querySelector && ic[i].querySelector("svg")) icSvg++; }
-        out.push("setIcon:" + ic.length + " withSvg:" + icSvg);
-        var sw = q("[role='switch']");
-        out.push("switch:" + (sw ? ("FOUND tag=" + sw.tagName + " cls=" + (sw.className || "").toString().slice(0, 60)) : "MISSING"));
-        var tl = null;
-        try {
-          var w = document.createTreeWalker(document.body, 4, null, false), n;
-          while ((n = w.nextNode())) {
-            if ((n.nodeValue || "").indexOf("XHigh") === -1) continue;
-            var el = n.parentElement;
-            if (el && el.offsetParent !== null) { tl = el; break; }
-          }
-        } catch (e) {}
-        out.push("thinkList:" + (tl ? ("tag=" + tl.tagName + " cls=" + (tl.className || "").toString().slice(0, 80) + " parent=" + (tl.parentElement ? tl.parentElement.tagName + "." + (tl.parentElement.className || "").toString().slice(0, 60) : "?")) : "NONE-VISIBLE"));
-        var rows = document.querySelectorAll ? document.querySelectorAll("a[href*='/chat/']") : [];
-        var badged = 0;
-        for (var j = 0; j < rows.length; j++) { if ((rows[j].textContent || "").indexOf("#") !== -1) badged++; }
-        out.push("sideRows:a=" + rows.length + " badged=" + badged);
-        var st = q("[data-agentx-thinking]");
-        out.push("ourSelect:" + (st ? "FOUND" : "MISSING"));
-        var div = document.getElementById("agentx-probe");
-        if (!div) {
-          div = document.createElement("div");
-          div.id = "agentx-probe";
-          div.style.cssText = "position:fixed;right:0;bottom:0;z-index:99999;background:#fff;color:#000;font:11px monospace;padding:6px;max-width:700px;white-space:pre-wrap;border:2px solid red;";
-          document.body.appendChild(div);
-        }
-        div.textContent = out.join("\n");
-      } catch (e) {}
     }
     addAccountMenuActions();
     fixAccountRow();
