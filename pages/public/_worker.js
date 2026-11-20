@@ -286,17 +286,19 @@ function computerPanelScript(rebrandEnabled) {
       // instead of a faint ~10px dot cluster.
       "[data-agentx-grid-icon]{width:20px!important;height:20px!important;padding:5px!important;box-sizing:content-box!important;border-radius:8px!important;background:var(--ax-surface-2)!important;border:1px solid var(--ax-line)!important;color:var(--ax-ink)!important;flex:none!important;transition:background-color .15s ease,border-color .15s ease;}" +
       "[data-agentx-grid-icon],[data-agentx-grid-icon] *{stroke:var(--ax-ink)!important;fill:var(--ax-ink)!important;}" +
-      // v12 COMPOSER COLD LOAD: the JS flatten kept losing the race on a cold
-      // post-login load. Enforce the merge from the stylesheet itself so it
-      // holds from the FIRST paint with no dependency on JS timing: every div
-      // inside the composer that holds a control but not the textbox becomes
-      // layout-transparent, so all controls land in the one flex row.
-      "[data-agentx-composer-toolbar] div:has(button):not(:has(textarea)){display:contents!important;}" +
+      "[data-agentx-grid-icon]:hover{background:var(--ax-line)!important;border-color:var(--ax-line-2)!important;}" +
+      // v13: the ':has()' composer flatten never matched the live DOM. The
+      // merge is now done by DOM manipulation (mergeComposerRows) - the row
+      // containers are found from the visible control labels and their
+      // children are physically moved into one container.
+      // Same for the sidebar icon lift - now tagged from JS.
       // Same cramped-icon problem on the sidebar's small action icons (the
       // 'Last 7 days' collapse / open-in-new pair rendered ~12-15px). Lift
       // every sidebar icon button's glyph to a legible size and a readable
       // colour. Additive only - larger icons are untouched.
-      "[data-agentx-sidebar] button:has(svg) svg{min-width:16px!important;min-height:16px!important;color:var(--ax-muted)!important;}" +
+      // v13: sidebar icon glyphs are lifted via the data-agentx-icon-btn tag
+      // (see above); no ':has()' selector here.
+      "[data-agentx-icon-btn] svg{min-width:16px!important;min-height:16px!important;color:var(--ax-muted)!important;}" +
       // v10 looks pass - SIDEBAR. Consistent motion + a clear hover/focus
       // affordance on every interactive element in the sidebar (nav items,
       // conversation rows, identity row, grid button). PURELY VISUAL: no
@@ -311,7 +313,11 @@ function computerPanelScript(rebrandEnabled) {
       // rendered ~14px - far below a comfortable target. Give every button
       // that contains an icon a 30px floor. Purely additive: buttons that are
       // already larger (composer 32px, grid button 38px) are unaffected.
-      "button:has(svg){min-width:30px!important;min-height:30px!important;box-sizing:border-box!important;}" +
+      // v13: icon-button hit-target floor. NOTE: this is applied by TAGGING
+      // from JS (data-agentx-icon-btn), not by ':has()', because the target
+      // browser does not reliably support ':has()' - the v11 ':has()' rules
+      // silently never matched the live DOM.
+      "[data-agentx-icon-btn]{min-width:30px!important;min-height:30px!important;box-sizing:border-box!important;}" +
       ".agentx-unclip{white-space:normal!important;text-overflow:clip!important;overflow-wrap:break-word!important;word-break:break-word!important;-webkit-line-clamp:none!important;}" +
       // System theme preview (v6): the slanted light/dark boundary is drawn by
       // a gradient/clip on the card or one of its (pseudo-)children. Inline
@@ -1015,49 +1021,79 @@ function computerPanelScript(rebrandEnabled) {
       for (var j = 0; j < b.length; j++) { var d = b.charAt(j); if (d < "0" || d > "9") return false; }
       return true;
     }
+    // v13 [10]: the Settings LEFT NAV is still cut off at the viewport bottom.
+    // The v11e pass queried nav/aside by tag, which does not match the live
+    // markup. Anchor on the nav's OWN visible labels instead ('Voice
+    // Transcription' / 'Global settings' exist only there), then walk up to the
+    // narrow, taller-than-viewport column and make IT fit + scroll internally.
     function fixTallNavs() {
       try {
-        var els = document.querySelectorAll("nav, aside");
-        for (var i = 0; i < els.length; i++) {
-          var el = els[i];
-          if (el.getAttribute("data-agentx-sidebar") === "1") continue;
-          var r = null; try { r = el.getBoundingClientRect(); } catch (e1) {}
-          if (!r || r.height < 700 || r.width > 460) continue;
-          el.setAttribute("data-agentx-tall-nav", "1");
-          el.style.setProperty("position", "sticky", "important");
-          el.style.setProperty("top", "0", "important");
-          el.style.setProperty("max-height", "100vh", "important");
-          el.style.setProperty("overflow-y", "auto", "important");
-          el.style.setProperty("align-self", "flex-start", "important");
-        }
-      } catch (e) { /* never break the console */ }
-    }
-
-    // v11 [G]: the 'Show thinking' row rendered STACKED (icon, heading,
-    // description and toggle all in one column) unlike every other settings
-    // row, which is left-text / right-control. Make it a proper row: the text
-    // block on the left, the toggle on the right. The toggle itself is kept -
-    // only its position changes.
-    function fixShowThinkingRow() {
-      try {
         if (!document.createTreeWalker) return;
+        var anchor = null;
         var walker = document.createTreeWalker(document.body, 4, null, false);
         var n;
         while ((n = walker.nextNode())) {
-          if ((n.nodeValue || "").trim() !== "Show thinking") continue;
-          var row = n.parentElement;
-          while (row && row !== document.body &&
-                 !row.querySelector("[role='switch'], input[type='checkbox'], button[aria-pressed]")) {
-            row = row.parentElement;
+          var tv = (n.nodeValue || "").trim();
+          if (tv !== "Voice Transcription" && tv !== "Global settings" && tv !== "Tool Offload") continue;
+          var el = n.parentElement;
+          for (var q = 0; el && el !== document.body && q < 6; q++) {
+            var tg = (el.tagName || "").toUpperCase();
+            if (tg === "A" || tg === "BUTTON" || el.getAttribute("href")) break;
+            el = el.parentElement;
           }
-          if (!row || row === document.body) return;
-          row.style.setProperty("display", "flex", "important");
-          row.style.setProperty("flex-direction", "row", "important");
-          row.style.setProperty("align-items", "center", "important");
-          row.style.setProperty("justify-content", "space-between", "important");
-          row.style.setProperty("gap", "16px", "important");
-          return;
+          if (el && el !== document.body) { anchor = el; break; }
         }
+        if (!anchor) return;
+        // The nav column = the OUTERMOST narrow ancestor that is taller than
+        // the viewport. Taking the outermost one matters: pinning an inner
+        // wrapper (v11e) left the real column overflowing.
+        var best = null;
+        for (var p = anchor; p && p !== document.body; p = p.parentElement) {
+          var r = null; try { r = p.getBoundingClientRect(); } catch (e1) {}
+          if (r && r.width < 460 && r.height > 780) best = p;
+        }
+        if (!best) return;
+        best.setAttribute("data-agentx-tall-nav", "1");
+        best.style.setProperty("position", "sticky", "important");
+        best.style.setProperty("top", "0", "important");
+        best.style.setProperty("height", "100vh", "important");
+        best.style.setProperty("max-height", "100vh", "important");
+        best.style.setProperty("overflow-y", "auto", "important");
+        best.style.setProperty("overflow-x", "hidden", "important");
+        best.style.setProperty("align-self", "flex-start", "important");
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v13 [5]: the 'Show thinking' row is STILL stacked (icon / heading /
+    // description / toggle in one column). The earlier walk looked for a
+    // [role=switch] ancestor, which does not match the live toggle. Now: find
+    // the heading by its visible text, take the NEAREST FOLLOWING button as
+    // the toggle, and make their smallest common ancestor a left-text /
+    // right-control row. The toggle is kept - only its position changes.
+    function fixShowThinkingRow() {
+      try {
+        if (!document.createTreeWalker || !window.Node) return;
+        var walker = document.createTreeWalker(document.body, 4, null, false);
+        var n, textEl = null;
+        while ((n = walker.nextNode())) {
+          if ((n.nodeValue || "").trim() === "Show thinking") { textEl = n.parentElement; break; }
+        }
+        if (!textEl) return;
+        var all = document.querySelectorAll("button, [role='switch'], input[type='checkbox']");
+        var toggle = null;
+        for (var i = 0; i < all.length; i++) {
+          if (textEl.contains(all[i])) continue;
+          if (all[i].compareDocumentPosition(textEl) & Node.DOCUMENT_POSITION_PRECEDING) { toggle = all[i]; break; }
+        }
+        if (!toggle) return;
+        var anc = textEl;
+        while (anc && anc !== document.body && !anc.contains(toggle)) anc = anc.parentElement;
+        if (!anc || anc === document.body) return;
+        anc.style.setProperty("display", "flex", "important");
+        anc.style.setProperty("flex-direction", "row", "important");
+        anc.style.setProperty("align-items", "center", "important");
+        anc.style.setProperty("justify-content", "space-between", "important");
+        anc.style.setProperty("gap", "16px", "important");
       } catch (e) { /* never break the console */ }
     }
 
@@ -1126,15 +1162,137 @@ function computerPanelScript(rebrandEnabled) {
       } catch (e) { /* never break the console */ }
     }
 
-    // v12: the grid/sliders icon is NOT a separate button beside the account
-    // row - it lives INSIDE the account pill at its right end (browser-measured
-    // x200-210 within the pill, no button in x220-278). Tag that glyph so the
-    // injected CSS can turn it into a visible chip. Idempotent.
+    // v13 [1]: merge the composer's control rows by DOM MANIPULATION. CSS
+    // merging (display:contents) and ':has()' never matched the live DOM. This
+    // walks DOWN from the controls' common ancestor to the deepest container
+    // whose controls are split across two or more children, then physically
+    // moves the extra branches' children into the first branch and hides the
+    // emptied branches. Anchored on the visible 'Send' label + the textbox.
+    // Idempotent, and it never moves or hides the textbox's own branch.
+    function mergeComposerRows() {
+      try {
+        var send = null;
+        var allBtns = document.querySelectorAll("button, [role='button']");
+        for (var i = 0; i < allBtns.length; i++) {
+          var tl = (allBtns[i].textContent || "").trim();
+          var al = (allBtns[i].getAttribute("aria-label") || "").trim();
+          if (tl === "Send" || al === "Send" || tl === "Send message" || al === "Send message") { send = allBtns[i]; break; }
+        }
+        if (!send) return;
+        var root = send.parentElement, tb = null;
+        for (var h = 0; root && root !== document.body && h < 12; h++) {
+          tb = root.querySelector("textarea, input[type='text'], [contenteditable='true']");
+          if (tb) break;
+          root = root.parentElement;
+        }
+        if (!root || root === document.body || !tb) return;
+        var all = root.querySelectorAll("button, select");
+        var ctrls = [];
+        for (var k = 0; k < all.length; k++) { if (!tb.contains(all[k])) ctrls.push(all[k]); }
+        if (ctrls.length < 2) return;
+        var lca = ctrls[0];
+        for (var a = 1; a < ctrls.length; a++) {
+          if (lca.contains(ctrls[a])) continue;
+          var cand = lca;
+          while (cand && !cand.contains(ctrls[a])) cand = cand.parentElement;
+          if (!cand) return;
+          lca = cand;
+        }
+        if (!lca || lca === document.body) return;
+        var node = lca, guard = 0;
+        while (node && node !== document.body && guard++ < 8) {
+          var branches = [], kids = node.children;
+          for (var b = 0; b < kids.length; b++) {
+            if (tb && kids[b].contains(tb)) continue;
+            for (var c = 0; c < ctrls.length; c++) {
+              if (kids[b].contains(ctrls[c])) { branches.push(kids[b]); break; }
+            }
+          }
+          if (branches.length >= 2) {
+            var target = branches[0];
+            for (var d = 1; d < branches.length; d++) {
+              var br = branches[d];
+              var move = [];
+              for (var e = 0; e < br.children.length; e++) move.push(br.children[e]);
+              for (var f = 0; f < move.length; f++) target.appendChild(move[f]);
+              br.style.setProperty("display", "none", "important");
+            }
+            target.style.setProperty("display", "flex", "important");
+            target.style.setProperty("flex-wrap", "wrap", "important");
+            target.style.setProperty("gap", "8px", "important");
+            target.style.setProperty("align-items", "center", "important");
+            target.style.setProperty("justify-content", "flex-start", "important");
+            node.style.setProperty("display", "flex", "important");
+            node.style.setProperty("flex-direction", "column", "important");
+            node.style.setProperty("gap", "8px", "important");
+            return;
+          }
+          if (branches.length === 1) { node = branches[0]; continue; }
+          return;
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v13 [2]: pin the identity pill to the viewport's bottom-left. Every
+    // structural attempt (sticky sidebar, 100vh, scrolling child) missed the
+    // real outer sidebar; a fixed pin is independent of the nesting and always
+    // visible. The pill keeps its own background so list content never shows
+    // through, and a soft shadow so it reads as a deliberate floating control.
+    function pinAccountFooter(row) {
+      try {
+        row.style.setProperty("position", "fixed", "important");
+        row.style.setProperty("left", "12px", "important");
+        row.style.setProperty("bottom", "12px", "important");
+        row.style.setProperty("z-index", "60", "important");
+        row.style.setProperty("max-width", "calc(100vw - 24px)", "important");
+        row.style.setProperty("box-shadow", "0 4px 16px rgba(0,0,0,.18)", "important");
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v13 [9]: tag every button containing an icon so the CSS hit-target floor
+    // applies WITHOUT ':has()', which the target browser does not support.
+    function tagIconButtons() {
+      try {
+        var btns = document.querySelectorAll("button");
+        for (var i = 0; i < btns.length; i++) {
+          if (btns[i].querySelector("svg") && btns[i].getAttribute("data-agentx-icon-btn") !== "1") {
+            btns[i].setAttribute("data-agentx-icon-btn", "1");
+          }
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v13 [3]: the 'Show compact menu' grid icon is also tiny and faint - give
+    // it the same chip treatment as the account-row icon.
+    function fixCompactMenuIcon() {
+      try {
+        var btns = document.querySelectorAll("button, [role='button']");
+        for (var i = 0; i < btns.length; i++) {
+          var al = (btns[i].getAttribute("aria-label") || "").trim();
+          var tl = (btns[i].textContent || "").trim();
+          if (al.indexOf("compact") === -1 && tl.indexOf("compact") === -1) continue;
+          var sv = btns[i].querySelector("svg");
+          if (sv) {
+            sv.setAttribute("data-agentx-grid-icon", "1");
+            btns[i].setAttribute("data-agentx-icon-btn", "1");
+          }
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v12/v13: the grid/sliders icon lives INSIDE the account pill at its right
+    // end. Tag the RIGHTMOST svg in the pill (DOM order is not guaranteed to
+    // match the visual right edge).
     function fixSidebarGridButton(row) {
       try {
         var svgs = row.querySelectorAll("svg");
         if (!svgs.length) return;
-        svgs[svgs.length - 1].setAttribute("data-agentx-grid-icon", "1");
+        var best = null, bestX = -1;
+        for (var i = 0; i < svgs.length; i++) {
+          var r = null; try { r = svgs[i].getBoundingClientRect(); } catch (e1) {}
+          if (r && r.left > bestX) { bestX = r.left; best = svgs[i]; }
+        }
+        if (best) best.setAttribute("data-agentx-grid-icon", "1");
       } catch (e) { /* never break the console */ }
     }
 
@@ -1287,6 +1445,10 @@ function computerPanelScript(rebrandEnabled) {
         fixImages();
         fixShowThinkingRow();
         fixRadioDescriptions();
+        mergeComposerRows();
+        pinAccountFooter(row);
+        tagIconButtons();
+        fixCompactMenuIcon();
       } catch (e) { /* never break the console */ }
     }
     addAccountMenuActions();
@@ -3182,6 +3344,7 @@ function computerPanelScript(rebrandEnabled) {
           // "Sensitive File…" — the only title still cut in v5, because it had
           // no repair entry (the other five were repaired or never cut).
           ["Sensitive File", "Sensitive File Access"],
+          ["Create From Tem", "Create From Template"],
         ];
         // NOTE: the Security > Detection Rules titles are deliberately NOT in
         // this list. Their truncation was JS-side (the console cut the string
