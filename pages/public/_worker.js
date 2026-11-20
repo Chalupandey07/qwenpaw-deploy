@@ -242,7 +242,14 @@ function computerPanelScript(rebrandEnabled) {
       "[data-agentx-identity-text]{display:flex!important;flex-direction:column!important;align-items:flex-start;justify-content:center;gap:2px;overflow:visible!important;min-width:0;flex:1 1 auto;text-align:left;}" +
       "[data-agentx-identity-text] strong,[data-agentx-identity-text] small{overflow:visible!important;text-overflow:clip!important;max-width:none!important;white-space:nowrap;}" +
       "[data-agentx-composer] button,[data-agentx-composer] select{min-height:32px;height:32px;box-sizing:border-box;}" +
-      ".agentx-unclip{white-space:normal!important;overflow:visible!important;text-overflow:clip!important;}" +
+      // v7 composer: reinforce the compact one-row layout from CSS (inline
+      // styles are dropped on React re-renders; the observer re-applies, and
+      // this stylesheet holds the line in between). Icons shrink too — a fat
+      // icon inside a pill is a big share of the wide pills' width.
+      "[data-agentx-composer-toolbar]{display:flex!important;flex-wrap:wrap!important;gap:8px!important;align-items:center!important;justify-content:flex-start!important;}" +
+      "[data-agentx-composer-toolbar] button,[data-agentx-composer-toolbar] select{min-height:32px!important;height:32px!important;padding:2px 6px!important;font-size:11px!important;min-width:0!important;white-space:nowrap!important;flex:0 0 auto!important;margin:0!important;box-sizing:border-box!important;}" +
+      "[data-agentx-composer-toolbar] button svg{width:13px!important;height:13px!important;flex:none!important;}" +
+      ".agentx-unclip{white-space:normal!important;text-overflow:clip!important;overflow-wrap:break-word!important;word-break:break-word!important;-webkit-line-clamp:none!important;}" +
       // System theme preview (v6): the slanted light/dark boundary is drawn by
       // a gradient/clip on the card or one of its (pseudo-)children. Inline
       // styles cannot reach ::before/::after, so the card is tagged with
@@ -252,7 +259,7 @@ function computerPanelScript(rebrandEnabled) {
       // one solid orange bar across both halves instead of being bisected.
       "[data-agentx-system-card]{background-image:none!important;clip-path:none!important;}" +
       "[data-agentx-system-card]::before,[data-agentx-system-card]::after{background-image:none!important;clip-path:none!important;}" +
-      "[data-agentx-system-preview]{background-image:linear-gradient(90deg,#f5f5f4 0 50%,#1f1f1f 50% 100%)!important;background-color:transparent!important;clip-path:none!important;overflow:hidden!important;}" +
+      "[data-agentx-system-preview]{background-image:linear-gradient(90deg,#f5f5f4 0%,#f5f5f4 50%,#111 50%,#111 100%)!important;background-color:transparent!important;clip-path:none!important;overflow:hidden!important;}" +
       "[data-agentx-system-preview]::before,[data-agentx-system-preview]::after,[data-agentx-system-preview] *::before,[data-agentx-system-preview] *::after{background-image:none!important;clip-path:none!important;}";
     var ICON_COMPUTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="13" rx="2"></rect><path d="M8.5 20.5h7M12 17v3.5"></path></svg>';
     var ICON_REST = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 13.2A8.5 8.5 0 1 1 10.8 3.5a6.8 6.8 0 0 0 9.7 9.7z"></path></svg>';
@@ -2731,14 +2738,23 @@ function computerPanelScript(rebrandEnabled) {
 
           // Uniform 32px controls, compact pills, even 8px spacing, Send
           // attached to the group (no auto margin pushing it to the edge).
+          // v7: compacted HARDER (11px type, 2px 6px padding, no min-width).
+          // The 8 controls did not fit one 824px row at their natural widths —
+          // the total hovered right at the box width, which is why flex-wrap
+          // wrapped at an UNSTABLE point that shifted between renders (the
+          // async Thinking selector changed the total). Compacted this small
+          // there is ~200px of slack at 1919px, so the row does not wrap at
+          // all and the layout stops flipping between variants.
           for (var c = 0; c < ctrls.length; c++) {
             var el = ctrls[c];
             el.style.setProperty("min-height", "32px", "important");
             el.style.setProperty("height", "32px", "important");
             el.style.setProperty("box-sizing", "border-box", "important");
-            el.style.setProperty("padding", "4px 8px", "important");
-            el.style.setProperty("font-size", "12px", "important");
+            el.style.setProperty("padding", "2px 6px", "important");
+            el.style.setProperty("font-size", "11px", "important");
             el.style.setProperty("flex", "0 0 auto", "important");
+            el.style.setProperty("min-width", "0", "important");
+            el.style.setProperty("white-space", "nowrap", "important");
             el.style.setProperty("margin-left", "0", "important");
             el.style.setProperty("margin-right", "0", "important");
           }
@@ -2806,15 +2822,20 @@ function computerPanelScript(rebrandEnabled) {
               if (t.indexOf(labels[i]) !== -1 && node.parentElement) { hits.push(node.parentElement); break; }
             }
           }
-          // (2) Unconditional unclip of the label and its ancestors.
+          // (2) Unclip the label and its IMMEDIATE parent only, and wrap the
+          // text WITHIN its box (overflow-wrap) instead of letting it spill
+          // out. v6's 8-hop overflow:visible sweep made the Detection-Rules
+          // titles spill over their '4 / 4' / '2 / 2' counts and pushed those
+          // counts out of their cards; wrapping in place keeps every count in
+          // its card while still removing every ellipsis.
           for (var k = 0; k < hits.length; k++) {
             var cur = hits[k], hops = 0;
-            while (cur && cur !== document.body && hops < 8) {
+            while (cur && cur !== document.body && hops < 2) {
               cur.classList.add("agentx-unclip");
               cur.style.setProperty("white-space", "normal", "important");
-              cur.style.setProperty("overflow", "visible", "important");
-              cur.style.setProperty("overflow-x", "visible", "important");
               cur.style.setProperty("text-overflow", "clip", "important");
+              cur.style.setProperty("overflow-wrap", "break-word", "important");
+              cur.style.setProperty("word-break", "break-word", "important");
               cur.style.setProperty("-webkit-line-clamp", "none", "important");
               cur = cur.parentElement; hops++;
             }
@@ -2885,7 +2906,7 @@ function computerPanelScript(rebrandEnabled) {
             // Clean vertical two-tone split (left light, right dark) painted on
             // the preview itself, so an opaque background-colour there cannot
             // hide the split behind it.
-            target.style.setProperty("background-image", "linear-gradient(90deg,#f5f5f4 0 50%,#1f1f1f 50% 100%)", "important");
+            target.style.setProperty("background-image", "linear-gradient(90deg,#f5f5f4 0%,#f5f5f4 50%,#111 50%,#111 100%)", "important");
             target.style.setProperty("background-color", "transparent", "important");
             target.style.setProperty("clip-path", "none", "important");
             target.style.setProperty("overflow", "hidden", "important");
