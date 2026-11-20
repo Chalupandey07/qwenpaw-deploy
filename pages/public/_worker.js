@@ -1392,12 +1392,27 @@ function computerPanelScript(rebrandEnabled) {
 
     function dedupeRowTitles() {
       try {
-        var rows = document.querySelectorAll("a[href*='/chat/'], a[href*='conversation'], [role='link']");
+        // v20: rows are <button>s, NOT <a href='/chat/'> links (live page
+        // data, v19 re-verification: a row is <button role=button> holding
+        // an "Idle" status image + the truncated title text). The old
+        // anchor selector matched NOTHING, so no badge ever ran. Find the
+        // sidebar, take its buttons, skip control buttons (account pill,
+        // New Chat/New task, group headers are unique so they never badge
+        // anyway - the skip is belt-and-braces).
+        var rows = [];
+        try {
+          var side = null;
+          try { side = findSidebarEl(); } catch (e0) {}
+          var btns = side && side.querySelectorAll ? side.querySelectorAll("button") : (document.querySelectorAll ? document.querySelectorAll("button") : []);
+          for (var i = 0; i < btns.length; i++) rows.push(btns[i]);
+        } catch (e1) {}
         var seen = {};
         for (var i = 0; i < rows.length; i++) {
           var el = rows[i];
           var t = (el.textContent || "").trim();
           if (!t || t.length < 3) continue;
+          if (t.indexOf("Console account") !== -1 || t.indexOf("Local workspace") !== -1) continue;
+          if (t === "New Chat" || t === "New task") continue;
           var key = t.toLowerCase();
           seen[key] = (seen[key] || 0) + 1;
           if (seen[key] < 2) continue;
@@ -1476,6 +1491,44 @@ function computerPanelScript(rebrandEnabled) {
         var targets = [];
         var pops = document.querySelectorAll ? document.querySelectorAll(".thinking-module__popover__QESSn,.thinking-module__picker__Rhv9q") : [];
         for (var p = 0; p < pops.length; p++) targets.push(pops[p]);
+        // v20: the class targets above never matched in the live page.
+        // The console's chunks contain NO "XHigh" literal at all (the level
+        // names exist only in our own injected select and in the console's
+        // locale data), and the a11y tree says OUR select is [collapsed] -
+        // so the painted list is a SEPARATE element the class query cannot
+        // see. Find it by its text: the smallest visible element holding
+        // the level list (XHigh + Medium + Off), NOT inside our select.
+        // The guard below (refuse anything containing the textarea or a
+        // control button) is what stops this climbing into the toolbar
+        // itself - the v18 lesson. Never hide our own select.
+        try {
+          var xhNode = null;
+          if (document.createTreeWalker) {
+            var w2 = document.createTreeWalker(document.body, 4, null, false), nn;
+            while ((nn = w2.nextNode())) {
+              if ((nn.nodeValue || "").indexOf("XHigh") === -1) continue;
+              var par = nn.parentElement;
+              if (!par || par.offsetParent === null) continue;
+              var anc = par, inOurs = false;
+              while (anc && anc !== document.body) {
+                if (anc.getAttribute && anc.getAttribute("data-agentx-thinking") !== null) { inOurs = true; break; }
+                anc = anc.parentElement;
+              }
+              if (inOurs) continue;
+              xhNode = par;
+              break;
+            }
+          }
+          if (xhNode) {
+            var cand = xhNode.parentElement, hops = 0;
+            while (cand && cand !== document.body && hops < 4) {
+              var ct = (cand.textContent || "");
+              if (ct.indexOf("XHigh") !== -1 && ct.indexOf("Medium") !== -1 && ct.indexOf("Off") !== -1 && ct.length < 400) { targets.push(cand); break; }
+              cand = cand.parentElement;
+              hops++;
+            }
+          }
+        } catch (e3) {}
         for (var t = 0; t < targets.length; t++) {
           var el = targets[t];
           if (!el) continue;
@@ -4286,6 +4339,78 @@ function computerPanelScript(rebrandEnabled) {
         }
       } catch (e) {}
     }
+    // v20: DECOUPLED page fixes. The v19 fixes (theme bars, toggle rows,
+    // dup badges, Thinking hide, counts, header icons) lived ONLY inside
+    // fixAccountRow(), which EARLY-RETURNS when the account row's <small>
+    // ("Console account" / "Local workspace") is not found - so on any
+    // page/load where the row is not yet mounted, NONE of them ran, even
+    // though the code looked right and the CSS was served. That is the
+    // most likely reason v19's Settings fixes never visibly landed while
+    // the counts (same function, but the row WAS found on Security) did.
+    // These fixes now run on EVERY observer pass and on a 2s timer,
+    // independent of the account row. All are idempotent; running them
+    // twice (here + inside fixAccountRow) is harmless.
+    function agentxRunPageFixes() {
+      try { addRuleCountBadges(); } catch (e) {}
+      try { fixToggleRows(); } catch (e) {}
+      try { fixThemeBars(); } catch (e) {}
+      try { dedupeRowTitles(); } catch (e) {}
+      try { hideColdOpenThinking(); } catch (e) {}
+      try { clarifyHeaderIcons(); } catch (e) {}
+      try { fixShowThinkingRow(); } catch (e) {}
+      try { fixTallNavs(); } catch (e) {}
+      try { fixImages(); } catch (e) {}
+      try { fixRadioDescriptions(); } catch (e) {}
+      try { agentxProbeV20(); } catch (e) {}
+    }
+    // v20 PROBE (temporary, remove before calling any round done): the same
+    // live-DOM ground-truth probe as v19, but called from the DECOUPLED
+    // agentxRunPageFixes (every observer pass + timer) instead of from
+    // inside fixAccountRow - which is why the v19 probe never rendered.
+    // Read-only: reports classes/computed display into a visible div.
+    function agentxProbeV20() {
+      try {
+        var out = [];
+        var q = function (s) { try { return document.querySelector(s); } catch (e) { return null; } };
+        var cs = function (el, p) { try { return el ? window.getComputedStyle(el)[p] : "n/a"; } catch (e) { return "err"; } };
+        var th = q(".GeneralSettings-module__appearanceChoices__mYTAt");
+        out.push("theme:" + (th ? ("FOUND disp=" + cs(th, "display") + " dir=" + cs(th, "flexDirection") + " wrap=" + cs(th, "flexWrap")) : "MISSING"));
+        var thb = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__appearanceChoice__Qcw7e") : [];
+        out.push("themeBtns:" + thb.length + (thb.length ? (" minH=" + cs(thb[0], "minHeight") + " disp=" + cs(thb[0], "display") + " w=" + cs(thb[0], "width")) : ""));
+        var sr = q(".GeneralSettings-module__settingRow__omDrI") || q(".index-module__settingRow__tmx4d");
+        out.push("setRow:" + (sr ? ("FOUND disp=" + cs(sr, "display") + " wrap=" + cs(sr, "flexWrap")) : "MISSING"));
+        var ic = document.querySelectorAll ? document.querySelectorAll(".index-module__settingIcon__jpeXm") : [];
+        var icSvg = 0;
+        for (var i = 0; i < ic.length; i++) { if (ic[i].querySelector && ic[i].querySelector("svg")) icSvg++; }
+        out.push("setIcon:" + ic.length + " withSvg:" + icSvg);
+        var sw = q("[role='switch']");
+        out.push("switch:" + (sw ? ("FOUND tag=" + sw.tagName) : "MISSING"));
+        var tl = null;
+        try {
+          var w = document.createTreeWalker(document.body, 4, null, false), n;
+          while ((n = w.nextNode())) {
+            if ((n.nodeValue || "").indexOf("XHigh") === -1) continue;
+            var el = n.parentElement;
+            if (el && el.offsetParent !== null) { tl = el; break; }
+          }
+        } catch (e) {}
+        out.push("thinkList:" + (tl ? ("tag=" + tl.tagName + " cls=" + (tl.className || "").toString().slice(0, 80) + " parent=" + (tl.parentElement ? tl.parentElement.tagName + "." + (tl.parentElement.className || "").toString().slice(0, 60) : "?")) : "NONE-VISIBLE"));
+        var rows = document.querySelectorAll ? document.querySelectorAll("button") : [];
+        var badged = 0;
+        for (var j = 0; j < rows.length; j++) { if ((rows[j].textContent || "").indexOf("#2") !== -1 || (rows[j].textContent || "").indexOf("#3") !== -1) badged++; }
+        out.push("sideBtns:" + rows.length + " badged=" + badged);
+        var st = q("[data-agentx-thinking]");
+        out.push("ourSelect:" + (st ? "FOUND" : "MISSING"));
+        var div = document.getElementById("agentx-probe");
+        if (!div) {
+          div = document.createElement("div");
+          div.id = "agentx-probe";
+          div.style.cssText = "position:fixed;right:0;bottom:0;z-index:99999;background:#fff;color:#000;font:11px monospace;padding:6px;max-width:700px;white-space:pre-wrap;border:2px solid red;";
+          document.body.appendChild(div);
+        }
+        div.textContent = out.join("\n");
+      } catch (e) {}
+    }
     // v11: the rule list is extracted so the observer callback and its
     // TRAILING re-run share one implementation, and a queued flag records when
     // mutations arrived while a pass was already running.
@@ -4306,6 +4431,7 @@ function computerPanelScript(rebrandEnabled) {
       agentxRunRuleNow("system-preview");
       agentxRunRuleNow("hide-per-row-more");
       agentxRunRules();
+      agentxRunPageFixes();
     }
     function agentxRunObserverPass() {
       if (agentxInObserverPass) return;
@@ -4375,6 +4501,16 @@ function computerPanelScript(rebrandEnabled) {
         setInterval(function () { // UI-TIMER-ALLOWLIST: sidebar-ellipsis re-apply
           try { agentxRunRuleNow("sidebar-ellipsis"); } catch (e) {}
         }, 1500);
+      } catch (e) {}
+      // v20: page-fixes re-apply timer. The observer can drop React's final
+      // cold-load render (re-entrancy guard + one bounded trailing re-run),
+      // and a late settings-chunk mount or an API-driven re-render can
+      // replace the nodes the fixes styled. A 2 s local re-apply catches
+      // those windows. Client-side only, no network, no data writes.
+      try {
+        setInterval(function () { // UI-TIMER-ALLOWLIST: page-fixes re-apply
+          try { agentxRunPageFixes(); } catch (e) {}
+        }, 2000);
       } catch (e) {}
       addVaultMenuItem();
       agentxRunRules();
