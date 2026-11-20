@@ -279,11 +279,19 @@ function computerPanelScript(rebrandEnabled) {
       // hairline border), a 22px SOLID ink glyph, hover that lifts both, and a
       // focus ring. The account row beside it stays the same size, so the two
       // read as one deliberate control group.
-      "[data-agentx-grid-btn]{width:40px!important;height:40px!important;min-width:40px!important;min-height:40px!important;padding:0!important;margin:0!important;display:flex!important;align-items:center!important;justify-content:center!important;flex:none!important;border-radius:10px!important;cursor:pointer!important;box-sizing:border-box!important;overflow:visible!important;background:var(--ax-surface-2)!important;border:1px solid var(--ax-line)!important;color:var(--ax-ink)!important;transition:background-color .15s ease,border-color .15s ease;}" +
-      "[data-agentx-grid-btn] svg{width:22px!important;height:22px!important;flex:none!important;color:var(--ax-ink)!important;}" +
-      "[data-agentx-grid-btn] svg,[data-agentx-grid-btn] svg *{stroke:var(--ax-ink)!important;fill:var(--ax-ink)!important;}" +
-      "[data-agentx-grid-btn]:hover{background:var(--ax-line)!important;border-color:var(--ax-line-2)!important;}" +
-      "[data-agentx-grid-btn]:focus-visible{outline:2px solid var(--ax-accent);outline-offset:2px;}" +
+      // v12: the sliders icon lives INSIDE the account pill at its right end
+      // (browser-measured x200-210), NOT as a separate button beside it. Style
+      // THAT glyph into a visible chip: 20px solid-ink glyph on a 30px
+      // surface-2 chip with a hairline border, so it reads as a real control
+      // instead of a faint ~10px dot cluster.
+      "[data-agentx-grid-icon]{width:20px!important;height:20px!important;padding:5px!important;box-sizing:content-box!important;border-radius:8px!important;background:var(--ax-surface-2)!important;border:1px solid var(--ax-line)!important;color:var(--ax-ink)!important;flex:none!important;transition:background-color .15s ease,border-color .15s ease;}" +
+      "[data-agentx-grid-icon],[data-agentx-grid-icon] *{stroke:var(--ax-ink)!important;fill:var(--ax-ink)!important;}" +
+      // v12 COMPOSER COLD LOAD: the JS flatten kept losing the race on a cold
+      // post-login load. Enforce the merge from the stylesheet itself so it
+      // holds from the FIRST paint with no dependency on JS timing: every div
+      // inside the composer that holds a control but not the textbox becomes
+      // layout-transparent, so all controls land in the one flex row.
+      "[data-agentx-composer-toolbar] div:has(button):not(:has(textarea)){display:contents!important;}" +
       // Same cramped-icon problem on the sidebar's small action icons (the
       // 'Last 7 days' collapse / open-in-new pair rendered ~12-15px). Lift
       // every sidebar icon button's glyph to a legible size and a readable
@@ -879,7 +887,12 @@ function computerPanelScript(rebrandEnabled) {
         side.style.setProperty("height", "100vh", "important");
         side.style.setProperty("max-height", "100vh", "important");
         side.style.setProperty("align-self", "flex-start", "important");
-        side.style.setProperty("overflow", "hidden", "important");
+        // v12: the sidebar must SCROLL (not clip). overflow:hidden clipped the
+        // footer to a sliver; overflow-y:auto plus the sticky footer below
+        // keeps the identity row visible at the bottom while the history
+        // scrolls above it.
+        side.style.setProperty("overflow-y", "auto", "important");
+        side.style.setProperty("overflow-x", "hidden", "important");
         side.style.setProperty("display", "flex", "important");
         side.style.setProperty("flex-direction", "column", "important");
         side.style.setProperty("min-height", "0", "important");
@@ -896,6 +909,11 @@ function computerPanelScript(rebrandEnabled) {
         foot.style.setProperty("gap", "10px", "important");
         foot.style.setProperty("width", "100%", "important");
         foot.style.setProperty("box-sizing", "border-box", "important");
+        // v12: pin the footer to the bottom of the (now scrollable) sidebar so
+        // the identity row is visible without collapsing history or scrolling.
+        foot.style.setProperty("position", "sticky", "important");
+        foot.style.setProperty("bottom", "0", "important");
+        foot.style.setProperty("z-index", "2", "important");
         var kids = side.children, list = null, best = -1;
         for (var i = 0; i < kids.length; i++) {
           if (kids[i] === foot) continue;
@@ -959,14 +977,14 @@ function computerPanelScript(rebrandEnabled) {
           // first paint, and only fall back to a plain-text badge when the
           // card has no count image at all (avoids showing the count twice).
           var cimgs = card.querySelectorAll("img");
-          if (cimgs.length) {
-            for (var q = 0; q < cimgs.length; q++) {
-              cimgs[q].setAttribute("loading", "eager");
-              cimgs[q].setAttribute("decoding", "sync");
-              cimgs[q].style.setProperty("opacity", "1", "important");
-            }
-            continue;
+          for (var q = 0; q < cimgs.length; q++) {
+            cimgs[q].setAttribute("loading", "eager");
+            cimgs[q].setAttribute("decoding", "sync");
           }
+          // v12: ALWAYS render the count as plain visible text. The v11a
+          // 'skip if the card has an image' rule left the cards with nothing
+          // at all when the console's own count image did not render. A plain
+          // text badge is the only guarantee of first-paint visibility.
           if (card.querySelector("[data-agentx-rule-count]") ||
               btns[i].querySelector("[data-agentx-rule-count]")) continue;
           var badge = document.createElement("span");
@@ -1108,28 +1126,15 @@ function computerPanelScript(rebrandEnabled) {
       } catch (e) { /* never break the console */ }
     }
 
-    // v10: the grid-icon button sits BESIDE the account row in the sidebar
-    // footer. Find it structurally (a small svg button, vertically aligned
-    // with the row) and tag it so the injected CSS can give it a real hit
-    // area. Idempotent via the data marker.
+    // v12: the grid/sliders icon is NOT a separate button beside the account
+    // row - it lives INSIDE the account pill at its right end (browser-measured
+    // x200-210 within the pill, no button in x220-278). Tag that glyph so the
+    // injected CSS can turn it into a visible chip. Idempotent.
     function fixSidebarGridButton(row) {
       try {
-        var scopes = [];
-        if (row.parentElement) scopes.push(row.parentElement);
-        var rr = null; try { rr = row.getBoundingClientRect(); } catch (e0) {}
-        for (var s = 0; s < scopes.length; s++) {
-          var btns = scopes[s].querySelectorAll("button");
-          for (var i = 0; i < btns.length; i++) {
-            var b = btns[i];
-            if (b === row || b.getAttribute("data-agentx-grid-btn") === "1") continue;
-            if (!b.querySelector("svg")) continue;
-            var r = null; try { r = b.getBoundingClientRect(); } catch (e1) {}
-            if (!r || r.width === 0 || r.width > 90 || r.height > 90) continue;
-            // Must sit beside the account row, not higher up the sidebar.
-            if (rr && Math.abs(r.top - rr.top) > 70) continue;
-            b.setAttribute("data-agentx-grid-btn", "1");
-          }
-        }
+        var svgs = row.querySelectorAll("svg");
+        if (!svgs.length) return;
+        svgs[svgs.length - 1].setAttribute("data-agentx-grid-icon", "1");
       } catch (e) { /* never break the console */ }
     }
 
