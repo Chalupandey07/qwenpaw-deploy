@@ -226,6 +226,10 @@ console.log("decideSleepWake — max-run guard (direct)");
     (() => { const d = decideSleepWake(idleInputs({ uptimeMin: 420, nextRoutineAt: NOW + 5 * MIN }), NOW); return d.action === "hold" && d.reason !== "max_run_guard"; })());
   check("uptime 420 + routine due in 5 min + down -> wake (WAKE wins)",
     (() => { const d = decideSleepWake(idleInputs({ uptimeMin: 420, nextRoutineAt: NOW + 5 * MIN, machineUp: false, sleepState: "suspended" }), NOW); return d.action === "wake"; })());
+  check("uptime 420 + routine due in 6 min + up -> sleep max_run_guard (outside the 5-min lookahead, WAKE does not win)",
+    (() => { const d = decideSleepWake(idleInputs({ uptimeMin: 420, nextRoutineAt: NOW + 6 * MIN }), NOW); return d.action === "sleep" && d.reason === "max_run_guard"; })());
+  check("uptime 420 + routine due in 6 min + down -> hold (outside the 5-min lookahead, guard needs the machine up)",
+    (() => { const d = decideSleepWake(idleInputs({ uptimeMin: 420, nextRoutineAt: NOW + 6 * MIN, machineUp: false, sleepState: "suspended" }), NOW); return d.action === "hold" && d.reason !== "max_run_guard"; })());
   check("uptime unknown (0) + otherwise idle -> hold (fail closed)",
     (() => { const d = decideSleepWake(idleInputs({ uptimeMin: 0 }), NOW); return d.action === "hold" && d.reason !== "max_run_guard"; })());
   check("uptime 420 + manual rest -> hold (rest wins)",
