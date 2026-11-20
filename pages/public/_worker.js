@@ -375,20 +375,15 @@ function computerPanelScript(rebrandEnabled) {
       // open with !important CSS. The console's own count IS a proper
       // block (span.count, 32px) - it only needs the 32px/overflow:hidden
       // clamp lifted.
-      // v32: the v31 CLEAN check (no probe) showed the counts painting but
-      // the card collapsed to a ~27px title pill with the count/meter/
-      // caption SPILLING below it (overlapping the next row + the Shell
-      // Evasion heading) - height:auto + padding:20px alone did not hold
-      // the card open (Framer Motion's layout animation fights height).
-      // min-height is the robust floor: it beats any height (inline or
-      // stylesheet) when the height is smaller, so the card cannot collapse
-      // below the room its own content needs.
-      ".RuleTable-module__category__e5r94{display:block!important;height:auto!important;min-height:170px!important;max-height:none!important;overflow:visible!important;padding:20px!important;}" +
-      ".RuleTable-module__count__9nsCT{display:block!important;font-size:32px!important;font-weight:550!important;margin:22px 0 14px!important;visibility:visible!important;opacity:1!important;position:static!important;}" +
-      ".RuleTable-module__count__9nsCT small{font-size:16px!important;}" +
-      ".RuleTable-module__meter__LMSek{display:block!important;height:3px!important;overflow:hidden!important;position:static!important;}" +
-      ".RuleTable-module__caption__xSKG7{display:block!important;margin-top:8px!important;font-size:12px!important;visibility:visible!important;opacity:1!important;position:static!important;}" +
-      ".RuleTable-module__categoryTop__TGen9{display:flex!important;position:static!important;}" +
+      // v33 (2026-11-20): ALL RuleTable rules REMOVED. The ?rebrand=0
+      // control test proved the console renders these cards CORRECTLY on
+      // its own (~177px tall, big count + "/ n" + Enabled + orange meter
+      // all inside, no overlap) and OUR injection was collapsing them to
+      // ~73px with the counts spilling onto the next row. The v30 CSS
+      // (height:auto + min-height:170px + overflow:visible + the
+      // position:static child rules) and the addRuleCountBadges JS were
+      // the breakage, not the fix. Do NOT re-add RuleTable overrides:
+      // the native render is the correct one. (L73.)
       "[data-agentx-system-preview]{background-image:linear-gradient(90deg,#f5f5f4 0%,#f5f5f4 50%,#111 50%,#111 100%)!important;background-color:transparent!important;clip-path:none!important;overflow:hidden!important;}" +
       "[data-agentx-system-preview]::before,[data-agentx-system-preview]::after,[data-agentx-system-preview] *::before,[data-agentx-system-preview] *::after{background-image:none!important;clip-path:none!important;}";
     var ICON_COMPUTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="13" rx="2"></rect><path d="M8.5 20.5h7M12 17v3.5"></path></svg>';
@@ -1000,6 +995,16 @@ function computerPanelScript(rebrandEnabled) {
     // no CSS unhide can reveal them. Inject a visible count badge into each
     // card instead. Idempotent via the data marker.
     function addRuleCountBadges() {
+      // v33 (2026-11-20): DISABLED - do not re-enable. The ?rebrand=0
+      // control test proved the console renders the Detection Rules
+      // counts correctly on its own (~177px cards, count + "/ n" +
+      // Enabled + meter all inside). This function (badge injection +
+      // the v29 reveal pass, plus the v30/v32 stylesheet rules it
+      // worked with) was collapsing the cards to ~73px with the counts
+      // spilling onto the next row. The native render is correct; our
+      // interference was the bug. (L73.) The body below is kept so the
+      // call sites need no change, but it never runs.
+      return;
       var RULES = ["Command Injection", "Resource Abuse", "Code Execution",
                    "Network Abuse", "Sensitive File Access", "Privilege Escalation"];
       function isDg(ch) { return ch >= "0" && ch <= "9"; }
