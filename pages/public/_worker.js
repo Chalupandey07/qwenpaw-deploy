@@ -1022,6 +1022,15 @@ function computerPanelScript(rebrandEnabled) {
           for (var q = 0; q < cimgs.length; q++) {
             cimgs[q].setAttribute("loading", "eager");
             cimgs[q].setAttribute("decoding", "sync");
+            // v22: the count image exists (alt "4 / 4") but does not paint
+            // (v20/v21). Force it to a real size - a 0x0 image paints
+            // nothing, and a lazy image below the fold never loads.
+            cimgs[q].style.setProperty("width", "auto", "important");
+            cimgs[q].style.setProperty("height", "auto", "important");
+            cimgs[q].style.setProperty("min-width", "16px", "important");
+            cimgs[q].style.setProperty("min-height", "16px", "important");
+            cimgs[q].style.setProperty("display", "inline-block", "important");
+            cimgs[q].style.setProperty("opacity", "1", "important");
           }
           // v12: ALWAYS render the count as plain visible text. The v11a
           // 'skip if the card has an image' rule left the cards with nothing
@@ -1266,9 +1275,19 @@ function computerPanelScript(rebrandEnabled) {
     // (blank main pane on return navigation, v20 item 10). Skip the merge
     // for 1.5 s after a navigation - the observer re-runs it once settled.
     var agentxLastNav = 0;
+    // v22: counters for the probe (is the nav guard starving the merge?).
+    var agentxNavCount = 0, agentxMergeSkipped = 0, agentxMergeRan = 0;
     function mergeComposerRows() {
       try {
-        if (Date.now() - agentxLastNav < 1500) return;
+        if (Date.now() - agentxLastNav < 1500) { agentxMergeSkipped++; return; }
+        // v22: also skip while the sidebar search is non-empty. Moving
+        // nodes while React filters the conversation list can unmount the
+        // chat view (blank main pane after search, v20/v21 item 10).
+        try {
+          var ssi = document.querySelector ? document.querySelector("input[placeholder*='Search conversations']") : null;
+          if (ssi && (ssi.value || "").trim() !== "") { agentxMergeSkipped++; return; }
+        } catch (e) {}
+        agentxMergeRan++;
         var send = null;
         var allBtns = document.querySelectorAll("button, [role='button']");
         for (var i = 0; i < allBtns.length; i++) {
@@ -1325,8 +1344,19 @@ function computerPanelScript(rebrandEnabled) {
               br.style.setProperty("display", "none", "important");
             }
             target.style.setProperty("display", "flex", "important");
-            target.style.setProperty("flex-wrap", "wrap", "important");
-            target.style.setProperty("gap", "8px", "important");
+            // v22: nowrap + tighter gap + shrinkable controls. On the cold
+            // load the 8 controls wrapped into two rows (v21 item 1) - the
+            // box is at its narrowest before the sidebar settles, and the
+            // now-visible Thinking select adds ~80px. Force one row and let
+            // the controls compress slightly instead of wrapping.
+            target.style.setProperty("flex-wrap", "nowrap", "important");
+            target.style.setProperty("gap", "6px", "important");
+            for (var sc = 0; sc < ctrls.length; sc++) {
+              try {
+                ctrls[sc].style.setProperty("flex-shrink", "1", "important");
+                ctrls[sc].style.setProperty("min-width", "0", "important");
+              } catch (e) {}
+            }
             target.style.setProperty("align-items", "center", "important");
             target.style.setProperty("justify-content", "flex-start", "important");
             node.style.setProperty("display", "flex", "important");
@@ -1733,6 +1763,44 @@ function computerPanelScript(rebrandEnabled) {
             parts[q].style.setProperty("fill", "currentColor", "important");
             parts[q].style.setProperty("stroke", "currentColor", "important");
           }
+          // v22: missing-sprite fallback. The v21 probe proved the svgs HAVE
+          // paths (svgEmpty:0 of 8) yet the four top tiles still paint
+          // empty - the likely cause is a <use> pointing at a sprite symbol
+          // that is not in the document, or a 0x0 render. If the <use>
+          // target is missing or the svg renders 0x0, replace it with a
+          // plain text glyph for the row so the tile is never empty.
+          // (Lower rows' icons paint fine and are never replaced.)
+          try {
+            var useEl = sv.querySelector ? sv.querySelector("use") : null;
+            var missing = false;
+            if (useEl) {
+              var href = useEl.getAttribute("href") || useEl.getAttribute("xlink:href") || "";
+              if (href && href.charAt(0) === "#" && !document.getElementById(href.slice(1))) missing = true;
+            }
+            var r0 = sv.getBoundingClientRect ? sv.getBoundingClientRect() : null;
+            if (r0 && r0.width === 0 && r0.height === 0) missing = true;
+            if (missing) {
+              var rowEl = ic;
+              for (var rh = 0; rowEl && rowEl !== document.body && rh < 5; rh++) {
+                var rc = (rowEl.className || "").toString();
+                if (rc.indexOf("settingRow") !== -1) break;
+                rowEl = rowEl.parentElement;
+              }
+              var lab = rowEl ? (rowEl.textContent || "") : "";
+              var glyph = null;
+              if (lab.indexOf("Language") !== -1) glyph = "A";
+              else if (lab.indexOf("Theme") !== -1) glyph = "◐";
+              else if (lab.indexOf("font size") !== -1) glyph = "Aa";
+              else if (lab.indexOf("Desktop Mode") !== -1) glyph = "▣";
+              if (glyph) {
+                var gs = document.createElement("span");
+                gs.textContent = glyph;
+                gs.style.cssText = "font-size:18px;line-height:1;color:#1a1d21;font-weight:600;";
+                gs.setAttribute("data-agentx-icon-glyph", "1");
+                sv.parentElement.replaceChild(gs, sv);
+              }
+            }
+          } catch (e7) {}
         }
       } catch (e) { /* never break the console */ }
     }
@@ -4573,6 +4641,41 @@ function computerPanelScript(rebrandEnabled) {
           }
         } catch (e) {}
         out.push("svgEmpty:" + svgEmpty + " of " + svgTotal);
+        var compW = -1, ctrlW = 0;
+        try {
+          var osel = q("[data-agentx-thinking]");
+          if (osel && osel.parentElement) {
+            compW = osel.parentElement.clientWidth;
+            var cbs = osel.parentElement.querySelectorAll ? osel.parentElement.querySelectorAll("button,select") : [];
+            for (var cw = 0; cw < cbs.length; cw++) ctrlW += cbs[cw].offsetWidth || 0;
+          }
+        } catch (e) {}
+        out.push("composerW:" + compW + " controlsW:" + ctrlW + " navCalls:" + agentxNavCount + " mergeSkipped:" + agentxMergeSkipped + " mergeRan:" + agentxMergeRan);
+        var cImg = "none";
+        try {
+          var allImgs = document.querySelectorAll ? document.querySelectorAll("img") : [];
+          for (var ci = 0; ci < allImgs.length; ci++) {
+            var im = allImgs[ci];
+            var alt = im.getAttribute("alt") || "";
+            if (alt.indexOf(" / ") !== -1) {
+              cImg = "alt=" + alt + " nat=" + (im.naturalWidth || 0) + "x" + (im.naturalHeight || 0) + " client=" + (im.clientWidth || 0) + "x" + (im.clientHeight || 0) + " src=" + (im.getAttribute("src") || "").slice(0, 60);
+              break;
+            }
+          }
+        } catch (e) {}
+        out.push("countImg:" + cImg);
+        var sUse = "none";
+        try {
+          var ssv = document.querySelectorAll ? document.querySelectorAll(".index-module__settingIcon__jpeXm svg use") : [];
+          if (ssv.length) {
+            var h0 = ssv[0].getAttribute("href") || ssv[0].getAttribute("xlink:href") || "";
+            sUse = "use=" + h0 + " targetExists=" + (h0.charAt(0) === "#" ? (!!document.getElementById(h0.slice(1))) : "n/a");
+          } else {
+            var ssv2 = document.querySelectorAll ? document.querySelectorAll(".index-module__settingIcon__jpeXm svg") : [];
+            if (ssv2.length) sUse = "no-use firstSvgHtml=" + (ssv2[0].innerHTML || "").slice(0, 120);
+          }
+        } catch (e) {}
+        out.push("svgUse:" + sUse);
         var rows = document.querySelectorAll ? document.querySelectorAll("button") : [];
         var badged = 0;
         for (var j = 0; j < rows.length; j++) { if ((rows[j].textContent || "").indexOf("#2") !== -1 || (rows[j].textContent || "").indexOf("#3") !== -1) badged++; }
@@ -4693,7 +4796,7 @@ function computerPanelScript(rebrandEnabled) {
       // v21: record SPA navigations so the composer merge (which MOVES
       // nodes) stays out of React's route-change commit (see agentxLastNav).
       try {
-        var _navMark = function () { try { agentxLastNav = Date.now(); } catch (e) {} };
+        var _navMark = function () { try { agentxLastNav = Date.now(); agentxNavCount++; } catch (e) {} };
         window.addEventListener("popstate", _navMark);
         window.addEventListener("hashchange", _navMark);
         if (window.history && window.history.pushState && !window.history.pushState.agentxWrapped) {
