@@ -1032,25 +1032,21 @@ function computerPanelScript(rebrandEnabled) {
             cimgs[q].style.setProperty("display", "inline-block", "important");
             cimgs[q].style.setProperty("opacity", "1", "important");
           }
-          // v25: the count goes on its OWN LINE under the title. The cards
-          // are single-line pills (~150px wide, title fills it) - a span
-          // appended inside is squeezed/clipped by the pill's flex row +
-          // fixed height (v24: nothing painted). So open the card up:
-          // height auto, overflow visible, wrap, and the span takes the
-          // full width as line 2. Idempotent via a marker attribute; if
-          // React re-renders the card the marker goes with it and the timer
-          // re-injects.
+          // v26: the count hangs BELOW the pill as an overlaid badge. The
+          // v24/v25 spans never painted because the pill is a single-line
+          // flex row in a fixed-height grid track - anything inside it is
+          // squeezed or clipped, and opening the card up (v25) did not move
+          // it either (the card found may be a wrapper, not the pill). A
+          // badge positioned below the pill does not fight the pill's own
+          // layout at all. Card is made position:relative so the badge
+          // anchors to it.
           try {
             if (card && !card.querySelector("[data-agentx-count-badge]")) {
-              card.style.setProperty("height", "auto", "important");
-              card.style.setProperty("min-height", "48px", "important");
-              card.style.setProperty("overflow", "visible", "important");
-              card.style.setProperty("flex-wrap", "wrap", "important");
-              card.style.setProperty("align-content", "flex-start", "important");
+              card.style.setProperty("position", "relative", "important");
               var badge = document.createElement("span");
               badge.setAttribute("data-agentx-count-badge", "1");
               badge.textContent = m[1] + " / " + m[2] + " Enabled";
-              badge.style.cssText = "display:block;flex-basis:100%;flex-shrink:0;font-size:12px;font-weight:600;line-height:1.4;color:#1a1d21;white-space:nowrap;margin-top:2px;";
+              badge.style.cssText = "position:absolute;top:calc(100% + 2px);left:0;z-index:5;display:inline-block;font-size:10px;font-weight:700;line-height:1.3;color:#fff;background:#1a1d21;border-radius:999px;padding:2px 7px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3);";
               card.appendChild(badge);
             }
           } catch (e4) {}
@@ -4769,6 +4765,37 @@ function computerPanelScript(rebrandEnabled) {
           if (rectSamples.length) sideRects = rectSamples.join(" | ");
         } catch (e) {}
         out.push("sideRows:" + sideRows + " firstDup:" + firstDup + " sideRects:" + sideRects);
+        // v26 diagnostics: (a) what IS a sidebar row? element at a known
+        // row position (100,450) + chain. (b) the count card: first element
+        // whose aria-label holds " / " - tag/class/computed box + whether
+        // our badge span exists in the document and where it paints.
+        // (c) the slab: element at (1000,420) - below the miniWindow strip,
+        // in the Dark label area - parent chain with bgColor + bgImage.
+        var rowEl = "none", countCard = "none", slabBg = "none", badgeEx = "none";
+        try {
+          if (document.elementFromPoint) {
+            var re = document.elementFromPoint(100, 450);
+            if (re) { var rc = [], re2 = re, rh = 0; while (re2 && rh < 3) { rc.push(re2.tagName + "." + (re2.className || "").toString().slice(0, 60)); re2 = re2.parentElement; rh++; } rowEl = rc.join(" < "); }
+            var se = document.elementFromPoint(1000, 420);
+            if (se) { var sc = [], se2 = se, sh = 0; while (se2 && sh < 4) { sc.push(se2.tagName + "." + (se2.className || "").toString().slice(0, 50) + " bg=" + cs(se2, "backgroundColor") + " img=" + cs(se2, "backgroundImage").slice(0, 40)); se2 = se2.parentElement; sh++; } slabBg = sc.join(" < "); }
+          }
+          var cc = null;
+          if (document.querySelectorAll) {
+            var al = document.querySelectorAll("[aria-label]");
+            for (var ai = 0; ai < al.length; ai++) { var av = al[ai].getAttribute("aria-label") || ""; if (av.indexOf(" / ") !== -1 && av.indexOf("Enabled") !== -1) { cc = al[ai]; break; } }
+          }
+          if (cc) {
+            var cr = cc.getBoundingClientRect ? cc.getBoundingClientRect() : null;
+            countCard = cc.tagName + "." + (cc.className || "").toString().slice(0, 60) + " disp=" + cs(cc, "display") + " h=" + (cr ? Math.round(cr.height) : "?") + " overflow=" + cs(cc, "overflow") + " pos=" + cs(cc, "position");
+          }
+          var be = document.querySelectorAll ? document.querySelectorAll("[data-agentx-count-badge]") : [];
+          if (be.length) { var br0 = be[0].getBoundingClientRect ? be[0].getBoundingClientRect() : null; badgeEx = be.length + " firstRect=" + (br0 ? Math.round(br0.left) + "," + Math.round(br0.top) + " " + Math.round(br0.width) + "x" + Math.round(br0.height) : "?") + " text='" + (be[0].textContent || "").slice(0, 20) + "'"; }
+          else badgeEx = "0";
+        } catch (e) {}
+        out.push("rowEl:" + rowEl);
+        out.push("countCard:" + countCard);
+        out.push("slabBg:" + slabBg);
+        out.push("badgeEx:" + badgeEx);
         var rows = document.querySelectorAll ? document.querySelectorAll("button") : [];
         var badged = 0;
         for (var j = 0; j < rows.length; j++) { if ((rows[j].textContent || "").indexOf("#2") !== -1 || (rows[j].textContent || "").indexOf("#3") !== -1) badged++; }
