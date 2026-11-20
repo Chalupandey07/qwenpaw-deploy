@@ -286,7 +286,11 @@ function computerPanelScript(rebrandEnabled) {
       // instead of a faint ~10px dot cluster.
       "[data-agentx-grid-icon]{width:20px!important;height:20px!important;padding:5px!important;box-sizing:content-box!important;border-radius:8px!important;background:var(--ax-surface-2)!important;border:1px solid var(--ax-line)!important;color:var(--ax-ink)!important;flex:none!important;transition:background-color .15s ease,border-color .15s ease;}" +
       "[data-agentx-grid-icon],[data-agentx-grid-icon] *{stroke:var(--ax-ink)!important;fill:var(--ax-ink)!important;}" +
-      "[data-agentx-grid-icon]:hover{background:var(--ax-line)!important;border-color:var(--ax-line-2)!important;}" +
+      // v13: a VISIBLE border, and a hover that changes the chip when the
+      // whole Settings pill is hovered (the chip is only ~30px, so hovering
+      // the pill is what a user actually does).
+      "[data-agentx-grid-icon]{border:1px solid var(--ax-line-2)!important;box-shadow:0 1px 2px rgba(0,0,0,.25)!important;}" +
+      "[data-agentx-account-row]:hover [data-agentx-grid-icon],[data-agentx-grid-icon]:hover{background:var(--ax-line)!important;border-color:var(--ax-accent)!important;}" +
       // v13: the ':has()' composer flatten never matched the live DOM. The
       // merge is now done by DOM manipulation (mergeComposerRows) - the row
       // containers are found from the visible control labels and their
@@ -952,7 +956,7 @@ function computerPanelScript(rebrandEnabled) {
         return false;
       }
       try {
-        var btns = document.querySelectorAll("button[aria-label], a[aria-label]");
+        var btns = document.querySelectorAll("[aria-label]");
         for (var i = 0; i < btns.length; i++) {
           var lbl = btns[i].getAttribute("aria-label") || "";
           // NOTE: this script is injected inside a template literal, so regex
@@ -996,6 +1000,15 @@ function computerPanelScript(rebrandEnabled) {
           var badge = document.createElement("span");
           badge.setAttribute("data-agentx-rule-count", "1");
           badge.textContent = m[1] + " / " + m[2];
+          // v13: force it to actually paint - the cards are small pills in a
+          // horizontal strip and clip their content, so the badge needs an
+          // explicit visible colour and an unclipped card.
+          badge.style.setProperty("display", "inline-block", "important");
+          badge.style.setProperty("opacity", "1", "important");
+          badge.style.setProperty("color", "var(--ax-ink)", "important");
+          badge.style.setProperty("font-size", "11px", "important");
+          badge.style.setProperty("line-height", "1.2", "important");
+          card.style.setProperty("overflow", "visible", "important");
           var last = card.lastElementChild;
           if (last && last !== badge) card.insertBefore(badge, last);
           else card.appendChild(badge);
@@ -1233,20 +1246,59 @@ function computerPanelScript(rebrandEnabled) {
       } catch (e) { /* never break the console */ }
     }
 
-    // v13 [2]: pin the identity pill to the viewport's bottom-left. Every
-    // structural attempt (sticky sidebar, 100vh, scrolling child) missed the
-    // real outer sidebar; a fixed pin is independent of the nesting and always
-    // visible. The pill keeps its own background so list content never shows
-    // through, and a soft shadow so it reads as a deliberate floating control.
+    // v13 [2]: the identity pill must sit OUTSIDE the sidebar's scroll
+    // container. Browser finding: scrolling the list scrolls the WHOLE sidebar
+    // content, so the pill is a CHILD of the scrolling element - which is why
+    // sticky/fixed never held (fixed is relative to a transformed ancestor,
+    // sticky is relative to the scroll container). Restructure: find the real
+    // scroll container, move the pill's container OUT of it to be a sibling,
+    // and make the parent a flex column - the list scrolls, the pill is pinned
+    // at the bottom and can never be scrolled away.
     function pinAccountFooter(row) {
       try {
-        row.style.setProperty("position", "fixed", "important");
-        row.style.setProperty("left", "12px", "important");
-        row.style.setProperty("bottom", "12px", "important");
-        row.style.setProperty("z-index", "60", "important");
-        row.style.setProperty("max-width", "calc(100vw - 24px)", "important");
-        row.style.setProperty("box-shadow", "0 4px 16px rgba(0,0,0,.18)", "important");
+        var sc = row.parentElement;
+        while (sc && sc !== document.body) {
+          var ov = "";
+          try { ov = window.getComputedStyle(sc).overflowY; } catch (e1) {}
+          if (ov === "auto" || ov === "scroll") break;
+          sc = sc.parentElement;
+        }
+        if (!sc || sc === document.body) return;
+        var foot = row, guard = 0;
+        while (foot && foot.parentElement !== sc && guard++ < 10) foot = foot.parentElement;
+        if (!foot || foot === document.body || foot.parentElement !== sc) return;
+        var parent = sc.parentElement;
+        if (!parent || parent === document.body) return;
+        parent.insertBefore(foot, sc.nextSibling);
+        parent.style.setProperty("display", "flex", "important");
+        parent.style.setProperty("flex-direction", "column", "important");
+        parent.style.setProperty("height", "100vh", "important");
+        parent.style.setProperty("max-height", "100vh", "important");
+        parent.style.setProperty("min-height", "0", "important");
+        parent.style.setProperty("overflow", "hidden", "important");
+        sc.style.setProperty("flex", "1 1 auto", "important");
+        sc.style.setProperty("min-height", "0", "important");
+        foot.style.setProperty("flex", "none", "important");
+        foot.style.setProperty("position", "relative", "important");
       } catch (e) { /* never break the console */ }
+    }
+
+    // v13 [1]: the cold-load render storm undoes the DOM merge (React
+    // re-renders its two-row structure after the merge lands). Re-run the merge
+    // on a short bounded schedule for ~15s after the composer first appears, so
+    // it lands AFTER React's final cold render. Purely client-side DOM
+    // settling - a setTimeout chain, no server polling.
+    var agentxComposerRetries = 0;
+    function startComposerRetry() {
+      if (agentxComposerRetries) return;
+      agentxComposerRetries = 1;
+      var tries = 0;
+      function tick() {
+        tries++;
+        try { mergeComposerRows(); } catch (e2) {}
+        if (tries < 60) setTimeout(tick, 250);
+      }
+      setTimeout(tick, 250);
     }
 
     // v13 [9]: tag every button containing an icon so the CSS hit-target floor
@@ -1446,6 +1498,7 @@ function computerPanelScript(rebrandEnabled) {
         fixShowThinkingRow();
         fixRadioDescriptions();
         mergeComposerRows();
+        startComposerRetry();
         pinAccountFooter(row);
         tagIconButtons();
         fixCompactMenuIcon();
