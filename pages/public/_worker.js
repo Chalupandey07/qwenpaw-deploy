@@ -268,6 +268,13 @@ function computerPanelScript(rebrandEnabled) {
       "[data-agentx-sidebar]{display:flex!important;flex-direction:column!important;overflow:hidden!important;min-height:0!important;}" +
       "[data-agentx-sidebar-list]{flex:1 1 auto!important;min-height:0!important;overflow-y:auto!important;}" +
       "[data-agentx-sidebar-foot]{flex:none!important;}" +
+      // v37: the settings sidebar's pull-up margin lives in the STYLESHEET
+      // (driven by --ax-sidebar-shift, set by JS on <html>), NOT as an
+      // inline style on the aside. React re-renders wipe inline styles
+      // on elements it manages (L70) - that is why v36's inline margin
+      // never stuck on a cold load. A stylesheet rule survives React;
+      // <html> is outside React's root so the variable is never wiped.
+      "aside.index-module__sidebar__MIhyN{margin-top:var(--ax-sidebar-shift,0px)!important;}" +
       // v10: the small grid-icon button beside the account row rendered
       // cramped (icon crowding its own edges) with a hit area so small it was
       // barely clickable. Give it a real 38px square target with a centred
@@ -1213,6 +1220,14 @@ function computerPanelScript(rebrandEnabled) {
     // It converges to the aside sitting at the content top and tracks
     // the race if the natural position moves. Only on /settings/*, wide
     // viewports; never sets display or position.
+    // v37: v36's INLINE margin never stuck on a cold load - React
+    // re-renders wipe inline styles on elements it manages (L70), and
+    // the aside is React-managed. So v37 drives the margin through a CSS
+    // VARIABLE (--ax-sidebar-shift) set on <html> (outside React's root,
+    // never wiped) + the stylesheet rule above (a stylesheet rule
+    // survives React). The shift value is tracked in a module var; the
+    // feedback math is unchanged.
+    var agentxSidebarShift = 0;
     function fixSettingsSidebarMargin() {
       try {
         if (!agentxWide()) return;
@@ -1238,15 +1253,15 @@ function computerPanelScript(rebrandEnabled) {
         if (!(cr.top > 0) || cr.top > 200) return;
         var err = ar.top - cr.top;
         if (err > -5 && err < 5) return;
-        var cur = 0;
-        try {
-          var ms = aside.style ? aside.style.marginTop || "" : "";
-          if (ms) { var v = parseFloat(ms); if (!isNaN(v)) cur = v; }
-        } catch (e6) {}
-        var next = Math.round(cur - err);
+        var next = Math.round(agentxSidebarShift - err);
         if (next < -800) next = -800;
         if (next > 50) next = 50;
-        aside.style.setProperty("margin-top", next + "px", "important");
+        if (next === agentxSidebarShift) return;
+        agentxSidebarShift = next;
+        try {
+          var de = document.documentElement;
+          if (de && de.style && de.style.setProperty) de.style.setProperty("--ax-sidebar-shift", next + "px");
+        } catch (e6) {}
       } catch (e) { /* never break the console */ }
     }
 
