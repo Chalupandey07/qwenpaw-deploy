@@ -1031,7 +1031,24 @@ function computerPanelScript(rebrandEnabled) {
           // rule name already paints, so text appended to it is guaranteed to
           // paint too - injected chips never did, because the cards sit in a
           // fixed-width clipping strip (the v15-v17 failures).
-          var ctn = longestTextNode(card);
+          // v21: append to the RULE-NAME text node specifically (the visible
+          // title), not the longest node. The longest node can be a hidden
+          // description/tooltip, so the count landed invisibly (v20: the
+          // count showed only as an image alt). The rule name always paints.
+          var ctn = null;
+          try {
+            if (document.createTreeWalker) {
+              var w3 = document.createTreeWalker(card, 4, null, false), nn3;
+              while ((nn3 = w3.nextNode())) {
+                var nv3 = nn3.nodeValue || "";
+                for (var r3 = 0; r3 < RULES.length; r3++) {
+                  if (nv3.indexOf(RULES[r3]) !== -1) { ctn = nn3; break; }
+                }
+                if (ctn) break;
+              }
+            }
+          } catch (e3) {}
+          if (!ctn) ctn = longestTextNode(card);
           if (ctn) {
             var ccur = ctn.nodeValue || "";
             // No regex here: this script lives in a template literal, which
@@ -1243,8 +1260,15 @@ function computerPanelScript(rebrandEnabled) {
     // moves the extra branches' children into the first branch and hides the
     // emptied branches. Anchored on the visible 'Send' label + the textbox.
     // Idempotent, and it never moves or hides the textbox's own branch.
+    // v21: timestamp of the last SPA navigation (set by the history wrapper
+    // in the init block). The composer merge MOVES nodes; running it while
+    // React is committing a route change can leave the chat view unmounted
+    // (blank main pane on return navigation, v20 item 10). Skip the merge
+    // for 1.5 s after a navigation - the observer re-runs it once settled.
+    var agentxLastNav = 0;
     function mergeComposerRows() {
       try {
+        if (Date.now() - agentxLastNav < 1500) return;
         var send = null;
         var allBtns = document.querySelectorAll("button, [role='button']");
         for (var i = 0; i < allBtns.length; i++) {
@@ -1286,6 +1310,15 @@ function computerPanelScript(rebrandEnabled) {
             var target = branches[0];
             for (var d = 1; d < branches.length; d++) {
               var br = branches[d];
+              // v21: a <select> control is a branch by itself (contains()
+              // is true for the element itself), so the old code moved its
+              // <option> CHILDREN into the target - orphaning them as plain
+              // text lines in the composer (the v13-v20 cold-load Thinking
+              // list: the probe proved the painted list is <option> elements
+              // whose parent is DIV.qwenpaw-sender-content-bottom, not a
+              // <select>). Move the WHOLE select (options intact), never its
+              // children, and do not hide it afterwards.
+              if ((br.tagName || "").toUpperCase() === "SELECT") { target.appendChild(br); continue; }
               var move = [];
               for (var e = 0; e < br.children.length; e++) move.push(br.children[e]);
               for (var f = 0; f < move.length; f++) target.appendChild(move[f]);
@@ -1392,6 +1425,12 @@ function computerPanelScript(rebrandEnabled) {
 
     function dedupeRowTitles() {
       try {
+        // v21: skip while the sidebar search is non-empty. Editing text
+        // nodes mid-search (while React filters the list) can confuse
+        // React's reconciliation and blank the main pane (v20 item 10).
+        var si = null;
+        try { si = document.querySelector ? document.querySelector("input[placeholder*='Search conversations']") : null; } catch (e0) {}
+        if (si && (si.value || "").trim() !== "") return;
         // v20: rows are <button>s, NOT <a href='/chat/'> links (live page
         // data, v19 re-verification: a row is <button role=button> holding
         // an "Idle" status image + the truncated title text). The old
@@ -1402,7 +1441,7 @@ function computerPanelScript(rebrandEnabled) {
         var rows = [];
         try {
           var side = null;
-          try { side = findSidebarEl(); } catch (e0) {}
+          try { side = findSidebarEl(); } catch (e0b) {}
           var btns = side && side.querySelectorAll ? side.querySelectorAll("button") : (document.querySelectorAll ? document.querySelectorAll("button") : []);
           for (var i = 0; i < btns.length; i++) rows.push(btns[i]);
         } catch (e1) {}
@@ -1413,7 +1452,17 @@ function computerPanelScript(rebrandEnabled) {
           if (!t || t.length < 3) continue;
           if (t.indexOf("Console account") !== -1 || t.indexOf("Local workspace") !== -1) continue;
           if (t === "New Chat" || t === "New task") continue;
-          var key = t.toLowerCase();
+          // v21: key on the TITLE text node (the longest node in the
+          // button), not the whole button textContent - extra text in the
+          // button (status, badges) made two identical titles hash
+          // differently, so no duplicate was ever detected (v20: badged=0
+          // with 54 buttons). The key and the prepend target are the same
+          // node, so they always agree.
+          var dtn = longestTextNode(el);
+          if (!dtn) continue;
+          var dcur = dtn.nodeValue || "";
+          var key = dcur.trim().toLowerCase();
+          if (!key || key.length < 3) continue;
           seen[key] = (seen[key] || 0) + 1;
           if (seen[key] < 2) continue;
           // v19: PREPEND the ordinal. v18 appended it - but sidebar titles
@@ -1421,9 +1470,6 @@ function computerPanelScript(rebrandEnabled) {
           // clipped off-screen and never paints (the v18 failure: the badge
           // existed in the page data, nothing rendered). The start of the
           // title is always visible, so "#2 " goes there.
-          var dtn = longestTextNode(el);
-          if (!dtn) continue;
-          var dcur = dtn.nodeValue || "";
           if (dcur.indexOf("#" + seen[key]) !== -1) continue;
           dtn.nodeValue = "#" + seen[key] + " " + dcur;
         }
@@ -1529,6 +1575,28 @@ function computerPanelScript(rebrandEnabled) {
             }
           }
         } catch (e3) {}
+        // v21: ORPHANED <option> elements. The v20 probe proved the painted
+        // list is <option> elements whose parent is
+        // DIV.qwenpaw-sender-content-bottom - NOT inside any <select>. A
+        // native <select> renders closed; <option> elements orphaned in a
+        // div render as plain text lines. (They were scattered there when
+        // the composer merge moved a <select>'s children out of it - fixed
+        // in mergeComposerRows in v21 - but orphans from earlier rounds are
+        // already in the live page.) Hide every VISIBLE <option> with no
+        // <select> ancestor. Our own select's options live inside a
+        // <select>, so they are never touched.
+        try {
+          var opts = document.querySelectorAll ? document.querySelectorAll("option") : [];
+          for (var oi = 0; oi < opts.length; oi++) {
+            var op = opts[oi];
+            if (!op || op.offsetParent === null) continue;
+            var hasSel = false, oa = op.parentElement;
+            while (oa && oa !== document.body) { if ((oa.tagName || "").toUpperCase() === "SELECT") { hasSel = true; break; } oa = oa.parentElement; }
+            if (hasSel) continue;
+            op.setAttribute("data-agentx-thinking-closed", "1");
+            op.style.setProperty("display", "none", "important");
+          }
+        } catch (e4) {}
         for (var t = 0; t < targets.length; t++) {
           var el = targets[t];
           if (!el) continue;
@@ -1599,6 +1667,72 @@ function computerPanelScript(rebrandEnabled) {
           labs[m].style.setProperty("align-items", "center", "important");
           labs[m].style.setProperty("gap", "6px", "important");
           labs[m].style.setProperty("white-space", "nowrap", "important");
+        }
+        // v21: the Theme row itself stacks (tile above label) even though
+        // the bars are fixed - the row holding the appearanceChoices is a
+        // flex column in the console's own CSS, so force the ROW (the
+        // appearanceChoices' parent) to a flex row with nowrap too. Same
+        // for the Desktop Mode row (found by its label text).
+        var ap = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__appearanceChoices__mYTAt") : [];
+        for (var a = 0; a < ap.length; a++) {
+          var prow = ap[a].parentElement;
+          if (prow) {
+            prow.style.setProperty("display", "flex", "important");
+            prow.style.setProperty("flex-direction", "row", "important");
+            prow.style.setProperty("flex-wrap", "nowrap", "important");
+            prow.style.setProperty("align-items", "center", "important");
+          }
+        }
+        try {
+          if (document.createTreeWalker) {
+            var w4 = document.createTreeWalker(document.body, 4, null, false), n4;
+            while ((n4 = w4.nextNode())) {
+              if ((n4.nodeValue || "").trim() !== "Desktop Mode") continue;
+              var drow = n4.parentElement;
+              for (var dh = 0; drow && drow !== document.body && dh < 5; dh++) {
+                var dc = (drow.className || "").toString();
+                if (dc.indexOf("settingRow") !== -1) break;
+                drow = drow.parentElement;
+              }
+              if (drow && drow !== document.body) {
+                drow.style.setProperty("display", "flex", "important");
+                drow.style.setProperty("flex-direction", "row", "important");
+                drow.style.setProperty("flex-wrap", "nowrap", "important");
+                drow.style.setProperty("align-items", "center", "important");
+              }
+              break;
+            }
+          }
+        } catch (e5) {}
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v21: the four GeneralSettings icon tiles (Language / Theme / Console
+    // font size / Desktop Mode) are empty even though the probe proves the
+    // svg elements EXIST (v20: setIcon:8 withSvg:8). Force visibility
+    // inline (the stylesheet rule alone is not reaching them): explicit
+    // 18px, dark ink, fill/stroke following currentColor, opacity 1.
+    function fixSettingIcons() {
+      try {
+        var icons = document.querySelectorAll ? document.querySelectorAll(".index-module__settingIcon__jpeXm") : [];
+        for (var i = 0; i < icons.length; i++) {
+          var ic = icons[i];
+          ic.style.setProperty("color", "#1a1d21", "important");
+          var sv = ic.querySelector ? ic.querySelector("svg") : null;
+          if (!sv) continue;
+          sv.style.setProperty("width", "18px", "important");
+          sv.style.setProperty("height", "18px", "important");
+          sv.style.setProperty("min-width", "18px", "important");
+          sv.style.setProperty("min-height", "18px", "important");
+          sv.style.setProperty("color", "#1a1d21", "important");
+          sv.style.setProperty("opacity", "1", "important");
+          sv.style.setProperty("fill", "currentColor", "important");
+          sv.style.setProperty("stroke", "currentColor", "important");
+          var parts = sv.querySelectorAll ? sv.querySelectorAll("*") : [];
+          for (var q = 0; q < parts.length; q++) {
+            parts[q].style.setProperty("fill", "currentColor", "important");
+            parts[q].style.setProperty("stroke", "currentColor", "important");
+          }
         }
       } catch (e) { /* never break the console */ }
     }
@@ -3146,6 +3280,21 @@ function computerPanelScript(rebrandEnabled) {
               }
             } catch (e) {}
           }
+          // v21: the composer merge used to move a <select>'s <option>
+          // children out of it (orphaning them as text lines - the cold-load
+          // Thinking list). If our select lost options, put them back so the
+          // control still works. (The merge itself is fixed in v21 to move
+          // a whole <select>, never its children.)
+          try {
+            if (sel) {
+              var need = { "inherit": "Default", "off": "Off", "low": "Low", "medium": "Medium", "high": "High", "xhigh": "XHigh" };
+              var have = {};
+              for (var oi2 = 0; sel.options && oi2 < sel.options.length; oi2++) have[sel.options[oi2].value] = true;
+              for (var nk in need) {
+                if (!have[nk]) { var no = document.createElement("option"); no.value = nk; no.textContent = need[nk]; sel.appendChild(no); }
+              }
+            }
+          } catch (e5) {}
           var chatId = agentxThinkingChatId();
           if (chatId && st.chatId === chatId && st.level) agentxThinkingShow(st.level);
           else if (chatId) agentxThinkingSync(false);
@@ -4358,6 +4507,7 @@ function computerPanelScript(rebrandEnabled) {
       try { hideColdOpenThinking(); } catch (e) {}
       try { clarifyHeaderIcons(); } catch (e) {}
       try { fixShowThinkingRow(); } catch (e) {}
+      try { fixSettingIcons(); } catch (e) {}
       try { fixTallNavs(); } catch (e) {}
       try { fixImages(); } catch (e) {}
       try { fixRadioDescriptions(); } catch (e) {}
@@ -4385,7 +4535,7 @@ function computerPanelScript(rebrandEnabled) {
         out.push("setIcon:" + ic.length + " withSvg:" + icSvg);
         var sw = q("[role='switch']");
         out.push("switch:" + (sw ? ("FOUND tag=" + sw.tagName) : "MISSING"));
-        var tl = null;
+        var tl = null, tlChain = "";
         try {
           var w = document.createTreeWalker(document.body, 4, null, false), n;
           while ((n = w.nextNode())) {
@@ -4393,8 +4543,36 @@ function computerPanelScript(rebrandEnabled) {
             var el = n.parentElement;
             if (el && el.offsetParent !== null) { tl = el; break; }
           }
+          if (tl) {
+            var cc = tl, hops = 0;
+            while (cc && hops < 4) { tlChain += (hops ? " > " : "") + cc.tagName + "." + (cc.className || "").toString().slice(0, 40); cc = cc.parentElement; hops++; }
+          }
         } catch (e) {}
-        out.push("thinkList:" + (tl ? ("tag=" + tl.tagName + " cls=" + (tl.className || "").toString().slice(0, 80) + " parent=" + (tl.parentElement ? tl.parentElement.tagName + "." + (tl.parentElement.className || "").toString().slice(0, 60) : "?")) : "NONE-VISIBLE"));
+        out.push("thinkList:" + (tl ? tlChain : "NONE-VISIBLE"));
+        var orph = 0, selOpts = -1;
+        try {
+          var allO = document.querySelectorAll ? document.querySelectorAll("option") : [];
+          for (var oo = 0; oo < allO.length; oo++) {
+            var oel = allO[oo];
+            if (!oel || oel.offsetParent === null) continue;
+            var hs = false, oa2 = oel.parentElement;
+            while (oa2 && oa2 !== document.body) { if ((oa2.tagName || "").toUpperCase() === "SELECT") { hs = true; break; } oa2 = oa2.parentElement; }
+            if (!hs) orph++;
+          }
+          var os = q("[data-agentx-thinking]");
+          if (os) selOpts = os.options ? os.options.length : 0;
+        } catch (e) {}
+        out.push("orphanOpts:" + orph + " ourSelOpts:" + selOpts);
+        var svgEmpty = 0, svgTotal = 0;
+        try {
+          var sics = document.querySelectorAll ? document.querySelectorAll(".index-module__settingIcon__jpeXm svg") : [];
+          svgTotal = sics.length;
+          for (var se = 0; se < sics.length; se++) {
+            var svv = sics[se];
+            if (!svv.querySelector || !svv.querySelector("path,circle,rect,use,polygon,text")) svgEmpty++;
+          }
+        } catch (e) {}
+        out.push("svgEmpty:" + svgEmpty + " of " + svgTotal);
         var rows = document.querySelectorAll ? document.querySelectorAll("button") : [];
         var badged = 0;
         for (var j = 0; j < rows.length; j++) { if ((rows[j].textContent || "").indexOf("#2") !== -1 || (rows[j].textContent || "").indexOf("#3") !== -1) badged++; }
@@ -4511,6 +4689,21 @@ function computerPanelScript(rebrandEnabled) {
         setInterval(function () { // UI-TIMER-ALLOWLIST: page-fixes re-apply
           try { agentxRunPageFixes(); } catch (e) {}
         }, 2000);
+      } catch (e) {}
+      // v21: record SPA navigations so the composer merge (which MOVES
+      // nodes) stays out of React's route-change commit (see agentxLastNav).
+      try {
+        var _navMark = function () { try { agentxLastNav = Date.now(); } catch (e) {} };
+        window.addEventListener("popstate", _navMark);
+        window.addEventListener("hashchange", _navMark);
+        if (window.history && window.history.pushState && !window.history.pushState.agentxWrapped) {
+          var _ps = window.history.pushState, _rs = window.history.replaceState;
+          var _wrapNav = function (orig) { return function () { var r = orig.apply(this, arguments); _navMark(); return r; }; };
+          window.history.pushState = _wrapNav(_ps);
+          window.history.pushState.agentxWrapped = true;
+          window.history.replaceState = _wrapNav(_rs);
+          window.history.replaceState.agentxWrapped = true;
+        }
       } catch (e) {}
       addVaultMenuItem();
       agentxRunRules();
