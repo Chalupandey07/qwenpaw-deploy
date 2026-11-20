@@ -1045,6 +1045,13 @@ function computerPanelScript(rebrandEnabled) {
           try {
             if (card && !card.querySelector("[data-agentx-count-badge]")) {
               card.style.setProperty("position", "relative", "important");
+              // v28: overflow:visible - the card is display:block, 32px
+              // high, overflow:hidden (probe, v27). The badge hangs BELOW
+              // the card, so overflow:hidden clips it to nothing even
+              // though it exists in the DOM. Visible lets it hang out; the
+              // title's own ellipsis lives on the title span, not the card,
+              // so the title does not spill.
+              card.style.setProperty("overflow", "visible", "important");
               var badge = document.createElement("span");
               badge.setAttribute("data-agentx-count-badge", "1");
               badge.textContent = m[1] + " / " + m[2] + " Enabled";
@@ -1733,6 +1740,35 @@ function computerPanelScript(rebrandEnabled) {
         for (var ic = 0; ic < ics.length; ic++) {
           ics[ic].style.setProperty("background", "transparent", "important");
           ics[ic].style.setProperty("background-color", "transparent", "important");
+        }
+        // v28: strip the SPLIT GRADIENT (a background-IMAGE, not a colour)
+        // off the Theme row + the card shells. The system-preview rule
+        // misfired during the render storm and painted the SPLIT gradient
+        // on the whole settingRow (probe: the row carries
+        // linear-gradient(90deg,#f5f5f4...#111)). Setting background-color
+        // transparent never removed it - a gradient is an image. Remove the
+        // image itself, on the row and on every shell, so the white settings
+        // card shows through.
+        var apc0 = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__appearanceChoices__mYTAt") : [];
+        for (var ap0 = 0; ap0 < apc0.length; ap0++) {
+          apc0[ap0].style.setProperty("background-image", "none", "important");
+          var srow = apc0[ap0].parentElement;
+          while (srow && srow !== document.body) {
+            var scls = (srow.className || "").toString();
+            if (scls.indexOf("GeneralSettings-module__settingRow__") !== -1) {
+              srow.style.setProperty("background-image", "none", "important");
+              srow.style.setProperty("background-color", "transparent", "important");
+              break;
+            }
+            srow = srow.parentElement;
+          }
+        }
+        var apb0 = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__appearanceChoice__Qcw7e") : [];
+        for (var ab0 = 0; ab0 < apb0.length; ab0++) {
+          apb0[ab0].style.setProperty("background-image", "none", "important");
+        }
+        for (var ic0 = 0; ic0 < ics.length; ic0++) {
+          ics[ic0].style.setProperty("background-image", "none", "important");
         }
         // v21: the Theme row itself stacks (tile above label) even though
         // the bars are fixed - the row holding the appearanceChoices is a
@@ -4087,12 +4123,24 @@ function computerPanelScript(rebrandEnabled) {
             // vertical split) and never reached the card holding the slanted
             // preview — that is why v5 changed nothing. Gate on HEIGHT instead:
             // the card is ~160px tall (preview + label strip), the strip ~35px.
+            // v28: ALSO cap the width (<300). During the cold-load render
+            // storm the button can be collapsed (height<=100), so the climb
+            // sails past it to the settingRow (~800px wide, ~160px tall),
+            // which passes the old gate - and the rule then paints the SPLIT
+            // gradient on the WHOLE ROW. That is the black slab (v22-v27):
+            // the probe caught the settingRow carrying the SPLIT gradient.
+            // A theme card is ~160px wide; a row is ~800px. Never paint a
+            // container.
             while (card && card !== document.body && hops2 < 8) {
               var cr = card.getBoundingClientRect();
-              if (cr.height > 100 && cr.width > 120) break;
+              if (cr.height > 100 && cr.width > 120 && cr.width < 300) break;
               card = card.parentElement; hops2++;
             }
             if (!card || card === document.body) continue;
+            // v28: refuse containers outright (belt and braces - the width
+            // cap above should already exclude them).
+            var ccls = (card.className || "").toString();
+            if (ccls.indexOf("settingRow") !== -1 || ccls.indexOf("settingsCard") !== -1 || ccls.indexOf("appearanceChoices") !== -1) continue;
             // Tag the card so the injected CSS — which also reaches the
             // ::before/::after painters that inline styles cannot touch — can
             // strip every diagonal painter inside it.
