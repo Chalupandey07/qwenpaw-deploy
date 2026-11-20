@@ -1032,41 +1032,22 @@ function computerPanelScript(rebrandEnabled) {
             cimgs[q].style.setProperty("display", "inline-block", "important");
             cimgs[q].style.setProperty("opacity", "1", "important");
           }
-          // v12: ALWAYS render the count as plain visible text. The v11a
-          // 'skip if the card has an image' rule left the cards with nothing
-          // at all when the console's own count image did not render. A plain
-          // text badge is the only guarantee of first-paint visibility.
-          // v18: append the count to the card's OWN rule-name text node. The
-          // rule name already paints, so text appended to it is guaranteed to
-          // paint too - injected chips never did, because the cards sit in a
-          // fixed-width clipping strip (the v15-v17 failures).
-          // v21: append to the RULE-NAME text node specifically (the visible
-          // title), not the longest node. The longest node can be a hidden
-          // description/tooltip, so the count landed invisibly (v20: the
-          // count showed only as an image alt). The rule name always paints.
-          var ctn = null;
+          // v24: inject the count as its OWN block element below the title.
+          // The v18/v21 text-node appends did not paint reliably (the title
+          // line is width-clipped, and the console's own count image often
+          // never decodes - v23: 0 images decoded). A block span inside the
+          // card paints on its own line. Idempotent via a marker attribute;
+          // if React re-renders the card the marker goes with it and the
+          // timer re-injects.
           try {
-            if (document.createTreeWalker) {
-              var w3 = document.createTreeWalker(card, 4, null, false), nn3;
-              while ((nn3 = w3.nextNode())) {
-                var nv3 = nn3.nodeValue || "";
-                for (var r3 = 0; r3 < RULES.length; r3++) {
-                  if (nv3.indexOf(RULES[r3]) !== -1) { ctn = nn3; break; }
-                }
-                if (ctn) break;
-              }
+            if (card && !card.querySelector("[data-agentx-count-badge]")) {
+              var badge = document.createElement("span");
+              badge.setAttribute("data-agentx-count-badge", "1");
+              badge.textContent = m[1] + " / " + m[2] + " Enabled";
+              badge.style.cssText = "display:block;font-size:13px;font-weight:600;line-height:1.4;color:#1a1d21;white-space:nowrap;margin-top:4px;";
+              card.appendChild(badge);
             }
-          } catch (e3) {}
-          if (!ctn) ctn = longestTextNode(card);
-          if (ctn) {
-            var ccur = ctn.nodeValue || "";
-            // No regex here: this script lives in a template literal, which
-            // eats single backslashes - a \/ would close the regex and break
-            // the parse. Append-only, guarded by indexOf, stays idempotent.
-            if (ccur.indexOf(m[1] + " / " + m[2]) === -1) {
-              ctn.nodeValue = ccur + " " + m[1] + " / " + m[2];
-            }
-          }
+          } catch (e4) {}
         }
       } catch (e) { /* never break the console */ }
     }
@@ -1307,6 +1288,19 @@ function computerPanelScript(rebrandEnabled) {
         var ctrls = [];
         for (var k = 0; k < all.length; k++) { if (!tb.contains(all[k])) ctrls.push(all[k]); }
         if (ctrls.length < 2) return;
+        // v24: skip when the controls already share one row. The merge ran
+        // hundreds of times per session (v23 probe: mergeRan 0 -> 592 in
+        // ~2 min, never settling) because every observer pass re-ran it even
+        // when the layout was already right. One row = same top edge.
+        try {
+          var top0 = null, oneRow = true;
+          for (var sr = 0; sr < ctrls.length; sr++) {
+            var rt = ctrls[sr].getBoundingClientRect ? ctrls[sr].getBoundingClientRect().top : 0;
+            if (top0 === null) top0 = rt;
+            else if (Math.abs(rt - top0) > 3) { oneRow = false; break; }
+          }
+          if (oneRow && ctrls.length >= 6) return;
+        } catch (e) {}
         var lca = ctrls[0];
         for (var a = 1; a < ctrls.length; a++) {
           if (lca.contains(ctrls[a])) continue;
@@ -1461,19 +1455,21 @@ function computerPanelScript(rebrandEnabled) {
         var si = null;
         try { si = document.querySelector ? document.querySelector("input[placeholder*='Search conversations']") : null; } catch (e0) {}
         if (si && (si.value || "").trim() !== "") return;
-        // v20: rows are <button>s, NOT <a href='/chat/'> links (live page
-        // data, v19 re-verification: a row is <button role=button> holding
-        // an "Idle" status image + the truncated title text). The old
-        // anchor selector matched NOTHING, so no badge ever ran. Find the
-        // sidebar, take its buttons, skip control buttons (account pill,
-        // New Chat/New task, group headers are unique so they never badge
-        // anyway - the skip is belt-and-braces).
+        // v24: collect the rows by their RENDERED position (left sidebar
+        // region, x<320, width<300), not via findSidebarEl(). That helper
+        // can return the wrong nav/aside (a hidden or secondary nav matches
+        // first), and then no conversation row is ever seen - the v20-v23
+        // badged=0 with 52 buttons. Position cannot lie about which buttons
+        // are the sidebar rows.
         var rows = [];
         try {
-          var side = null;
-          try { side = findSidebarEl(); } catch (e0b) {}
-          var btns = side && side.querySelectorAll ? side.querySelectorAll("button") : (document.querySelectorAll ? document.querySelectorAll("button") : []);
-          for (var i = 0; i < btns.length; i++) rows.push(btns[i]);
+          var allB = document.querySelectorAll ? document.querySelectorAll("button") : [];
+          for (var i = 0; i < allB.length; i++) {
+            var r = null;
+            try { r = allB[i].getBoundingClientRect(); } catch (e0c) {}
+            if (!r) continue;
+            if (r.left < 320 && r.width > 50 && r.width < 300 && r.top > 100) rows.push(allB[i]);
+          }
         } catch (e1) {}
         var seen = {};
         for (var i = 0; i < rows.length; i++) {
@@ -4719,6 +4715,40 @@ function computerPanelScript(rebrandEnabled) {
           }
         } catch (e) {}
         out.push("themeBg:" + bgP);
+        // v24: which element IS the black slab? (themeBg says the container
+        // + buttons are transparent, so it is something else.) Also: how many
+        // sidebar-region buttons does dedupe actually see, and what is the
+        // first duplicate title it finds?
+        var slabEl = "none";
+        try {
+          if (document.elementFromPoint) {
+            var ep = document.elementFromPoint(1000, 360);
+            if (ep) {
+              var chain = [];
+              var ecc = ep, eh = 0;
+              while (ecc && eh < 3) { chain.push(ecc.tagName + "." + (ecc.className || "").toString().slice(0, 50) + " bg=" + cs(ecc, "backgroundColor")); ecc = ecc.parentElement; eh++; }
+              slabEl = chain.join(" < ");
+            }
+          }
+        } catch (e) {}
+        out.push("slabEl:" + slabEl);
+        var sideRows = 0, firstDup = "none";
+        try {
+          var ab3 = document.querySelectorAll ? document.querySelectorAll("button") : [];
+          var seenT = {};
+          for (var sr2 = 0; sr2 < ab3.length; sr2++) {
+            var rr = null;
+            try { rr = ab3[sr2].getBoundingClientRect(); } catch (e0d) {}
+            if (!rr || rr.left >= 320 || rr.width <= 50 || rr.width >= 300 || rr.top <= 100) continue;
+            sideRows++;
+            var tt = (ab3[sr2].textContent || "").trim().toLowerCase();
+            if (tt && tt.length >= 3) {
+              if (seenT[tt]) { if (firstDup === "none") firstDup = tt; }
+              else seenT[tt] = 1;
+            }
+          }
+        } catch (e) {}
+        out.push("sideRows:" + sideRows + " firstDup:" + firstDup);
         var rows = document.querySelectorAll ? document.querySelectorAll("button") : [];
         var badged = 0;
         for (var j = 0; j < rows.length; j++) { if ((rows[j].textContent || "").indexOf("#2") !== -1 || (rows[j].textContent || "").indexOf("#3") !== -1) badged++; }
