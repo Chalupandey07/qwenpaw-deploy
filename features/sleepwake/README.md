@@ -25,10 +25,10 @@ over D1 state; the tick only probes / suspends based on it.
   structured `cron` + `timezone` so the next run is computable.
 
 **The decision** (`decideSleepWake`):
-- WAKE wins: a routine due within 10 min (5 min lead + wake buffer) and
+- WAKE wins: a routine due within 5 min and
   the machine down -> wake. Overdue routines count as imminent.
-- SLEEP only when EVERY guard passes: routine beyond the 10-min window,
-  no visit in 30 min, no agent activity in 10 min, uptime >= 15 min, no
+- SLEEP only when EVERY guard passes: routine beyond the 5-min window,
+  no visit in 20 min, no agent activity in 10 min, uptime >= 15 min, no
   manual rest, reporter fresh (< 10 min), machine up, state running, and
   at least 20 min since the last wake (deadband > lookahead: kills
   sleep-wake-sleep flap).
@@ -128,9 +128,9 @@ Deploy verified live 2026-11-17 ~22:2x–22:4x IST:
   except the 4 known NEEDS-REBUILD rows.
 
 NOT YET OBSERVED (do not claim done until these are seen live):
-- A real idle -> suspend (machine idle 30 min, no agent activity 10 min,
+- A real idle -> suspend (machine idle 20 min, no agent activity 10 min,
   reporter fresh, uptime >= 15 min, >= 20 min since last wake).
-- The wake ~5-10 min before the 07:00 IST daily summary (2026-11-18).
+- The wake ~5 min before the 07:00 IST daily summary.
 - The new waking page's live progress in a real browser during a real
   wake.
 
@@ -141,6 +141,14 @@ NOT YET OBSERVED (do not claim done until these are seen live):
 - A native job created while the machine is up is only known to the
   Worker after the next reporter tick (<= 2 min). A job due within that
   window could be woken late; the D1 routines are the reliable schedule.
-- The 10-min wake lookahead assumes a wake takes <= ~5 min. If InstaBox
-  is slow to wake (cold start), a routine could start late; the keep-alive
-  retries every 5 min and the routines Worker is a backup wake.
+- The 5-min wake lookahead assumes a wake takes ~1-2 min, so the machine
+  is ready ~3 min before the routine. If InstaBox is slow to wake (cold
+  start), a routine could start late; the keep-alive retries every 5 min
+  and the routines Worker is a backup wake (its 15-min lookahead covers
+  slow wakes).
+- Thresholds set by the user 2026-11-21: wake 5 min before a routine,
+  auto-sleep after 20 min idle (was 10-min lookahead / 30-min visit
+  idle). The 10-min lookahead was the 2026-11-19 margin for the 5-min
+  cron; the user tightened it because the wake itself is fast and the
+  routines Worker backs it up. The 20-min visit idle replaces the old
+  30-min value so a quiet machine sleeps sooner.
