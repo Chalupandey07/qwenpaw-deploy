@@ -268,13 +268,6 @@ function computerPanelScript(rebrandEnabled) {
       "[data-agentx-sidebar]{display:flex!important;flex-direction:column!important;overflow:hidden!important;min-height:0!important;}" +
       "[data-agentx-sidebar-list]{flex:1 1 auto!important;min-height:0!important;overflow-y:auto!important;}" +
       "[data-agentx-sidebar-foot]{flex:none!important;}" +
-      // v37: the settings sidebar's pull-up margin lives in the STYLESHEET
-      // (driven by --ax-sidebar-shift, set by JS on <html>), NOT as an
-      // inline style on the aside. React re-renders wipe inline styles
-      // on elements it manages (L70) - that is why v36's inline margin
-      // never stuck on a cold load. A stylesheet rule survives React;
-      // <html> is outside React's root so the variable is never wiped.
-      "aside.index-module__sidebar__MIhyN{margin-top:var(--ax-sidebar-shift,0px)!important;}" +
       // v10: the small grid-icon button beside the account row rendered
       // cramped (icon crowding its own edges) with a hit area so small it was
       // barely clickable. Give it a real 38px square target with a centred
@@ -1203,65 +1196,6 @@ function computerPanelScript(rebrandEnabled) {
         best.style.setProperty("overflow-y", "auto", "important");
         best.style.setProperty("overflow-x", "hidden", "important");
         best.style.setProperty("align-self", "flex-start", "important");
-      } catch (e) { /* never break the console */ }
-    }
-
-    // v36: pull the SETTINGS sidebar up with a negative top margin
-    // (IN-FLOW). v34/v35 REVERTED: the position:fixed pin took the aside
-    // out of the grid, so auto-placement moved the content <main> (no
-    // explicit grid-column) into column 1 - under the sidebar, headings
-    // hidden, cards shrunk to ~35px. That was worse than the displacement
-    // it fixed. A top MARGIN keeps the aside IN FLOW (grid intact, content
-    // stays in column 2, no overlap) while shifting it up visually. The
-    // displacement varies between loads (410-694px) and is an upstream
-    // race, so the margin is a FEEDBACK LOOP, not a constant: each pass
-    // measures the aside's top against the content column's top and
-    // adjusts the margin by the error (newMargin = oldMargin - error).
-    // It converges to the aside sitting at the content top and tracks
-    // the race if the natural position moves. Only on /settings/*, wide
-    // viewports; never sets display or position.
-    // v37: v36's INLINE margin never stuck on a cold load - React
-    // re-renders wipe inline styles on elements it manages (L70), and
-    // the aside is React-managed. So v37 drives the margin through a CSS
-    // VARIABLE (--ax-sidebar-shift) set on <html> (outside React's root,
-    // never wiped) + the stylesheet rule above (a stylesheet rule
-    // survives React). The shift value is tracked in a module var; the
-    // feedback math is unchanged.
-    var agentxSidebarShift = 0;
-    function fixSettingsSidebarMargin() {
-      try {
-        if (!agentxWide()) return;
-        var path = "";
-        try { path = window.location ? window.location.pathname || "" : ""; } catch (e) {}
-        if (path.indexOf("/settings") !== 0) return;
-        var aside = null;
-        try { aside = document.querySelector ? document.querySelector("aside.index-module__sidebar__MIhyN") : null; } catch (e) {}
-        if (!aside) {
-          try {
-            var nav = document.querySelector ? document.querySelector('nav[aria-label="Settings"]') : null;
-            if (nav && nav.closest) aside = nav.closest("aside");
-          } catch (e2) {}
-        }
-        if (!aside) return;
-        var content = null;
-        try { content = document.querySelector ? document.querySelector("main.index-module__content__-76Dm") : null; } catch (e3) {}
-        if (!content) return;
-        var ar = null, cr = null;
-        try { ar = aside.getBoundingClientRect(); } catch (e4) {}
-        try { cr = content.getBoundingClientRect(); } catch (e5) {}
-        if (!ar || !cr) return;
-        if (!(cr.top > 0) || cr.top > 200) return;
-        var err = ar.top - cr.top;
-        if (err > -5 && err < 5) return;
-        var next = Math.round(agentxSidebarShift - err);
-        if (next < -800) next = -800;
-        if (next > 50) next = 50;
-        if (next === agentxSidebarShift) return;
-        agentxSidebarShift = next;
-        try {
-          var de = document.documentElement;
-          if (de && de.style && de.style.setProperty) de.style.setProperty("--ax-sidebar-shift", next + "px");
-        } catch (e6) {}
       } catch (e) { /* never break the console */ }
     }
 
@@ -3950,7 +3884,20 @@ function computerPanelScript(rebrandEnabled) {
         // is removed and no node is re-parented (React is untouched). The
         // console's responsive collapse of 'Agent default'/'Smart Mode' to
         // icons at narrow width is preserved — labels are never forced open.
+        // v38 (2026-11-20, ROOT CAUSE of the settings-sidebar displacement):
+        // this rule runs on EVERY page, and on /settings/* the theme buttons
+        // (Light/Dark/System) are type="submit" by default, so isSend()
+        // misreads "Light" as the chat Send button. It then flattens the
+        // ancestors of every button/select up to their common ancestor with
+        // display:contents — including the mobileNavigation div — which
+        // breaks the settings grid and pushes the aside down ~360px (and
+        // ~1000px during a cold load). The composer lives ONLY on /chat,
+        // so this rule returns early anywhere else. (Bisect proof: stubbing
+        // only this rule restores the General aside to y=65, mobNav to
+        // display:none, flatCount 0.)
         try {
+          var _crPath = ""; try { _crPath = location.pathname || ""; } catch (e) {}
+          if (_crPath.indexOf("/chat") !== 0) return;
           function cName(el) {
             try { return ((el.textContent || "") + " " + (el.getAttribute("aria-label") || "") + " " + (el.getAttribute("title") || "")).trim(); } catch (e) { return ""; }
           }
@@ -4802,7 +4749,6 @@ function computerPanelScript(rebrandEnabled) {
       try { fixShowThinkingRow(); } catch (e) {}
       try { fixSettingIcons(); } catch (e) {}
       try { fixTallNavs(); } catch (e) {}
-      try { fixSettingsSidebarMargin(); } catch (e) {}
       try { fixImages(); } catch (e) {}
       try { fixRadioDescriptions(); } catch (e) {}
     }
