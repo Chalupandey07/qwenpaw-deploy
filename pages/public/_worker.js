@@ -273,10 +273,37 @@ function computerPanelScript(rebrandEnabled) {
       // barely clickable. Give it a real 38px square target with a centred
       // icon, hover state and focus ring so it reads as clickable at 1920x999
       // and at narrow widths.
-      "[data-agentx-grid-btn]{width:38px!important;height:38px!important;min-width:38px!important;min-height:38px!important;padding:0!important;margin:0!important;display:flex!important;align-items:center!important;justify-content:center!important;flex:none!important;border-radius:10px!important;cursor:pointer!important;box-sizing:border-box!important;overflow:visible!important;transition:background-color .15s ease;}" +
-      "[data-agentx-grid-btn] svg{width:18px!important;height:18px!important;flex:none!important;}" +
-      "[data-agentx-grid-btn]:hover{background:var(--ax-surface-2)!important;}" +
+      // v10/v11: the grid button must read as a REAL button at a glance, not a
+      // faint dot cluster. Rohan's screenshot verdict: the glyph was ~15px,
+      // faint grey, no surface. Now: a visible pill surface (surface-2 fill +
+      // hairline border), a 22px SOLID ink glyph, hover that lifts both, and a
+      // focus ring. The account row beside it stays the same size, so the two
+      // read as one deliberate control group.
+      "[data-agentx-grid-btn]{width:40px!important;height:40px!important;min-width:40px!important;min-height:40px!important;padding:0!important;margin:0!important;display:flex!important;align-items:center!important;justify-content:center!important;flex:none!important;border-radius:10px!important;cursor:pointer!important;box-sizing:border-box!important;overflow:visible!important;background:var(--ax-surface-2)!important;border:1px solid var(--ax-line)!important;color:var(--ax-ink)!important;transition:background-color .15s ease,border-color .15s ease;}" +
+      "[data-agentx-grid-btn] svg{width:22px!important;height:22px!important;flex:none!important;color:var(--ax-ink)!important;}" +
+      "[data-agentx-grid-btn] svg,[data-agentx-grid-btn] svg *{stroke:var(--ax-ink)!important;fill:var(--ax-ink)!important;}" +
+      "[data-agentx-grid-btn]:hover{background:var(--ax-line)!important;border-color:var(--ax-line-2)!important;}" +
       "[data-agentx-grid-btn]:focus-visible{outline:2px solid var(--ax-accent);outline-offset:2px;}" +
+      // Same cramped-icon problem on the sidebar's small action icons (the
+      // 'Last 7 days' collapse / open-in-new pair rendered ~12-15px). Lift
+      // every sidebar icon button's glyph to a legible size and a readable
+      // colour. Additive only - larger icons are untouched.
+      "[data-agentx-sidebar] button:has(svg) svg{min-width:16px!important;min-height:16px!important;color:var(--ax-muted)!important;}" +
+      // v10 looks pass - SIDEBAR. Consistent motion + a clear hover/focus
+      // affordance on every interactive element in the sidebar (nav items,
+      // conversation rows, identity row, grid button). PURELY VISUAL: no
+      // control, option, menu entry or setting is removed, hidden, merged or
+      // renamed (v1 lesson: beautiful, not removed). Deliberately no
+      // !important here so the console's own active/selected states win.
+      "[data-agentx-sidebar] button,[data-agentx-sidebar] a{transition:background-color .15s ease,color .15s ease;}" +
+      "[data-agentx-sidebar] button:hover,[data-agentx-sidebar] a:hover{background:var(--ax-surface-2);}" +
+      "[data-agentx-sidebar] button:focus-visible,[data-agentx-sidebar] a:focus-visible{outline:2px solid var(--ax-accent);outline-offset:2px;}" +
+      // v11 BUG-HUNT [L]: tiny hit targets. Icon-only buttons (? help, eye /
+      // shield / trash / pencil actions, card '...' menus, scanner actions)
+      // rendered ~14px - far below a comfortable target. Give every button
+      // that contains an icon a 30px floor. Purely additive: buttons that are
+      // already larger (composer 32px, grid button 38px) are unaffected.
+      "button:has(svg){min-width:30px!important;min-height:30px!important;box-sizing:border-box!important;}" +
       ".agentx-unclip{white-space:normal!important;text-overflow:clip!important;overflow-wrap:break-word!important;word-break:break-word!important;-webkit-line-clamp:none!important;}" +
       // System theme preview (v6): the slanted light/dark boundary is drawn by
       // a gradient/clip on the card or one of its (pseudo-)children. Inline
@@ -843,6 +870,19 @@ function computerPanelScript(rebrandEnabled) {
         }
         if (!side || side === document.body) return;
         side.setAttribute("data-agentx-sidebar", "1");
+        // v11: the sidebar itself must FIT the viewport. Pin it to the top and
+        // make it exactly viewport-height so its content cannot push the
+        // identity row below the fold; only the conversation list scrolls
+        // (below), and the flex:none footer stays visible at the bottom.
+        side.style.setProperty("position", "sticky", "important");
+        side.style.setProperty("top", "0", "important");
+        side.style.setProperty("height", "100vh", "important");
+        side.style.setProperty("max-height", "100vh", "important");
+        side.style.setProperty("align-self", "flex-start", "important");
+        side.style.setProperty("overflow", "hidden", "important");
+        side.style.setProperty("display", "flex", "important");
+        side.style.setProperty("flex-direction", "column", "important");
+        side.style.setProperty("min-height", "0", "important");
         var foot = row;
         while (foot && foot.parentElement && foot.parentElement !== side) {
           foot = foot.parentElement;
@@ -912,6 +952,21 @@ function computerPanelScript(rebrandEnabled) {
             probe = probe.parentElement;
           }
           if (!card) continue;
+          // v11: the console renders these counts as IMAGES that load late
+          // (browser check: hidden on the first Security visit, visible once
+          // settled). Make those images load eagerly so the console's own
+          // rendering - count + 'Enabled' under an orange divider - appears on
+          // first paint, and only fall back to a plain-text badge when the
+          // card has no count image at all (avoids showing the count twice).
+          var cimgs = card.querySelectorAll("img");
+          if (cimgs.length) {
+            for (var q = 0; q < cimgs.length; q++) {
+              cimgs[q].setAttribute("loading", "eager");
+              cimgs[q].setAttribute("decoding", "sync");
+              cimgs[q].style.setProperty("opacity", "1", "important");
+            }
+            continue;
+          }
           if (card.querySelector("[data-agentx-rule-count]") ||
               btns[i].querySelector("[data-agentx-rule-count]")) continue;
           var badge = document.createElement("span");
@@ -920,6 +975,135 @@ function computerPanelScript(rebrandEnabled) {
           var last = card.lastElementChild;
           if (last && last !== badge) card.insertBefore(badge, last);
           else card.appendChild(badge);
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v11 [L]: the Settings LEFT NAV is taller than the viewport on every
+    // settings page, so its bottom items are cut off and its scroll position
+    // drifts between pages. Any tall, narrow nav/aside becomes sticky at the
+    // top, capped to the viewport height, and scrolls internally - the same
+    // treatment the chat sidebar gets.
+    // v11 [F]: a clock value must never break across lines ('13 : 22' rendered
+    // on three lines in Configuration > User Timezone because its flex box was
+    // shrunk to about one character wide).
+    function agentxIsClockText(s) {
+      if (!s || s.length > 12) return false;
+      var ci = s.indexOf(":");
+      if (ci < 1) return false;
+      var a = s.slice(0, ci).trim(), b = s.slice(ci + 1).trim();
+      if (a.length < 1 || a.length > 2 || b.length !== 2) return false;
+      for (var i = 0; i < a.length; i++) { var c = a.charAt(i); if (c < "0" || c > "9") return false; }
+      for (var j = 0; j < b.length; j++) { var d = b.charAt(j); if (d < "0" || d > "9") return false; }
+      return true;
+    }
+    function fixTallNavs() {
+      try {
+        var els = document.querySelectorAll("nav, aside");
+        for (var i = 0; i < els.length; i++) {
+          var el = els[i];
+          if (el.getAttribute("data-agentx-sidebar") === "1") continue;
+          var r = null; try { r = el.getBoundingClientRect(); } catch (e1) {}
+          if (!r || r.height < 700 || r.width > 460) continue;
+          el.setAttribute("data-agentx-tall-nav", "1");
+          el.style.setProperty("position", "sticky", "important");
+          el.style.setProperty("top", "0", "important");
+          el.style.setProperty("max-height", "100vh", "important");
+          el.style.setProperty("overflow-y", "auto", "important");
+          el.style.setProperty("align-self", "flex-start", "important");
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v11 [G]: the 'Show thinking' row rendered STACKED (icon, heading,
+    // description and toggle all in one column) unlike every other settings
+    // row, which is left-text / right-control. Make it a proper row: the text
+    // block on the left, the toggle on the right. The toggle itself is kept -
+    // only its position changes.
+    function fixShowThinkingRow() {
+      try {
+        if (!document.createTreeWalker) return;
+        var walker = document.createTreeWalker(document.body, 4, null, false);
+        var n;
+        while ((n = walker.nextNode())) {
+          if ((n.nodeValue || "").trim() !== "Show thinking") continue;
+          var row = n.parentElement;
+          while (row && row !== document.body &&
+                 !row.querySelector("[role='switch'], input[type='checkbox'], button[aria-pressed]")) {
+            row = row.parentElement;
+          }
+          if (!row || row === document.body) return;
+          row.style.setProperty("display", "flex", "important");
+          row.style.setProperty("flex-direction", "row", "important");
+          row.style.setProperty("align-items", "center", "important");
+          row.style.setProperty("justify-content", "space-between", "important");
+          row.style.setProperty("gap", "16px", "important");
+          return;
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v11 [C][D]: the Voice Transcription and Tool Offload radio groups
+    // rendered the SAME description on every option - the console reused one
+    // string, so 'OpenAI', 'Local Whisper' and 'Whisper API' all claimed to be
+    // 'No transcription...', and both offload modes described only the
+    // foreground/countdown behaviour. The real per-option descriptions exist in
+    // the console bundle; patch them in by option label. TEXT ONLY - no option,
+    // control or setting is added, removed or renamed.
+    function fixRadioDescriptions() {
+      var opts = [
+        ["OpenAI",
+         "OpenAI provider. Select a specific provider above to enable transcription.",
+         "No transcription. Voice messages"],
+        ["Local Whisper",
+         "Run transcription locally using the openai-whisper Python library. Requires both ffmpeg and openai-whisper to be installed.",
+         "No transcription. Voice messages"],
+        ["Whisper API",
+         "Select which provider to use for audio transcription via the Whisper API. Only providers with a Whisper-compatible endpoint are shown.",
+         "No transcription. Voice messages"],
+        ["Auto Offload",
+         "After the countdown expires, the tool is automatically moved to background execution, allowing the Agent to continue processing other tasks. Suitable for long-running tools.",
+         "continues running in the foreground"]
+      ];
+      try {
+        if (!document.createTreeWalker) return;
+        var walker = document.createTreeWalker(document.body, 4, null, false);
+        var nodes = [], n;
+        while ((n = walker.nextNode())) nodes.push(n);
+        for (var i = 0; i < nodes.length; i++) {
+          var label = (nodes[i].nodeValue || "").trim();
+          for (var j = 0; j < opts.length; j++) {
+            if (label !== opts[j][0]) continue;
+            var cont = nodes[i].parentElement, h = 0;
+            while (cont && cont !== document.body && h < 8 &&
+                   (cont.textContent || "").indexOf(opts[j][2]) === -1) {
+              cont = cont.parentElement; h++;
+            }
+            if (!cont || cont === document.body) continue;
+            var tw = document.createTreeWalker(cont, 4, null, false);
+            var m;
+            while ((m = tw.nextNode())) {
+              if ((m.nodeValue || "").indexOf(opts[j][2]) !== -1) { m.nodeValue = opts[j][1]; break; }
+            }
+            break;
+          }
+        }
+      } catch (e) { /* never break the console */ }
+    }
+
+    // v11 [L]: provider logos on Models (and other images) popped in late and
+    // left blank holes in the layout. Load images eagerly and give any that
+    // has not arrived yet a quiet placeholder surface, so the page reads as
+    // clean and fast instead of showing empty holes.
+    function fixImages() {
+      try {
+        var imgs = document.images;
+        for (var i = 0; i < imgs.length; i++) {
+          var im = imgs[i];
+          if (im.getAttribute("loading") !== "eager") im.setAttribute("loading", "eager");
+          if (im.getAttribute("decoding") !== "sync") im.setAttribute("decoding", "sync");
+          if (!im.complete) im.style.setProperty("background-color", "var(--ax-surface-2)", "important");
+          else if (im.style.backgroundColor) im.style.removeProperty("background-color");
         }
       } catch (e) { /* never break the console */ }
     }
@@ -1094,6 +1278,10 @@ function computerPanelScript(rebrandEnabled) {
         fixSidebarScroll(row);
         addRuleCountBadges();
         fixSidebarGridButton(row);
+        fixTallNavs();
+        fixImages();
+        fixShowThinkingRow();
+        fixRadioDescriptions();
       } catch (e) { /* never break the console */ }
     }
     addAccountMenuActions();
@@ -3016,6 +3204,19 @@ function computerPanelScript(rebrandEnabled) {
               node.nodeValue = t.replace(/Bot Prefix:Not set/g, "Bot Prefix: Not set");
               t = node.nodeValue;
             }
+            // v11 [F]: a clock value must stay on one line - its flex box was
+            // being shrunk until '13 : 22' broke onto three separate lines.
+            if (agentxIsClockText(t.trim()) && node.parentElement) {
+              var cp = node.parentElement;
+              cp.style.setProperty("white-space", "nowrap", "important");
+              cp.style.setProperty("flex", "none", "important");
+              cp.style.setProperty("min-width", "max-content", "important");
+            }
+            // v11 [F]: 'Thinking depth cannot be adjusted' was pale orange on
+            // cream - nearly unreadable. Darken it to a high-contrast amber.
+            if (t.indexOf("Thinking depth cannot be adjusted") !== -1 && node.parentElement) {
+              node.parentElement.style.setProperty("color", "#92400e", "important");
+            }
             // (1) Restore full labels from their truncated forms.
             for (var r = 0; r < repairs.length; r++) {
               var cut = repairs[r][0], full = repairs[r][1];
@@ -3045,6 +3246,30 @@ function computerPanelScript(rebrandEnabled) {
               cur.style.setProperty("-webkit-line-clamp", "none", "important");
               cur = cur.parentElement; hops++;
             }
+          }
+          // (3) v11 BUG-HUNT [H]: buttons and headings must never show a cut
+          // label ('Create From Tem…', 'Sync to Skill P…', 'Browse Official…',
+          // 'Refresh backend…', ...). Any button/heading that is actually
+          // clipped (overflow hidden or ellipsis AND content wider than its
+          // box) is unclipped IN PLACE - the text wraps within its own box and
+          // the element may grow vertically - so the full label is visible
+          // without pushing content sideways. Nothing is removed or renamed.
+          var clipEls = document.querySelectorAll("button, h1, h2, h3, h4, h5, h6, th, label, summary");
+          for (var ci = 0; ci < clipEls.length; ci++) {
+            var ce = clipEls[ci], cst = null;
+            try { cst = window.getComputedStyle(ce); } catch (eC) {}
+            if (!cst) continue;
+            var trunc = (cst.textOverflow === "ellipsis") || (cst.overflowX === "hidden") || (cst.overflow === "hidden");
+            if (!trunc) continue;
+            var sw = 0, cw = 0; try { sw = ce.scrollWidth; cw = ce.clientWidth; } catch (eD) {}
+            if (sw <= cw + 1) continue;
+            ce.classList.add("agentx-unclip");
+            ce.style.setProperty("white-space", "normal", "important");
+            ce.style.setProperty("text-overflow", "clip", "important");
+            ce.style.setProperty("overflow-wrap", "break-word", "important");
+            ce.style.setProperty("word-break", "break-word", "important");
+            ce.style.setProperty("-webkit-line-clamp", "none", "important");
+            ce.style.setProperty("height", "auto", "important");
           }
         } catch (e) { /* never break the console */ }
       } },
@@ -3582,6 +3807,49 @@ function computerPanelScript(rebrandEnabled) {
         }
       } catch (e) {}
     }
+    // v11: the rule list is extracted so the observer callback and its
+    // TRAILING re-run share one implementation, and a queued flag records when
+    // mutations arrived while a pass was already running.
+    var agentxPassQueued = false;
+    function agentxRunAllRules() {
+      addVaultMenuItem();
+      agentxRunRuleNow("fix-grammar");
+      agentxRunRuleNow("sidebar-ellipsis");
+      agentxRunRuleNow("chat-input-fixes");
+      agentxRunRuleNow("thinking-selector");
+      agentxRunRuleNow("queue-takeover");
+      agentxRunRuleNow("settings-white-area");
+      agentxRunRuleNow("page-bottom-padding");
+      agentxRunRuleNow("account-row");
+      agentxRunRuleNow("account-menu");
+      agentxRunRuleNow("composer-row");
+      agentxRunRuleNow("label-truncation");
+      agentxRunRuleNow("system-preview");
+      agentxRunRuleNow("hide-per-row-more");
+      agentxRunRules();
+    }
+    function agentxRunObserverPass() {
+      if (agentxInObserverPass) return;
+      agentxInObserverPass = true;
+      try {
+        agentxRunAllRules();
+      } finally {
+        // Clear the flag on a later task, not synchronously (A9): mutations
+        // made during this pass are delivered as a microtask after it returns.
+        setTimeout(function () { agentxInObserverPass = false; }, 0);
+        // v11: mutations that arrived WHILE this pass was running were dropped
+        // by the guard. Re-run once on a later task so React's final cold-load
+        // render is always processed; bounded to one re-run per pass, and any
+        // later render is caught by a normal observer pass.
+        setTimeout(function () {
+          if (!agentxPassQueued) return;
+          agentxPassQueued = false;
+          agentxInObserverPass = true;
+          try { agentxRunAllRules(); }
+          finally { setTimeout(function () { agentxInObserverPass = false; }, 0); }
+        }, 0);
+      }
+    }
     try {
       var vaultMenuObserver = new MutationObserver(function () {
         // RE-ENTRANCY GUARD (A9, 2026-11-19). Seven of the eight rules
@@ -3597,31 +3865,14 @@ function computerPanelScript(rebrandEnabled) {
         // The flag makes each callback a single pass: writes made DURING
         // the pass do not queue another endless run. Mutations React makes
         // afterwards still arrive normally, so the fixes still re-apply.
-        if (agentxInObserverPass) return;
-        agentxInObserverPass = true;
-        try {
-          addVaultMenuItem();
-          agentxRunRuleNow("fix-grammar");
-          agentxRunRuleNow("sidebar-ellipsis");
-          agentxRunRuleNow("chat-input-fixes");
-          agentxRunRuleNow("thinking-selector");
-          agentxRunRuleNow("queue-takeover");
-          agentxRunRuleNow("settings-white-area");
-          agentxRunRuleNow("page-bottom-padding");
-          agentxRunRuleNow("account-row");
-          agentxRunRuleNow("account-menu");
-          agentxRunRuleNow("composer-row");
-          agentxRunRuleNow("label-truncation");
-          agentxRunRuleNow("system-preview");
-          agentxRunRuleNow("hide-per-row-more");
-          agentxRunRules();
-        } finally {
-          // Clear the flag on the next task, not immediately: MutationObserver
-          // callbacks for writes made in this pass are delivered as a
-          // microtask AFTER this function returns, and clearing synchronously
-          // would let that queued microtask re-enter anyway.
-          setTimeout(function () { agentxInObserverPass = false; }, 0);
-        }
+        // v11 COLD-LOAD FIX: mutations arriving while a pass is already
+        // running were previously DROPPED. On a cold post-login load React's
+        // final composer render landed inside that dropped window, so the
+        // row-flatten attributes were never written and the composer stayed
+        // two rows until a reload. Record the arrival so the pass's trailing
+        // re-run processes the final DOM state. See agentxRunObserverPass.
+        if (agentxInObserverPass) { agentxPassQueued = true; return; }
+        agentxRunObserverPass();
       });
       // characterData: React updates a text node in place (nodeValue)
       // when it re-renders — e.g. the Models page resetting "1 provider
