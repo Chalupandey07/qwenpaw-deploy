@@ -1482,17 +1482,28 @@ function computerPanelScript(rebrandEnabled) {
           if (!t || t.length < 3) continue;
           if (t.indexOf("Console account") !== -1 || t.indexOf("Local workspace") !== -1) continue;
           if (t === "New Chat" || t === "New task") continue;
-          // v21: key on the TITLE text node (the longest node in the
-          // button), not the whole button textContent - extra text in the
-          // button (status, badges) made two identical titles hash
-          // differently, so no duplicate was ever detected (v20: badged=0
-          // with 54 buttons). The key and the prepend target are the same
-          // node, so they always agree.
-          var dtn = longestTextNode(el);
-          if (!dtn) continue;
-          var dcur = dtn.nodeValue || "";
-          var key = dcur.trim().toLowerCase();
-          if (!key || key.length < 3) continue;
+          // v23: key on the LONGEST VISIBLE text node (the visible title).
+          // longestTextNode could be a HIDDEN tooltip/preview node (longer
+          // than the title), so two identical titles hashed differently and
+          // no duplicate was ever found (v20-v22: badged=0 with 52 buttons).
+          // Prepend to EVERY visible text node with that value, so
+          // whichever copy paints shows the badge.
+          var visNodes = [], key = "";
+          try {
+            if (document.createTreeWalker) {
+              var w5 = document.createTreeWalker(el, 4, null, false), n5;
+              while ((n5 = w5.nextNode())) {
+                var v5 = (n5.nodeValue || "").trim();
+                if (!v5 || v5.length < 3) continue;
+                var pe5 = n5.parentElement;
+                if (!pe5 || pe5.offsetParent === null) continue;
+                visNodes.push(n5);
+                if (v5.length > key.length) key = v5;
+              }
+            }
+          } catch (e5) {}
+          if (!key) continue;
+          key = key.toLowerCase();
           seen[key] = (seen[key] || 0) + 1;
           if (seen[key] < 2) continue;
           // v19: PREPEND the ordinal. v18 appended it - but sidebar titles
@@ -1500,8 +1511,12 @@ function computerPanelScript(rebrandEnabled) {
           // clipped off-screen and never paints (the v18 failure: the badge
           // existed in the page data, nothing rendered). The start of the
           // title is always visible, so "#2 " goes there.
-          if (dcur.indexOf("#" + seen[key]) !== -1) continue;
-          dtn.nodeValue = "#" + seen[key] + " " + dcur;
+          for (var tn = 0; tn < visNodes.length; tn++) {
+            var cur = visNodes[tn].nodeValue || "";
+            if (cur.trim().toLowerCase() !== key) continue;
+            if (cur.indexOf("#" + seen[key]) !== -1) continue;
+            visNodes[tn].nodeValue = "#" + seen[key] + " " + cur;
+          }
         }
       } catch (e) { /* never break the console */ }
     }
@@ -1697,6 +1712,21 @@ function computerPanelScript(rebrandEnabled) {
           labs[m].style.setProperty("align-items", "center", "important");
           labs[m].style.setProperty("gap", "6px", "important");
           labs[m].style.setProperty("white-space", "nowrap", "important");
+        }
+        // v23: kill the black slab behind the theme cards (v22 item 5: a
+        // solid black rectangle x~803-1235 behind Dark/System, covering
+        // part of Light and extending past System). The miniWindow previews
+        // carry the theme colours themselves; the container and the buttons
+        // must be transparent so the white settings card shows through.
+        var apc = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__appearanceChoices__mYTAt") : [];
+        for (var ac = 0; ac < apc.length; ac++) {
+          apc[ac].style.setProperty("background", "transparent", "important");
+          apc[ac].style.setProperty("background-color", "transparent", "important");
+        }
+        var apb = document.querySelectorAll ? document.querySelectorAll(".GeneralSettings-module__appearanceChoice__Qcw7e") : [];
+        for (var ab = 0; ab < apb.length; ab++) {
+          apb[ab].style.setProperty("background", "transparent", "important");
+          apb[ab].style.setProperty("background-color", "transparent", "important");
         }
         // v21: the Theme row itself stacks (tile above label) even though
         // the bars are fixed - the row holding the appearanceChoices is a
@@ -4676,6 +4706,19 @@ function computerPanelScript(rebrandEnabled) {
           }
         } catch (e) {}
         out.push("svgUse:" + sUse);
+        // v23: theme-slab backgrounds (which element is black behind the
+        // theme cards?) - container + each button's computed background.
+        var bgP = "none";
+        try {
+          var apc2 = q(".GeneralSettings-module__appearanceChoices__mYTAt");
+          if (apc2) {
+            var bgs = [cs(apc2, "backgroundColor")];
+            var ab2 = apc2.querySelectorAll ? apc2.querySelectorAll(".GeneralSettings-module__appearanceChoice__Qcw7e") : [];
+            for (var bi = 0; bi < ab2.length; bi++) bgs.push(cs(ab2[bi], "backgroundColor"));
+            bgP = bgs.join(" | ");
+          }
+        } catch (e) {}
+        out.push("themeBg:" + bgP);
         var rows = document.querySelectorAll ? document.querySelectorAll("button") : [];
         var badged = 0;
         for (var j = 0; j < rows.length; j++) { if ((rows[j].textContent || "").indexOf("#2") !== -1 || (rows[j].textContent || "").indexOf("#3") !== -1) badged++; }
@@ -4686,7 +4729,7 @@ function computerPanelScript(rebrandEnabled) {
         if (!div) {
           div = document.createElement("div");
           div.id = "agentx-probe";
-          div.style.cssText = "position:fixed;right:0;bottom:0;z-index:99999;background:#fff;color:#000;font:11px monospace;padding:6px;max-width:700px;white-space:pre-wrap;border:2px solid red;";
+          div.style.cssText = "position:fixed;right:0;bottom:140px;z-index:99999;background:#fff;color:#000;font:11px monospace;padding:6px;max-width:700px;white-space:pre-wrap;border:2px solid red;";
           document.body.appendChild(div);
         }
         div.textContent = out.join("\\n");
