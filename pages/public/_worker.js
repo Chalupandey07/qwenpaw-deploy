@@ -828,6 +828,28 @@ function computerPanelScript(rebrandEnabled) {
         // subtitle is never pushed out of the pill.
         row.style.minHeight = "48px";
         row.style.padding = "8px 12px";
+        // v8: the account row is the popup's LAST row, and a height-capped
+        // popup clips its second stacked line at the bottom edge (live v8
+        // check showed 'satwik' but a truncated 'Console acco…'). Let the
+        // small popup panels grow to their content so the whole 48px row is
+        // always inside. Bounded walk, and only panels capped below 720px —
+        // never the page's main scroll containers.
+        var anc = row.parentElement, hops = 0;
+        while (anc && anc !== document.body && hops < 7) {
+          var acs = null;
+          try { acs = window.getComputedStyle(anc); } catch (eAc) {}
+          if (acs) {
+            var amh = parseFloat(acs.maxHeight), ahh = parseFloat(acs.height);
+            var apos = acs.position;
+            var capped = (!isNaN(amh) && amh > 0 && amh < 720) ||
+              (!isNaN(ahh) && ahh > 0 && ahh < 720 && (apos === "absolute" || apos === "fixed"));
+            if (capped) {
+              anc.style.setProperty("max-height", "none", "important");
+              anc.style.setProperty("height", "auto", "important");
+            }
+          }
+          anc = anc.parentElement; hops++;
+        }
         var spans = row.querySelectorAll("span");
         for (var s = 0; s < spans.length; s++) {
           var sp = spans[s];
@@ -2737,6 +2759,20 @@ function computerPanelScript(rebrandEnabled) {
             }
           }
 
+          // The textbox takes its OWN full-width line above the control row, so
+          // the controls always share the next line as one even row (and the
+          // textbox can never be pulled into the control row as a flex item).
+          if (tb) {
+            var tbLine = tb;
+            while (tbLine && tbLine.parentElement && tbLine.parentElement !== comp) {
+              tbLine = tbLine.parentElement;
+            }
+            if (tbLine && tbLine !== comp && tbLine.parentElement === comp) {
+              tbLine.style.setProperty("flex", "0 0 100%", "important");
+              tbLine.style.setProperty("max-width", "100%", "important");
+            }
+          }
+
           // Uniform 32px controls, compact pills, even 8px spacing, Send
           // attached to the group (no auto margin pushing it to the edge).
           // v7: compacted HARDER (11px type, 2px 6px padding, no min-width).
@@ -2792,10 +2828,16 @@ function computerPanelScript(rebrandEnabled) {
           // no repair entry (the other five were repaired or never cut).
           ["Sensitive File", "Sensitive File Access"],
         ];
+        // NOTE: the Security > Detection Rules titles are deliberately NOT in
+        // this list. Their truncation was JS-side (the console cut the string
+        // before rendering), which the repairs list above already undoes, so
+        // the full text fits the wide card on one line. Unclipping them via CSS
+        // changed the title's box and displaced/hid the '4 / 4' / '2 / 2'
+        // counts (v6 overlapped them, v7 hid them entirely), so those titles
+        // are repaired by TEXT only and the cards' own layout is left alone.
         var labels = [
           "Community & messaging", "Voice Transcription", "Pending Approvals",
-          "Connect AgentX", "Connect QwenPaw", "Command Injection",
-          "Sensitive File", "Privilege Escalation", "Token Usage",
+          "Connect AgentX", "Connect QwenPaw", "Token Usage",
           "Agent Management", "Tool Offload", "Skill Pool", "Environments",
           "Cron Jobs", "Heartbeat", "Backups", "Debug",
         ];
@@ -2894,20 +2936,27 @@ function computerPanelScript(rebrandEnabled) {
             target.setAttribute("data-agentx-system-preview", "1");
             // Strip painters inside the preview's subtree (inline, for real
             // elements; the injected CSS covers the pseudo-elements).
+            // v8: REPLACE each gradient in the preview with the clean vertical
+            // split instead of stripping it to none. v7 stripped the diagonal
+            // gradient on the VISIBLE surface away entirely, which left that
+            // surface showing its own light background-colour; the dark half
+            // never appeared because the split was painted on a wrapper behind
+            // it. Repainting the same element that drew the diagonal guarantees
+            // the dark half is on the visible surface.
+            var SPLIT = "linear-gradient(90deg,#f5f5f4 0%,#f5f5f4 50%,#111 50%,#111 100%)";
             var scope = [target].concat([].slice.call(target.querySelectorAll("*")));
             for (var q = 0; q < scope.length; q++) {
               var el = scope[q], bg = "", clip = "";
               try { bg = window.getComputedStyle(el).backgroundImage; } catch (e2) {}
               try { clip = window.getComputedStyle(el).clipPath; } catch (e3) {}
-              if (bg && bg.indexOf("gradient") !== -1) el.style.setProperty("background-image", "none", "important");
+              if (bg && bg.indexOf("gradient") !== -1) el.style.setProperty("background-image", SPLIT, "important");
               if (clip && clip !== "none") el.style.setProperty("clip-path", "none", "important");
               var svgs = el.tagName === "svg" ? [el] : (el.querySelectorAll ? el.querySelectorAll("svg") : []);
               for (var s = 0; s < svgs.length; s++) svgs[s].style.setProperty("display", "none", "important");
             }
-            // Clean vertical two-tone split (left light, right dark) painted on
-            // the preview itself, so an opaque background-colour there cannot
-            // hide the split behind it.
-            target.style.setProperty("background-image", "linear-gradient(90deg,#f5f5f4 0%,#f5f5f4 50%,#111 50%,#111 100%)", "important");
+            // Clean vertical two-tone split (left light, right dark) on the
+            // preview surface itself.
+            target.style.setProperty("background-image", SPLIT, "important");
             target.style.setProperty("background-color", "transparent", "important");
             target.style.setProperty("clip-path", "none", "important");
             target.style.setProperty("overflow", "hidden", "important");
