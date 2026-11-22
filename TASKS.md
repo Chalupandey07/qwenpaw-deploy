@@ -1,0 +1,141 @@
+# Tasks — Telegram token UI, TinyFish via Monid, Camoufox from GitHub, Rust migration, and all remaining fixes
+
+Date: 2026-11-22 ~23:09 IST (updated 2026-11-22 ~23:30 IST). Source: Rohan's messages.
+**WHO DOES THE CODING (Rohan, 2026-11-22 ~23:30 IST): Pi on Altare writes the code, FULLY, for ALL tasks. Muse coordinates, verifies live, and deploys. (This overrides the earlier "Pi stopped for coding" instruction.)** Pi reads this file from the deploy repo and works through it; Muse pulls Pi's code back, verifies it live, and deploys it.
+Standing rules that govern ALL of this: English only, no China endpoints, InstaBox Free only, cloud LLM only with Rohan's own keys. Verify live before claiming done. Fix → check in a real browser → if not fixed, fix again, without stopping. Keep ALL features and ALL options — nothing removed, hidden, merged, or renamed. The console look stays the same. The browser stays Camoufox.
+
+Status marks: [ ] not started · [~] in progress · [x] done + live-verified · [!] blocked (reason noted).
+
+---
+
+## PART 1 — Telegram bot token entry option (Rohan: "i cant see an telgram bot tken enter option")
+
+**Root cause (verified 2026-11-22):** There is NO Telegram token field in the web Settings UI. The token exists only as a backend config: `bot_token` in `src/qwenpaw/app/channels/conflict.py` ("telegram": ("bot_token",)), a CLI prompt in `src/qwenpaw/cli/channels_cmd.py` (`configure_telegram`, "Telegram Bot Token"), and the env var `TELEGRAM_CHANNEL_ENABLED` in `src/qwenpaw/config/channel_env.py`. A grep of the whole console source for `telegram` returns zero UI matches. The T131 spec said "setup is ONLY the bot token in Settings" — the bot was built, but the Settings field was never added. That is why Rohan cannot see it. This is MY end, not his.
+
+- [ ] T1.1 — Find where the console Settings Channels section lives (and whether a Channels page exists at all in the web UI). If there is no Channels page, the Telegram section goes in Settings, in the same style as the other settings sections.
+- [ ] T1.2 — Add a Telegram section to the web Settings UI: a "Telegram Bot Token" field (password-masked input), an Enable/Disable toggle, and a Save action. Same look as the other settings fields — no redesign, no renamed labels elsewhere.
+- [ ] T1.3 — Wire the field to the real config: saving writes `bot_token` to the Telegram channel config (the same config `channels_cmd.py` writes), and the toggle writes the enabled flag. The token must be stored encrypted like the other secrets, never in plain text in the repo or in memory.
+- [ ] T1.4 — Verify live in a real browser: open Settings, confirm the Telegram token field is visible, enter a test value, save, reload, confirm it persisted (masked). Then clear the test value.
+- [ ] T1.5 — Verify the bot picks the token up: with a real token (Rohan enters it), confirm the Telegram bot starts, answers a DM, and the owner-approval flow works. (Needs Rohan's token — he enters it in the new field; I do NOT ask him for the token value.)
+- [ ] T1.6 — Push the change to the deploy repo (Chalupandey07/qwenpaw-deploy) and rebuild/redeploy so the field is live on both Pages.
+
+---
+
+## PART 2 — TinyFish via Monid, ONLY the 2 free endpoints (Rohan: "monid tinyfish … this is what i wanted … that is why i added monid … see screenshot only these 2 use")
+
+**What Rohan wants (now clear):** TinyFish THROUGH Monid, not a direct TinyFish key. He added a Monid key for this. The screenshot is Monid's TinyFish tool page (monid.ai/tools/tinyfish) under "PROMOTIONS & FREE TIERS": **TinyFish Web Search (free) — /free/search** and **TinyFish Fetch (free) — /free/fetch**. ONLY these two are to be used. The paid TinyFish endpoints on Monid (/search $0.0050/call, /fetch $0.0010/result) must NEVER be called.
+
+**Why the current skill fails (verified live):** The saved key is a Monid key (35 chars, prefix "moni"). The TinyFish skill v2 calls TinyFish's direct API (`https://api.search.tinyfish.ai`, `https://api.fetch.tinyfish.ai`, `X-API-Key`) → 401 INVALID_API_KEY. A Monid key is not a TinyFish key. The fix is to route through Monid, not to get a TinyFish key.
+
+**Monid facts (from https://monid.ai/SKILL.md, v0.1.9):** Monid is a CLI/API gateway. Install: `npm install -g @monid-ai/cli@latest`, then `monid setup`. Key: `monid keys add -k <key> -l main`. Workflow: `monid discover -q "…"`, `monid inspect -p <provider> -e <endpoint>`, `monid run -p <provider> -e <endpoint> -i '{…}' -w`, `monid runs get -r <runId>`, `monid balance`. The TinyFish provider on Monid is `tinyfish`.
+
+- [ ] T2.1 — Install the Monid CLI on the machine (`npm install -g @monid-ai/cli@latest`, `monid setup`). Confirm `monid --version` matches the skill version.
+- [ ] T2.2 — Configure the Monid CLI with the ALREADY-SAVED Monid key (the value in envs.json under TINYFISH_API_KEY — that IS the Monid key, 35 chars, "moni" prefix). Do NOT ask Rohan for the key again; read it from the existing env (length + prefix only in any log). Rename the env to MONID_API_KEY in the skill/docs, but keep TINYFISH_API_KEY working as an alias so nothing already saved breaks.
+- [ ] T2.3 — Inspect the two free endpoints and record their exact input schemas: `monid inspect -p tinyfish -e /free/search` and `monid inspect -p tinyfish -e /free/fetch`. Save the schemas in the skill. Do NOT guess the parameters.
+- [ ] T2.4 — Rework the TinyFish skill (`features/tinyfish/`, SKILL.md + implementation) to call Monid, NOT TinyFish directly: `monid run -p tinyfish -e /free/search` for web search and `monid run -p tinyfish -e /free/fetch` for fetch. Remove the direct `api.search.tinyfish.ai` / `api.fetch.tinyfish.ai` calls. Hard-block the paid endpoints: the skill must never call `/search` or `/fetch` (paid) — only `/free/search` and `/free/fetch`.
+- [ ] T2.5 — Keep the existing fallbacks (DuckDuckGo search/fetch) for when Monid is unreachable. Do not remove any capability.
+- [ ] T2.6 — Live-test BOTH free endpoints with the Monid key: a real web search (confirm ranked results come back) and a real fetch of up to 10 URLs (confirm clean Markdown comes back). Confirm the runs cost $0 (free tier) via `monid balance` / run receipts.
+- [ ] T2.7 — Update the TinyFish README + SKILL.md to document the Monid route (provider `tinyfish`, free endpoints only, Monid key, no direct TinyFish key needed). Push to the deploy repo.
+- [ ] T2.8 — Verify in the console: run a TinyFish search and a fetch from a real chat and confirm the results come back. Browser-verify the Settings TinyFish section still shows the key field (now labelled Monid key) and saves correctly.
+
+---
+
+## PART 3 — Delete Chromium, install Camoufox from GitHub (Rohan: "chromium is installed then delete and install my github version of camoufox")
+
+**Current state (verified 2026-11-20/22):** Only Chromium 156.0.8078.79 is installed as the desktop browser. Camoufox is NOT installed as a desktop browser (only the Camoufox bridge on port 8899, healthy 200). The Computer rebuild spec (2026-11-20) already named the source: `https://github.com/daijro/camoufox.git`.
+
+**Source — CONFIRMED by Rohan 2026-11-22 ~23:19 IST:** `https://github.com/gogibeta/camofox-browser` — gogibeta's fork (fork of jo-inc/camofox-browser, "Stealth headless browser for AI agents — bypass Cloudflare, bot detection, and anti-scraping. Drop-in Puppeteer/Playwright replacement", default branch master, last pushed 2026-11-21). Install from THIS fork, not upstream daijro/camoufox.
+
+- [ ] T3.1 — Source is CONFIRMED: `https://github.com/gogibeta/camofox-browser` (Rohan, 2026-11-22 ~23:19 IST). Clone that fork. Do NOT use upstream daijro/camoufox.
+- [ ] T3.2 — Remove Chromium from the machine (the desktop browser install). Also remove the other non-system browsers per the earlier instruction ("delete Chrome/Cdex/Claude and all non-system installs, keep only our system") — confirm each one exists before removing, and remove ONLY browsers, not system packages.
+- [ ] T3.3 — Install Camoufox from the GitHub source on the machine (clone, install per its README, fetch the browser binaries it needs). Verify `camoufox` launches and renders a page.
+- [ ] T3.4 — Point the desktop at Camoufox (replace Chromium as the desktop browser in the XFCE session / noVNC setup). Verify the desktop opens in Camoufox, not Chromium.
+- [ ] T3.5 — Verify the Camoufox bridge on 8899 still works (it is the automation bridge — do NOT break it). Verify noVNC ports 6080–6085 still return 200 and the desktop is usable (Take control, VNC shell, Release, terminal echo).
+- [ ] T3.6 — Verify anti-detect works: load a page that blocks plain Chromium and confirm Camoufox passes it. Record the result.
+- [ ] T3.7 — Update the Computer rebuild docs + the deploy repo with the Camoufox install steps (so a rebuild reproduces it). Push.
+
+---
+
+## PART 4 — Install rust-anything and change to Rust (Rohan: "add install this here — https://github.com/erkamyaman/rust-anything — and whatever is possible with all same functionality all same look change to rust … keep the browser camoufox same as it is")
+
+**What rust-anything IS (read live 2026-11-22):** A migration TOOL, not a library. "Rewrite your whole app in Rust, one piece at a time, checked against the original's recorded behavior at every step." It records what the original does, your coding agent writes the Rust one piece at a time, and every piece is checked against that recording before it moves on. It does NOT translate code; it proves the rewrite. Supports TypeScript/JavaScript, Python, C, Go, Ruby, Java. Built on napi-rs (JS), PyO3 (Python), wasm-bindgen. Commands: `record` (run the original on generated edge cases + your inputs, save what it returns/throws), `bridge` (generate the Rust crate + wrapper so callers keep the original API), `diff` (replay every recorded case against the Rust), `gate` (nothing ships until all match), `app lift` (make it a pure Rust app), `go` (profile + port the one hot function), `report` / `disable` (switch a port on/off). Install: `cargo install rust-anything`, then `rust-anything setup`. Prebuilt binaries for macOS/Linux/Windows; `npm install -g rust-anything` for JS projects. MIT license. Repo: erkamyaman/rust-anything (7,862 stars, 362 commits).
+
+**Scope — MAJORITY of QwenPaw to Rust, WHATEVER IS POSSIBLE WITHOUT ANY ISSUES (Rohan, 2026-11-22 ~23:30 IST: "whatever is possible to be in rust without any issues go and do that").** Convert everything that can be ported to Rust cleanly, without breaking anything. If a module cannot be ported without issues, leave it alone and record WHY (do not force it). That means: the Python agent backend (the biggest part), the Python brokers (vault 8896, reset 8895, MCP proxies 8898/8897), the JS/TS services (keep-alive Worker, _worker.js proxy, Pages functions), and any other logic that rust-anything can port. The console UI is React — the LOOK must stay identical, so the frontend's rendering stays React; only its non-UI logic is a porting candidate, and only where it does not change the look. The browser stays Camoufox — the Rust migration does NOT touch the browser. Nothing ships until `diff` + `gate` pass on recorded behavior. The original is never touched until a port is proven.
+
+- [x] T4.1 — Install rust-anything: DONE + live-verified 2026-11-22 ~23:25 IST. `rust-anything 3.3.0` installed via npm (prebuilt binary) + `rust-anything setup` done (Claude Code, Codex, Gemini CLI registered). Rust toolchain: `cargo 1.100.0` + `rustc 1.100.0` installed via rustup to the home directory (144G free). Note: /tmp is only a 512M tmpfs (368M free) — the toolchain does NOT fit there; the first rustup attempt to /tmp failed "No space left on device". Always install Rust tooling under $HOME, never /tmp.
+- [x] T4.2 — Inventory (measured 2026-11-22 ~23:26 IST, ~/workspace/qwenpaw-source/): the Python agent backend is the MAJORITY — **1,133 .py files, 384,023 lines** under `src/qwenpaw/` (top dirs: agents, app, channels, cli, config, memory, providers, security, services, sandbox, loop, runtime, etc.). The JS/TS side: keep-alive Worker (1 JS file) + Pages (19 JS files) + the React console frontend (stays React for the look). Ranking for the majority conversion: (1) Python agent backend, module by module — this is the bulk; (2) Python brokers (vault 8896, reset 8895, MCP proxies 8898/8897); (3) JS/TS services (keep-alive Worker, _worker.js, Pages functions); (4) console frontend non-UI logic ONLY where it does not change the look. Target: the majority of the system in Rust.
+- [ ] T4.3 — Record the baseline behavior for the FIRST candidate (the hottest function): `rust-anything record` on generated edge cases + real inputs. Save the recording. This is the proof baseline — no port moves without it.
+- [ ] T4.4 — Port the first candidate: `rust-anything bridge` to generate the crate + wrapper, write the Rust, `rust-anything diff` to replay every recorded case, `gate` to confirm. Only switch it on when every recorded case matches. Keep the fallback (the original) wired so `rust-anything disable` restores it byte for byte.
+- [ ] T4.5 — Expand module by module toward the MAJORITY target, one module at a time, each with its own record → bridge → diff → gate cycle. Never port two modules at once. Never lift a module to pure Rust until its `diff` + `gate` pass with no fallback. **If a module cannot be ported WITHOUT ANY ISSUES, leave it alone and record exactly why (do not force it, do not break it).** Track the running Rust share after each module; stop expanding only when everything portable is Rust or when a module is proven un-portable (record the reason).
+- [ ] T4.6 — After each port, live-verify the whole system still behaves identically (same console look, same API responses, same sleep/wake, same vault/reset flows). Browser-verify the console after any port that touches a path the console uses.
+- [ ] T4.7 — Document each port (REPORT.md + card, per the tool's `report` command) and push the inventory + reports to the deploy repo. Keep a running "Rust share" note (what % of the code is Rust, what is still original).
+- [ ] T4.8 — Explicit non-goals (do NOT do these): do NOT rewrite the React console UI in Rust (same look = React stays); do NOT change the browser (Camoufox stays); do NOT change any API, config key, D1 column, or user-visible label as part of a port (a port that changes behavior is a failed port).
+
+---
+
+## PART 5 — All other fixes (Rohan: "rest all other fix too yourself i think that your end not mine")
+
+These are mine to do. Order: the ones that unblock other work first, then the rest. Each one gets the fix → browser-check → fix-again loop until it is fully fixed.
+
+### 5A. Guard sleep / smart sleep-wake (the biggest open item)
+
+**ROHAN'S RESTATED SPEC (2026-11-22 ~23:30 IST) — the auto-sleep is NOT working, "i think it constantly waking up":** (1) If there is a scheduled task, wake up 5 minutes BEFORE the task. (2) If Rohan is doing any task or anything is running, KEEP RUNNING — do not sleep while anything is active. (3) Once everything stops, after 20 minutes of NO activity, auto sleep. The current behavior is wrong: it keeps waking up when it should stay asleep, and/or it never actually sleeps. Fix the logic to match this spec exactly, and find WHY it is constantly waking up (the keep-alive / reporter / wake path is the prime suspect — it must not wake the machine for its own bookkeeping).
+
+- [ ] T5A.0 — Diagnose "constantly waking up": trace every wake event (keep-alive cron, reporter, visit, routine, guard) and record which one wakes the machine when it should be asleep. The keep-alive must NOT wake the machine just to check or record state — it should only wake it for a real scheduled task (5 min before) or a real user visit. Fix the wake logic so the machine stays asleep when nothing is due.
+- [ ] T5A.1 — Root-cause the Pages sleep path (E3). Known facts: guard sleep failed 7 times (pages_sleep_failed, latest ~22:10 IST 2026-11-22). NOT the cause: INSTABOX_MACHINE_ID IS set on both Pages (verified live); SLEEP_TOKEN was rotated 2026-11-21 and the 7th failure happened after rotation. Investigate the actual sleep call path (Pages `POST /api/machine/sleep` → `sleepMachine` in `pages/public/machine-control.js` → InstaBox PATCH `{desiredState:"suspended"}`) with live tracing on the next guard window. Record the exact error at each hop.
+- [ ] T5A.2 — Rebuild the sleep/wake decision to Rohan's spec: wake 5 min before a scheduled task; stay awake while ANY task/activity is running (a running job, an active chat, a user visit, a routine in progress); sleep only after 20 min of zero activity. Verify the decision logic against the spec with a live trace (a scheduled task, an active task, then idle → sleep).
+- [ ] T5A.3 — Fix the root cause and prove it: get ONE real guard sleep to succeed end-to-end (machine actually suspends at the 7h mark and the state records it) AND confirm the machine STAYS asleep (no spurious wake) until the next scheduled task or visit. Do not call it done on code review alone.
+- [ ] T5A.4 — Fix the frozen /status timestamps (checkedAt/lastPingAt/lastUpAt frozen at 09:40:59Z while /sleepwake/state is fresh). Worker recording bug — find where the Worker writes those fields and fix it. Verify live that /status timestamps advance.
+
+### 5B. The 12 READY-FOR-MUSE items (code done by Pi, machine/browser steps mine)
+- [ ] T5B.1 — A1: Worker-side daily-summary watchdog (do NOT create a second summary job). Deploy the watchdog to the keep-alive Worker; verify live that it flags if no cron_result by ~07:10 IST.
+- [ ] T5B.2 — A3: T123 egress guard wiring. Wire it, verify live.
+- [ ] T5B.3 — A4: T127 real workspace run (checkpoints on a real workspace; NEVER `--force` on the live workspace).
+- [ ] T5B.4 — A5: T128 real MCP server + agent-loop wiring. Verify live.
+- [ ] T5B.5 — A6: T129 skill-from-draft + index.json loading. Verify live.
+- [ ] T5B.6 — A7: T134 identity note + live PATCH switch. Verify live.
+- [ ] T5B.7 — A9: renderer investigation — MOOT (cause was the injected _worker.js MutationObserver; _worker.js is now stripped). Close it as moot with the evidence, do not re-investigate.
+- [ ] T5B.8 — B1: scheduler observability (image rebuild = Muse). Add logger routing for the scheduler; verify scheduler lines appear in qwenpaw.log.
+- [ ] T5B.9 — B3: QA round 20 banner gap — measure it live and fix if it is real.
+- [ ] T5B.10 — B4: takeover two-tab live test. Run the two-tab test in a real browser and confirm the "Take over sending" flow works.
+- [ ] T5B.11 — T132: approval-TTL HTTP-409 live proof through a real approval card (needs a real agent run on the machine; code IS deployed). Do the live run and record the 409.
+
+### 5C. Deploys and cleanups
+- [ ] T5C.1 — E1 Pages deploy + live verify: deploy the multi-PC Computer registry to Pages (registry.js currently 404 live), verify the registry loads and a second computer can be registered, verify the port pool 6080–6085.
+- [ ] T5C.2 — E2 UI fixes (Computer ui.html hallmark fixes): push them now that the Computer rebuild path is settled (they were held because the rebuild would overwrite them — sequence them AFTER the Camoufox install in Part 3).
+- [ ] T5C.3 — Pages status page: cut 367 bytes (12,655 → under the 12,288 budget). Verify live size after.
+- [ ] T5C.4 — Delete the unreachable `pages/public/search-settings-ui.js` from the repo and push. (Note: its key-field role is replaced by the native Settings section; do not delete the native section.)
+- [ ] T5C.5 — PLAN.md: remove the stale "INSTABOX_MACHINE_ID is ABSENT" sentence (line 74; the correction is already appended inline). Docs pass, push.
+- [ ] T5C.6 — Model-labels mapping: apply the names Rohan already gave (deepseek → "AgentX-1-Mini", nex-n2.6 → "AgentX-1") in providers/config. Verify live that the labels show in the model selector. (He proposed these exact names, so applying them is his call already made — not a new decision.)
+- [ ] T5C.7 — Infra-email-prompt-injection: land the fix (sender allowlist before parsing + untrusted-email marker) BEFORE any deploy of the email router. The router stays undeployed until the fix is in. Close the audit finding with evidence.
+
+### 5D. Open UI items (none covered by Phases 1–6) — fix in the source, browser-verify each
+- [ ] T5D.1 — Community Feedback toggle: check on the SETTINGS page (my earlier check was on /chat, which proved nothing). If the row genuinely has no toggle, add one or confirm by design with evidence.
+- [ ] T5D.2 — Detection Rules cards collapse on SPA click-through on Pages; sidebar doesn't scroll independently on Pages; ~10s blank-white first paint on navigation; deep-link blank-white ~10–12s.
+- [ ] T5D.3 — Search-blank (upstream console bug); Environments black rectangle; Configuration Gate Pipeline buttons; General colour dots + spinbutton arrows.
+- [ ] T5D.4 — /chat sidebar New Chat disabled state; /computer loading states + '—' live values + clipped Teach placeholder + thumbnail overlap; /vault + Channels loading indicators + stray '1'.
+- [ ] T5D.5 — Settings section-switch stale-content flash; clock digits not rendering; Models provider-name truncation; Settings nav fit on first paint; icon targets ~14px; 'Last 7 days' group expansion; login first-submit hang (intermittent); 1–2px black line at System card's bottom-right edge.
+- [ ] T5D.6 — After all UI fixes, run the full loop-rule check: https://qwenpawx.pages.dev/settings/general AND https://qwenpawx.pages.dev/chat, cold load + existing conversation, desktop AND phone widths, until every item is fixed.
+
+---
+
+## PART 6 — Still needs Rohan (only the things that truly need his key or his call)
+
+These are the ONLY items I cannot do myself. Everything else above is mine.
+- **Telegram bot token value** — he enters it in the new Settings field (Part 1). I never ask for the value.
+- **Daily-summary model switch** — switch the summary to nex-n2.6 needs per-job model support (a code change + rebuild = source7). Awaiting his call. The summary fires on time but times out on DeepSeek.
+- **Camoufox source confirmation** — CONFIRMED 2026-11-22 ~23:19 IST: gogibeta/camofox-browser. No longer needed.
+- **Coarena $50/day** — his request pending review with Coarena; cannot verify from here (no key, no account endpoint).
+- **GitHub fine-grained token** — he revokes it only when the WHOLE project is complete, not before.
+
+---
+
+## Execution order
+
+1. Part 1 (Telegram UI) + Part 2 (TinyFish/Monid) — both are console/skill work, no machine rebuild needed first.
+2. Part 3 (Camoufox) — machine work; do it when the machine is up (it hits the 8h wall ~23:10 IST 2026-11-22, then ~2h cooldown).
+3. Part 4 (rust-anything) — install the tool first, record baselines, then port the hottest function; expand piece by piece.
+4. Part 5 (all other fixes) — interleaved with the above, guard sleep first (it is the biggest open item).
+5. Part 6 — only when Rohan's input is actually needed; do not block the rest on it.
+
+Verification rule for every task: live check before calling it done (real browser render for UI, real API call for skills, real machine state for sleep/deploy). A code change without a live check is not done.
