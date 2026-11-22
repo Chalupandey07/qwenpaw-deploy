@@ -357,6 +357,7 @@ async function manualRestInEffect(env) {
 // must never invent one.
 const SW_MIN = 60_000;
 const SW_WAKE_LOOKAHEAD_MS = 5 * SW_MIN;    // routine due within 5 min -> wake (user-set 2026-11-21: wake takes ~1-2 min, so the machine is ready ~3 min before the routine; the routines Worker's 15-min backup wake covers slow wakes)
+const SW_OVERDUE_GRACE_MS = 15 * SW_MIN;    // a routine at most this far OVERDUE still counts as imminent (it just fired and nextRun has not advanced yet). Farther overdue = missed/stuck, NOT a reason to wake or to block sleep: waking for it every tick is the "constantly waking up" bug (2026-11-22), and a stuck routine would otherwise block sleep forever. 15 min covers a slow wake + the routines Worker's 15-min backup window; a routine hours overdue is not "just fired".
 const SW_VISIT_IDLE_MS = 20 * SW_MIN;       // no visitor for 20 min (user-set 2026-11-21: auto-sleep after 20 min idle)
 const SW_AGENT_IDLE_MS = 10 * SW_MIN;       // no agent activity for 10 min
 const SW_MIN_UPTIME_MS = 15 * SW_MIN;       // machine must have been up 15 min
@@ -447,7 +448,9 @@ function nextRun(cronExpr, timezone, fromMs) {
 // nextRoutineAt: epoch ms of the next routine, Infinity when there are
 //   definitively NO routines, null when UNKNOWN (could not compute).
 //   null -> fail-awake (hold). Infinity -> sleep allowed (no routine to miss).
-//   A finite value in the past (overdue) counts as imminent, never sleepable.
+//   A finite value in the past (overdue) counts as imminent ONLY within
+//   SW_OVERDUE_GRACE_MS; farther overdue is missed/stuck, not imminent
+//   (2026-11-22 fix for "constantly waking up").
 function decideSleepWake(inp, now = Date.now()) {
   const {
     nextRoutineAt = null,
@@ -470,9 +473,19 @@ function decideSleepWake(inp, now = Date.now()) {
   const known = nextRoutineAt !== null && nextRoutineAt !== undefined;
   const untilRoutine = known ? nextRoutineAt - now : Infinity;
 
-  // WAKE wins. "<= lookahead" also catches overdue (negative) routines:
-  // the run already fired but nextRun hasn't advanced yet -> stay up.
-  if (known && untilRoutine <= SW_WAKE_LOOKAHEAD_MS) {
+  // IMMINENT = due within the 5-min lookahead ahead, or at most
+  // SW_OVERDUE_GRACE_MS overdue (it just fired and nextRun has not
+  // advanced yet). A routine farther overdue is MISSED/STUCK, not
+  // imminent: it must neither wake the machine every tick (the
+  // "constantly waking up" bug, 2026-11-22 — a stale report or a
+  // timed-out job leaves nextRoutineAt hours in the past) nor block
+  // sleep forever. The scheduler's misfire handling owns missed runs.
+  const imminent = known && untilRoutine <= SW_WAKE_LOOKAHEAD_MS && untilRoutine >= -SW_OVERDUE_GRACE_MS;
+
+  // WAKE wins, but only for an imminent routine. "<= lookahead" also
+  // catches a just-fired routine (negative, within grace): the run
+  // already fired but nextRun hasn't advanced yet -> stay up.
+  if (imminent) {
     const down = !machineUp || sleepState === "suspended";
     if (down) return { action: "wake", reason: "routine due within lookahead" };
     return { action: "hold", reason: "routine window, already up" };
@@ -502,7 +515,11 @@ function decideSleepWake(inp, now = Date.now()) {
 
   const sinceWake = lastWakeAt == null ? Infinity : now - lastWakeAt;
   const guards = {
-    routineBeyondWindow: untilRoutine > SW_WAKE_LOOKAHEAD_MS,
+    // Not imminent = either far in the future (beyond the lookahead) or
+    // far overdue (missed/stuck, beyond the grace). A missed routine
+    // must not block sleep: it is the scheduler's misfire to own, and
+    // a stuck routine would otherwise hold the machine awake forever.
+    routineBeyondWindow: !imminent,
     noRecentVisit: lastVisitAt == null || now - lastVisitAt >= SW_VISIT_IDLE_MS,
     noRecentAgent: lastAgentActivityAt == null || now - lastAgentActivityAt >= SW_AGENT_IDLE_MS,
     uptimeEnough: uptimeMin * SW_MIN >= SW_MIN_UPTIME_MS,
@@ -678,8 +695,17 @@ async function computeNextRoutine(db, report, now = Date.now()) {
     }
   } catch { unknown = true; }
   if (report && Number.isFinite(report.nextNativeRun) && report.nextNativeRun < best) {
-    best = report.nextNativeRun;
-    bestSource = "native";
+    // A STALE report's nextNativeRun must not force a wake (2026-11-22
+    // "constantly waking up"): the report is a snapshot from when the
+    // machine last ran, so its nextNativeRun can be hours in the past by
+    // now, and decideSleepWake treats a past time as an overdue routine
+    // -> wake, every tick. Only a fresh report (within the staleness
+    // threshold) may contribute a native run.
+    const reportFresh = Number.isFinite(report.reportedAt) && (now - report.reportedAt <= SW_REPORTER_STALE_MS);
+    if (reportFresh) {
+      best = report.nextNativeRun;
+      bestSource = "native";
+    }
   }
   if (unknown && best === Infinity) return { at: null, source: "unknown" };
   if (best === Infinity) {
@@ -687,7 +713,10 @@ async function computeNextRoutine(db, report, now = Date.now()) {
     // reporter has told us there are no native jobs; with no report at
     // all, native jobs are unknown (jobs.json is unreadable from here),
     // so the honest answer is null (fail-awake), not Infinity.
-    if (!report) return { at: null, source: "unknown" };
+    // A STALE report is as untrustworthy as no report here: it cannot
+    // prove there are no native jobs now, so it is also "unknown".
+    const reportFresh = report && Number.isFinite(report.reportedAt) && (now - report.reportedAt <= SW_REPORTER_STALE_MS);
+    if (!reportFresh) return { at: null, source: "unknown" };
     return { at: Infinity, source: "none" };
   }
   return { at: best, source: bestSource };
