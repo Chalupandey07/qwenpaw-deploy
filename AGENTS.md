@@ -1,6 +1,6 @@
 # AGENTS.md — working on the QwenPaw deployment
 
-You are working on **`Ratulbaba7/qwenpaw-deploy`**: the control plane for a
+You are working on **`Chalupandey07/qwenpaw-deploy`**: the control plane for a
 QwenPaw agent running on an InstaBox **Free** machine, fronted by Cloudflare
 Pages + Workers. This file is the contract. Read it before touching anything.
 
