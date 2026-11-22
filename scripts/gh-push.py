@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Push local repo files to Ratulbaba7/qwenpaw-deploy (main) via the GitHub
+"""Push local repo files to Chalupandey07/qwenpaw-deploy (main) via the GitHub
 Contents API through gh.py (classic token). One commit message for all files.
 
 Usage:
@@ -15,8 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = "Ratulbaba7/qwenpaw-deploy"
-GH = ["python3", str(Path.home() / "workspace/custom-connectors/custom.github/bin/gh.py")]
+REPO = "Chalupandey07/qwenpaw-deploy"
+GH = ["python3", str(Path.home() / "workspace/custom-connectors/custom.github-chalupandey07/bin/gh.py")]
 ROOT = Path(__file__).resolve().parent.parent
 
 
