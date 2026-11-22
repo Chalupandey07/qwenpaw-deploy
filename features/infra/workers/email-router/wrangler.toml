@@ -1,0 +1,36 @@
+name = "qwenpaw-infra-email"
+main = "index.js"
+compatibility_date = "2026-11-14"
+
+# Cloudflare Email Worker (email handler). NOT DEPLOYED: the account has
+# zero zones, so no Email Routing rule can point at this Worker yet.
+# Deploy only after: (1) a user-owned domain is added as a zone,
+# (2) an Email Routing rule points the bot address at this Worker,
+# (3) the secrets below are set (never in this file).
+# See features/infra/17-bot-email.md for the deploy path.
+#
+# SECURITY (audit finding infra-email-prompt-injection, fixed 2026-11-23):
+# the handler enforces a sender allowlist BEFORE delivering (index.js),
+# and the delivered template marks the body as untrusted data, never
+# instructions. EMAIL_ALLOWLIST must be set before deploy; if it is unset
+# the Worker rejects everything (fail closed) — "no allowlist" never
+# means "accepts the world".
+
+[vars]
+# Public InstaBox URL of the published QwenPaw port.
+QWENPAW_URL = "https://8088-agq5wqqo2fvypym7rjlpvngc2m.instabox.tech/"
+
+# Secrets (set via `wrangler secret put` or the API, never in this file):
+#   QWENPAW_USER     — the QwenPaw console username the Worker logs in as.
+#   QWENPAW_PASS     — the QwenPaw console password.
+#   EMAIL_ALLOWLIST  — comma-separated exact sender addresses or "@domain"
+#                      suffixes allowed to drive the agent by email.
+#                      Example: "owner@example.com,@example.com".
+#                      Unset = reject everything.
+
+# KV namespace for the cached login token. Same STATUS namespace as
+# qwenpaw-keepalive (shared; the email token key is prefixed
+# "qwenpaw:email-token" so it cannot collide).
+[[kv_namespaces]]
+binding = "STATUS"
+id = "6a91d8099ed8419c88c94b0946186a27"
