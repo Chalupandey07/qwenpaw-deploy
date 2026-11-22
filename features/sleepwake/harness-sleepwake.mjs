@@ -208,6 +208,17 @@ console.log("decideSleepWake — pure decision, fail closed");
     decideSleepWake({ ...idle, nextRoutineAt: NOW - 5 * MIN, machineUp: false, sleepState: "suspended" }, NOW).action === "wake");
   check("overdue routine + machine up -> hold",
     decideSleepWake({ ...idle, nextRoutineAt: NOW - 5 * MIN }, NOW).action === "hold");
+  // 2026-11-22 "constantly waking up" fix: a routine FAR overdue (beyond
+  // the 15-min grace) is missed/stuck, not imminent. It must neither wake
+  // a down machine every tick nor block sleep.
+  check("far-overdue routine (2h ago) + machine down -> hold, NOT wake (missed, not imminent)",
+    decideSleepWake({ ...idle, nextRoutineAt: NOW - 120 * MIN, machineUp: false, sleepState: "suspended" }, NOW).action === "hold");
+  check("far-overdue routine (2h ago) + machine up + idle -> sleep (missed routine does not block sleep)",
+    decideSleepWake({ ...idle, nextRoutineAt: NOW - 120 * MIN }, NOW).action === "sleep");
+  check("overdue routine within grace (10 min ago) + machine down -> wake (still imminent)",
+    decideSleepWake({ ...idle, nextRoutineAt: NOW - 10 * MIN, machineUp: false, sleepState: "suspended" }, NOW).action === "wake");
+  check("overdue routine just past grace (16 min ago) + machine down -> hold, NOT wake",
+    decideSleepWake({ ...idle, nextRoutineAt: NOW - 16 * MIN, machineUp: false, sleepState: "suspended" }, NOW).action === "hold");
 }
 
 console.log("POST /report — reporter auth + storage");
