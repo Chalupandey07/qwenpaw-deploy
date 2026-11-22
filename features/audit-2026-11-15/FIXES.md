@@ -220,10 +220,7 @@ never read.
   auth code (a rebuild/redeploy of the container image path) and
   regression-testing file preview, QR-code status, WebSocket console and
   fetch-based chat streaming. Needs a user decision + a logged-in session.
-- `infra-email-prompt-injection` (needs_validation): pre-deployment
-  design finding on the undeployed email router. The fix (sender
-  allowlist before parsing, untrusted-email marker) must land before any
-  deploy; the router is still undeployed.
+- `infra-email-prompt-injection` (FIXED 2026-11-23, still undeployed — not a live vulnerability): the sender allowlist + untrusted-email marker are now in `features/infra/workers/email-router/index.js` (allowlist `EMAIL_ALLOWLIST`, checked before deliver, fail-closed when unset; delivered template marks the body as untrusted data, never instructions, with a fenced body and a sanitised sender in `user_id`), harness `features/infra/workers/email-router/harness-email-router.mjs` 24/24 PASS, and `wrangler.toml` now ships for `qwenpaw-infra-email` (STATUS KV binding). The router stays undeployed (zero zones, no Email Routing rule, no secrets set) — the fix landed BEFORE any deploy, as required.
 - `groupchat-injection-relay-latent` and `qwenpaw-indirect-prompt-injection`
   (rejected): no sink exists (relay not installed; single-user agent
   acting on owner-directed content is intended behaviour; a
