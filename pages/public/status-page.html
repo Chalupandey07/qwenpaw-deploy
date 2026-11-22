@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="AgentX status, keep-alive, and wake controls.">
 <title>AgentX: Status</title>
 <style>
 /* Hallmark · v2.0.0 · theme: AgentX status (custom) · genre modern-minimal · shape: one card */
@@ -32,11 +31,7 @@ button{font-family:var(--font-body);font-size:var(--text-body);cursor:pointer;}
 .btn:disabled,.switch:disabled{opacity:0.55;cursor:not-allowed;}
 .btn-primary{background:var(--color-accent);color:var(--color-accent-ink);}
 .btn-secondary{background:none;color:var(--color-ink);border:1px solid var(--color-line);}
-/* Even action grid (beauty v4). v3 used flex:1 1 auto, but the four
-   buttons' natural widths still overflowed the card, so 'Refresh status'
-   wrapped ALONE onto a full-width second line (3+1). A 2x2 grid is
-   deterministic: two even rows of two, every button the same width and
-   height, no orphan — which is exactly the accepted fallback. */
+/* 2x2 grid: even rows, no orphan button. */
 .actions{display:grid;grid-template-columns:1fr 1fr;align-items:stretch;gap:var(--space-2);margin-top:var(--space-4);}
 .actions .btn{width:100%;min-width:0;}
 .ka-row{display:flex;align-items:center;gap:var(--space-3);}
