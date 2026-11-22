@@ -26,7 +26,12 @@ over D1 state; the tick only probes / suspends based on it.
 
 **The decision** (`decideSleepWake`):
 - WAKE wins: a routine due within 5 min and
-  the machine down -> wake. Overdue routines count as imminent.
+  the machine down -> wake. A routine at most 15 min overdue still counts
+  as imminent (it just fired and nextRun has not advanced yet); farther
+  overdue is missed/stuck, not imminent — it must neither wake the machine
+  every tick nor block sleep (2026-11-22 fix for "constantly waking up").
+  A stale reporter's nextNativeRun is ignored entirely (a stale snapshot's
+  next run can be hours in the past and would otherwise force a wake).
 - SLEEP only when EVERY guard passes: routine beyond the 5-min window,
   no visit in 20 min, no agent activity in 10 min, uptime >= 15 min, no
   manual rest, reporter fresh (< 10 min), machine up, state running, and
