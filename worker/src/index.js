@@ -1,8 +1,13 @@
 // qwenpaw-keepalive — Cloudflare Worker (Free): cron keep-alive + status API
 // for QwenPaw on InstaBox Free. No secrets in this file.
 // Env vars: QWENPAW_URL, INSTABOX_MACHINE_ID, PAGES_URL
-// Secrets (optional): PORT_TOKEN (private port only), INSTABOX_API_KEY (API-wake fallback)
-// Secrets (sleep/wake): REPORTER_TOKEN (POST /report auth), SLEEP_TOKEN (POST /api/machine/sleep on Pages)
+// Secrets (optional): PORT_TOKEN (private port only), INSTABOX_API_KEY (API-wake fallback AND, since v3, the sleep path)
+// Secrets (sleep/wake): REPORTER_TOKEN (POST /report auth)
+// Secrets (v3 sleep): INSTABOX_API_KEY + INSTABOX_MACHINE_ID are REQUIRED for
+//   the cron to suspend the machine itself (PATCH InstaBox). v2 asked Pages to
+//   do it and failed seven times; see the note above suspendViaInstaBox.
+//   SLEEP_TOKEN / PAGES_URL are still read by the v2 Pages path on Pages' side,
+//   but the Worker no longer calls it.
 // Secret (required for /wake): WAKE_TOKEN — POST /wake requires header
 // X-Wake-Token to match; when unset, /wake returns 503 (fail closed).
 // WAKE_TOKEN also gates POST /keepalive (Authorization: Bearer header).
@@ -358,6 +363,7 @@ async function manualRestInEffect(env) {
 const SW_MIN = 60_000;
 const SW_WAKE_LOOKAHEAD_MS = 5 * SW_MIN;    // routine due within 5 min -> wake (user-set 2026-11-21: wake takes ~1-2 min, so the machine is ready ~3 min before the routine; the routines Worker's 15-min backup wake covers slow wakes)
 const SW_OVERDUE_GRACE_MS = 15 * SW_MIN;    // a routine at most this far OVERDUE still counts as imminent (it just fired and nextRun has not advanced yet). Farther overdue = missed/stuck, NOT a reason to wake or to block sleep: waking for it every tick is the "constantly waking up" bug (2026-11-22), and a stuck routine would otherwise block sleep forever. 15 min covers a slow wake + the routines Worker's 15-min backup window; a routine hours overdue is not "just fired".
+const SW_SLEEP_BLOCK_RETRY_MS = 60 * SW_MIN; // a PERMANENT suspend failure (bad key, wrong machine id) must not be retried every tick: that is the seven-failure loop. Retry once an hour so a fixed key recovers on its own.
 const SW_VISIT_IDLE_MS = 20 * SW_MIN;       // no visitor for 20 min (user-set 2026-11-21: auto-sleep after 20 min idle)
 const SW_AGENT_IDLE_MS = 10 * SW_MIN;       // no agent activity for 10 min
 const SW_MIN_UPTIME_MS = 15 * SW_MIN;       // machine must have been up 15 min
@@ -722,28 +728,101 @@ async function computeNextRoutine(db, report, now = Date.now()) {
   return { at: best, source: bestSource };
 }
 
-// Suspend via the Pages Worker (it holds INSTABOX_API_KEY). The keep-alive
-// Worker never holds that key. SLEEP_TOKEN is a shared secret, set on both
-// sides; when unset on either side this fails closed (no suspend).
-async function suspendViaPages(env) {
-  const pagesUrl = (env.PAGES_URL || "https://qwenpawx.pages.dev").replace(/\/$/, "");
-  const token = env.SLEEP_TOKEN;
-  if (!token) return { ok: false, error: "sleep_token_unset" };
-  try {
-    const res = await fetch(`${pagesUrl}/api/machine/sleep`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Sleep-Token": token },
-      body: JSON.stringify({ via: "keepalive-cron" }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    const text = await res.text().catch(() => "");
-    let body = null;
-    try { body = JSON.parse(text); } catch { /* non-JSON */ }
-    if (!res.ok) return { ok: false, error: "pages_sleep_failed", status: res.status, detail: (body && body.error) || text.slice(0, 200) };
-    return { ok: true, status: res.status, body };
-  } catch (e) {
-    return { ok: false, error: "pages_sleep_fetch_failed", detail: String(e).slice(0, 200) };
+// --- v3 suspend: the Worker calls InstaBox DIRECTLY (2026-11-23) --------
+// v2 suspended by asking Pages to do it (POST /api/machine/sleep ->
+// sleepMachine in pages/public/machine-control.js -> PATCH InstaBox).
+// That path failed SEVEN times live, always as `pages_sleep_failed`, and the
+// root cause was never found: the Pages function returned 503
+// `instabox_machine_unset` because INSTABOX_MACHINE_ID was absent from the
+// Pages production env, and even after that var was set the failure moved
+// rather than cleared. Seven failures of an indirection whose every step is
+// invisible from here is enough: the Worker now suspends the machine itself.
+//
+// The auth and endpoint MIRROR the wake path that is already proven live
+// (`callInstaBoxWake` above): same base URL, same `X-API-Key` header carrying
+// INSTABOX_API_KEY, same `Idempotency-Key: crypto.randomUUID()`, same 30 s
+// AbortSignal.timeout. Only the verb and the body differ, and they mirror the
+// call Pages made, which was itself tested: PATCH
+// /v1/machines/{id} with {"desiredState":"suspended"}.
+//
+// The Worker already holds INSTABOX_API_KEY — it is the same secret the wake
+// fallback has always read. Nothing new is invented here, no key moves, and
+// no Pages deploy is needed for this to work.
+//
+// FAILURE SEMANTICS, and this is the part that matters:
+//
+//   A suspend that fails must NOT be retried in a loop. The old code reverted
+//   the state to "running" and fell through to a probe, which kept the machine
+//   awake and let the next tick try again five minutes later — forever. Seven
+//   failures is what that looks like from the outside. v3 distinguishes:
+//
+//     - transient (network error, timeout, 5xx, 429): revert to running and
+//       let the next tick retry. The machine stays up, which is safe.
+//     - permanent (401/403 bad key, 404 machine gone, 400 bad request):
+//       record a `sleep_blocked` state with the reason and STOP trying until
+//       the reason changes. A wrong API key does not fix itself in five
+//       minutes, and a tick that retries it every five minutes is a log
+//       spammer, not a recovery mechanism.
+//
+function instaBoxSuspendConfigured(env) {
+  return Boolean(env.INSTABOX_API_KEY && env.INSTABOX_MACHINE_ID);
+}
+
+/** Classify an InstaBox suspend attempt: is retrying it ever going to help? */
+function classifySuspendFailure(status) {
+  // No status = the request never completed (DNS, TLS, timeout, reset).
+  // That is the transient case: the next tick may well succeed.
+  if (!status) return "transient";
+  if (status === 401 || status === 403) return "permanent"; // bad/expired key
+  if (status === 404) return "permanent"; // machine id gone
+  if (status === 400 || status === 422) return "permanent"; // we sent nonsense
+  if (status === 409) return "transient"; // mid-transition; try again later
+  if (status === 429) return "transient"; // rate limited
+  if (status >= 500) return "transient";
+  return "transient";
+}
+
+async function suspendViaInstaBox(env) {
+  if (!env.INSTABOX_MACHINE_ID) {
+    return { ok: false, error: "instabox_machine_unset", kind: "permanent" };
   }
+  if (!env.INSTABOX_API_KEY) {
+    return { ok: false, error: "instabox_api_key_unset", kind: "permanent" };
+  }
+  const id = encodeURIComponent(env.INSTABOX_MACHINE_ID);
+  let res;
+  try {
+    res = await fetch(`https://api.instabox.sh/v1/machines/${id}`, {
+      method: "PATCH",
+      headers: {
+        "X-API-Key": env.INSTABOX_API_KEY,
+        "Content-Type": "application/json",
+        "Idempotency-Key": crypto.randomUUID(),
+      },
+      body: JSON.stringify({ desiredState: "suspended" }),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      error: "suspend_fetch_failed",
+      kind: classifySuspendFailure(0),
+      detail: String(err?.name || err).slice(0, 200),
+    };
+  }
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: "suspend_failed",
+      status: res.status,
+      kind: classifySuspendFailure(res.status),
+      detail: text.slice(0, 300),
+    };
+  }
+  let body = null;
+  try { body = JSON.parse(text); } catch { /* InstaBox may answer 204/empty */ }
+  return { ok: true, status: res.status, body };
 }
 
 async function keepAliveTick(env, source) {
@@ -866,20 +945,54 @@ async function keepAliveTick(env, source) {
   }, now);
   console.log(`[keepalive:${source}] decision=${decision.action} reason=${decision.reason} nextRoutine=${nextRoutine.at === Infinity ? "none" : nextRoutine.at === null ? "unknown" : new Date(nextRoutine.at).toISOString()} (${nextRoutine.source}) state=${state.mode} up=${machineUp}`);
 
-  // SLEEP: marker first, then suspend via Pages. A failed suspend reverts
-  // the state to running (fail-awake) and we probe below to keep it up.
+  // SLEEP (v3, 2026-11-23): marker first, then suspend the machine DIRECTLY
+  // through InstaBox. v2 asked Pages to do this and failed seven times with
+  // `pages_sleep_failed` for reasons invisible from here; see the long note on
+  // suspendViaInstaBox above. The order is unchanged and still important: the
+  // marker is written BEFORE the call, so a successful suspend can never leave
+  // a state that says "running" and invite a wake.
   if (decision.action === "sleep") {
     await writeSleepState(db, { mode: "suspending", reason: decision.reason, lastSleepAt: now });
-    const susp = await suspendViaPages(env);
+    // BACKOFF, not a permanent give-up (v3, 2026-11-23). A permanent failure
+    // (401 bad key, 404 wrong machine id) does not fix itself five minutes
+    // later — retrying it every tick is exactly the seven-failure loop this
+    // version exists to end. But never retrying it means a fixed key is never
+    // noticed, so the retry is spaced to once an hour: frequent enough to
+    // recover unattended, sparse enough not to be a loop.
+    const blockedFor = state.suspendBlockedAt ? now - Number(state.suspendBlockedAt) : null;
+    if (Number.isFinite(blockedFor) && blockedFor >= 0 && blockedFor < SW_SLEEP_BLOCK_RETRY_MS) {
+      // A config error that has since been fixed is worth retrying at once.
+      const configNowPresent = instaBoxSuspendConfigured(env);
+      const wasConfigError = /_unset/.test(String(state.reason || ""));
+      if (!(wasConfigError && configNowPresent)) {
+        console.log(`[keepalive:sleep] held (suspend blocked ${Math.round(blockedFor / 60000)} min ago: ${state.reason || "unknown"})`);
+        return { ...(cached || { status: "up" }), sleepwake: { action: "hold", reason: `blocked:${state.reason || "unknown"}`, nextRoutineAt: nextRoutine.at, nextRoutineSource: nextRoutine.source } };
+      }
+      console.log("[keepalive:sleep] retrying suspend: the missing config is now present");
+    }
+    const susp = await suspendViaInstaBox(env);
     if (susp.ok) {
-      await writeSleepState(db, { mode: "sleeping", reason: decision.reason, lastSleepAt: now });
+      await writeSleepState(db, { mode: "sleeping", reason: decision.reason, lastSleepAt: now, suspendBlockedAt: null });
       const saved = await saveStatus(env, { status: "sleeping", httpStatus: 0, note: `Intelligent sleep: ${decision.reason}. Next routine ${nextRoutine.at === Infinity ? "none" : new Date(nextRoutine.at).toISOString()}.`, source });
-      console.log("[keepalive:sleep] suspended via Pages", JSON.stringify(susp.body || {}).slice(0, 200));
+      console.log("[keepalive:sleep] suspended via InstaBox", JSON.stringify(susp.body || {}).slice(0, 200));
       return saved || { status: "sleeping" };
     }
-    console.log("[keepalive:sleep] suspend FAILED, staying awake:", susp.error, susp.detail || "");
-    await writeSleepState(db, { mode: "running", reason: `sleep_failed:${susp.error}` });
-    // Fall through to the probe below (keep awake).
+    console.log("[keepalive:sleep] suspend FAILED, staying awake:", susp.error, susp.status || "", susp.detail || "");
+    if (susp.kind === "permanent") {
+      // Record the block IN THE REASON so /sleepwake/state explains why this
+      // machine will not sleep, and stamp suspendBlockedAt so the next tick
+      // backs off instead of repeating the same doomed call. The mode stays
+      // "running": the machine is genuinely up.
+      await writeSleepState(db, { mode: "running", reason: `sleep_blocked:${susp.error}${susp.status ? `:${susp.status}` : ""}`, suspendBlockedAt: now });
+      console.log("[keepalive:sleep] blocking future suspends until the cause changes");
+    } else {
+      await writeSleepState(db, { mode: "running", reason: `sleep_failed:${susp.error}` });
+    }
+    // Fall through to the probe in BOTH cases (fail-awake): the machine is up,
+    // and a probe keeps the status honest about that. Skipping it would leave
+    // the last-known status frozen at whatever it said before the failed
+    // suspend, which is how the Pages UI ends up lying about a machine that is
+    // plainly awake.
   }
 
   // WAKE: the machine is down and a routine is due. Probe (wakes a paused
