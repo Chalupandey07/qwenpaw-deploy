@@ -11,14 +11,13 @@ api.anysearch.com
 api.cloudflare.com
 api.deepseek.com
 api.duckduckgo.com
-api.fetch.tinyfish.ai
 api.github.com
 api.groq.com
 api.kilo.ai
 api.mistral.ai
+api.monid.ai
 api.openai.com
 api.openrouter.ai
-api.search.tinyfish.ai
 api.x.ai
 generativelanguage.googleapis.com
 raw.githubusercontent.com
