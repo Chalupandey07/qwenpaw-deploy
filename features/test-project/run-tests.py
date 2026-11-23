@@ -587,9 +587,9 @@ def t08():
 
 def t09():
     ok, res = machine_python(WS_ECHO_SCRIPT, [], timeout_s=60)
-    if not ok:
+    if not ok or not isinstance(res, dict):
         return "FAIL", str(res)
-    good = res.get("ws_status", "").startswith("HTTP/1.1 101") \
+    good = str(res.get("ws_status", "")).startswith("HTTP/1.1 101") \
         and res.get("echo_found") is True
     return ("PASS" if good else "FAIL",
             f"ws_status={res.get('ws_status')} echo_found={res.get('echo_found')} "
@@ -598,7 +598,7 @@ def t09():
 
 def _mcp_expect(port, must_contain, must_not_contain):
     ok, res = mcp_list_apps(port)
-    if not ok:
+    if not ok or not isinstance(res, dict):
         return "FAIL", str(res)
     if res.get("error"):
         return "FAIL", f"port {port}: {one_line(res['error'])}"
@@ -739,7 +739,7 @@ def t17():
     ok2, res = machine_python(
         PNG_MEAN_SCRIPT, ["/tmp/mss-test.png", "/tmp/scrot-test.png"],
         timeout_s=60)
-    if not ok2:
+    if not ok2 or not isinstance(res, dict):
         return "FAIL", f"capture ok (sizes={sizes}) but PNG compare failed: {res}"
     try:
         m = res["/tmp/mss-test.png"]; s = res["/tmp/scrot-test.png"]
@@ -1026,7 +1026,7 @@ def t37():
     if before is None:
         return "FAIL", err
     ok, res = mcp_list_apps(8898)
-    if not ok or res.get("error"):
+    if not ok or not isinstance(res, dict) or res.get("error"):
         return "FAIL", f"MCP call failed, cannot compare counts: {res}"
     after, err = approval_pending_count()
     if after is None:
@@ -1328,6 +1328,7 @@ def t49():
             return "FAIL", ("KV write accepted but __lease?computer=qa never "
                             f"showed holder=user leaseId={lease['leaseId']}")
         control = False
+        control_txt = ""
         # 18 x 5 s = 90 s: the watcher polls __lease every 10 s, so the
         # control file can lag the test's own read by ~10 s. (The old KV
         # version of this test waited out a ~60 s KV stale-read window;
@@ -1898,29 +1899,41 @@ def t115():
 
 
 def t116():
-    """TinyFish free search + fetch: Settings-based key, request-building,
-    fallback, feature flags, and the Settings "Your Keys" section (147 checks:
-    108 skill selftest + 39 UI harness).
+    """TinyFish free search + fetch THROUGH MONID: endpoint blocklist,
+    argv building, fallback, feature flags, and the Settings "Your Keys"
+    section (177 checks: 138 skill selftest + 39 UI harness).
 
     Machine-free selftest (features/tinyfish/test_tinyfish.py) for the
-    tinyfish skill's rules. The key is an env var (TINYFISH_API_KEY) set
-    by the user in Console -> Settings -> Environments — NOT a vault
-    item (the vault holds only connectors). The skill reads it from
-    os.environ at runtime with python3 (stdlib urllib), so the key never
-    appears in a command string, argv, or log, and it is deliberately NOT
-    declared in require_envs (a skill whose declared env vars are unmet
-    is skipped for the turn, which would break the fallback). It builds
-    the TinyFish search URL (root path on api.search.tinyfish.ai, the
-    path the official SDK uses) and the fetch body (1-10 urls,
-    markdown/html/json), the DuckDuckGo Instant Answer url (the only DDG
-    surface that works from this box — the HTML and lite endpoints are
-    anomaly-blocked), the env-based fallback decision (key present ->
-    TinyFish, absent -> built-in web_search/web_fetch exactly as now),
-    the feature flags (TINYFISH_SEARCH / TINYFISH_FETCH / TINYFISH_DDG_IA,
-    absent means on, the built-in is never a flag), and the error mapping
-    (401/402/429/404/5xx). No network: it only builds requests and
-    decides. The live half (a real TinyFish call) needs a real key in
-    Settings and is NOT verified here.
+    tinyfish skill's rules. v3.0 (2026-11-22) routes TinyFish ONLY through
+    the Monid CLI: `monid run -p tinyfish -e /free/search` and
+    `monid run -p tinyfish -e /free/fetch`. The PAID endpoints /search
+    ($0.00175/call) and /fetch ($0.001/result) are hard-blocked —
+    build_run_argv() refuses them and the suite proves no argv can name
+    one. The direct TinyFish API (api.search.tinyfish.ai /
+    api.fetch.tinyfish.ai + X-API-Key) is REMOVED: it 401s because the
+    saved key is a Monid key (35 chars, "moni" prefix), not a TinyFish
+    key. The key is an env var (TINYFISH_API_KEY, holding the Monid key)
+    set by the user in Console -> Settings -> Environments — NOT a vault
+    item (the vault holds only connectors). The Monid CLI has no key env
+    var, so the skill bootstraps a 0700 temp dir with 0600
+    credentials.yaml/config.yaml and points XDG_CONFIG_HOME at it; the
+    key therefore never appears in argv (never `monid keys add -k`). It is
+    deliberately NOT declared in require_envs (a skill whose declared env
+    vars are unmet is skipped for the turn, which would break the
+    fallback). The suite checks the exact /free/search schema (13 params,
+    GET -> --query, required query) and /free/fetch schema (12 params,
+    POST -> -i, required urls 1-10) captured from `monid inspect` on
+    2026-11-22 — not guessed — plus the DuckDuckGo Instant Answer url (the
+    only DDG surface that works from this box — the HTML and lite
+    endpoints are anomaly-blocked), the env-based fallback decision (key
+    present + CLI present -> Monid, otherwise -> built-in
+    web_search/web_fetch exactly as now), the feature flags
+    (TINYFISH_SEARCH / TINYFISH_FETCH / TINYFISH_DDG_IA, absent means on,
+    the built-in is never a flag), and the error mapping
+    (AUTH_FAILED/401/402/429/VALIDATION/CLI-missing/5xx). No network: it
+    only builds argv and decides. The live half was run by hand from this
+    box with a real Monid key (both free endpoints COMPLETED, $0.00
+    billed); the in-container agent run is Muse's live test.
 
     Node harness (features/tinyfish/test_search_settings_ui.mjs) for the
     Settings "Your Keys" section (pages/public/search-settings-ui.js): the
@@ -1943,9 +1956,19 @@ def t116():
     vault-based SKILL.md, and the UI harness fails 2/27 before the
     _worker.js wiring lands (and 3/22 against a PUT instead of PATCH,
     2/22 against a buildSaveBody that always sends the key).
+
+    KNOWN ARCHITECTURE NOTE (not a failure): pages/public/_worker.js no
+    longer injects HTML at all — commit e005407 (2026-11-21, "Strip ALL
+    HTML injection from Pages worker") removed the injection and the
+    /search-settings-ui.js asset route on purpose. The section now ships
+    by ORIGIN BAKE instead: features/rebrand/bake_rebrand.py injects the
+    block into the console's index.html at image build and copies
+    search-settings-ui.js next to it (covered by
+    features/rebrand/harness-rebrand.mjs, 59/59). The UI harness accepts
+    either wiring and asserts one of them holds.
     """
     s1, m1 = _py_script_harness(
-        ["features/tinyfish/test_tinyfish.py", "--selftest"], 108)
+        ["features/tinyfish/test_tinyfish.py", "--selftest"], 138)
     s2, m2 = _harness("features/tinyfish/test_search_settings_ui.mjs", 39)
     good = s1 == "PASS" and s2 == "PASS"
     return ("PASS" if good else "FAIL",
