@@ -251,14 +251,14 @@ def main() -> int:
                       method="POST", body='{"model": "deepseek-chat"}')
     check("E1 request: DeepSeek chat completions ALLOWED",
           d.allowed, getattr(d, "reason", ""))
-    d = check_request("https://api.search.tinyfish.ai/?query=weather")
-    check("E2 request: TinyFish search ALLOWED",
+    d = check_request("https://api.monid.ai/v1/run")
+    check("E2 request: Monid API (TinyFish route) ALLOWED",
           d.allowed, getattr(d, "reason", ""))
     d = check_request("https://api.github.com/user")
     check("E3 request: GitHub API ALLOWED",
           d.allowed, getattr(d, "reason", ""))
-    d = check_shell("curl https://api.fetch.tinyfish.ai/ -X POST -d '{\"urls\": []}'")
-    check("E4 shell: curl to TinyFish fetch ALLOWED",
+    d = check_shell("curl https://api.monid.ai/v1/run -X POST -d '{}'")
+    check("E4 shell: curl to the Monid API ALLOWED",
           d.allowed, getattr(d, "reason", ""))
     d = check_request("https://api.deepseek.com./v1/chat/completions")
     check("E5 request: trailing-dot host canonicalised, ALLOWED",
