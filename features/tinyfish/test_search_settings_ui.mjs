@@ -62,6 +62,9 @@ const SRC = readFileSync(resolve(HERE, "..", "..", "pages", "public",
   "search-settings-ui.js"), "utf8");
 const WORKER = readFileSync(resolve(HERE, "..", "..", "pages", "public",
   "_worker.js"), "utf8");
+// The origin-bake path (see the wiring checks below).
+const BAKE_PY = readFileSync(resolve(HERE, "..", "..", "features",
+  "rebrand", "bake_rebrand.py"), "utf8");
 
 let passed = 0;
 const failed = [];
@@ -97,15 +100,30 @@ check("self-mount retries on DOM changes and stops once mounted",
 check("self-mount is throttled (no hot loop on SPA re-renders)",
   SRC.includes("lastAttempt") && SRC.includes("< 500"));
 
-// _worker.js wiring: the module is a Pages static asset, and a bare
-// <script src> for an unrouted path falls through to the console proxy,
-// which answers with the SPA HTML (B-35) — so the worker must route the
-// asset explicitly AND inject the script tag into the console HTML.
-check("_worker.js routes /search-settings-ui.js to the Pages assets",
-  WORKER.includes('"/search-settings-ui.js"')
-  && WORKER.includes("env.ASSETS.fetch"));
-check("_worker.js injects the module script into the console HTML",
-  WORKER.includes('<script type="module" src="/search-settings-ui.js">'));
+// Wiring: the module must be reachable and loaded. Two generations are
+// valid, because the delivery mechanism changed on 2026-11-21 (e005407,
+// "Strip ALL HTML injection from Pages worker"):
+//   A) PROXY INJECTION (pre-e005407): _worker.js routes the asset AND
+//      injects <script type="module" src="/search-settings-ui.js">.
+//      A bare unrouted <script src> would fall through to the console
+//      proxy, which answers with the SPA HTML (B-35).
+//   B) ORIGIN BAKE (current): features/rebrand/bake_rebrand.py injects
+//      the block into the console's index.html at image build and copies
+//      search-settings-ui.js next to it, so the tag resolves on the
+//      origin. features/rebrand/harness-rebrand.mjs (59/59) covers that.
+// At least one must hold, and the module source must be non-empty.
+const WORKER_WIRING = WORKER.includes('"/search-settings-ui.js"')
+  && WORKER.includes("env.ASSETS.fetch")
+  && WORKER.includes('<script type="module" src="/search-settings-ui.js">');
+const BAKED_AT_ORIGIN = BAKE_PY.includes("search-settings-ui.js")
+  && BAKE_PY.includes("SEARCH_UI_REL")
+  && BAKE_PY.includes("MARKER");
+
+check("module is wired to a page (proxy route+inject, or origin bake)",
+  WORKER_WIRING || BAKED_AT_ORIGIN,
+  `worker=${WORKER_WIRING} bake=${BAKED_AT_ORIGIN}`);
+check("the module source is present and non-trivial",
+  typeof SRC === "string" && SRC.length > 500);
 
 // ---------- pure functions ----------
 check("flagOn: 0/false/no/off are off (any case)",
