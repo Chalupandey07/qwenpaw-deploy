@@ -1,0 +1,46 @@
+{"fn": "effort_preset", "args": ["trailing."], "error": "ValueError: unknown Visual Compact effort: trailing."}
+{"fn": "effort_preset", "args": ["ns:key.path😀"], "error": "ValueError: unknown Visual Compact effort: ns:key.path😀"}
+{"fn": "effort_preset", "args": ["日本語のテキストabc"], "error": "ValueError: unknown Visual Compact effort: 日本語のテキストabc"}
+{"fn": "effort_preset", "args": ["é"], "error": "ValueError: unknown Visual Compact effort: é"}
+{"fn": "effort_preset", "args": ["abc"], "error": "ValueError: unknown Visual Compact effort: abc"}
+{"fn": "effort_preset", "args": ["﻿bom"], "error": "ValueError: unknown Visual Compact effort: ﻿bom"}
+{"fn": "effort_preset", "args": ["a..b"], "error": "ValueError: unknown Visual Compact effort: a..b"}
+{"fn": "effort_preset", "args": ["tab\tseparateda😀b😀c"], "error": "ValueError: unknown Visual Compact effort: tab\tseparateda😀b😀c"}
+{"fn": "effort_preset", "args": ["src/a/b.ts"], "error": "ValueError: unknown Visual Compact effort: src/a/b.ts"}
+{"fn": "effort_preset", "args": [""], "error": "ValueError: unknown Visual Compact effort: "}
+{"fn": "effort_preset", "args": ["line1\nline2a"], "error": "ValueError: unknown Visual Compact effort: line1\nline2a"}
+{"fn": "effort_preset", "args": ["Hello World"], "error": "ValueError: unknown Visual Compact effort: Hello World"}
+{"fn": "effort_preset", "args": ["{name} has {count} itemshello"], "error": "ValueError: unknown Visual Compact effort: {name} has {count} itemshello"}
+{"fn": "effort_preset", "args": ["HELLO"], "error": "ValueError: unknown Visual Compact effort: HELLO"}
+{"fn": "effort_preset", "args": ["ab"], "error": "ValueError: unknown Visual Compact effort: ab"}
+{"fn": "effort_preset", "args": ["a.b.c.leading"], "error": "ValueError: unknown Visual Compact effort: a.b.c.leading"}
+{"fn": "effort_preset", "args": ["emoji 👍🏽 mix"], "error": "ValueError: unknown Visual Compact effort: emoji 👍🏽 mix"}
+{"fn": "effort_preset", "args": [".leading"], "error": "ValueError: unknown Visual Compact effort: .leading"}
+{"fn": "effort_preset", "args": ["HELLOemoji 👍🏽 mix"], "error": "ValueError: unknown Visual Compact effort: HELLOemoji 👍🏽 mix"}
+{"fn": "effort_preset", "args": ["日本語のテキスト"], "error": "ValueError: unknown Visual Compact effort: 日本語のテキスト"}
+{"fn": "effort_preset", "args": ["héllo wörld"], "error": "ValueError: unknown Visual Compact effort: héllo wörld"}
+{"fn": "effort_preset", "args": ["👍🏽 thumbs"], "error": "ValueError: unknown Visual Compact effort: 👍🏽 thumbs"}
+{"fn": "effort_preset", "args": ["日本語"], "error": "ValueError: unknown Visual Compact effort: 日本語"}
+{"fn": "effort_preset", "args": ["İstanbul"], "error": "ValueError: unknown Visual Compact effort: İstanbul"}
+{"fn": "effort_preset", "args": ["straße"], "error": "ValueError: unknown Visual Compact effort: straße"}
+{"fn": "effort_preset", "args": ["ılık ırmak"], "error": "ValueError: unknown Visual Compact effort: ılık ırmak"}
+{"fn": "effort_preset", "args": ["👨‍👩‍👧 family"], "error": "ValueError: unknown Visual Compact effort: 👨‍👩‍👧 family"}
+{"fn": "effort_preset", "args": ["a b"], "error": "ValueError: unknown Visual Compact effort: a b"}
+{"fn": "effort_preset", "args": ["ΣΊΣΥΦΟΣ"], "error": "ValueError: unknown Visual Compact effort: ΣΊΣΥΦΟΣ"}
+{"fn": "effort_preset", "args": ["a😀b"], "error": "ValueError: unknown Visual Compact effort: a😀b"}
+{"fn": "effort_preset", "args": ["a²b x½ y①"], "error": "ValueError: unknown Visual Compact effort: a²b x½ y①"}
+{"fn": "effort_preset", "args": ["aⅠb Ⅻ"], "error": "ValueError: unknown Visual Compact effort: aⅠb Ⅻ"}
+{"fn": "effort_preset", "args": ["a𐐀b 𝐀bc"], "error": "ValueError: unknown Visual Compact effort: a𐐀b 𝐀bc"}
+{"fn": "effort_preset", "args": ["कि ٣٤"], "error": "ValueError: unknown Visual Compact effort: कि ٣٤"}
+{"fn": "effort_preset", "args": ["low"], "ok": {"$object": "EffortPreset", "attrs": {"effort": "low", "cell_width": 8, "line_height": 16, "readable_chars_per_image": 8775}}}
+{"fn": "effort_preset", "args": ["medium"], "ok": {"$object": "EffortPreset", "attrs": {"effort": "medium", "cell_width": 6, "line_height": 13, "readable_chars_per_image": 14300}}}
+{"fn": "effort_preset", "args": ["high"], "ok": {"$object": "EffortPreset", "attrs": {"effort": "high", "cell_width": 5, "line_height": 8, "readable_chars_per_image": 28080}}}
+{"fn": "effort_preset", "args": [""], "error": "ValueError: unknown Visual Compact effort: "}
+{"fn": "effort_preset", "args": ["LOW"], "error": "ValueError: unknown Visual Compact effort: LOW"}
+{"fn": "effort_preset", "args": ["Low"], "error": "ValueError: unknown Visual Compact effort: Low"}
+{"fn": "effort_preset", "args": ["unknown"], "error": "ValueError: unknown Visual Compact effort: unknown"}
+{"fn": "effort_preset", "args": ["none"], "error": "ValueError: unknown Visual Compact effort: none"}
+{"fn": "effort_preset", "args": ["high "], "error": "ValueError: unknown Visual Compact effort: high "}
+{"fn": "effort_preset", "args": [" high"], "error": "ValueError: unknown Visual Compact effort:  high"}
+{"fn": "effort_preset", "args": ["lo"], "error": "ValueError: unknown Visual Compact effort: lo"}
+{"fn": "effort_preset", "args": ["lowish"], "error": "ValueError: unknown Visual Compact effort: lowish"}
