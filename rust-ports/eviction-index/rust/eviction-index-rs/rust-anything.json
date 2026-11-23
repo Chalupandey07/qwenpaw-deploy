@@ -1,0 +1,448 @@
+{
+  "schema": "rust-anything/bridge@1",
+  "root": "/root/work/qwenpaw-source",
+  "unit": "src/qwenpaw/agents/context/scroll/",
+  "language": "python",
+  "kind": "pyo3",
+  "crate_name": "eviction-index-rs",
+  "exports": [
+    {
+      "name": "collapse_blocks",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 176,
+      "params": [
+        {
+          "name": "blocks",
+          "ts_type": "unknown[]",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "apply_eviction",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 199,
+      "params": [
+        {
+          "name": "tiers",
+          "ts_type": "unknown[]",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "leaves",
+          "ts_type": "unknown[]",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "seq_lo",
+          "ts_type": "int",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "seq_hi",
+          "ts_type": "int",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "unknown[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "render_index",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 220,
+      "params": [
+        {
+          "name": "tiers",
+          "ts_type": "unknown[]",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "include_envelope",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "True"
+        },
+        {
+          "name": "include_live_banner",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "True"
+        },
+        {
+          "name": "detail_char_budget",
+          "ts_type": "int | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "describe_index",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 257,
+      "params": [
+        {
+          "name": "tiers",
+          "ts_type": "unknown[]",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "bounded_headline",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 262,
+      "params": [
+        {
+          "name": "text",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "limit",
+          "ts_type": "int",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "bounded_line_text",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 269,
+      "params": [
+        {
+          "name": "line",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "limit",
+          "ts_type": "int",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    }
+  ],
+  "classes": [],
+  "js_only": [
+    {
+      "name": "build_update_prompt",
+      "file": "src/qwenpaw/agents/context/scroll/continuation_summary.py",
+      "line": 74,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "redact_secrets",
+      "file": "src/qwenpaw/agents/context/scroll/continuation_summary.py",
+      "line": 333,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "contains_secret",
+      "file": "src/qwenpaw/agents/context/scroll/continuation_summary.py",
+      "line": 341,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "extract_identifiers",
+      "file": "src/qwenpaw/agents/context/scroll/continuation_summary.py",
+      "line": 346,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "parse_plain_markdown",
+      "file": "src/qwenpaw/agents/context/scroll/continuation_summary.py",
+      "line": 610,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "validate_summary_quality",
+      "file": "src/qwenpaw/agents/context/scroll/continuation_summary.py",
+      "line": 690,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "SummarySource",
+      "file": "src/qwenpaw/agents/context/scroll/continuation_summary.py",
+      "line": 359,
+      "reason": "class: `@classmethod` method `from_dict`, decorated with `@dataclass`, public class attribute `hi`, public class attribute `lo`, public class attribute `type`, public class attribute `value`"
+    },
+    {
+      "name": "SummaryItem",
+      "file": "src/qwenpaw/agents/context/scroll/continuation_summary.py",
+      "line": 403,
+      "reason": "class: `@classmethod` method `from_dict`, decorated with `@dataclass`, public class attribute `sources`, public class attribute `text`"
+    },
+    {
+      "name": "ContinuationSummary",
+      "file": "src/qwenpaw/agents/context/scroll/continuation_summary.py",
+      "line": 431,
+      "reason": "class: `@classmethod` method `from_dict`, decorated with `@dataclass`, public class attribute `active_task`, public class attribute `constraints`, public class attribute `covered_seq`, public class attribute `current_state`, public class attribute `decisions`, public class attribute `open_work`, public class attribute `status`, public class attribute `version`"
+    },
+    {
+      "name": "render_live_turn_banner",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 65,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "Leaf",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 71,
+      "reason": "class: decorated with `@dataclass`, public class attribute `headline`, public class attribute `seq`"
+    },
+    {
+      "name": "Line",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 79,
+      "reason": "class: `@property` method `span`, `@property` method `text`, decorated with `@dataclass`, public class attribute `head`, public class attribute `seq_hi`, public class attribute `seq_lo`, public class attribute `tail`"
+    },
+    {
+      "name": "Block",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 111,
+      "reason": "class: `@property` method `first`, `@property` method `last`, decorated with `@dataclass`, public class attribute `lines`, public class attribute `seq_hi`, public class attribute `seq_lo`"
+    },
+    {
+      "name": "EvictionIndex",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 367,
+      "reason": "class: `@classmethod` method `from_dict`, `@property` method `is_empty`"
+    },
+    {
+      "name": "validate_history_database",
+      "file": "src/qwenpaw/agents/context/scroll/history.py",
+      "line": 203,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "backup_history_database",
+      "file": "src/qwenpaw/agents/context/scroll/history.py",
+      "line": 231,
+      "reason": "calls its parameter `check_cancelled`: a callable"
+    },
+    {
+      "name": "HistorySchemaError",
+      "file": "src/qwenpaw/agents/context/scroll/history.py",
+      "line": 88,
+      "reason": "class: inherits from sqlite3.DatabaseError"
+    },
+    {
+      "name": "HistoryCorruptionError",
+      "file": "src/qwenpaw/agents/context/scroll/history.py",
+      "line": 92,
+      "reason": "class: inherits from sqlite3.DatabaseError"
+    },
+    {
+      "name": "HistoryStore",
+      "file": "src/qwenpaw/agents/context/scroll/history.py",
+      "line": 283,
+      "reason": "class: `@property` method `closed`, `@property` method `path`, async or generator method `shutdown`, async or generator method `start_retention`, public attribute `degraded`, public attribute `write_failures`, special method `__repr__`"
+    },
+    {
+      "name": "ScrollContextManager",
+      "file": "src/qwenpaw/agents/context/scroll/manager.py",
+      "line": 81,
+      "reason": "class: `@staticmethod` method `should_compress`, async or generator method `compress`, async or generator method `recover_from_context_overflow`, public attribute `last_compress`"
+    },
+    {
+      "name": "fts_match_query",
+      "file": "src/qwenpaw/agents/context/scroll/memoryspace.py",
+      "line": 190,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "sanitize_suffix",
+      "file": "src/qwenpaw/agents/context/scroll/memoryspace.py",
+      "line": 268,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "parse_date",
+      "file": "src/qwenpaw/agents/context/scroll/memoryspace.py",
+      "line": 275,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "MemorySpace",
+      "file": "src/qwenpaw/agents/context/scroll/memoryspace.py",
+      "line": 344,
+      "reason": "class: `@property` method `agent_id`, `@property` method `session_id`, `@property` method `session_suffix`, special method `__repr__`"
+    },
+    {
+      "name": "build_scroll_system_prompt",
+      "file": "src/qwenpaw/agents/context/scroll/prompt.py",
+      "line": 191,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "make_recall_history",
+      "file": "src/qwenpaw/agents/context/scroll/recall_tool.py",
+      "line": 839,
+      "reason": "takes or returns a function"
+    },
+    {
+      "name": "RecallSnapshotChangedError",
+      "file": "src/qwenpaw/agents/context/scroll/recall_tool.py",
+      "line": 62,
+      "reason": "class: inherits from ValueError"
+    },
+    {
+      "name": "RecallLoopGuard",
+      "file": "src/qwenpaw/agents/context/scroll/recall_tool.py",
+      "line": 190,
+      "reason": "class: `@staticmethod` method `key`, decorated with `@dataclass`, public class attribute `blocked`, public class attribute `turn_id`"
+    },
+    {
+      "name": "make_recall_history_python",
+      "file": "src/qwenpaw/agents/context/scroll/repl.py",
+      "line": 90,
+      "reason": "takes or returns a function"
+    },
+    {
+      "name": "extract_headline",
+      "file": "src/qwenpaw/agents/context/scroll/serialize.py",
+      "line": 70,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "strip_headline",
+      "file": "src/qwenpaw/agents/context/scroll/serialize.py",
+      "line": 79,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "strip_headline_delta",
+      "file": "src/qwenpaw/agents/context/scroll/serialize.py",
+      "line": 100,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "flush_headline_delta",
+      "file": "src/qwenpaw/agents/context/scroll/serialize.py",
+      "line": 167,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "msg_to_entries",
+      "file": "src/qwenpaw/agents/context/scroll/serialize.py",
+      "line": 194,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "HeadlineDeltaState",
+      "file": "src/qwenpaw/agents/context/scroll/serialize.py",
+      "line": 54,
+      "reason": "class: decorated with `@dataclass`, public class attribute `legacy_comment`, public class attribute `pending`, public class attribute `suppressing`"
+    },
+    {
+      "name": "preflight_sessions",
+      "file": "src/qwenpaw/agents/context/scroll/sync.py",
+      "line": 535,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "sync_sessions_to_history",
+      "file": "src/qwenpaw/agents/context/scroll/sync.py",
+      "line": 577,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "migrate_agent_history",
+      "file": "src/qwenpaw/agents/context/scroll/sync.py",
+      "line": 774,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "invalidate_agent_migration",
+      "file": "src/qwenpaw/agents/context/scroll/sync.py",
+      "line": 840,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "import_session_history",
+      "file": "src/qwenpaw/agents/context/scroll/sync.py",
+      "line": 847,
+      "reason": "eviction_index.py only"
+    },
+    {
+      "name": "FileResult",
+      "file": "src/qwenpaw/agents/context/scroll/sync.py",
+      "line": 63,
+      "reason": "class: decorated with `@dataclass`, public class attribute `aged_out`, public class attribute `agent_rows_claimed`, public class attribute `blocked`, public class attribute `errored`, public class attribute `filename`, public class attribute `legacy_session_ids`, public class attribute `messages`, public class attribute `orphaned`, public class attribute `rows_deduplicated`, public class attribute `rows_inserted`, public class attribute `rows_processed`, public class attribute `rows_rekeyed`, public class attribute `session_id`, public class attribute `skipped`, public class attribute `unparseable`"
+    },
+    {
+      "name": "SyncReport",
+      "file": "src/qwenpaw/agents/context/scroll/sync.py",
+      "line": 84,
+      "reason": "class: `@property` method `aged_out`, `@property` method `errored_files`, `@property` method `orphaned_files`, `@property` method `rows_inserted`, `@property` method `sessions`, `@property` method `skipped_files`, `@property` method `synced_files`, `@property` method `unparseable`, decorated with `@dataclass`, public class attribute `files`, public class attribute `registry_error`"
+    },
+    {
+      "name": "ChatRegistry",
+      "file": "src/qwenpaw/agents/context/scroll/sync.py",
+      "line": 178,
+      "reason": "class: `@property` method `available`, decorated with `@dataclass`, public class attribute `error`, public class attribute `has_registered_chats`, public class attribute `mapping`"
+    },
+    {
+      "name": "SyncPreflight",
+      "file": "src/qwenpaw/agents/context/scroll/sync.py",
+      "line": 191,
+      "reason": "class: decorated with `@dataclass`, public class attribute `registry_error`, public class attribute `registry`, public class attribute `session_files`"
+    },
+    {
+      "name": "tiers_to_json",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 144,
+      "reason": "seam adapter: Python dataclass -> JSON; PyO3 cannot receive the dataclass, so it must stay in Python"
+    },
+    {
+      "name": "tiers_from_json",
+      "file": "src/qwenpaw/agents/context/scroll/eviction_index.py",
+      "line": 161,
+      "reason": "seam adapter: JSON -> Python dataclass, inverse of tiers_to_json; must stay in Python"
+    }
+  ]
+}
