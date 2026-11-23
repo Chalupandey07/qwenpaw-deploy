@@ -74,8 +74,8 @@ surfaces:
 - LLM: `api.deepseek.com`, `api.openai.com`, `api.anthropic.com`,
   `api.mistral.ai`, `api.groq.com`, `api.openrouter.ai`, `api.x.ai`,
   `generativelanguage.googleapis.com`, `api.kilo.ai`
-- Fetch: `api.search.tinyfish.ai`, `api.fetch.tinyfish.ai`,
-  `api.duckduckgo.com`, `api.anysearch.com`
+- Fetch: `api.monid.ai` (the TinyFish route — Monid CLI, free
+  endpoints only), `api.duckduckgo.com`, `api.anysearch.com`
 - GitHub: `api.github.com`, `raw.githubusercontent.com`
 - Cloudflare: `api.cloudflare.com`
 
