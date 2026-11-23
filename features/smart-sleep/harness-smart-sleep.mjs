@@ -115,8 +115,11 @@ function makeFetch(calls) {
   return async (url, init = {}) => {
     const u = String(url);
     calls.push({ url: u, method: init.method || "GET" });
-    if (u.includes("qwenpawx.pages.dev/api/machine/sleep")) {
-      return new Response(JSON.stringify({ ok: true, sleeping: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+    // v3 (2026-11-23): the tick suspends through InstaBox DIRECTLY, not
+    // through Pages. A PATCH to the machine endpoint is the suspend; a POST
+    // to /wake is the wake fallback.
+    if (u.includes("api.instabox.sh/v1/machines/") && (init.method || "GET") === "PATCH") {
+      return new Response(JSON.stringify({ ok: true, desiredState: "suspended" }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     if (u.includes("api.instabox.sh")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -124,6 +127,20 @@ function makeFetch(calls) {
     // Console probe.
     return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain" } });
   };
+}
+
+/**
+ * Is this call a SUSPEND? v3 (2026-11-23) suspends through InstaBox directly
+ * (PATCH the machine endpoint), not through Pages. The predicate keeps the old
+ * Pages URL too, so a regression back to that path is still counted — and
+ * still visible.
+ */
+function isSuspendCall(c) {
+  const m = (c.method || "GET").toUpperCase();
+  return (
+    (c.url.includes("api.instabox.sh/v1/machines/") && m === "PATCH") ||
+    c.url.includes("/api/machine/sleep")
+  );
 }
 
 function makeEnv(d1, opts = {}) {
@@ -135,6 +152,10 @@ function makeEnv(d1, opts = {}) {
     INSTABOX_MACHINE_ID: "m_test",
     PAGES_URL: "https://qwenpawx.pages.dev",
     SLEEP_TOKEN: "sleep-token-test",
+    // v3 (2026-11-23): the Worker suspends the machine itself, so it needs the
+    // InstaBox key. In production this is the same secret the API-wake
+    // fallback has always read — a deploy PREREQUISITE, asserted below.
+    INSTABOX_API_KEY: "instabox-key-test",
     REPORTER_TOKEN: "reporter-token-test",
     WAKE_TOKEN: "wake-token-test",
   };
@@ -259,7 +280,7 @@ console.log("cron tick gate — toggle OFF / ON / absent / unreadable / invalid"
     const d1 = new MockD1();
     idleTickSetup(d1, { toggle: "1" });
     const { result, calls } = await runTick(makeEnv(d1));
-    const sleepCalls = calls.filter((c) => c.url.includes("/api/machine/sleep"));
+    const sleepCalls = calls.filter((c) => isSuspendCall(c));
     const probeCalls = calls.filter((c) => c.url.includes("8088-test.instabox.tech"));
     check("toggle '1' idle -> Pages sleep exactly once (golden: same as today)", sleepCalls.length === 1, `sleepCalls=${sleepCalls.length}`);
     check("toggle '1' idle -> NO console probe", probeCalls.length === 0, `probeCalls=${probeCalls.length}`);
@@ -272,7 +293,7 @@ console.log("cron tick gate — toggle OFF / ON / absent / unreadable / invalid"
     const d1 = new MockD1();
     idleTickSetup(d1, {});
     const { calls } = await runTick(makeEnv(d1));
-    check("toggle absent idle -> Pages sleep exactly once (absent = ON)", calls.filter((c) => c.url.includes("/api/machine/sleep")).length === 1);
+    check("toggle absent idle -> Pages sleep exactly once (absent = ON)", calls.filter((c) => isSuspendCall(c)).length === 1);
   }
   // Toggle read throws -> HOLD, zero fetches, zero writes.
   {
@@ -311,7 +332,7 @@ console.log("cron tick gate — toggle OFF / ON / absent / unreadable / invalid"
     const { result, calls } = await runTick(makeEnv(d1));
     check("toggle OFF + uptime 420 -> skip (guard never runs)", result && result.action === "skip" && result.reason === "keepalive-off", JSON.stringify(result));
     check("toggle OFF + uptime 420 -> ZERO fetch calls", calls.length === 0, `calls=${calls.length}`);
-    check("toggle OFF + uptime 420 -> NO Pages sleep call", calls.filter((c) => c.url.includes("/api/machine/sleep")).length === 0);
+    check("toggle OFF + uptime 420 -> NO Pages sleep call", calls.filter((c) => isSuspendCall(c)).length === 0);
   }
   // Toggle ON + uptime 420 + recent visit/agent -> sleep via the
   // max-run guard (via the tick, not just the pure function).
@@ -324,7 +345,7 @@ console.log("cron tick gate — toggle OFF / ON / absent / unreadable / invalid"
     });
     const { calls } = await runTick(makeEnv(d1));
     check("toggle ON + uptime 420 + recent activity -> Pages sleep once (guard via tick)",
-      calls.filter((c) => c.url.includes("/api/machine/sleep")).length === 1, `calls=${JSON.stringify(calls.map((c) => c.url))}`);
+      calls.filter((c) => isSuspendCall(c)).length === 1, `calls=${JSON.stringify(calls.map((c) => c.url))}`);
     check("toggle ON + uptime 420 + recent activity -> NO console probe",
       calls.filter((c) => c.url.includes("8088-test.instabox.tech")).length === 0);
   }
@@ -531,7 +552,7 @@ console.log("stuck-state recovery — reporter_up (2026-11-19)");
     return RT;
   }
   const probeCalls = (calls) => calls.filter((c) => c.url.includes("8088-test.instabox.tech"));
-  const sleepCalls = (calls) => calls.filter((c) => c.url.includes("/api/machine/sleep"));
+  const sleepCalls = (calls) => calls.filter((c) => isSuspendCall(c));
   const readState = (d1) => JSON.parse(d1.meta.get("sleepwake:state") || "{}");
 
   // A. Fresh reporter (1 min) + recent visit -> recovery flips to
@@ -640,7 +661,7 @@ console.log("stuck-state recovery — reporter_up (2026-11-19)");
     check("stuck + fresh reporter with uptimeSec null -> state uptimeSec ~0 (baseline just reset, NOT the stale lastUpAt 3600)", s.uptimeSec !== null && s.uptimeSec < 60, `uptimeSec=${s.uptimeSec}`);
     const runStart = Number(d1.meta.get("sleepwake:run-start"));
     check("stuck + fresh reporter with uptimeSec null -> run-start baseline set to ~now", Number.isFinite(runStart) && Math.abs(runStart - before) < 60_000, `runStart=${runStart}`);
-    check("stuck + fresh reporter with uptimeSec null -> ZERO Pages sleep calls (guard sees ~0, not 3600)", calls.filter((c) => c.url.includes("/api/machine/sleep")).length === 0);
+    check("stuck + fresh reporter with uptimeSec null -> ZERO Pages sleep calls (guard sees ~0, not 3600)", calls.filter((c) => isSuspendCall(c)).length === 0);
     void calls;
   }
   // I. A finite reporter uptimeSec wins over lastUpAt.
@@ -725,7 +746,7 @@ console.log("run-start baseline — stale-baseline incident (2026-11-19)");
     return RT;
   }
   const probeCalls = (calls) => calls.filter((c) => c.url.includes("8088-test.instabox.tech"));
-  const sleepCalls = (calls) => calls.filter((c) => c.url.includes("/api/machine/sleep"));
+  const sleepCalls = (calls) => calls.filter((c) => isSuspendCall(c));
   const readState = (d1) => JSON.parse(d1.meta.get("sleepwake:state") || "{}");
   const readBaseline = (d1) => { const v = d1.meta.get("sleepwake:run-start"); return v === undefined ? null : Number(v); };
 
