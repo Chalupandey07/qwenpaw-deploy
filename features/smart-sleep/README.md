@@ -401,3 +401,110 @@ node --input-type=module -e "import('./worker/src/index.js')"  # import smoke te
   the first real sleep is also the proof that the Pages sleep works
   once `INSTABOX_MACHINE_ID` is set (see §4).
 - `GET /status` / `/sleepwake/state` showing `keepAlive` in a browser.
+
+## 5. v3 — the Worker suspends the machine itself (2026-11-23)
+
+### Why v2's suspend was replaced
+v2 suspended by asking Pages to do it:
+
+```
+keep-alive cron -> POST {PAGES_URL}/api/machine/sleep (SLEEP_TOKEN)
+                -> sleepMachine() in pages/public/machine-control.js
+                -> PATCH api.instabox.sh/v1/machines/{id} {desiredState:"suspended"}
+```
+
+It failed **seven times live**, always as `pages_sleep_failed`, and the root
+cause was never found. §4 diagnosed one of them (a missing
+`INSTABOX_MACHINE_ID` on the Pages projects), but setting that var moved the
+failure rather than clearing it. Three Workers, two Pages projects and a secret
+on each side all had to agree for one suspend to happen, and from the cron's
+side every one of those steps is invisible: the only fact it ever learned was
+"Pages said no".
+
+Seven failures is enough. v3 deletes the indirection.
+
+### What v3 does
+The cron PATCHes InstaBox directly, mirroring the wake path that is already
+proven live (`callInstaBoxWake`):
+
+| | wake (existing, proven) | suspend (v3, new) |
+| --- | --- | --- |
+| URL | `POST /v1/machines/{id}/wake` | `PATCH /v1/machines/{id}` |
+| Auth | `X-API-Key: INSTABOX_API_KEY` | same |
+| Idempotency | `Idempotency-Key: crypto.randomUUID()` | same |
+| Timeout | 30 s `AbortSignal.timeout` | same |
+| Body | (none) | `{"desiredState":"suspended"}` |
+
+No new secret, no key moved, **no Pages deploy needed** for this to work.
+
+### Failure semantics — the part that matters
+v2 reverted to `running` on every failure and fell through to a probe, so the
+next tick tried the same doomed call five minutes later, forever. That is what
+seven failures looks like from the outside: not seven bugs, one loop.
+
+v3 classifies:
+
+| Outcome | Kind | What happens |
+| --- | --- | --- |
+| 2xx | success | state `sleeping`, block cleared |
+| network error / timeout | transient | revert to `running`, probe, **retry next tick** |
+| 409 / 429 / 5xx | transient | same as above |
+| 401 / 403 (bad key) | **permanent** | record `sleep_blocked:...`, probe, **back off 1 h** |
+| 404 (machine gone) | **permanent** | same |
+| 400 / 422 (bad request) | **permanent** | same |
+| `INSTABOX_API_KEY` unset | **permanent** | no call attempted, names the secret |
+| `INSTABOX_MACHINE_ID` unset | **permanent** | no call attempted, names the var |
+
+The backoff is `SW_SLEEP_BLOCK_RETRY_MS` (60 min): sparse enough that a broken
+key is not a log-spamming loop, frequent enough that a fixed key recovers with
+no deploy. A **config** block (`*_unset`) is retried *immediately* once the
+config appears, because that is the one case where the cause is known to have
+changed.
+
+The machine stays **awake** in every failure mode. A failed suspend must never
+be able to wake anything: the failure path only probes (which keeps an
+already-up machine up) and never calls the wake endpoint.
+
+### Deploy prerequisite (Muse)
+`INSTABOX_API_KEY` must be a secret on the **keep-alive Worker**. It already is
+in the deployed configuration — the API-wake fallback has read it since
+2026-11-15 — but this is now load-bearing for sleep, so verify it before
+enabling keep-alive:
+
+```bash
+python3 scripts/cf.py worker-secrets     # expects INSTABOX_API_KEY in the list
+```
+
+`INSTABOX_MACHINE_ID` is already a plain var in `worker/wrangler.toml`.
+If either is missing the cron does **not** crash and does **not** loop: it
+records `sleep_blocked:instabox_*_unset` and holds the machine awake, visible
+in `GET /sleepwake/state`.
+
+### v2 behaviour that is deliberately unchanged
+Every threshold and guard is untouched: wake 5 min before a routine, sleep after
+20 min visit idle / 10 min agent idle, 15-min overdue grace, stale reporter
+ignored past 10 min, max-run guard at 7 h uptime, `keepalive:enabled` toggle,
+reporter protocol, and the `/sleepwake/state` field set (a check asserts every
+v2 field is still present).
+
+### Tests
+```bash
+node features/smart-sleep/harness-sleepwake-v3.mjs   # 70/70  (new)
+node features/smart-sleep/harness-smart-sleep.mjs    # 133/133
+node features/sleepwake/harness-sleepwake.mjs        # 56/56
+```
+
+The v3 harness drives each failure mode through the **real HTTP status**, not a
+mocked helper: 401/403/404, 500/503/429, a thrown network error, and both
+missing-config cases. It asserts the loop guard directly — **seven consecutive
+failing ticks produce exactly one suspend attempt**, not seven — and that the
+backoff releases both by time and by a fixed config.
+
+**Fail-first proven:** against the v2 module (`V3_SRC=/tmp/worker-v2.js`), 46 of
+the 70 checks fail.
+
+### NOT yet verified live (Muse)
+- A real idle -> suspend through the new path (the machine actually going
+  down on a cron tick).
+- The first wake after that suspend.
+- That the 07:00 IST daily summary runs with the machine woken by v3.
