@@ -101,8 +101,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ALLOWLIST_FILE = os.path.join(HERE, "allowlist.txt")
 
 # ---------------------------------------------------------------------------
-# Allowlist: LLM provider hosts + the real fetch surfaces (TinyFish,
-# DuckDuckGo Instant Answer, AnySearch, GitHub). Exact-host match only:
+# Allowlist: LLM provider hosts + the real fetch surfaces (Monid — the
+# TinyFish route — DuckDuckGo Instant Answer, AnySearch, GitHub). Exact-host match only:
 # it mirrors the vault's origin pin, and a compromised allowlisted host
 # must not become a sink for other hosts. Add a host by adding one line
 # to allowlist.txt (see README.md), never by editing this list in code
@@ -119,9 +119,11 @@ DEFAULT_ALLOWLIST = frozenset({
     "api.x.ai",
     "generativelanguage.googleapis.com",
     "api.kilo.ai",
-    # Fetch surfaces (TinyFish skill + built-in fallbacks).
-    "api.search.tinyfish.ai",
-    "api.fetch.tinyfish.ai",
+    # Fetch surfaces (TinyFish skill via the Monid CLI + built-in fallbacks).
+    # Monid is the ONLY route to TinyFish now: the direct TinyFish hosts
+    # (api.search.tinyfish.ai / api.fetch.tinyfish.ai) were removed in
+    # TinyFish v3.0 — that route 401s because the saved key is a Monid key.
+    "api.monid.ai",
     "api.duckduckgo.com",
     "api.anysearch.com",
     # GitHub (vault identity probe + repo reads via vault_request).
