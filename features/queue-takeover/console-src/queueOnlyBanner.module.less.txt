@@ -1,0 +1,20 @@
+/* The banner is a single line: the message must not wrap the button off it,
+   and the button must never be squeezed below its label width. */
+.queueOnlyBanner {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: nowrap;
+  max-width: 100%;
+}
+
+.queueOnlyBanner > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queueOnlyBanner > :global(.ant-btn) {
+  flex: none;
+}
