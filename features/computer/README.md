@@ -23,11 +23,11 @@ Source of truth: `elie222/rakazo` @ `d343d83`, read directly —
 The desktop browser is **Camoufox**, not Chromium. The full reproduce-from-
 scratch record is `CAMOUFOX-INSTALL.md` beside this file: the gogibeta
 `camofox-browser` Node server on port 9377, the desktop GUI launch, the
-Chromium removal (package removal — killing the process alone does not
-stop the supervisor relaunching it), the anti-detect verification
-(bot.sannysoft.com: WebDriver passed), and the TinyFish machine live test
-(both free endpoints, $0.00). The automation bridge on 8899 is a separate
-daijro/camoufox install and must not be touched.
+anti-detect verification (bot.sannysoft.com: WebDriver passed), and the
+TinyFish machine live test (both free endpoints, $0.00). Chromium is
+**still installed** (HELD — the headless-render scripts depend on
+`/usr/bin/chromium`); the desktop no longer uses it. The automation bridge
+on 8899 is a separate daijro/camoufox install and must not be touched.
 
 ## The shape
 
