@@ -164,18 +164,41 @@ paths + the vault token + D1; widening it to filesystem deletion breaks least
 privilege. Separate unit = separate token, separate allowlist, separate audit log.
 
 Chain:
-1. **Pages route** `pages/public/reset/router.js` (`POST /reset/api/preview`,
-   `POST /reset/api/execute`). First line: `authenticate(request, env)` from
-   `pages/public/machine-control.js` — server-to-server token header **or**
-   forward the caller's Bearer token to the console's `/api/cron/jobs` and trust
-   only a 200 with a JSON body. Never `/api/auth/status`. Fail → 401, no forward.
-2. **Forward** to `env.RESET_BROKER_URL` (`http://172.18.0.1:8895`), headers
+1. **Console proxy** `src/qwenpaw/app/routers/reset.py` (`POST /api/reset/preview`,
+   `POST /api/reset/execute`) — the LIVE path since source9 (2026-11-23). The
+   console is on the machine, so it forwards to the broker at
+   `http://172.18.0.1:8895` with `X-Reset-Token` from the `RESET_TOKEN` env var
+   and returns the broker's response unchanged. The console's own Bearer-token
+   auth gates `/api/*`, so only a signed-in session can call these.
+2. **Pages route** `pages/public/reset/router.js` (`POST /reset/api/preview`,
+   `POST /reset/api/execute`) — **DEAD, never worked live (see below).** First
+   line: `authenticate(request, env)` from `pages/public/machine-control.js` —
+   server-to-server token header **or** forward the caller's Bearer token to the
+   console's `/api/cron/jobs` and trust only a 200 with a JSON body. Never
+   `/api/auth/status`. Fail → 401, no forward.
+3. **Forward** to `env.RESET_BROKER_URL` (`http://172.18.0.1:8895`), headers
    `X-Reset-Token: env.RESET_TOKEN`, `X-Request-Id: <uuid>`, `User-Agent:
    qwenpaw-reset/1`. Port 8895: 8896 is the vault broker, 8897/8898 are the MCP
    proxies, 8899 is the Camoufox bridge.
-3. **Broker** (`features/reset/reset-broker.py`, stdlib only) rejects missing/wrong
+4. **Broker** (`features/reset/reset-broker.py`, stdlib only) rejects missing/wrong
    token with constant-time compare → 401. It accepts **only** a fixed category
    enum + `confirm`/`ack`/`plan_id` — never client-supplied paths, never a shell.
+
+## Why the Pages route never worked live (2026-11-23)
+
+Cloudflare Workers cannot reach the broker at `http://172.18.0.1:8895` — it is a
+private Docker-host IP. The worker's fetch fails with Cloudflare error 1003
+("Direct IP access not allowed"), and `forwardToBroker` passes that 403
+straight through to the browser. Verified live 2026-11-23: a valid token gets
+`auth_invalid` for a wrong token (so `authenticate()` works), but a valid token
+gets HTTP 403 + `error code: 1003` — and the standalone `/reset` page (ui.js,
+2026-11-18) fails identically (`Preview failed: HTTP 403`). The broker itself
+is healthy (verified live via the console proxy: preview of `logs` returned 1
+file, 1,594,709 bytes, a real `plan_id`). The Pages route is kept for the
+static `/reset` page only; the API goes through the console proxy (item 1
+above). Do not "fix" the Pages route by pointing it at a public broker URL
+without a security review — the broker deletes files, and its token must never
+cross the public internet unauthenticated.
 4. **Runtime identity**: `User=root` (workspace files are root-owned) contained by
    `ProtectSystem=strict` + `ReadWritePaths=` listing only the allowlist roots,
    `PrivateTmp=yes`, `NoNewPrivileges=yes`, `CapabilityBoundingSet=`, no network
