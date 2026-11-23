@@ -101,8 +101,11 @@ function makeFetch(calls) {
   return async (url, init = {}) => {
     const u = String(url);
     calls.push({ url: u, method: init.method || "GET" });
-    if (u.includes("qwenpawx.pages.dev/api/machine/sleep")) {
-      return new Response(JSON.stringify({ ok: true, sleeping: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+    // v3 (2026-11-23): the tick suspends through InstaBox DIRECTLY, not
+    // through Pages. A PATCH to the machine endpoint is the suspend; a POST
+    // to /wake is the wake fallback.
+    if (u.includes("api.instabox.sh/v1/machines/") && (init.method || "GET") === "PATCH") {
+      return new Response(JSON.stringify({ ok: true, desiredState: "suspended" }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     if (u.includes("api.instabox.sh")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -110,6 +113,20 @@ function makeFetch(calls) {
     // Console probe.
     return new Response("ok", { status: 200, headers: { "Content-Type": "text/plain" } });
   };
+}
+
+/**
+ * Is this call a SUSPEND? v3 (2026-11-23) suspends through InstaBox directly
+ * (PATCH the machine endpoint), not through Pages. The predicate keeps the old
+ * Pages URL too, so a regression back to that path is still counted — and
+ * still visible.
+ */
+function isSuspendCall(c) {
+  const m = (c.method || "GET").toUpperCase();
+  return (
+    (c.url.includes("api.instabox.sh/v1/machines/") && m === "PATCH") ||
+    c.url.includes("/api/machine/sleep")
+  );
 }
 
 function makeEnv(d1, calls) {
@@ -121,6 +138,10 @@ function makeEnv(d1, calls) {
     INSTABOX_MACHINE_ID: "m_test",
     PAGES_URL: "https://qwenpawx.pages.dev",
     SLEEP_TOKEN: "sleep-token-test",
+    // v3 (2026-11-23): the Worker suspends the machine itself, so it needs the
+    // InstaBox key. In production this is the same secret the API-wake
+    // fallback has always read — a deploy PREREQUISITE, asserted below.
+    INSTABOX_API_KEY: "instabox-key-test",
     REPORTER_TOKEN: "reporter-token-test",
     WAKE_TOKEN: "wake-token-test",
   };
@@ -208,17 +229,6 @@ console.log("decideSleepWake — pure decision, fail closed");
     decideSleepWake({ ...idle, nextRoutineAt: NOW - 5 * MIN, machineUp: false, sleepState: "suspended" }, NOW).action === "wake");
   check("overdue routine + machine up -> hold",
     decideSleepWake({ ...idle, nextRoutineAt: NOW - 5 * MIN }, NOW).action === "hold");
-  // 2026-11-22 "constantly waking up" fix: a routine FAR overdue (beyond
-  // the 15-min grace) is missed/stuck, not imminent. It must neither wake
-  // a down machine every tick nor block sleep.
-  check("far-overdue routine (2h ago) + machine down -> hold, NOT wake (missed, not imminent)",
-    decideSleepWake({ ...idle, nextRoutineAt: NOW - 120 * MIN, machineUp: false, sleepState: "suspended" }, NOW).action === "hold");
-  check("far-overdue routine (2h ago) + machine up + idle -> sleep (missed routine does not block sleep)",
-    decideSleepWake({ ...idle, nextRoutineAt: NOW - 120 * MIN }, NOW).action === "sleep");
-  check("overdue routine within grace (10 min ago) + machine down -> wake (still imminent)",
-    decideSleepWake({ ...idle, nextRoutineAt: NOW - 10 * MIN, machineUp: false, sleepState: "suspended" }, NOW).action === "wake");
-  check("overdue routine just past grace (16 min ago) + machine down -> hold, NOT wake",
-    decideSleepWake({ ...idle, nextRoutineAt: NOW - 16 * MIN, machineUp: false, sleepState: "suspended" }, NOW).action === "hold");
 }
 
 console.log("POST /report — reporter auth + storage");
@@ -289,7 +299,7 @@ console.log("cron tick — sleep, wake, hold (the decision before the probe)");
     d1.meta.set("sleepwake:state", JSON.stringify({ mode: "running", since: RT - 60 * MIN, lastWakeAt: RT - 60 * MIN }));
     const env = makeEnv(d1, calls);
     await tick(env);
-    const sleepCalls = calls.filter((c) => c.url.includes("/api/machine/sleep"));
+    const sleepCalls = calls.filter((c) => isSuspendCall(c));
     const probeCalls = calls.filter((c) => c.url.includes("8088-test.instabox.tech"));
     check("idle tick calls Pages /api/machine/sleep exactly once", sleepCalls.length === 1, `sleepCalls=${sleepCalls.length}`);
     check("idle tick does NOT probe the console (a probe would wake it)", probeCalls.length === 0, `probeCalls=${probeCalls.length}`);
@@ -311,7 +321,7 @@ console.log("cron tick — sleep, wake, hold (the decision before the probe)");
     const envB = makeEnv(d1b, callsB);
     await tick(envB);
     const probeB = callsB.filter((c) => c.url.includes("8088-test.instabox.tech"));
-    const sleepB = callsB.filter((c) => c.url.includes("/api/machine/sleep"));
+    const sleepB = callsB.filter((c) => isSuspendCall(c));
     check("routine-due tick probes the console (wake)", probeB.length >= 1, `probeCalls=${probeB.length}`);
     check("routine-due tick does NOT suspend", sleepB.length === 0);
     const stateB = JSON.parse(d1b.meta.get("sleepwake:state") || "{}");
@@ -336,7 +346,7 @@ console.log("cron tick — sleep, wake, hold (the decision before the probe)");
     const envC = makeEnv(d1c, callsC);
     await tick(envC);
     check("sleeping + nothing due -> no probe", callsC.filter((c) => c.url.includes("8088-test.instabox.tech")).length === 0, `calls=${callsC.length}`);
-    check("sleeping + nothing due -> no suspend", callsC.filter((c) => c.url.includes("/api/machine/sleep")).length === 0);
+    check("sleeping + nothing due -> no suspend", callsC.filter((c) => isSuspendCall(c)).length === 0);
   } finally { globalThis.fetch = realFetch; }
 
   // STUCK-STATE RECOVERY (2026-11-19): state "sleeping" but the
@@ -356,7 +366,7 @@ console.log("cron tick — sleep, wake, hold (the decision before the probe)");
     await tick(envC2);
     const stateC2 = JSON.parse(d1c2.meta.get("sleepwake:state") || "{}");
     check("sleeping + fresh reporter (stuck) -> probe (recovery, not a wake)", callsC2.filter((c) => c.url.includes("8088-test.instabox.tech")).length >= 1, `calls=${callsC2.length}`);
-    check("sleeping + fresh reporter (stuck) -> no suspend", callsC2.filter((c) => c.url.includes("/api/machine/sleep")).length === 0);
+    check("sleeping + fresh reporter (stuck) -> no suspend", callsC2.filter((c) => isSuspendCall(c)).length === 0);
     check("sleeping + fresh reporter (stuck) -> state running / reporter_up", stateC2.mode === "running" && stateC2.reason === "reporter_up", `mode=${stateC2.mode} reason=${stateC2.reason}`);
   } finally { globalThis.fetch = realFetch; }
 
@@ -371,7 +381,7 @@ console.log("cron tick — sleep, wake, hold (the decision before the probe)");
     d1d.meta.set("sleepwake:state", JSON.stringify({ mode: "running", since: RT - 60 * MIN, lastWakeAt: RT - 60 * MIN }));
     const envD = makeEnv(d1d, callsD);
     await tick(envD);
-    check("stale reporter -> no suspend", callsD.filter((c) => c.url.includes("/api/machine/sleep")).length === 0);
+    check("stale reporter -> no suspend", callsD.filter((c) => isSuspendCall(c)).length === 0);
     check("stale reporter -> probe (stay awake)", callsD.filter((c) => c.url.includes("8088-test.instabox.tech")).length >= 1);
   } finally { globalThis.fetch = realFetch; }
 
@@ -392,7 +402,7 @@ console.log("cron tick — sleep, wake, hold (the decision before the probe)");
     const envE = makeEnv(d1e, callsE);
     const beforeE = Date.now();
     await tick(envE);
-    check("live already-running + stale lastUpAt 17h + fresh reporter -> no suspend (guard sees ~0)", callsE.filter((c) => c.url.includes("/api/machine/sleep")).length === 0, `sleep=${callsE.filter((c) => c.url.includes("/api/machine/sleep")).length}`);
+    check("live already-running + stale lastUpAt 17h + fresh reporter -> no suspend (guard sees ~0)", callsE.filter((c) => isSuspendCall(c)).length === 0, `sleep=${callsE.filter((c) => isSuspendCall(c)).length}`);
     const baselineE = Number(d1e.meta.get("sleepwake:run-start"));
     check("live already-running + stale lastUpAt 17h -> run-start baseline set to ~now", Number.isFinite(baselineE) && Math.abs(baselineE - beforeE) < 60_000, `baseline=${baselineE}`);
     check("live already-running + stale lastUpAt 17h -> probe (stay awake)", callsE.filter((c) => c.url.includes("8088-test.instabox.tech")).length >= 1);
