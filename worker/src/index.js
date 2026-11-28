@@ -741,9 +741,22 @@ async function computeNextRoutine(db, report, now = Date.now()) {
 // The auth and endpoint MIRROR the wake path that is already proven live
 // (`callInstaBoxWake` above): same base URL, same `X-API-Key` header carrying
 // INSTABOX_API_KEY, same `Idempotency-Key: crypto.randomUUID()`, same 30 s
-// AbortSignal.timeout. Only the verb and the body differ, and they mirror the
-// call Pages made, which was itself tested: PATCH
-// /v1/machines/{id} with {"desiredState":"suspended"}.
+// AbortSignal.timeout. The suspend is a lifecycle POST, mirroring wake:
+// POST /v1/machines/{id}/suspend, no body.
+//
+// CORRECTION (2026-11-28): the original v3 call was PATCH
+// /v1/machines/{id} with {"desiredState":"suspended"}. That PATCH returns
+// 400 unknown_field — desiredState is not a valid PATCH field (known fields:
+// name, rootDiskGiB, persistentDiskGiB, vcpus, memMiB, metadata,
+// autoSuspendAfterSeconds, maxRunMinutes, vault, apply, cancelScheduled).
+// So the v3 suspend as built could never work; it would 400, not suspend.
+// The connector doc lists "suspend" among the lifecycle POST calls
+// (create, start, stop, suspend, resume, delete — all POST with
+// Idempotency-Key), and the wake path is POST /v1/machines/{id}/wake.
+// POST /suspend is therefore the inferred correct endpoint — it is NOT
+// proven live. Do not live-test it by suspending on purpose; the first live
+// test is at a genuine suspend (end of run / guard sleep), watching for
+// sleep_blocked vs a clean suspend in /sleepwake/state.
 //
 // The Worker already holds INSTABOX_API_KEY — it is the same secret the wake
 // fallback has always read. Nothing new is invented here, no key moves, and
@@ -792,14 +805,12 @@ async function suspendViaInstaBox(env) {
   const id = encodeURIComponent(env.INSTABOX_MACHINE_ID);
   let res;
   try {
-    res = await fetch(`https://api.instabox.sh/v1/machines/${id}`, {
-      method: "PATCH",
+    res = await fetch(`https://api.instabox.sh/v1/machines/${id}/suspend`, {
+      method: "POST",
       headers: {
         "X-API-Key": env.INSTABOX_API_KEY,
-        "Content-Type": "application/json",
         "Idempotency-Key": crypto.randomUUID(),
       },
-      body: JSON.stringify({ desiredState: "suspended" }),
       signal: AbortSignal.timeout(30_000),
     });
   } catch (err) {
