@@ -424,16 +424,25 @@ side every one of those steps is invisible: the only fact it ever learned was
 Seven failures is enough. v3 deletes the indirection.
 
 ### What v3 does
-The cron PATCHes InstaBox directly, mirroring the wake path that is already
+The cron POSTs to InstaBox directly, mirroring the wake path that is already
 proven live (`callInstaBoxWake`):
 
 | | wake (existing, proven) | suspend (v3, new) |
 | --- | --- | --- |
-| URL | `POST /v1/machines/{id}/wake` | `PATCH /v1/machines/{id}` |
+| URL | `POST /v1/machines/{id}/wake` | `POST /v1/machines/{id}/suspend` |
 | Auth | `X-API-Key: INSTABOX_API_KEY` | same |
 | Idempotency | `Idempotency-Key: crypto.randomUUID()` | same |
 | Timeout | 30 s `AbortSignal.timeout` | same |
-| Body | (none) | `{"desiredState":"suspended"}` |
+| Body | (none) | (none) |
+
+CORRECTION (2026-11-28): v3 as built used PATCH `/v1/machines/{id}` with
+body `{"desiredState":"suspended"}`. That PATCH returns 400 unknown_field —
+desiredState is not a valid PATCH field — so the v3 suspend could never work;
+it would 400, not suspend. The suspend is a lifecycle POST (the connector doc
+lists "suspend" among the lifecycle POST calls, and the wake path is a POST).
+POST /suspend is inferred from that shape, NOT proven live: do not live-test
+it by suspending on purpose; the first live test is at a genuine suspend
+(end of run / guard sleep), watching for sleep_blocked vs a clean suspend.
 
 No new secret, no key moved, **no Pages deploy needed** for this to work.
 
