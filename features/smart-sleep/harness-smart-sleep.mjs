@@ -115,11 +115,12 @@ function makeFetch(calls) {
   return async (url, init = {}) => {
     const u = String(url);
     calls.push({ url: u, method: init.method || "GET" });
-    // v3 (2026-11-23): the tick suspends through InstaBox DIRECTLY, not
-    // through Pages. A PATCH to the machine endpoint is the suspend; a POST
-    // to /wake is the wake fallback.
-    if (u.includes("api.instabox.sh/v1/machines/") && (init.method || "GET") === "PATCH") {
-      return new Response(JSON.stringify({ ok: true, desiredState: "suspended" }), { status: 200, headers: { "Content-Type": "application/json" } });
+    // v3 (2026-11-23, corrected 2026-11-28): the tick suspends through
+    // InstaBox DIRECTLY, not through Pages. A POST to .../machines/{id}/suspend
+    // is the suspend; a POST to /wake is the wake fallback. (The original
+    // PATCH with {desiredState:"suspended"} returns 400 unknown_field.)
+    if (u.includes("/suspend") && (init.method || "GET") === "POST") {
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     if (u.includes("api.instabox.sh")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -130,15 +131,15 @@ function makeFetch(calls) {
 }
 
 /**
- * Is this call a SUSPEND? v3 (2026-11-23) suspends through InstaBox directly
- * (PATCH the machine endpoint), not through Pages. The predicate keeps the old
- * Pages URL too, so a regression back to that path is still counted — and
- * still visible.
+ * Is this call a SUSPEND? v3 (2026-11-23, corrected 2026-11-28) suspends
+ * through InstaBox directly (POST .../machines/{id}/suspend), not through
+ * Pages. The predicate keeps the old Pages URL too, so a regression back to
+ * that path is still counted — and still visible.
  */
 function isSuspendCall(c) {
   const m = (c.method || "GET").toUpperCase();
   return (
-    (c.url.includes("api.instabox.sh/v1/machines/") && m === "PATCH") ||
+    (c.url.includes("/suspend") && m === "POST") ||
     c.url.includes("/api/machine/sleep")
   );
 }
