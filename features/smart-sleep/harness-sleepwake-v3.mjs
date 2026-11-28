@@ -11,16 +11,22 @@
  * cause was never established. Every step of the indirection is invisible from
  * the Worker, so the failure could only be diagnosed by inference.
  *
- * v3 removes the indirection: the Worker PATCHes InstaBox itself, using the
+ * v3 removes the indirection: the Worker POSTs to InstaBox itself, using the
  * INSTABOX_API_KEY secret it already holds for the API-wake fallback. The
  * endpoint, the header and the idempotency key mirror that wake path, which is
  * proven live.
  *
+ * CORRECTION (2026-11-28): the original v3 call was PATCH
+ * /v1/machines/{id} with {desiredState:"suspended"}. That PATCH returns 400
+ * unknown_field — desiredState is not a valid PATCH field. The suspend is a
+ * lifecycle POST: POST /v1/machines/{id}/suspend, no body. POST /suspend is
+ * inferred from the connector doc + the wake-path shape, NOT proven live.
+ *
  * WHAT IS ASSERTED HERE
  * ---------------------
- *   1. Success: exactly ONE PATCH to the right machine URL, the right body
- *      (`desiredState: suspended`), the right header, and a state that ends
- *      `sleeping` with the decision's reason.
+ *   1. Success: exactly ONE POST to the right machine URL
+ *      (.../machines/{id}/suspend), no body, the right header, and a state
+ *      that ends `sleeping` with the decision's reason.
  *   2. NO Pages call is made at all — the whole point of v3.
  *   3. Failure modes, each with the behaviour that must follow:
  *        - 401 / 403 (bad or expired key)  -> permanent: record the block,
@@ -124,10 +130,10 @@ function makeFetch(calls, { suspendReply = 200 } = {}) {
     const u = String(url);
     const method = (init.method || "GET").toUpperCase();
     calls.push({ url: u, method, body: init.body, headers: init.headers || {} });
-    if (u.includes("api.instabox.sh/v1/machines/") && method === "PATCH") {
+    if (u.includes("/suspend") && method === "POST") {
       if (suspendReply === "throw") throw Object.assign(new Error("network down"), { name: "TypeError" });
       if (suspendReply >= 200 && suspendReply < 300) {
-        return new Response(JSON.stringify({ ok: true, desiredState: "suspended" }), { status: suspendReply, headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ ok: true }), { status: suspendReply, headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({ error: { code: "nope", message: "refused" } }), { status: suspendReply, headers: { "Content-Type": "application/json" } });
     }
@@ -168,7 +174,7 @@ async function tick(env) {
 }
 
 const isSuspend = (c) =>
-  c.url.includes("api.instabox.sh/v1/machines/") && (c.method || "").toUpperCase() === "PATCH";
+  c.url.includes("/suspend") && (c.method || "").toUpperCase() === "POST";
 const isPagesSleep = (c) => c.url.includes("/api/machine/sleep");
 
 /** An idle machine whose every sleep guard passes, ready to be suspended. */
@@ -222,12 +228,12 @@ console.log("sleep/wake v3 — direct InstaBox suspend\n");
   const suspends = calls.filter(isSuspend);
   check("exactly one suspend call", suspends.length === 1, `calls=${JSON.stringify(calls.map((c) => `${c.method} ${c.url}`))}`);
   const s = suspends[0] || {};
-  check("suspend goes to the InstaBox machine endpoint",
-    String(s.url || "") === "https://api.instabox.sh/v1/machines/m_agq5wqqo2fvypym7rjlpvngc2m",
+  check("suspend goes to the InstaBox machine suspend endpoint",
+    String(s.url || "") === "https://api.instabox.sh/v1/machines/m_agq5wqqo2fvypym7rjlpvngc2m/suspend",
     `url=${s.url}`);
-  check("suspend is a PATCH", String(s.method || "").toUpperCase() === "PATCH", `method=${s.method}`);
-  check("suspend body is {desiredState:'suspended'}",
-    s.body === JSON.stringify({ desiredState: "suspended" }), `body=${s.body}`);
+  check("suspend is a POST", String(s.method || "").toUpperCase() === "POST", `method=${s.method}`);
+  check("suspend sends no body",
+    s.body === undefined || s.body === null, `body=${s.body}`);
   const h = s.headers || {};
   check("suspend authenticates with X-API-Key (the same header the wake path uses)",
     h["X-API-Key"] === "instabox-key-test", `headers=${JSON.stringify(Object.keys(h))}`);
